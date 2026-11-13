@@ -14,6 +14,8 @@ use std::sync::Arc;
 
 #[path = "kiwi/compact_affine.rs"]
 mod compact_affine;
+mod compact_float;
+pub use compact_float::FloatRecord;
 #[path = "kiwi/compact_guid.rs"]
 mod compact_guid;
 #[path = "kiwi/import_projection.rs"]
@@ -325,6 +327,9 @@ pub enum FigValue {
     Guid(u32, u32),
     /// Import-only exact 2×3 float transform, retaining all six authored values.
     Affine([f32; 6]),
+    /// Import-only exact float structs, preserving borrowed scalar lookups.
+    Vec2(FloatRecord<2>),
+    Color(FloatRecord<4>),
     Float(f32),
     Str(String),
     Bytes(Vec<u8>),
@@ -344,6 +349,7 @@ impl FigValue {
     /// keys, or keys explicitly decoded to [`FigValue::Null`].
     pub fn get(&self, key: &str) -> Option<&FigValue> {
         match self {
+            FigValue::Vec2(_) | FigValue::Color(_) => self.small_float_get(key),
             FigValue::Object(pairs) => pairs
                 .iter()
                 .find(|(k, _)| k.as_ref() == key)
@@ -411,7 +417,11 @@ impl FigValue {
     pub fn is_object(&self) -> bool {
         matches!(
             self,
-            FigValue::Object(_) | FigValue::Guid(_, _) | FigValue::Affine(_)
+            FigValue::Object(_)
+                | FigValue::Guid(_, _)
+                | FigValue::Affine(_)
+                | FigValue::Vec2(_)
+                | FigValue::Color(_)
         )
     }
 
@@ -441,22 +451,6 @@ impl FigValue {
         match self.get_mut(key)? {
             FigValue::Array(values) => Some(values),
             _ => None,
-        }
-    }
-
-    /// Insert or overwrite a field on an object value (no-op for
-    /// non-objects).
-    pub fn set(&mut self, key: &str, value: FigValue) {
-        if self.set_affine_number(key, &value) {
-            return;
-        }
-        self.materialize_compact();
-        if let FigValue::Object(pairs) = self {
-            if let Some(slot) = pairs.iter_mut().find(|(k, _)| k.as_ref() == key) {
-                slot.1 = value;
-            } else {
-                pairs.push((Arc::from(key), value));
-            }
         }
     }
 }
@@ -495,6 +489,7 @@ struct Decoder<'a, 'b> {
     object_keys: Vec<Vec<Arc<str>>>,
     compact_guids: Vec<Option<bool>>,
     compact_affines: Vec<Option<[u8; 6]>>,
+    compact_floats: Vec<Option<(compact_float::FloatKind, [u8; 4])>>,
 }
 
 impl<'a, 'b> Decoder<'a, 'b> {
@@ -561,6 +556,7 @@ impl<'a, 'b> Decoder<'a, 'b> {
             object_keys,
             compact_guids: compact_guid::definitions(schema),
             compact_affines: compact_affine::definitions(schema),
+            compact_floats: compact_float::definitions(schema),
         })
     }
 

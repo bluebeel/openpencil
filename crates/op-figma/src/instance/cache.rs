@@ -112,6 +112,10 @@ fn fig_value_equal(left: &FigValue, right: &FigValue) -> bool {
             .zip(right)
             .all(|(left, right)| left.to_bits() == right.to_bits());
     }
+    if let (Some((lk, lv)), Some((rk, rv))) = (left.small_float_parts(), right.small_float_parts())
+    {
+        return lk == rk && lv.iter().zip(rv).all(|(a, b)| a.to_bits() == b.to_bits());
+    }
     match (left, right) {
         (FigValue::Null, FigValue::Null) => true,
         (FigValue::Bool(a), FigValue::Bool(b)) => a == b,
@@ -155,8 +159,16 @@ fn hash_fig_value<H: Hasher>(value: &FigValue, state: &mut H) {
         guid.hash(state);
         return;
     }
+    if let Some((kind, values)) = value.small_float_parts() {
+        kind.hash(state);
+        for value in values {
+            value.to_bits().hash(state);
+        }
+        return;
+    }
     std::mem::discriminant(value).hash(state);
     match value {
+        FigValue::Vec2(_) | FigValue::Color(_) => unreachable!("normalized before hashing"),
         FigValue::Null => {}
         FigValue::Bool(value) => value.hash(state),
         FigValue::Int(value) => value.hash(state),
@@ -188,6 +200,8 @@ fn hash_fig_value<H: Hasher>(value: &FigValue, state: &mut H) {
 fn fig_value_bytes(value: &FigValue) -> usize {
     std::mem::size_of::<FigValue>()
         + match value {
+            FigValue::Vec2(value) => value.retained_bytes(),
+            FigValue::Color(value) => value.retained_bytes(),
             FigValue::Str(value) => value.len(),
             FigValue::Bytes(value) => value.len(),
             FigValue::TextEvidence(value) => value.retained_bytes(),
@@ -365,6 +379,51 @@ pub(crate) fn apply_instance_overrides_memoized(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn packed_float_cache_keys_preserve_bits_order_independence_and_view_accounting() {
+        use crate::kiwi::FloatRecord;
+        use std::collections::hash_map::DefaultHasher;
+        let values = [f32::from_bits(0x7fc01234), -0.0, 0.25, 0.75];
+        let forms = [
+            (
+                FigValue::Vec2(FloatRecord::new([values[0], values[1]])),
+                vec!["x", "y"],
+            ),
+            (
+                FigValue::Color(FloatRecord::new(values)),
+                vec!["r", "g", "b", "a"],
+            ),
+        ];
+        for (compact, names) in forms {
+            let fields = names
+                .iter()
+                .zip(values)
+                .map(|(name, value)| (*name, FigValue::Float(value)))
+                .collect::<Vec<_>>();
+            let mut reversed = fields.clone();
+            reversed.reverse();
+            for ordinary in [obj(fields), obj(reversed)] {
+                assert!(fig_value_equal(&compact, &ordinary));
+                let (mut left, mut right) = (DefaultHasher::new(), DefaultHasher::new());
+                hash_fig_value(&compact, &mut left);
+                hash_fig_value(&ordinary, &mut right);
+                assert_eq!(left.finish(), right.finish());
+            }
+            let mut positive = compact.clone();
+            positive.set(names[1], FigValue::Float(0.0));
+            assert!(!fig_value_equal(&compact, &positive));
+            let mut other_nan = compact.clone();
+            other_nan.set(names[0], FigValue::Float(f32::from_bits(0x7fc05678)));
+            assert!(!fig_value_equal(&compact, &other_nan));
+            let before = fig_value_bytes(&compact);
+            assert!(compact.get(names[0]).is_some());
+            assert_eq!(
+                fig_value_bytes(&compact) - before,
+                names.len() * std::mem::size_of::<FigValue>()
+            );
+        }
+    }
 
     #[test]
     fn compact_affine_cache_equality_hash_keep_float_bits_and_ignore_field_order() {

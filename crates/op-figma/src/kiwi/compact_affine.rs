@@ -41,7 +41,10 @@ impl Decoder<'_, '_> {
         if let Some(guid) = self.decode_compact_guid(definition, depth, scope)? {
             return Ok(Some(guid));
         }
-        self.decode_compact_affine(definition, depth, scope)
+        if let Some(affine) = self.decode_compact_affine(definition, depth, scope)? {
+            return Ok(Some(affine));
+        }
+        self.decode_compact_float(definition, depth, scope)
     }
 
     fn decode_compact_affine(
@@ -78,15 +81,17 @@ impl Decoder<'_, '_> {
 
 impl FigValue {
     pub(super) fn compact_number(&self, key: &str) -> Option<f64> {
-        self.guid_number(key).or_else(|| {
-            let Self::Affine(values) = self else {
-                return None;
-            };
-            FIELDS
-                .iter()
-                .position(|name| *name == key)
-                .map(|index| f64::from(values[index]))
-        })
+        self.small_float_number(key)
+            .or_else(|| self.guid_number(key))
+            .or_else(|| {
+                let Self::Affine(values) = self else {
+                    return None;
+                };
+                FIELDS
+                    .iter()
+                    .position(|name| *name == key)
+                    .map(|index| f64::from(values[index]))
+            })
     }
 
     pub(crate) fn affine_parts(&self) -> Option<[f32; 6]> {
@@ -126,6 +131,7 @@ impl FigValue {
 
     pub(super) fn materialize_compact(&mut self) {
         self.materialize_guid();
+        self.materialize_small_float();
         if let Self::Affine(values) = self {
             *self = Self::Object(
                 FIELDS

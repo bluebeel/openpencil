@@ -454,10 +454,10 @@ fn projected_transient_structs_reserve_only_fields_the_consumer_keeps() {
         panic!("expected glyph object");
     };
     assert_eq!(fields.capacity(), 2);
-    let FigValue::Object(point) = fields[1].1.clone() else {
-        panic!("expected point");
-    };
-    assert_eq!(point.capacity(), 2);
+    let point = &fields[1].1;
+    assert!(matches!(point, FigValue::Vec2(_)));
+    assert_eq!(point.get_f64("x"), Some(1.0));
+    assert_eq!(point.get_f64("y"), Some(2.0));
 }
 
 #[test]
