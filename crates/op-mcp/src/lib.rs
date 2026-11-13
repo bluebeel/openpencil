@@ -143,6 +143,8 @@ pub mod parser;
 pub mod read_nodes;
 #[cfg(test)]
 mod read_nodes_tests;
+#[cfg(test)]
+mod read_snapshot_tests;
 pub mod read_tools;
 pub mod read_tools_extra;
 pub mod reparent_tools;
@@ -203,7 +205,7 @@ pub use batch_design::{
     design_content_snapshot, design_skeleton_snapshot, DesignContent, DesignSkeleton,
 };
 pub use batch_design_result::{batch_design_snapshot, batch_design_snapshot_for_call, BatchDesign};
-pub use batch_get::{batch_get_snapshot, BatchGet};
+pub use batch_get::{batch_get_snapshot, batch_get_snapshot_for_call, BatchGet};
 pub use batch_program_objects::parse_program_objects;
 pub use bulk_vars::{
     apply_design_system_snapshot, get_variables_snapshot, set_themes_snapshot,
@@ -269,7 +271,7 @@ pub use page_tools::{
     Undo,
 };
 pub use parser::parse_tool_call;
-pub use read_nodes::{read_nodes_snapshot, ReadNodes};
+pub use read_nodes::{read_nodes_snapshot, read_nodes_snapshot_for_call, ReadNodes};
 pub use reparent_tools::{copy_node_snapshot, move_node_snapshot, CopyNode, MoveNode};
 pub use scalar_vars::{
     create_variable_snapshot, delete_variable_snapshot, rename_variable_snapshot,

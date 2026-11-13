@@ -155,7 +155,10 @@ pub(super) fn lean_registry(
     let mut registry = ToolRegistry::default();
     let wants = |name: &str| requested_tool.is_none_or(|requested| requested == name);
     if wants("get_editor_state") {
-        registry.register(Box::new(LeanEditorState::snapshot(doc)));
+        registry.register(Box::new(match arguments {
+            Some(args) => LeanEditorState::snapshot_for_call(doc, args),
+            None => LeanEditorState::snapshot(doc),
+        }));
     }
     if wants("get_guidelines") {
         registry.register(Box::new(get_guidelines_snapshot()));

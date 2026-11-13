@@ -111,8 +111,20 @@ pub(super) fn rebuild_registry(
     register_tool!("list_components", list_components_snapshot(doc));
     register_tool!("list_ui_kits", list_ui_kits_snapshot(doc));
     register_tool!("get_component", get_component_snapshot(doc));
-    register_tool!("batch_get", batch_get_snapshot(doc));
-    register_tool!("read_nodes", read_nodes_snapshot(doc));
+    register_tool!(
+        "batch_get",
+        match arguments {
+            Some(args) => op_mcp::batch_get_snapshot_for_call(doc, args),
+            None => batch_get_snapshot(doc),
+        }
+    );
+    register_tool!(
+        "read_nodes",
+        match arguments {
+            Some(args) => op_mcp::read_nodes_snapshot_for_call(doc, args),
+            None => read_nodes_snapshot(doc),
+        }
+    );
     register_tool!("codegen_plan", codegen_plan_snapshot(doc));
     register_tool!("codegen_submit_chunk", codegen_submit_chunk_snapshot());
     register_tool!("codegen_assemble", codegen_assemble_snapshot());
