@@ -27,10 +27,11 @@ pub(super) fn tools_list_response(
     // The lean catalog advertises its own derived schemas — never the kit
     // insert tools or debug tools, which it does not serve.
     if profile.catalog == McpToolCatalog::Lean {
-        let entries: Vec<&str> = lean_tool_schemas()
+        let entries: Vec<String> = lean_tool_schemas()
             .iter()
             .map(String::as_str)
             .filter(|schema| listed(schema))
+            .map(schema_with_agent_context)
             .collect();
         return format!(
             r#"{{"jsonrpc":"2.0","id":{id_raw},"result":{{"tools":[{}]}}}}"#,
@@ -40,12 +41,13 @@ pub(super) fn tools_list_response(
     let mut entries: Vec<String> = TOOL_SCHEMAS
         .iter()
         .filter(|schema| listed(schema))
-        .map(|s| (*s).to_string())
+        .map(|s| schema_with_agent_context(s))
         .collect();
     entries.extend(
         op_mcp::element_tools::element_tool_schemas(state)
             .into_iter()
-            .filter(|schema| listed(schema)),
+            .filter(|schema| listed(schema))
+            .map(|schema| schema_with_agent_context(&schema)),
     );
     #[cfg(not(feature = "mcp-debug-tools"))]
     let _ = debug_enabled;
@@ -55,11 +57,25 @@ pub(super) fn tools_list_response(
             DEBUG_TOOL_SCHEMAS
                 .iter()
                 .filter(|schema| listed(schema))
-                .map(|s| (*s).to_string()),
+                .map(|s| schema_with_agent_context(s)),
         );
     }
     format!(
         r#"{{"jsonrpc":"2.0","id":{id_raw},"result":{{"tools":[{}]}}}}"#,
         entries.join(",")
     )
+}
+
+// Discovery advertises the host extension without changing individual tools or
+// widening any deployment's catalog/authorization profile.
+fn schema_with_agent_context(schema: &str) -> String {
+    let Ok(mut value) = serde_json::from_str::<serde_json::Value>(schema) else {
+        return schema.to_owned();
+    };
+    value["inputSchema"]["properties"]["agentId"] = serde_json::json!({
+        "type": "string", "minLength": 1, "maxLength": 96,
+        "pattern": "^[A-Za-z0-9._:-]+$",
+        "description": "Optional host UI context identifier. Isolates selection, viewport, active page and clipboard; document and undo history remain shared. Not an authentication credential."
+    });
+    value.to_string()
 }

@@ -176,6 +176,7 @@ impl std::error::Error for TenantError {}
 
 /// One account's live document authority.
 pub struct Tenant {
+    pub(super) authority: Arc<super::ConnAuthority>,
     /// This account's editor, version counter and collaboration state — the
     /// exact structure the single-user daemon keeps, one per account.
     pub(crate) state: Mutex<WebCanvasState>,
@@ -208,6 +209,7 @@ impl Tenant {
         // deployment property, not an account one.
         state.allow_origins = allow_origins.to_vec();
         Self {
+            authority: Arc::new(super::ConnAuthority::new(&state)),
             state: Mutex::new(state),
             hub: SseHub::default(),
             shared_with: Mutex::new(shared_with),

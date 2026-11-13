@@ -82,6 +82,7 @@ pub fn run_web_canvas(options: ServeWebOptions) -> Result<()> {
         current_path,
         credential_persistence,
     )));
+
     let hub = Arc::new(SseHub::default());
     let conn_count = Arc::new(AtomicUsize::new(0));
     // Raised by a connection thread that accepted a token-authenticated
@@ -135,14 +136,15 @@ pub fn run_web_canvas(options: ServeWebOptions) -> Result<()> {
     // `serve_one` uses the token only for a body-authenticated shutdown and
     // uses the allowlist as the browser request boundary. Ordinary native
     // requests carry neither X-OpenPencil-Token nor Authorization.
-    {
+    let authority = {
         let mut guard = state.lock().unwrap_or_else(|p| p.into_inner());
         guard.mode = mode;
         if managed_token.is_some() || !allow_origins.is_empty() {
             guard.managed_token = managed_token;
             guard.allow_origins = allow_origins;
         }
-    }
+        Arc::new(ConnAuthority::new(&guard))
+    };
     // The collaboration pump. It observes `shutdown` itself, so it retires
     // within one tick of the daemon being asked to stop.
     collab_driver::spawn(&state, &hub, &shutdown);
@@ -168,6 +170,7 @@ pub fn run_web_canvas(options: ServeWebOptions) -> Result<()> {
         }
         conn_count.fetch_add(1, Ordering::AcqRel);
         let state = Arc::clone(&state);
+        let authority = Arc::clone(&authority);
         let hub = Arc::clone(&hub);
         let conns = Arc::clone(&conn_count);
         let shutdown_flag = Arc::clone(&shutdown);
@@ -177,7 +180,7 @@ pub fn run_web_canvas(options: ServeWebOptions) -> Result<()> {
                 let _conn_guard = ConnGuard(conns);
                 let _ = s.set_read_timeout(Some(IO_TIMEOUT));
                 let _ = s.set_write_timeout(Some(IO_TIMEOUT));
-                match serve_one_in_mode(&mut s, &state, &hub, mode) {
+                match serve_one_with_authority(&mut s, &state, &hub, mode, &authority) {
                     Ok(true) => {
                         shutdown_flag.store(true, Ordering::Release);
                         // Wake the (possibly blocked) accept loop. Loopback

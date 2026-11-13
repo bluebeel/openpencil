@@ -672,9 +672,12 @@ pub use wire::*;
 mod doc_sync;
 pub use doc_sync::*;
 
+pub(crate) mod agent_context;
 mod lean_profile;
 mod lean_tools;
 mod raster_snapshot;
+mod resident_charge;
+mod resident_documents;
 pub(crate) mod schemas;
 pub mod tool_catalog;
 mod tools_list;

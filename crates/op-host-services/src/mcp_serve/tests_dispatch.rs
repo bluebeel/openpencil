@@ -7,6 +7,147 @@
 use super::*;
 
 #[test]
+fn file_backed_view_change_does_not_require_a_writable_document_path() {
+    let suffix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let missing = std::env::temp_dir().join(format!("op-no-view-write-{suffix}/missing/view.op"));
+    let mut state = EditorState::new();
+    let document = state.doc.clone();
+    let line = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"set_viewport","arguments":{"zoom_percent":"150"}}}"#;
+    let response = process_message(&mut state, &missing, line)
+        .unwrap()
+        .unwrap();
+    assert!(!response.contains(r#""isError":true"#), "{response}");
+    assert_eq!(state.viewport.zoom, 1.5);
+    assert_eq!(state.doc, document);
+    assert!(!missing.exists());
+}
+
+#[test]
+fn file_backed_agent_context_keeps_selection_zoom_and_cross_file_clipboard_separate() {
+    let suffix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let directory =
+        std::env::temp_dir().join(format!("op-stdio-agents-{}-{suffix}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let first = directory.join("one.op");
+    let second = directory.join("two.op");
+    let document = jian_ops_schema::load_str(
+        r#"{"version":"1.0.0","children":[
+      {"id":"n1","name":"One","type":"rectangle","width":8,"height":8},
+      {"id":"n2","name":"Two","type":"rectangle","width":8,"height":8}]}"#,
+    )
+    .unwrap()
+    .value;
+    let mut state = EditorState::from_document(document);
+    let a = format!("stdio-a-{suffix}");
+    let b = format!("stdio-b-{suffix}");
+    let call = |state: &mut EditorState,
+                path: &Path,
+                agent: &str,
+                name: &str,
+                mut args: serde_json::Value| {
+        args["agentId"] = agent.into();
+        let line = serde_json::json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
+            "params":{"name":name,"arguments":args}})
+        .to_string();
+        let response = process_message(state, path, &line).unwrap().unwrap();
+        assert!(!response.contains(r#""isError":true"#), "{response}");
+        serde_json::from_str::<serde_json::Value>(&tool_text(&response)).unwrap()
+    };
+    call(
+        &mut state,
+        &first,
+        &a,
+        "set_selection",
+        serde_json::json!({"node_id":"n1"}),
+    );
+    call(
+        &mut state,
+        &first,
+        &b,
+        "set_selection",
+        serde_json::json!({"node_id":"n2"}),
+    );
+    call(
+        &mut state,
+        &first,
+        &a,
+        "copy_selected",
+        serde_json::json!({}),
+    );
+    call(
+        &mut state,
+        &first,
+        &a,
+        "paste_clipboard",
+        serde_json::json!({"offset_px":"0"}),
+    );
+    assert_eq!(
+        state
+            .active_children()
+            .iter()
+            .filter(|n| n.base().name.as_deref() == Some("One"))
+            .count(),
+        2
+    );
+    assert_eq!(
+        state
+            .active_children()
+            .iter()
+            .filter(|n| n.base().name.as_deref() == Some("Two"))
+            .count(),
+        1
+    );
+    call(
+        &mut state,
+        &first,
+        &a,
+        "set_viewport",
+        serde_json::json!({"zoom_percent":"125"}),
+    );
+    call(
+        &mut state,
+        &first,
+        &b,
+        "set_viewport",
+        serde_json::json!({"zoom_percent":"200"}),
+    );
+    let viewport = call(
+        &mut state,
+        &first,
+        &a,
+        "get_viewport",
+        serde_json::json!({}),
+    );
+    assert_eq!(viewport["zoom_percent"], "125");
+    assert_eq!(state.viewport.zoom, 1.0, "the live camera is restored");
+    assert!(state.selection.set.is_empty());
+    let mut other = EditorState::new();
+    call(
+        &mut other,
+        &second,
+        &a,
+        "paste_clipboard",
+        serde_json::json!({"offset_px":"0"}),
+    );
+    assert_eq!(other.active_children().len(), 1);
+    assert_eq!(
+        other.active_children()[0].base().name.as_deref(),
+        Some("One")
+    );
+    assert_eq!(
+        load_editor_state(&second).unwrap().active_children().len(),
+        1
+    );
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn ui_commands_skip_document_repairs_but_writes_keep_them() {
     let doc = jian_ops_schema::load_str(
         r#"{

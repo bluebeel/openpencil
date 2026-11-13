@@ -158,6 +158,11 @@ impl SharedDoc {
         &self.root_children
     }
 
+    /// Borrow snapshot metadata without materializing its shared node trees.
+    pub fn document_metadata(&self) -> &PenDocument {
+        &self.skeleton
+    }
+
     /// Shared top-level nodes of page `i`, if any.
     pub fn page_children(&self, i: usize) -> Option<&[Arc<PenNode>]> {
         self.page_children.get(i).map(|v| v.as_slice())

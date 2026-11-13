@@ -1,20 +1,21 @@
-//! Headless web-canvas daemon — serves the document to the Rust WASM web shell
-//! (`op-host-web`, which runs in a browser and can't bind a socket) and to
-//! external MCP/CLI clients. It is the Rust analog of the TS web app's
-//! `apps/web/server/api/mcp/*` Nitro routes + `setSyncDocument`: it owns the
-//! canonical document in memory and answers the same whole-document REST sync
-//! shape, so a JSON-RPC/REST client (e.g. the `op` CLI or any MCP client) can
-//! drive the Rust *web* canvas the same way it drives the desktop canvas.
+//! Headless document authority for the Rust WASM shell and MCP/CLI clients.
+//! The live document serves canonical JSON-RPC/REST synchronization; authorized
+//! local filePath calls use a bounded per-file authority hub. Both drive the
+//! same Rust editor commands and shared raster renderer.
 //!
 //! This module ships the request-handling CORE (`handle_web_canvas_request`,
-//! fully unit-testable without a socket) plus a runnable loop
-//! (`run_web_canvas`, behind
+//! fully unit-testable without a socket) plus a runnable loop (`run_web_canvas`, behind
 //! `openpencil-desktop --serve-web <port> [doc] [--host <addr>]`).
 //! Layered on top: an SSE endpoint that streams `version` bumps to connected
 //! shells, static serving of the host page + WASM bundle (`crate::web_static`
 //! — `GET /` and `GET /pkg/*`), and a token-authenticated `openpencil/shutdown`
 //! (same contract as `--mcp-http`) so `op stop` works against this daemon.
 
+use crate::web_canvas_server_error::WebCanvasError;
+use crate::web_credential_policy::WebCredentialPersistence;
+use base64::Engine as _;
+use op_editor_core::agent_settings::{AcpAgentConnectOutcome, ProviderConnectOutcome};
+use op_editor_core::{AgentSettings, EditorState};
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::path::PathBuf;
@@ -22,14 +23,6 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
-
-use base64::Engine as _;
-use op_editor_core::agent_settings::{AcpAgentConnectOutcome, ProviderConnectOutcome};
-use op_editor_core::{AgentSettings, EditorState};
-
-use crate::web_canvas_server_error::WebCanvasError;
-use crate::web_credential_policy::WebCredentialPersistence;
-
 /// Every fallible step of this module fails with [`WebCanvasError`].
 type Result<T> = std::result::Result<T, WebCanvasError>;
 
@@ -76,6 +69,8 @@ impl Drop for ConnGuard {
 /// read/replace it over `/api/mcp/document`.
 pub struct WebCanvasState {
     pub(crate) editor: EditorState,
+    /// MCP agent UI contexts are isolated per daemon/account, never across tenants.
+    pub(crate) agent_contexts: Arc<crate::mcp_serve::agent_context::AgentContexts>,
     /// Immutable deployment policy for browser-supplied credentials. Public
     /// demo deployments fail closed to browser-only persistence.
     pub(crate) credential_persistence: WebCredentialPersistence,
@@ -85,8 +80,7 @@ pub struct WebCanvasState {
     /// Monotonic sync version, bumped on every document mutation — the key the
     /// browser shell uses to detect that the live document changed.
     pub(crate) version: u64,
-    /// The bound port, reported by `GET /api/mcp/server` (TS `server.get.ts`
-    /// parity).
+    /// The bound port, reported by `GET /api/mcp/server` (TS `server.get.ts` parity).
     pub(crate) port: u16,
     /// Managed-mode per-instance lifecycle token (see
     /// `ServeWebOptions::managed` / `run_web_canvas`). `None` outside managed
@@ -158,6 +152,7 @@ impl WebCanvasState {
         }
         Self {
             editor,
+            agent_contexts: Arc::new(crate::mcp_serve::agent_context::AgentContexts::default()),
             credential_persistence,
             current_path,
             version: 0,
@@ -749,6 +744,8 @@ mod collab_routes;
 pub(crate) mod collab_state;
 mod connect_routes;
 mod connection;
+mod connection_authority;
+use connection_authority::ConnAuthority;
 mod connection_ai_routes;
 mod doc_routes;
 mod export_routes;

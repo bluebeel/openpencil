@@ -6,19 +6,13 @@
 
 use super::*;
 
-/// Everything one request is served against.
-///
-/// The single-user daemon has exactly one `Mutex<WebCanvasState>` and one
-/// [`SseHub`], so this used to be two arguments. The online daemon has one of
-/// each per account and resolves them from the connection's verified identity
-/// before dispatch, so the pair travels together with the deployment mode that
-/// decides which routes exist at all.
-///
-/// `Local` and `Managed` build exactly the ctx the two arguments used to mean,
-/// and every mode predicate answers `true` for them — the non-online dispatch
-/// below is unchanged.
+/// One request's document authority and client-context store.
+/// Online resolves a verified tenant before dispatch; Local and Managed reuse
+/// their daemon's pair. Agent admission is separate from the document mutex,
+/// so busy agents can be rejected before waiting for a document writer.
 pub(super) struct ConnCtx<'a> {
     pub(super) state: &'a Mutex<WebCanvasState>,
+    pub(super) authority: &'a ConnAuthority,
     pub(super) hub: &'a SseHub,
     pub(super) mode: ServeMode,
     /// Which MCP tools this connection may see and call. `UNRESTRICTED` for
@@ -72,11 +66,23 @@ pub(super) fn serve_one<S: Read + Write>(
 /// caller then stops the accept loop so `op stop` never signals a pid. In
 /// managed mode only this lifecycle request, not ordinary traffic, uses the
 /// token emitted in the startup handshake.
+#[cfg(test)]
 pub(super) fn serve_one_in_mode<S: Read + Write>(
     stream: &mut S,
     state: &Mutex<WebCanvasState>,
     hub: &SseHub,
     mode: ServeMode,
+) -> Result<bool> {
+    let authority = ConnAuthority::new(&state.lock().unwrap_or_else(|p| p.into_inner()));
+    serve_one_with_authority(stream, state, hub, mode, &authority)
+}
+
+pub(super) fn serve_one_with_authority<S: Read + Write>(
+    stream: &mut S,
+    state: &Mutex<WebCanvasState>,
+    hub: &SseHub,
+    mode: ServeMode,
+    authority: &ConnAuthority,
 ) -> Result<bool> {
     let req = crate::mcp_serve::read_http_request(stream)?;
     dispatch(
@@ -84,6 +90,7 @@ pub(super) fn serve_one_in_mode<S: Read + Write>(
         &req,
         &ConnCtx {
             state,
+            authority,
             hub,
             mode,
             mcp_profile: crate::mcp_serve::tool_profile::McpAccessProfile::UNRESTRICTED,
@@ -105,10 +112,8 @@ pub(super) fn dispatch<S: Read + Write>(
 ) -> Result<bool> {
     let state = ctx.state;
     let hub = ctx.hub;
-    let (managed_lifecycle_token, allow_origins) = {
-        let guard = state.lock().unwrap_or_else(|p| p.into_inner());
-        (guard.managed_token.clone(), guard.allow_origins.clone())
-    };
+    let managed_lifecycle_token = &ctx.authority.managed_lifecycle_token;
+    let allow_origins = &ctx.authority.allow_origins;
     // Online never emits `*`: its requests carry credentials, and a wildcard
     // plus credentials is what lets any page on the internet read another
     // account's document. Managed mode keeps its own allowlist echo, and the
@@ -477,6 +482,77 @@ pub(super) fn dispatch<S: Read + Write>(
         crate::mcp_serve::tool_catalog::McpToolCatalog::for_http_path(&req.path)
             .unwrap_or(crate::mcp_serve::tool_catalog::McpToolCatalog::Full),
     );
+    let agent_contexts = &ctx.authority.agent_contexts;
+    let _agent_admission = match agent_contexts.try_admit(&req.body, mcp_profile) {
+        Ok(admission) => admission,
+        Err(error) => {
+            let response = op_mcp::parse_tool_call(&req.body)
+                .map(|call| crate::mcp_serve::file_path::error_response(&call, error.to_string()))
+                .unwrap_or_default();
+            crate::mcp_serve::write_mcp_http_response_with_origin(
+                stream,
+                "200 OK",
+                &response,
+                cors_origin,
+            )?;
+            return Ok(false);
+        }
+    };
+    let current_path = state
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .current_path
+        .clone();
+    let document_key = current_path
+        .as_ref()
+        .map(|path| path.canonicalize().unwrap_or_else(|_| path.clone()))
+        .unwrap_or_else(|| std::path::PathBuf::from("live://canvas/current"));
+    // Alternate local files have their own bounded, per-file writer authority.
+    // Only copy the primary path while holding its lock; dispatching another
+    // file must not hold up normal edits to the live document. Online paths
+    // remain account-scoped and never reach the local filesystem router.
+    if !mcp_profile.deny_unshareable_tools {
+        let routed = crate::mcp_serve::file_path::process_live_save_for_file_path_arg(
+            current_path.as_deref(),
+            &req.body,
+            mcp_profile,
+            |destination| {
+                let mut guard = state.lock().unwrap_or_else(|p| p.into_inner());
+                crate::mcp_serve::agent_context::with_agent_context(
+                    &agent_contexts,
+                    &document_key,
+                    &mut guard.editor,
+                    &req.body,
+                    mcp_profile,
+                    |editor| {
+                        crate::doc_io::save_to_path(editor, destination).map_err(|error| {
+                            crate::mcp_serve::McpServeError::Document(error.to_string())
+                        })?;
+                        Ok(None)
+                    },
+                )
+                .map(|_| ())
+            },
+        )?;
+        let routed = match routed {
+            Some(response) => Some(response),
+            None => crate::mcp_serve::file_path::process_message_for_file_path_arg_with_contexts(
+                &agent_contexts,
+                current_path.as_deref(),
+                &req.body,
+                mcp_profile,
+            )?,
+        };
+        if let Some(response) = routed {
+            crate::mcp_serve::write_mcp_http_response_with_origin(
+                stream,
+                "200 OK",
+                &response,
+                cors_origin,
+            )?;
+            return Ok(false);
+        }
+    }
     #[cfg(feature = "mcp-debug-tools")]
     if let Some(response) = (mcp_profile.catalog
         == crate::mcp_serve::tool_catalog::McpToolCatalog::Full)
@@ -553,24 +629,35 @@ pub(super) fn dispatch<S: Read + Write>(
         // call against a headless `op start` daemon also relays the
         // radar-scan to the browser shell) is tracked as follow-up
         // scope, not part of this pass.
-        let response = crate::mcp_serve::process_message_with_applier_profiled(
+        let response = crate::mcp_serve::agent_context::with_agent_context(
+            &agent_contexts,
+            &document_key,
             &mut guard.editor,
             &req.body,
             mcp_profile,
-            |_tool_name, editor, cmd| {
-                if let Err(reason) =
-                    policy.check_command(cmd, op_editor_core::CollabEditSource::Mcp)
-                {
-                    refused = Some(reason);
-                    return false;
-                }
-                let revision_before = editor.document_revision();
-                let ok = editor.apply(cmd.clone());
-                if ok {
-                    crate::mcp_serve::repair_after_document_change(editor, revision_before);
-                }
-                applied_any |= ok;
-                ok
+            |editor| {
+                crate::mcp_serve::process_message_with_applier_profiled(
+                    editor,
+                    &req.body,
+                    mcp_profile,
+                    |_tool_name, editor, cmd| {
+                        if let Err(reason) =
+                            policy.check_command(cmd, op_editor_core::CollabEditSource::Mcp)
+                        {
+                            refused = Some(reason);
+                            return false;
+                        }
+                        let revision_before = editor.document_revision();
+                        let ok = editor.apply(cmd.clone());
+                        if ok {
+                            crate::mcp_serve::repair_after_document_change(editor, revision_before);
+                        }
+                        applied_any |= ok
+                            && (!_agent_admission.is_active()
+                                || editor.document_revision() != revision_before);
+                        ok
+                    },
+                )
             },
         )?
         .unwrap_or_default();

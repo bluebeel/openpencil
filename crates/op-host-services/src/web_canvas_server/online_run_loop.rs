@@ -652,6 +652,7 @@ pub(super) fn serve_one_online<S: Read + Write>(
         &req,
         &ConnCtx {
             state: lease.state(),
+            authority: &lease.tenant().authority,
             hub: lease.hub(),
             mode: ServeMode::Online,
             // The public tool profile, narrowed further by whatever scopes
