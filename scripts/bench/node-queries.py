@@ -41,6 +41,7 @@ def fixture(count):
 
 def cases(count):
     last = f"n{count - 4}"
+    last_active = (count - 3) // 2
     return [
         ("get-last-page-node", "get_node", {"node_id": last}, {"name": f"Rectangle {count - 4}", "parent_id": ""}),
         ("get-nested-leaf", "get_node", {"node_id": "detail-leaf"}, {"name": "Leaf token", "parent_id": "detail-group"}),
@@ -58,6 +59,18 @@ def cases(count):
         ("batch-parent-search", "batch_get", {"pageId": "detail", "parentId": "detail-root", "patterns": [{"name": "^leaf"}], "searchDepth": 1, "readDepth": 0}, ["detail-leaf"]),
         ("batch-mixed-order", "batch_get", {"pageId": "detail", "patterns": [{"name": "^leaf"}], "nodeIds": ["detail-root", "detail-leaf"], "readDepth": 0}, ["detail-leaf", "detail-root"]),
         ("batch-token-resolve", "batch_get", {"pageId": "detail", "nodeIds": ["detail-leaf"], "resolveRefs": True}, ["detail-leaf"]),
+        ("selection-bulk-depth-zero", "get_selection", {"readDepth": 0}, ["bulk-root"]),
+        ("selection-bulk-invalid-depth", "get_selection", {"readDepth": "bad"}, "readDepth must be an i32"),
+        ("get-parent-last-active", "get_node_parent", {"node_id": f"n{last_active}"}, {"parent_id": "bulk-root", "depth": "1"}),
+        ("get-parent-ignores-other-page", "get_node_parent", {"node_id": "detail-leaf", "pageId": "detail"}, "not found on active page"),
+        ("get-children-small-container", "get_node_children", {"node_id": "detail-root"}, {"count": "1", "ids": "detail-group", "child_0_name": "Group"}),
+        ("get-children-leaf", "get_node_children", {"node_id": last}, {"count": "0", "ids": ""}),
+        ("get-children-missing", "get_node_children", {"node_id": "absent"}, "node absent not found"),
+        ("find-name-first", "find_node_by_name", {"name": "Bulk"}, {"id": "bulk-root", "kind": "frame"}),
+        ("find-name-last-active", "find_node_by_name", {"name": f"Rectangle {last_active}"}, {"id": f"n{last_active}", "kind": "rectangle"}),
+        ("find-name-other-page", "find_node_by_name", {"name": "Leaf token"}, "on the active page"),
+        ("get-node-camel-alias-error", "get_node", {"nodeId": "n1"}, "node_id is required"),
+        ("get-node-missing-arg", "get_node", {}, "node_id is required"),
         ("missing-node-error", "get_node", {"node_id": "absent"}, "node absent not found"),
         ("page-error-priority", "read_nodes", {"pageId": "absent", "depth": "bad"}, "page not found: absent"),
         ("depth-error", "read_nodes", {"depth": "bad"}, "depth must be an i32"),
@@ -77,7 +90,7 @@ def validate(label, response, expected):
         return
     assert [node["id"] for node in response["nodes"]] == expected, (label, response)
     assert "count" not in response
-    if label in ("read-depth-zero", "read-top-level", "read-large-parent-depth-zero"):
+    if label in ("read-depth-zero", "read-top-level", "read-large-parent-depth-zero", "selection-bulk-depth-zero"):
         assert response["nodes"][0]["children"] == "..."
     elif label == "read-depth-one":
         assert response["nodes"][0]["children"][0]["id"] == "detail-group"
@@ -88,6 +101,8 @@ def validate(label, response, expected):
         assert response["nodes"][0]["fill"][0]["color"] == "$brand"
     elif label == "batch-token-resolve":
         assert response["nodes"][0]["fill"][0]["color"] == "#3366ff"
+    if label.startswith("selection-"):
+        assert response["selectedIds"] == ["bulk-root"] and response["activePageId"] == "first"
     if label.startswith("read-") and label != "read-alias-metadata":
         assert "variables" not in response and "themes" not in response
 
@@ -119,7 +134,13 @@ async def run_case(args, count, baseline):
         handshake = json.loads(await asyncio.wait_for(process.stdout.readline(), 30))
         assert handshake.get("ok"), handshake
         port = handshake["port"]
+        selection_ready = False
         for label, tool, arguments, expected in cases(count):
+            if label.startswith("selection-") and not selection_ready:
+                shared.phase("selection-ui-setup")
+                await shared.tool(port, "selection-warmup", "set_selection", {"node_id": "bulk-root"})
+                selection_ready = True
+                report["selectionSetup"] = "One UI-only set_selection; no design-content edits"
             shared.phase(label)
             walls, cpus, hashes = [], [], set()
             response = None
@@ -139,13 +160,14 @@ async def run_case(args, count, baseline):
                 hashes.add(hashlib.sha256(json.dumps(response, sort_keys=True, separators=(",", ":")).encode()).hexdigest())
             assert len(hashes) == 1, (label, "responses changed without writes")
             digest = hashes.pop()
-            if baseline:
-                assert digest == baseline["queries"][label]["responseSha256"], (label, "baseline response changed")
+            previous = baseline.get("queries", {}).get(label) if baseline else None
+            if previous:
+                assert digest == previous["responseSha256"], (label, "baseline response changed")
             (output / f"{label}.json").write_text(json.dumps(response, indent=2) + "\n")
             report["queries"][label] = {"tool": tool, "arguments": arguments, "samples": len(walls),
                 "wallP50Seconds": shared.percentile(walls, .5), "wallP95Seconds": shared.percentile(walls, .95),
                 "serviceCpuP50Seconds": shared.percentile(cpus, .5), "responseSha256": digest,
-                "responseBytes": len(json.dumps(response).encode()), "exactBaselineMatch": True if baseline else None}
+                "responseBytes": len(json.dumps(response).encode()), "exactBaselineMatch": True if previous else None}
         assert shared.sha(document) == initial_sha256, "queries must not edit the file"
         report["documentSha256"] = initial_sha256
         report["correctness"] = True
@@ -215,7 +237,7 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--scene-binary", type=Path, help="built op-pen-loader scene_queries example; adds exact hit/spatial-query checks")
     parser.add_argument("--scene-queries", type=int, default=256)
-    parser.add_argument("--baseline", type=Path, help="prior suite output; require exact normalized hashes for counts present there")
+    parser.add_argument("--baseline", type=Path, help="prior suite output; require exact normalized hashes for cases/counts present there")
     parser.add_argument("--nodes", type=int, nargs="+", default=[10000, 100000])
     parser.add_argument("--iterations", type=int, default=7)
     parser.add_argument("--max-bytes", type=int, default=1_000_000_000)

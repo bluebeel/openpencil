@@ -144,6 +144,8 @@ pub mod read_nodes;
 #[cfg(test)]
 mod read_nodes_tests;
 #[cfg(test)]
+mod read_record_tests;
+#[cfg(test)]
 mod read_snapshot_tests;
 pub mod read_tools;
 pub mod read_tools_extra;
@@ -244,7 +246,9 @@ pub use design_md_tools::{
 pub use design_prompt::{get_design_prompt_snapshot, GetDesignPrompt};
 pub use design_refine_result::{design_refine_snapshot, DesignRefine};
 pub use document_save::{save_document_snapshot, SaveDocument};
-pub use extra_read_tools::{get_node_children_snapshot, ChildRecord, GetNodeChildren};
+pub use extra_read_tools::{
+    get_node_children_snapshot, get_node_children_snapshot_for_call, ChildRecord, GetNodeChildren,
+};
 pub use guidelines_tools::{get_guidelines_snapshot, GetGuidelines};
 pub use json_serializer::{response_to_json, tool_response_to_json};
 pub use lint_tools::{lint_document_snapshot, LintDocument};
@@ -308,14 +312,16 @@ pub use theme_presets::{
 pub use tool_search::{tool_search, tool_search_snapshot, ToolSearch};
 pub use tools::{
     count_nodes_snapshot, document_info_snapshot, find_empty_space_snapshot,
-    find_node_by_name_snapshot, get_active_theme_snapshot, get_canvas_bounds_snapshot,
-    get_component_snapshot, get_history_depth_snapshot, get_node_parent_snapshot,
-    get_node_snapshot, get_selection_set_snapshot, get_viewport_snapshot, list_components_snapshot,
-    list_node_kinds_snapshot, list_pages_snapshot, list_variables_snapshot, selection_snapshot,
+    find_node_by_name_snapshot, find_node_by_name_snapshot_for_call, get_active_theme_snapshot,
+    get_canvas_bounds_snapshot, get_component_snapshot, get_history_depth_snapshot,
+    get_node_parent_snapshot, get_node_parent_snapshot_for_call, get_node_snapshot,
+    get_node_snapshot_for_call, get_selection_set_snapshot, get_viewport_snapshot,
+    list_components_snapshot, list_node_kinds_snapshot, list_pages_snapshot,
+    list_variables_snapshot, selection_snapshot, selection_snapshot_for_call,
     snapshot_layout_snapshot, CountNodes, FindEmptySpace, FindNodeByName, GetActiveTheme,
     GetCanvasBounds, GetComponent, GetDocumentInfo, GetHistoryDepth, GetNode, GetNodeParent,
     GetSelection, GetSelectionSet, GetViewport, ListComponents, ListNodeKinds, ListPages,
-    ListVariables, NodeRecord, SnapshotLayout, VariableRecord,
+    ListVariables, NodeRecord, PreparedSelection, SnapshotLayout, VariableRecord,
 };
 pub use write_tools::{
     delete_node_snapshot, import_svg_snapshot, insert_node_snapshot, replace_node_snapshot,

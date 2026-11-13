@@ -40,8 +40,19 @@ pub(super) fn rebuild_registry(
     register_tool!("open_document", open_document_snapshot(doc));
     register_tool!("save_document", save_document_snapshot(doc));
     register_tool!("get_document_info", document_info_snapshot(doc));
-    register_tool!("get_selection", selection_snapshot(doc));
-    register_tool!("get_node", get_node_snapshot(doc));
+    if should_register(requested_tool, "get_selection") {
+        match arguments {
+            Some(args) => r.register(Box::new(op_mcp::selection_snapshot_for_call(doc, args))),
+            None => r.register(Box::new(selection_snapshot(doc))),
+        }
+    }
+    register_tool!(
+        "get_node",
+        match arguments {
+            Some(args) => op_mcp::get_node_snapshot_for_call(doc, args),
+            None => get_node_snapshot(doc),
+        }
+    );
     register_tool!("annotate_image", op_mcp::annotate_image_snapshot(doc));
     register_tool!("list_pages", list_pages_snapshot(doc));
     register_tool!("list_variables", list_variables_snapshot(doc));
@@ -141,9 +152,27 @@ pub(super) fn rebuild_registry(
     register_tool!("snapshot_layout", snapshot_layout_snapshot(doc));
     register_tool!("find_empty_space", find_empty_space_snapshot(doc));
     register_tool!("get_canvas_bounds", get_canvas_bounds_snapshot(doc));
-    register_tool!("find_node_by_name", find_node_by_name_snapshot(doc));
-    register_tool!("get_node_parent", get_node_parent_snapshot(doc));
-    register_tool!("get_node_children", get_node_children_snapshot(doc));
+    register_tool!(
+        "find_node_by_name",
+        match arguments {
+            Some(args) => op_mcp::find_node_by_name_snapshot_for_call(doc, args),
+            None => find_node_by_name_snapshot(doc),
+        }
+    );
+    register_tool!(
+        "get_node_parent",
+        match arguments {
+            Some(args) => op_mcp::get_node_parent_snapshot_for_call(doc, args),
+            None => get_node_parent_snapshot(doc),
+        }
+    );
+    register_tool!(
+        "get_node_children",
+        match arguments {
+            Some(args) => op_mcp::get_node_children_snapshot_for_call(doc, args),
+            None => get_node_children_snapshot(doc),
+        }
+    );
     register_tool!("count_nodes", count_nodes_snapshot(doc));
     register_tool!("list_node_kinds", list_node_kinds_snapshot(doc));
     register_tool!("get_history_depth", get_history_depth_snapshot(doc));

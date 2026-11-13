@@ -223,6 +223,53 @@ pub fn selection_snapshot(state: &EditorState) -> GetSelection {
     }
 }
 
+/// Prepared per-call selection JSON. Keeps the public GetSelection literal
+/// fields/legacy constructor intact and never clones selected subtrees.
+pub struct PreparedSelection {
+    outcome: ToolOutcome,
+}
+
+impl McpTool for PreparedSelection {
+    fn name(&self) -> &str {
+        "get_selection"
+    }
+    fn call(&self, _args: &BTreeMap<String, String>) -> ToolOutcome {
+        self.outcome.clone()
+    }
+}
+
+pub fn selection_snapshot_for_call(
+    state: &EditorState,
+    args: &BTreeMap<String, String>,
+) -> PreparedSelection {
+    let outcome = match parse_selection_depth(args) {
+        Err((code, message)) => ToolOutcome::Err(code, message),
+        Ok(depth) => {
+            let selected_ids: Vec<_> = state
+                .selection
+                .set
+                .iter()
+                .filter(|id| id.is_real())
+                .map(|id| id.as_str())
+                .collect();
+            let nodes: Vec<_> = state
+                .selection
+                .set
+                .iter()
+                .filter(|id| id.is_real())
+                .filter_map(|id| find_node(state.active_children(), id))
+                .map(|node| node_snapshot_value(node, depth))
+                .collect();
+            ToolOutcome::OkJson(
+                json!({"selectedIds": selected_ids,
+                "activePageId": active_page_id(state), "nodes": nodes})
+                .to_string(),
+            )
+        }
+    };
+    PreparedSelection { outcome }
+}
+
 fn parse_selection_depth(args: &BTreeMap<String, String>) -> Result<i32, (ToolErrorCode, String)> {
     match args.get("readDepth").or_else(|| args.get("depth")) {
         None => Ok(2),
@@ -372,6 +419,77 @@ pub fn get_node_snapshot(state: &EditorState) -> GetNode {
     GetNode { nodes }
 }
 
+/// Request-specific record lookup. Global DFS keeps the legacy last-ID-wins
+/// rule without allocating records for unrelated nodes or changing raw IDs.
+pub fn get_node_snapshot_for_call(state: &EditorState, args: &BTreeMap<String, String>) -> GetNode {
+    fn last<'a>(
+        nodes: &'a [PenNode],
+        id: &str,
+        parent: &'a str,
+        found: &mut Option<(&'a PenNode, &'a str)>,
+    ) {
+        for node in nodes {
+            if node.id_str() == id {
+                *found = Some((node, parent));
+            }
+            if let Some(children) = node.children() {
+                last(children, id, node.id_str(), found);
+            }
+        }
+    }
+    let mut nodes = BTreeMap::new();
+    if let Some(id) = args.get("node_id") {
+        let mut found = None;
+        match &state.doc.pages {
+            Some(pages) => {
+                for page in pages {
+                    last(&page.children, id, "", &mut found);
+                }
+            }
+            None => last(&state.doc.children, id, "", &mut found),
+        }
+        if let Some((node, parent)) = found {
+            nodes.insert(
+                id.clone(),
+                node_record(
+                    node,
+                    parent,
+                    &state.ui.variables.fill_refs,
+                    &state.ui.variables.stroke_refs,
+                ),
+            );
+        }
+    }
+    GetNode { nodes }
+}
+
+fn node_record(
+    node: &PenNode,
+    parent_id: &str,
+    fill_refs: &std::collections::HashMap<NodeId, String>,
+    stroke_refs: &std::collections::HashMap<NodeId, String>,
+) -> NodeRecord {
+    let (x, y, width, height) = rect_i32(aggregate_bounds(node));
+    let (fill_ref, stroke_ref) = match NodeId::new_opt(node.id_str()) {
+        Some(id) => (
+            fill_refs.get(&id).cloned().unwrap_or_default(),
+            stroke_refs.get(&id).cloned().unwrap_or_default(),
+        ),
+        None => (String::new(), String::new()),
+    };
+    NodeRecord {
+        kind: kind_label(node).into(),
+        name: node.base().name.clone().unwrap_or_default(),
+        x,
+        y,
+        width,
+        height,
+        parent_id: parent_id.into(),
+        fill_ref,
+        stroke_ref,
+    }
+}
+
 fn walk_node(
     node: &PenNode,
     parent_id: &str,
@@ -379,32 +497,13 @@ fn walk_node(
     stroke_refs: &std::collections::HashMap<NodeId, String>,
     out: &mut BTreeMap<String, NodeRecord>,
 ) {
-    let (x, y, w, h) = rect_i32(aggregate_bounds(node));
-    let id = node.id_str().to_string();
-    let (fill_ref, stroke_ref) = match NodeId::new_opt(id.as_str()) {
-        Some(nid) => (
-            fill_refs.get(&nid).cloned().unwrap_or_default(),
-            stroke_refs.get(&nid).cloned().unwrap_or_default(),
-        ),
-        None => (String::new(), String::new()),
-    };
     out.insert(
-        id.clone(),
-        NodeRecord {
-            kind: kind_label(node).into(),
-            name: node.base().name.clone().unwrap_or_default(),
-            x,
-            y,
-            width: w,
-            height: h,
-            parent_id: parent_id.to_string(),
-            fill_ref,
-            stroke_ref,
-        },
+        node.id_str().to_string(),
+        node_record(node, parent_id, fill_refs, stroke_refs),
     );
     if let Some(children) = node.children() {
         for child in children {
-            walk_node(child, &id, fill_refs, stroke_refs, out);
+            walk_node(child, node.id_str(), fill_refs, stroke_refs, out);
         }
     }
 }
@@ -653,8 +752,9 @@ pub use super::read_tools::{
     find_empty_space_snapshot, snapshot_layout_snapshot, FindEmptySpace, SnapshotLayout,
 };
 pub use super::read_tools_extra::{
-    count_nodes_snapshot, find_node_by_name_snapshot, get_canvas_bounds_snapshot,
-    get_history_depth_snapshot, get_node_parent_snapshot, get_selection_set_snapshot,
-    get_viewport_snapshot, list_node_kinds_snapshot, CountNodes, FindNodeByName, GetCanvasBounds,
-    GetHistoryDepth, GetNodeParent, GetSelectionSet, GetViewport, ListNodeKinds,
+    count_nodes_snapshot, find_node_by_name_snapshot, find_node_by_name_snapshot_for_call,
+    get_canvas_bounds_snapshot, get_history_depth_snapshot, get_node_parent_snapshot,
+    get_node_parent_snapshot_for_call, get_selection_set_snapshot, get_viewport_snapshot,
+    list_node_kinds_snapshot, CountNodes, FindNodeByName, GetCanvasBounds, GetHistoryDepth,
+    GetNodeParent, GetSelectionSet, GetViewport, ListNodeKinds,
 };

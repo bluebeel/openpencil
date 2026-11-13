@@ -98,6 +98,75 @@ pub fn get_node_children_snapshot(state: &EditorState) -> GetNodeChildren {
     }
 }
 
+/// Capture only the requested immediate-child records. The original map is
+/// built postorder and only nonempty containers overwrite entries: later leaves
+/// or empty containers with the same ID must not erase an earlier child list.
+pub fn get_node_children_snapshot_for_call(
+    state: &EditorState,
+    args: &BTreeMap<String, String>,
+) -> GetNodeChildren {
+    fn last_children<'a>(
+        node: &'a PenNode,
+        id: &str,
+        known: &mut bool,
+        found: &mut Option<&'a [PenNode]>,
+    ) {
+        let matches = node.id_str() == id;
+        *known |= matches;
+        if let Some(children) = node.children().filter(|children| !children.is_empty()) {
+            for child in children {
+                last_children(child, id, known, found);
+            }
+            if matches {
+                *found = Some(children);
+            }
+        }
+    }
+    let mut children = BTreeMap::new();
+    let mut known_ids = std::collections::BTreeSet::new();
+    if let Some(id) = args.get("node_id") {
+        let mut known = false;
+        let mut found = None;
+        match &state.doc.pages {
+            Some(pages) => {
+                for page in pages {
+                    for node in &page.children {
+                        last_children(node, id, &mut known, &mut found);
+                    }
+                }
+            }
+            None => {
+                for node in &state.doc.children {
+                    last_children(node, id, &mut known, &mut found);
+                }
+            }
+        }
+        if known {
+            known_ids.insert(id.clone());
+        }
+        if let Some(found) = found {
+            children.insert(id.clone(), found.iter().map(child_record).collect());
+        }
+    }
+    GetNodeChildren {
+        children,
+        known_ids,
+    }
+}
+
+fn child_record(child: &PenNode) -> ChildRecord {
+    let b = aggregate_bounds(child);
+    ChildRecord {
+        id: child.id_str().into(),
+        kind: kind_label(child).into(),
+        name: child.base().name.clone().unwrap_or_default(),
+        x: b.x as i32,
+        y: b.y as i32,
+        width: b.w as i32,
+        height: b.h as i32,
+    }
+}
+
 fn walk(
     node: &PenNode,
     out: &mut BTreeMap<String, Vec<ChildRecord>>,
@@ -113,16 +182,7 @@ fn walk(
     let parent_id = node.id_str().to_string();
     let mut records = Vec::with_capacity(node_children.len());
     for child in node_children {
-        let b = aggregate_bounds(child);
-        records.push(ChildRecord {
-            id: child.id_str().to_string(),
-            kind: kind_label(child).into(),
-            name: child.base().name.clone().unwrap_or_default(),
-            x: b.x as i32,
-            y: b.y as i32,
-            width: b.w as i32,
-            height: b.h as i32,
-        });
+        records.push(child_record(child));
         walk(child, out, known);
     }
     out.insert(parent_id, records);

@@ -107,6 +107,48 @@ pub fn find_node_by_name_snapshot(state: &EditorState) -> FindNodeByName {
     FindNodeByName { index }
 }
 
+/// Request-specific exact-name lookup on the active page; first DFS match wins.
+pub fn find_node_by_name_snapshot_for_call(
+    state: &EditorState,
+    args: &BTreeMap<String, String>,
+) -> FindNodeByName {
+    let index = args
+        .get("name")
+        .and_then(|name| {
+            first_match(active_children(state), "", 0, &|node| {
+                node.base().name.as_deref().unwrap_or_default() == name
+            })
+        })
+        .map(|(node, _, _)| {
+            vec![(
+                node.base().name.clone().unwrap_or_default(),
+                node.id_str().into(),
+                kind_label(node).into(),
+            )]
+        })
+        .unwrap_or_default();
+    FindNodeByName { index }
+}
+
+fn first_match<'a>(
+    nodes: &'a [PenNode],
+    parent: &'a str,
+    depth: u32,
+    matches: &impl Fn(&PenNode) -> bool,
+) -> Option<(&'a PenNode, &'a str, u32)> {
+    for node in nodes {
+        if matches(node) {
+            return Some((node, parent, depth));
+        }
+        if let Some(children) = node.children() {
+            if let Some(found) = first_match(children, node.id_str(), depth + 1, matches) {
+                return Some(found);
+            }
+        }
+    }
+    None
+}
+
 // --- get_node_parent -------------------------------------------------
 
 /// First-party `get_node_parent` tool — parent id of `node_id` on the
@@ -148,6 +190,20 @@ pub fn get_node_parent_snapshot(state: &EditorState) -> GetNodeParent {
     }
     let mut index = Vec::new();
     walk(active_children(state), "", 0, &mut index);
+    GetNodeParent { index }
+}
+
+/// Parent queries intentionally use the active page and the first ID match,
+/// unlike get_node's global last-match contract.
+pub fn get_node_parent_snapshot_for_call(
+    state: &EditorState,
+    args: &BTreeMap<String, String>,
+) -> GetNodeParent {
+    let index = args
+        .get("node_id")
+        .and_then(|id| first_match(active_children(state), "", 0, &|node| node.id_str() == id))
+        .map(|(node, parent, depth)| vec![(node.id_str().into(), parent.into(), depth)])
+        .unwrap_or_default();
     GetNodeParent { index }
 }
 
