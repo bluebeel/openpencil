@@ -169,18 +169,21 @@ fn visit_assignments<'a>(
     scopes: &TextScopes,
     mut visit: impl FnMut(&'a FigValue, &'static str, &'a FigValue),
 ) {
-    let text_master = scopes.target(holder);
+    let master = scopes.target(holder);
     for assignment in assignment_entries(holder) {
         let targets = assignment
             .get("defID")
             .and_then(guid_to_string)
             .and_then(|id| routes.get(&id));
         for route in targets.into_iter().flatten() {
-            if route.field == "textData"
-                && text_master
-                    .as_ref()
-                    .is_some_and(|master| !scopes.contains(master, &route.owner))
-            {
+            let outside = master.as_ref().is_some_and(|master| {
+                if route.field == "textData" {
+                    !scopes.contains(master, &route.owner)
+                } else {
+                    scopes.excludes_known_owner(master, &route.owner)
+                }
+            });
+            if outside {
                 continue;
             }
             if let Some(target) = assignment_value(assignment, route.field) {
@@ -281,6 +284,10 @@ mod visibility_tests;
 #[cfg(test)]
 #[path = "component_props/text_tests.rs"]
 mod text_tests;
+
+#[cfg(test)]
+#[path = "component_props/scope_tests.rs"]
+mod scope_tests;
 
 #[cfg(test)]
 mod tests {

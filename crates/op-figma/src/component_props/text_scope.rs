@@ -1,4 +1,4 @@
-//! A shared property id can name text layers in many component variants.
+//! A shared property id can name layers in many component variants.
 //! Only the actual instance master subtree is a target for that placement.
 
 use super::{guid_to_string, FigValue};
@@ -92,5 +92,17 @@ impl TextScopes {
             .and_then(|_| guid_to_string(owner))
             .and_then(|id| self.owners.get(&id))
             .is_some_and(|ancestors| ancestors.iter().any(|ancestor| ancestor == master))
+    }
+
+    /// Unknown/partial ancestry cannot prove that a visibility/swap route is
+    /// outside the placement. A different known master ancestry can.
+    pub(super) fn excludes_known_owner(&self, master: &str, owner: &FigValue) -> bool {
+        owner
+            .get("sessionID")
+            .and_then(|_| guid_to_string(owner))
+            .and_then(|id| self.owners.get(&id))
+            .is_some_and(|ancestors| {
+                !ancestors.is_empty() && !ancestors.iter().any(|ancestor| ancestor == master)
+            })
     }
 }
