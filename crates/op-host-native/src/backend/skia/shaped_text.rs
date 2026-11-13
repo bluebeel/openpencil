@@ -32,6 +32,11 @@ const DEFAULT_FAMILY: &str = "Roboto";
 /// must not break; `max_intrinsic_width` then reports the natural width.
 const NATURAL_LAYOUT_BUDGET: f32 = 1.0e6;
 
+// Font parsing uses DirectWrite on Windows and must stay on its render thread.
+#[cfg(all(test, not(target_os = "windows")))]
+#[path = "variable_font_tests.rs"]
+mod variable_font_tests;
+
 /// One styled run to shape. Grouped into a struct so paint and measure take
 /// the identical inputs — if they ever drifted, wrapped text would be laid
 /// out against one width and painted at another.
@@ -144,6 +149,7 @@ impl ShapedText {
                 Slant::Upright
             },
         ));
+        jian_skia::font_variations::set_paragraph_weight(&mut text_style, run.weight);
         if run.line_height > 0.0 {
             text_style.set_height(run.line_height);
             text_style.set_height_override(true);
