@@ -4,6 +4,8 @@ use super::layout::{SavedBaseline, SavedMarker, SavedTextLayout};
 use crate::kiwi::FigValue;
 use std::borrow::Cow;
 
+pub(crate) const NESTED_EVIDENCE: &str = "_savedTextEvidence";
+
 pub(crate) fn nearly_equal(a: f64, b: f64) -> bool {
     (a - b).abs() <= 0.001
 }
@@ -133,6 +135,7 @@ pub struct TextEvidence {
     invalid_font: bool,
     tracking: Tracking,
     pub(crate) layout: Option<Box<SavedTextLayout>>,
+    pub(crate) layout_size: Option<(f64, f64)>,
 }
 
 impl TextEvidence {
@@ -154,6 +157,9 @@ impl TextEvidence {
         self.characters.hash(state);
         self.font.hash(state);
         self.invalid_font.hash(state);
+        self.layout_size
+            .map(|(x, y)| (x.to_bits(), y.to_bits()))
+            .hash(state);
         if let Some(layout) = &self.layout {
             layout.hash(state);
         }
@@ -202,10 +208,16 @@ impl TextEvidence {
         if let FigValue::TextEvidence(evidence) = cache {
             return Cow::Borrowed(evidence);
         }
+        if let Some(FigValue::TextEvidence(evidence)) = cache.get(NESTED_EVIDENCE) {
+            return Cow::Borrowed(evidence);
+        }
         let mut evidence = Self {
             characters: cache.get_str("characters").map(str::to_owned),
             ..Self::default()
         };
+        if let Some(size) = cache.get("layoutSize") {
+            evidence.observe_layout_size(size);
+        }
         if let Some(glyphs) = cache.get_array("glyphs") {
             let mut previous = None;
             for glyph in glyphs {
@@ -235,6 +247,13 @@ impl TextEvidence {
 
     pub(crate) fn saved_line_count(&self) -> Option<usize> {
         self.line_height.value().map(|_| self.line_height.count)
+    }
+
+    pub(crate) fn observe_layout_size(&mut self, value: &FigValue) {
+        self.layout_size = value
+            .get_f64("x")
+            .zip(value.get_f64("y"))
+            .filter(|(x, y)| x.is_finite() && y.is_finite() && *x >= 0.0 && *y >= 0.0);
     }
 
     pub(crate) fn uses_font(&self, font: &FigValue) -> bool {

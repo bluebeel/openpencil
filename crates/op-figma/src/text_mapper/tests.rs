@@ -47,6 +47,58 @@ fn kerning_maps_figma_default_enabled_and_explicit_disabled_features() {
 }
 
 #[test]
+fn opentype_features_keep_salt_and_off_precedence_with_normalized_tags() {
+    let mut node = obj(vec![
+        (
+            "toggledOnOTFeatures",
+            FigValue::Array(
+                ["SALT", "KERN", "SS01", "bad"]
+                    .into_iter()
+                    .map(|tag| FigValue::Str(tag.into()))
+                    .collect(),
+            ),
+        ),
+        (
+            "toggledOffOTFeatures",
+            FigValue::Array(
+                ["KERN", "LIGA"]
+                    .into_iter()
+                    .map(|tag| FigValue::Str(tag.into()))
+                    .collect(),
+            ),
+        ),
+    ]);
+    assert_eq!(
+        map_figma_text_props(&node).font_features,
+        Some(BTreeMap::from([
+            ("kern".into(), 0),
+            ("liga".into(), 0),
+            ("salt".into(), 1),
+            ("ss01".into(), 1),
+        ]))
+    );
+    assert_eq!(map_figma_text_props(&node).font_kerning, Some(false));
+    node.set(
+        "toggledOffOTFeatures",
+        FigValue::Array(vec![FigValue::Str("SALT".into())]),
+    );
+    assert_eq!(
+        map_figma_text_props(&node)
+            .font_features
+            .unwrap()
+            .get("salt"),
+        Some(&0)
+    );
+    node.set("toggledOnOTFeatures", FigValue::Array(vec![]));
+    node.set("toggledOffOTFeatures", FigValue::Array(vec![]));
+    assert_eq!(
+        map_figma_text_props(&node).font_features,
+        Some(BTreeMap::new())
+    );
+    assert_eq!(map_figma_text_props(&obj(vec![])).font_features, None);
+}
+
+#[test]
 fn figma_family_with_css_separators_is_quoted_for_the_canonical_stack() {
     assert_eq!(canonical_font_family_value("Inter"), "Inter");
     for family in ["ACME, Display", "ACME \\\" Display"] {

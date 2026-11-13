@@ -268,3 +268,19 @@ fn linked_line_height_uses_auto_height_geometry_when_cache_stores_natural_metric
         assert_eq!(changes[1].get_f64("fontSize"), Some(20.0));
     }
 }
+
+#[test]
+fn linked_opentype_salt_is_inherited_without_replacing_explicit_feature_arrays() {
+    let mut style = linked_style();
+    style.set("toggledOnOTFeatures", FigValue::Array(vec![string("SALT")]));
+    for explicit in [false, true] {
+        let mut local = node("Local Font", 0.0);
+        if explicit {
+            local.set("toggledOnOTFeatures", FigValue::Array(vec![]));
+        }
+        let mut changes = vec![style.clone(), local];
+        resolve_style_references(&mut changes);
+        let features = map_figma_text_props(&changes[1]).font_features.unwrap();
+        assert_eq!(features.get("salt"), if explicit { None } else { Some(&1) });
+    }
+}

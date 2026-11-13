@@ -62,6 +62,7 @@ impl DecodeScope {
             (DirectNode, "derivedTextData") => Some(DirectTextCache),
             (DirectNode, "symbolData" | "derivedSymbolData") => Some(Instance),
             (DirectTextCache, "characters") => Some(Full),
+            (DirectTextCache, "layoutSize") => Some(PointEvidence),
             (DirectTextCache, "glyphs") => Some(GlyphEvidence),
             (DirectTextCache, "baselines") => Some(BaselineEvidence),
             (DirectTextCache, "fontMetaData") => Some(FontMetadataEvidence),

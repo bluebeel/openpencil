@@ -1,13 +1,14 @@
 //! Import-specific streaming reduction of direct derived text caches.
 
 use super::{DecodeScope, Decoder, DefKind, FigValue, KiwiError, NativeType, ResolvedType};
-use crate::text_cache::evidence::TextEvidence;
+use crate::text_cache::evidence::{TextEvidence, NESTED_EVIDENCE};
 
 impl Decoder<'_, '_> {
     pub(super) fn decode_text_evidence(
         &mut self,
         resolved: ResolvedType,
         depth: u32,
+        nested: bool,
     ) -> Result<FigValue, KiwiError> {
         let ResolvedType::Definition(definition) = resolved else {
             return self.decode_type(resolved, depth, DecodeScope::Full);
@@ -43,7 +44,19 @@ impl Decoder<'_, '_> {
             };
             self.decode_evidence_field(definition, field, depth, &mut evidence)?;
         }
-        Ok(FigValue::TextEvidence(Box::new(evidence)))
+        if nested {
+            let mut fields = Vec::with_capacity(2);
+            if let Some(characters) = &evidence.characters {
+                fields.push(("characters".into(), FigValue::Str(characters.clone())));
+            }
+            fields.push((
+                NESTED_EVIDENCE.into(),
+                FigValue::TextEvidence(Box::new(evidence)),
+            ));
+            Ok(FigValue::Object(fields))
+        } else {
+            Ok(FigValue::TextEvidence(Box::new(evidence)))
+        }
     }
 
     fn decode_evidence_field(
@@ -66,6 +79,10 @@ impl Decoder<'_, '_> {
                 .decode_field(resolved, is_array, depth, scope)?
                 .as_str()
                 .map(str::to_owned);
+            return Ok(());
+        }
+        if name == "layoutSize" {
+            evidence.observe_layout_size(&self.decode_field(resolved, is_array, depth, scope)?);
             return Ok(());
         }
         evidence.reset(name);

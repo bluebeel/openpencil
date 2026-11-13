@@ -456,6 +456,7 @@ pub(super) fn wrap_text(
             family: "",
             italic: false,
             kerning: None,
+            font_features: &Default::default(),
         },
         max_w,
     )
@@ -475,6 +476,7 @@ pub(super) struct WrapFont<'a> {
     pub(super) family: &'a str,
     pub(super) italic: bool,
     pub(super) kerning: Option<bool>,
+    pub(super) font_features: &'a std::collections::BTreeMap<String, u32>,
 }
 
 /// [`wrap_text`] measured in `font`'s family (see [`WrapFont`]).
@@ -580,6 +582,7 @@ fn measure_text_with_letter_spacing(
             font.italic,
             font.kerning,
             0.0,
+            font.font_features,
         )
     };
     let gaps = text.chars().count().saturating_sub(1) as f32;

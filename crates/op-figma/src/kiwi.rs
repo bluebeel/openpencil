@@ -553,8 +553,15 @@ impl<'a, 'b> Decoder<'a, 'b> {
         if depth > MAX_DEPTH {
             return Err(KiwiError::TooDeep);
         }
-        if matches!(scope, DecodeScope::DirectTextCache) {
-            return self.decode_text_evidence(resolved, depth);
+        if matches!(
+            scope,
+            DecodeScope::DirectTextCache | DecodeScope::NestedTextCache
+        ) {
+            return self.decode_text_evidence(
+                resolved,
+                depth,
+                matches!(scope, DecodeScope::NestedTextCache),
+            );
         }
         if matches!(scope, DecodeScope::Presence)
             && matches!(resolved, ResolvedType::Definition(index) if self.schema.definitions[index].kind != DefKind::Enum)

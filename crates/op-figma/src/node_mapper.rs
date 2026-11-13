@@ -22,7 +22,9 @@ mod style_references;
 use crate::kiwi::FigValue;
 #[cfg(test)]
 use style_references::non_empty_array;
+#[cfg(test)]
 pub use style_references::resolve_style_references;
+pub(crate) use style_references::resolve_style_references_with_mode;
 
 /// Outcome of a full-document Figma import.
 pub struct FigmaImportResult {
@@ -92,7 +94,7 @@ pub fn figma_all_pages_to_pen_document(
     file_name: &str,
     layout_mode: FigLayoutMode,
 ) -> FigmaImportResult {
-    resolve_style_references(&mut decoded.node_changes);
+    resolve_style_references_with_mode(&mut decoded.node_changes, layout_mode);
 
     let Some(tree) = build_tree_owned(std::mem::take(&mut decoded.node_changes)) else {
         return empty_import_result(file_name, "No document root found", decoded.blobs);
@@ -161,7 +163,7 @@ pub fn figma_to_pen_document(
     page_index: usize,
     layout_mode: FigLayoutMode,
 ) -> FigmaImportResult {
-    resolve_style_references(&mut decoded.node_changes);
+    resolve_style_references_with_mode(&mut decoded.node_changes, layout_mode);
 
     let Some(tree) = build_tree_owned(std::mem::take(&mut decoded.node_changes)) else {
         return empty_import_result(file_name, "No document root found", decoded.blobs);
@@ -254,7 +256,7 @@ pub fn figma_node_changes_to_pen_nodes(
     mut decoded: FigmaDecodedFile,
     layout_mode: FigLayoutMode,
 ) -> FigmaClipboardResult {
-    resolve_style_references(&mut decoded.node_changes);
+    resolve_style_references_with_mode(&mut decoded.node_changes, layout_mode);
     let tree = build_tree(&decoded.node_changes);
 
     let top_nodes: Vec<TreeNode> = if let Some(tree) = &tree {

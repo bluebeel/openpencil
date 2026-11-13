@@ -147,6 +147,7 @@ impl SnapshotCtx<'_> {
         };
         let sizing = text_box(rect, lines, nowrap);
         Some(PenNode::Text(TextNode {
+            font_features: None,
             font_kerning: None,
             base: self.base(id, Some("Text".into()), rect, Some(parent_rect)),
             limits: sizing.limits,

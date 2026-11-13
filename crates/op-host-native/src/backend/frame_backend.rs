@@ -706,6 +706,7 @@ impl<'a> RenderBackend for NativeFrameBackend<'a> {
         italic: bool,
         kerning: Option<bool>,
         letter_spacing: f32,
+        font_features: &std::collections::BTreeMap<String, u32>,
     ) -> f32 {
         self.inner.measure_text_family_kerned(
             text,
@@ -715,6 +716,7 @@ impl<'a> RenderBackend for NativeFrameBackend<'a> {
             italic,
             kerning,
             letter_spacing,
+            font_features,
         )
     }
 

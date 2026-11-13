@@ -216,6 +216,7 @@ pub(super) fn text_to_payload(n: &TextNode) -> NodePayload {
     p.font_size = n.font_size.unwrap_or(0.0) as f32;
     p.font_weight = resolve_font_weight(n.font_weight.as_ref());
     p.font_kerning = n.font_kerning;
+    p.font_features = n.font_features.clone().unwrap_or_default();
     // Keep paint on the same canonical multiplier used by layout measurement.
     // In particular, text carrying a pixel-like lineHeight must not measure
     // with the default and then paint with hundreds of pixels of leading.

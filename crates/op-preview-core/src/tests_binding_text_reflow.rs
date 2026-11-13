@@ -12,6 +12,7 @@ const LONG: &str = "导航已结束，可随时恢复导航";
 fn assert_fixture_preconditions(backend: &str, measure: &dyn MeasureBackend) {
     let measured = |text: &str, max_width| {
         let runs = [StyledRun {
+        font_features: None,
             text,
             font_family: None,
             font_size: 13.0,

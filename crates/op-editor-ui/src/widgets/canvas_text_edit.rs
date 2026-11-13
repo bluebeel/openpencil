@@ -45,6 +45,7 @@ pub struct TextEditLayout {
     /// Node-level italic, measured alongside the family.
     pub italic: bool,
     pub font_kerning: Option<bool>,
+    pub font_features: std::collections::BTreeMap<String, u32>,
     pub text_align: SceneTextAlign,
 }
 
@@ -93,6 +94,7 @@ pub fn text_edit_layout(backend: &mut dyn RenderBackend, node: &SceneNode) -> Te
                 family,
                 italic: node.italic,
                 kerning: node.font_kerning,
+                font_features: &node.font_features,
             },
             doc_wrap_width,
         )
@@ -116,7 +118,7 @@ pub fn text_edit_layout(backend: &mut dyn RenderBackend, node: &SceneNode) -> Te
                     font_size,
                     weight,
                     letter_spacing,
-                    (family, node.italic, node.font_kerning),
+                    (family, node.italic, node.font_kerning, &node.font_features),
                 )
             })
             .fold(0.0_f32, f32::max);
@@ -140,6 +142,7 @@ pub fn text_edit_layout(backend: &mut dyn RenderBackend, node: &SceneNode) -> Te
         family: family.to_string(),
         italic: node.italic,
         font_kerning: node.font_kerning,
+        font_features: node.font_features.clone(),
         lines,
     }
 }
@@ -168,10 +171,23 @@ pub fn measure_line_width(
     font_size: f32,
     weight: u16,
     letter_spacing: f32,
-    (family, italic, kerning): (&str, bool, Option<bool>),
+    (family, italic, kerning, font_features): (
+        &str,
+        bool,
+        Option<bool>,
+        &std::collections::BTreeMap<String, u32>,
+    ),
 ) -> f32 {
-    let base =
-        backend.measure_text_family_kerned(line, font_size, family, weight, italic, kerning, 0.0);
+    let base = backend.measure_text_family_kerned(
+        line,
+        font_size,
+        family,
+        weight,
+        italic,
+        kerning,
+        0.0,
+        font_features,
+    );
     let extra = line.chars().count().saturating_sub(1) as f32 * letter_spacing;
     base + extra
 }
@@ -214,7 +230,12 @@ impl TextEditLayout {
                     self.font_size,
                     self.weight,
                     self.letter_spacing,
-                    (&self.family, self.italic, self.font_kerning),
+                    (
+                        &self.family,
+                        self.italic,
+                        self.font_kerning,
+                        &self.font_features,
+                    ),
                 );
                 self.origin.x + (self.align_width - line_w).max(0.0) / 2.0
             }
@@ -225,7 +246,12 @@ impl TextEditLayout {
                     self.font_size,
                     self.weight,
                     self.letter_spacing,
-                    (&self.family, self.italic, self.font_kerning),
+                    (
+                        &self.family,
+                        self.italic,
+                        self.font_kerning,
+                        &self.font_features,
+                    ),
                 );
                 self.origin.x + (self.align_width - line_w).max(0.0)
             }
@@ -243,7 +269,10 @@ impl TextEditLayout {
             return 0.0;
         }
         let prefix = &line[..offset];
-        if self.letter_spacing.abs() < f32::EPSILON || self.font_kerning == Some(true) {
+        if self.letter_spacing.abs() < f32::EPSILON
+            || self.font_kerning == Some(true)
+            || self.font_features.values().any(|value| *value != 0)
+        {
             let advance = backend.measure_text_family_kerned(
                 prefix,
                 self.font_size,
@@ -252,6 +281,7 @@ impl TextEditLayout {
                 self.italic,
                 self.font_kerning,
                 self.letter_spacing,
+                &self.font_features,
             );
             advance
                 + if offset < line.len() {

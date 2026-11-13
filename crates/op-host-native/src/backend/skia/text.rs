@@ -113,6 +113,7 @@ impl NativeBackend {
                     italic,
                     kerning: None,
                     letter_spacing: 0.0,
+                    font_features: None,
                     line_height: 0.0,
                     color: skia_safe::Color::BLACK,
                 },
@@ -133,8 +134,9 @@ impl NativeBackend {
         italic: bool,
         kerning: Option<bool>,
         letter_spacing: f32,
+        font_features: &std::collections::BTreeMap<String, u32>,
     ) -> f32 {
-        if kerning == Some(true) {
+        if kerning == Some(true) || font_features.values().any(|value| *value != 0) {
             self.shaped_text.measure(
                 &self.font_resolver,
                 &ShapedRun {
@@ -145,6 +147,7 @@ impl NativeBackend {
                     italic,
                     kerning,
                     letter_spacing,
+                    font_features: Some(font_features),
                     line_height: 0.0,
                     color: skia_safe::Color::BLACK,
                 },
@@ -234,7 +237,10 @@ impl NativeBackend {
             let italic = layout.italic();
             for run in draw_text_runs(layout) {
                 let jc = run.color;
-                if needs_complex_shaping(run.content.as_str()) || layout.kerning() == Some(true) {
+                if needs_complex_shaping(run.content.as_str())
+                    || layout.kerning() == Some(true)
+                    || layout.font_features().values().any(|value| *value != 0)
+                {
                     // Arabic and friends need bidi reordering plus contextual
                     // joining, neither of which `draw_str` performs. Hand the
                     // whole run to the cached Paragraph shaper; segmentation
@@ -251,6 +257,7 @@ impl NativeBackend {
                             italic,
                             kerning: layout.kerning(),
                             letter_spacing: layout.letter_spacing(),
+                            font_features: Some(layout.font_features()),
                             line_height: run.line_height,
                             color: skia_safe::Color::from_argb(jc.a(), jc.r(), jc.g(), jc.b()),
                         },

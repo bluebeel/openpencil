@@ -186,6 +186,8 @@ pub struct NodePayload {
     pub font_weight: u16,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub font_kerning: Option<bool>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub font_features: std::collections::BTreeMap<String, u32>,
     /// Node-level `fontStyle: italic`. Text-only.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub italic: bool,

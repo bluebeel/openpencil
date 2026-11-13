@@ -9,8 +9,8 @@ use crate::figma_types::{
 };
 use crate::image_resolver::{resolve_image_blobs_owned_with, ImageTransform};
 use crate::node_mapper::{
-    convert_tree_all_pages, convert_tree_page, empty_import_result, resolve_style_references,
-    FigmaImportResult, FigmaPageInfo,
+    convert_tree_all_pages, convert_tree_page, empty_import_result,
+    resolve_style_references_with_mode, FigmaImportResult, FigmaPageInfo,
 };
 use crate::progress::FigImportPhase;
 use crate::tree::{build_tree_owned, guid_to_string, is_user_page, TreeNode};
@@ -82,7 +82,7 @@ impl PreparedFig {
         observer: &mut dyn FnMut(FigImportPhase),
     ) -> Self {
         observer(FigImportPhase::ResolveStyles);
-        resolve_style_references(&mut decoded.node_changes);
+        resolve_style_references_with_mode(&mut decoded.node_changes, layout_mode);
         observer(FigImportPhase::BuildTree);
         let tree = build_tree_owned(std::mem::take(&mut decoded.node_changes));
         let pages = tree

@@ -120,8 +120,16 @@ fn explicit_kerning_changes_latin_advances_and_paint_while_absence_stays_legacy(
         let mut backend = backend();
         backend.shaped_text = super::super::shaped_text::ShapedText::new(&backend.font_resolver);
         let plain = backend.measure_text_family_styled("AVATAR", 40.0, "Inter", 700, false);
-        let absent =
-            backend.measure_text_family_kerned("AVATAR", 40.0, "Inter", 700, false, None, 0.0);
+        let absent = backend.measure_text_family_kerned(
+            "AVATAR",
+            40.0,
+            "Inter",
+            700,
+            false,
+            None,
+            0.0,
+            &Default::default(),
+        );
         let off = backend.measure_text_family_kerned(
             "AVATAR",
             40.0,
@@ -130,6 +138,7 @@ fn explicit_kerning_changes_latin_advances_and_paint_while_absence_stays_legacy(
             false,
             Some(false),
             0.0,
+            &Default::default(),
         );
         let on = backend.measure_text_family_kerned(
             "AVATAR",
@@ -139,6 +148,7 @@ fn explicit_kerning_changes_latin_advances_and_paint_while_absence_stays_legacy(
             false,
             Some(true),
             0.0,
+            &Default::default(),
         );
         let tracked = backend.measure_text_family_kerned(
             "AVATAR",
@@ -148,6 +158,7 @@ fn explicit_kerning_changes_latin_advances_and_paint_while_absence_stays_legacy(
             false,
             Some(true),
             2.0,
+            &Default::default(),
         );
         assert!(
             (tracked - on - 10.0).abs() < 0.001,
@@ -199,6 +210,45 @@ fn explicit_kerning_changes_latin_advances_and_paint_while_absence_stays_legacy(
         assert!(
             ink_bounds(&kerned_pixels).2 < ink_bounds(&legacy_pixels).2,
             "the kerned paint has the measured narrower extent"
+        );
+    });
+}
+
+#[test]
+fn font_features_explicit_off_wins_over_legacy_kerning() {
+    jian_skia::with_font_lock(|| {
+        let mut backend = backend();
+        backend.shaped_text = super::super::shaped_text::ShapedText::new(&backend.font_resolver);
+        let plain = backend.measure_text_family_styled("AVATAR", 40.0, "Inter", 700, false);
+        let off = std::collections::BTreeMap::from([("kern".into(), 0)]);
+        let on = std::collections::BTreeMap::from([("kern".into(), 1)]);
+        let explicit_off = backend.measure_text_family_kerned(
+            "AVATAR",
+            40.0,
+            "Inter",
+            700,
+            false,
+            Some(true),
+            0.0,
+            &off,
+        );
+        let legacy_off = backend.measure_text_family_kerned(
+            "AVATAR",
+            40.0,
+            "Inter",
+            700,
+            false,
+            Some(false),
+            0.0,
+            &on,
+        );
+        let explicit_on =
+            backend.measure_text_family_kerned("AVATAR", 40.0, "Inter", 700, false, None, 0.0, &on);
+        assert!((explicit_off - plain).abs() < 0.02);
+        assert!((legacy_off - plain).abs() < 0.02);
+        assert!(
+            explicit_on < explicit_off - 1.0,
+            "generic feature maps reach shaping"
         );
     });
 }

@@ -8,7 +8,7 @@ use crate::figma_types::FigColor;
 use crate::kiwi::FigValue;
 use jian_ops_schema::node::text::{TextAlign, TextAlignVertical, TextContent, TextGrowth};
 use jian_ops_schema::style::{FontStyleKind, StyledTextSegment};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 /// Mapped text props — spread onto a `TextNode` by the converter.
 #[derive(Debug, Clone, PartialEq)]
@@ -19,6 +19,7 @@ pub struct TextProps {
     pub font_weight: Option<u32>,
     pub font_style: Option<FontStyleKind>,
     pub font_kerning: Option<bool>,
+    pub font_features: Option<BTreeMap<String, u32>>,
     pub letter_spacing: Option<f64>,
     pub line_height: Option<f64>,
     pub text_align: Option<TextAlign>,
@@ -49,6 +50,7 @@ pub fn map_figma_text_props(node: &FigValue) -> TextProps {
             None
         },
         font_kerning: map_font_kerning(node),
+        font_features: map_font_features(node),
         letter_spacing: map_letter_spacing(node),
         line_height: map_line_height(node),
         // Figma omits LEFT defaults. Make it explicit so a centered parent
@@ -81,6 +83,26 @@ fn map_font_kerning(node: &FigValue) -> Option<bool> {
                     .any(|feature| feature.as_str() == Some("KERN"))
             }),
     )
+}
+
+fn map_font_features(node: &FigValue) -> Option<BTreeMap<String, u32>> {
+    let enabled = node.get_array("toggledOnOTFeatures");
+    let disabled = node.get_array("toggledOffOTFeatures");
+    if enabled.is_none() && disabled.is_none() {
+        return None;
+    }
+    let mut features = BTreeMap::new();
+    for (values, setting) in [(enabled, 1), (disabled, 0)] {
+        for value in values.unwrap_or(&[]) {
+            let Some(tag) = value.as_str().filter(|tag| {
+                tag.len() == 4 && tag.bytes().all(|byte| byte.is_ascii_alphanumeric())
+            }) else {
+                continue;
+            };
+            features.insert(tag.to_ascii_lowercase(), setting);
+        }
+    }
+    Some(features)
 }
 
 /// Build the text content — plain string, or per-run styled segments

@@ -235,10 +235,9 @@ fn projected_decode_preserves_direct_evidence_and_matches_existing_compaction() 
     assert_eq!(nested.get_str("characters"), Some("nested text"));
     assert!(nested.get("glyphs").is_none());
     assert!(overrides[0].get("legacyDerivedTextData").is_none());
-    assert_eq!(
-        overrides[1].get("derivedTextData"),
-        Some(&FigValue::Object(Vec::new()))
-    );
+    assert!(overrides[1]
+        .get("derivedTextData")
+        .is_some_and(FigValue::is_object));
 
     // After the existing import compactor runs, both representations are equal.
     crate::text_cache::compact_transient_text_caches(full.get_array_mut("nodeChanges").unwrap());

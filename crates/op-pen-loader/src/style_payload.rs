@@ -64,6 +64,7 @@ pub(crate) fn base_payload(base: &PenNodeBase, kind: &str) -> NodePayload {
         font_size: 0.0,
         font_weight: 0,
         font_kerning: None,
+        font_features: Default::default(),
         italic: false,
         underline: false,
         strikethrough: false,

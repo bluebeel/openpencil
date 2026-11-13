@@ -176,6 +176,7 @@ fn measure_line_slices(
             style.italic,
             node.font_kerning,
             0.0,
+            &node.font_features,
         );
         chars += slice.chars().count();
     });
@@ -193,15 +194,21 @@ fn draw_slice(
     letter_spacing: f32,
     justify_extra: f32,
     kerning: Option<bool>,
+    font_features: &std::collections::BTreeMap<String, u32>,
 ) -> (f32, f32) {
     let jc = (style.color).to_jian();
-    if (letter_spacing.abs() < f32::EPSILON || kerning == Some(true)) && justify_extra <= 0.0 {
+    if (letter_spacing.abs() < f32::EPSILON
+        || kerning == Some(true)
+        || font_features.values().any(|value| *value != 0))
+        && justify_extra <= 0.0
+    {
         backend.draw_text(
             &TextLayout::single_run(slice, family, style.font_size, jc, Point2D::ZERO)
                 .with_font_weight(style.weight)
                 .with_italic(style.italic)
                 .with_kerning(kerning)
-                .with_letter_spacing(letter_spacing),
+                .with_letter_spacing(letter_spacing)
+                .with_font_features(font_features),
             Point2D::new(x, baseline_y),
         );
         let advance = backend.measure_text_family_kerned(
@@ -212,6 +219,7 @@ fn draw_slice(
             style.italic,
             kerning,
             letter_spacing,
+            font_features,
         );
         return (x + advance + letter_spacing, x + advance);
     }
@@ -227,7 +235,8 @@ fn draw_slice(
                 .with_font_weight(style.weight)
                 .with_italic(style.italic)
                 .with_kerning(kerning)
-                .with_letter_spacing(letter_spacing),
+                .with_letter_spacing(letter_spacing)
+                .with_font_features(font_features),
             Point2D::new(cursor, baseline_y),
         );
         let adv = backend.measure_text_family_styled(
@@ -460,6 +469,7 @@ pub(crate) fn paint_text_node(
                         letter_spacing,
                         justify_extra,
                         paint_node.font_kerning,
+                        &paint_node.font_features,
                     );
                     decorate_slice(cx.backend, style, slice_x0, glyph_end, baseline_y);
                     x = next_x;

@@ -48,6 +48,7 @@ pub(crate) struct ShapedRun<'a> {
     pub italic: bool,
     pub kerning: Option<bool>,
     pub letter_spacing: f32,
+    pub font_features: Option<&'a std::collections::BTreeMap<String, u32>>,
     pub line_height: f32,
     pub color: skia_safe::Color,
 }
@@ -113,7 +114,10 @@ impl ShapedText {
             paragraph.layout(NATURAL_LAYOUT_BUDGET);
             let natural = paragraph.max_intrinsic_width();
             paragraph.layout(natural.ceil());
-            if run.kerning == Some(true)
+            if (run.kerning == Some(true)
+                || run
+                    .font_features
+                    .is_some_and(|f| f.values().any(|value| *value != 0)))
                 && !op_editor_core::text_script::needs_complex_shaping(run.text)
             {
                 // HarfBuzz supplies pair positioning; the direct native font
@@ -183,20 +187,35 @@ impl ShapedText {
             BaseDirection::Ltr => skia_safe::textlayout::TextDirection::LTR,
         });
 
-        if run.kerning == Some(true) {
+        let explicit_shape = run.kerning == Some(true)
+            || run
+                .font_features
+                .is_some_and(|f| f.values().any(|value| *value != 0));
+        if explicit_shape {
             paragraph_style.turn_hinting_off();
         }
         let mut text_style = TextStyle::new();
         text_style.set_font_size(run.font_size);
+        let mut features = run.font_features.cloned().unwrap_or_default();
         if let Some(kerning) = run.kerning {
-            text_style.add_font_feature("kern", u32::from(kerning) as i32);
+            if !kerning {
+                features.insert("kern".into(), 0);
+            } else {
+                features.entry("kern".into()).or_insert(1);
+            }
             if kerning {
-                text_style.add_font_feature("liga", 0);
-                text_style.add_font_feature("calt", 0);
-                text_style.set_font_hinting(skia_safe::FontHinting::None);
+                features.entry("liga".into()).or_insert(0);
+                features.entry("calt".into()).or_insert(0);
             }
         }
-
+        for (tag, value) in features {
+            if tag.len() == 4 && tag.is_ascii() {
+                text_style.add_font_feature(&tag, value as i32);
+            }
+        }
+        if explicit_shape {
+            text_style.set_font_hinting(skia_safe::FontHinting::None);
+        }
         text_style.set_color(run.color);
         let families = font_resolver.font_families_for_shaping(if run.family.is_empty() {
             None

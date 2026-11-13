@@ -193,6 +193,7 @@ pub fn text_node(
         font_weight: props.font_weight.map(FontWeight::Number),
         font_style,
         font_kerning: props.font_kerning,
+        font_features: props.font_features,
         letter_spacing: props.letter_spacing,
         line_height: props.line_height,
         text_align: props.text_align,

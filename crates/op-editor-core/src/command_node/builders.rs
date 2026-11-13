@@ -149,6 +149,7 @@ pub fn build_leaf_node(
             route: None,
         }),
         "text" => PenNode::Text(TextNode {
+            font_features: None,
             font_kerning: None,
             base,
             width: Some(w),

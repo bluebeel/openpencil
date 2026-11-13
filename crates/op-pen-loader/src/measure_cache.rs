@@ -43,6 +43,7 @@ struct RunKey {
     font_weight: u16,
     italic: bool,
     letter_spacing_bits: u32,
+    font_features: Vec<(String, u32)>,
 }
 
 #[derive(PartialEq, Eq, Hash)]
@@ -64,6 +65,15 @@ impl MeasureKey {
                 font_weight: run.font_weight,
                 italic: matches!(run.font_style, FontStyleKind::Italic),
                 letter_spacing_bits: run.letter_spacing.to_bits(),
+                font_features: run
+                    .font_features
+                    .map(|features| {
+                        features
+                            .iter()
+                            .map(|(tag, value)| (tag.clone(), *value))
+                            .collect()
+                    })
+                    .unwrap_or_default(),
             })
             .collect();
         MeasureKey {
@@ -145,6 +155,7 @@ mod tests {
 
     fn run(text: &str, size: f32, weight: u16) -> StyledRun<'_> {
         StyledRun {
+            font_features: None,
             text,
             font_family: None,
             font_size: size,
@@ -215,6 +226,42 @@ mod tests {
             counter.calls.get(),
             cases.len(),
             "each distinct shaping input measures exactly once"
+        );
+    }
+}
+
+#[cfg(test)]
+mod feature_cache_tests {
+    use super::*;
+    use jian_core::layout::measure::StyledRun;
+
+    #[test]
+    fn font_features_are_part_of_measurement_cache_key() {
+        let on = std::collections::BTreeMap::from([("salt".into(), 1)]);
+        let off = std::collections::BTreeMap::from([("salt".into(), 0)]);
+        let key = |features| {
+            let run = StyledRun {
+                text: "g",
+                font_family: Some("Open Sans"),
+                font_size: 56.0,
+                font_weight: 400,
+                font_style: FontStyleKind::Normal,
+                letter_spacing: 0.0,
+                font_features: Some(features),
+            };
+            MeasureKey::from_request(&MeasureRequest {
+                runs: &[run],
+                line_height: 0.0,
+                max_width: None,
+            })
+        };
+        assert!(
+            key(&on) != key(&off),
+            "ON and OFF must not share a cached width"
+        );
+        assert!(
+            key(&on) == key(&on),
+            "identical sorted feature inputs share a key"
         );
     }
 }

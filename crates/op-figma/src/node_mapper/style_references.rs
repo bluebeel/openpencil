@@ -1,3 +1,4 @@
+use crate::common::FigLayoutMode;
 use crate::kiwi::FigValue;
 use crate::text_cache::compact_transient_text_caches;
 use crate::text_cache::evidence::{nearly_equal, TextEvidence};
@@ -8,10 +9,21 @@ use std::collections::HashMap;
 #[path = "style_references_tests.rs"]
 mod tests;
 
+#[path = "preserved_fonts.rs"]
+mod preserved_fonts;
+
 /// Copy style-node values inline onto the nodes that reference them,
 /// so downstream converters never chase a style ref. Mutates the
 /// node-change list in place.
+#[cfg(test)]
 pub fn resolve_style_references(node_changes: &mut [FigValue]) {
+    resolve_style_references_with_mode(node_changes, FigLayoutMode::OpenPencil);
+}
+
+pub(crate) fn resolve_style_references_with_mode(
+    node_changes: &mut [FigValue],
+    layout_mode: FigLayoutMode,
+) {
     crate::component_props::resolve_component_property_swaps(node_changes);
     let mut style_map: HashMap<String, FigValue> = HashMap::new();
     for nc in node_changes.iter() {
@@ -32,6 +44,9 @@ pub fn resolve_style_references(node_changes: &mut [FigValue]) {
     }
     if style_map.is_empty() {
         crate::color_variables::resolve_color_variables(node_changes);
+        if layout_mode == FigLayoutMode::Preserve {
+            preserved_fonts::restore_saved_instance_fonts(node_changes);
+        }
         compact_transient_text_caches(node_changes);
         return;
     }
@@ -48,6 +63,9 @@ pub fn resolve_style_references(node_changes: &mut [FigValue]) {
         }
     }
     crate::color_variables::resolve_color_variables(node_changes);
+    if layout_mode == FigLayoutMode::Preserve {
+        preserved_fonts::restore_saved_instance_fonts(node_changes);
+    }
     compact_transient_text_caches(node_changes);
 }
 
