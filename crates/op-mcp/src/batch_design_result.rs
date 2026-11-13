@@ -25,7 +25,6 @@ use super::batch_design::{
 };
 use super::batch_direct_ops::is_direct_image_operation;
 use super::batch_page::optional_page_id;
-use super::read_nodes::{page_nodes_snapshots, PageNodes};
 use super::{EditorCommand, McpTool, ToolErrorCode, ToolOutcome};
 
 /// `batch_design` — insert a node forest in one shot. Holds a document snapshot
@@ -36,11 +35,16 @@ pub struct BatchDesign {
     /// (`batch_program.rs`) simulates each program line against a clone
     /// of this; any failing line rolls back the whole batch (the
     /// agent-facing transactional contract).
-    state: EditorState,
-    pages: Vec<PageNodes>,
+    state: Option<EditorState>,
+    pages: Vec<PageNodeCount>,
     active_page_id: String,
     existing_ids: HashSet<NodeId>,
     id_seed: Option<u64>,
+}
+
+struct PageNodeCount {
+    id: String,
+    count: usize,
 }
 
 impl McpTool for BatchDesign {
@@ -86,7 +90,7 @@ impl McpTool for BatchDesign {
             // its target slot. The flat direct parser has no parent geometry,
             // so route even a single G through the program simulator.
             Ok(ParsedOperations::Direct(_)) if is_direct_image_operation(operations) => {
-                super::batch_program::run_batch_design_program(&self.state, operations, args)
+                self.run_program(operations, args)
             }
             // Other single direct ops keep the flat command-per-op shape.
             Ok(ParsedOperations::Direct(_)) => dispatch_batch_design(args, None),
@@ -95,23 +99,94 @@ impl McpTool for BatchDesign {
             // default (any failing line rolls back the whole batch);
             // internal callers may opt into TS best-effort via
             // `_line_policy` (see `batch_program.rs` module docs).
-            Err(_) => super::batch_program::run_batch_design_program(&self.state, operations, args),
+            Err(_) => self.run_program(operations, args),
         }
     }
 }
 
 pub fn batch_design_snapshot(state: &EditorState) -> BatchDesign {
-    let (pages, active_page_id) = page_nodes_snapshots(state);
+    snapshot(state, true, true)
+}
+
+/// Construct only the snapshot consumed by this request's selected payload.
+/// The returned tool is request-scoped: dispatch it with the same arguments.
+/// Mixed programs retain their transaction simulator; plain nodes and direct
+/// commands need no document copy, and inserts retain only ids/page counts.
+pub fn batch_design_snapshot_for_call(
+    state: &EditorState,
+    args: &BTreeMap<String, String>,
+) -> BatchDesign {
+    // Script expansion starts a sandbox. Keep its existing one-evaluation
+    // contract; argument-aware preparation must never execute it twice.
+    if args.contains_key("script") {
+        return batch_design_snapshot(state);
+    }
+    if !matches!(select_batch_input(args), Ok(BatchInputKind::Operations)) {
+        return snapshot(state, false, false);
+    }
+    let Some(operations) = args.get("operations") else {
+        return snapshot(state, false, false);
+    };
+    match parse_operations(operations) {
+        Ok(ParsedOperations::Insert { .. }) => snapshot(state, false, true),
+        Ok(ParsedOperations::Direct(_)) if !is_direct_image_operation(operations) => {
+            snapshot(state, false, false)
+        }
+        _ => snapshot(state, true, false),
+    }
+}
+
+fn snapshot(state: &EditorState, program: bool, insert: bool) -> BatchDesign {
+    let (pages, active_page_id) = if insert {
+        match state.doc.pages.as_ref().filter(|pages| !pages.is_empty()) {
+            Some(pages) => {
+                let active = state.ui.active_page_index.min(pages.len() - 1);
+                (
+                    pages
+                        .iter()
+                        .map(|page| PageNodeCount {
+                            id: page.id.clone(),
+                            count: count_forest(&page.children),
+                        })
+                        .collect(),
+                    pages[active].id.clone(),
+                )
+            }
+            None => (
+                vec![PageNodeCount {
+                    id: "0".into(),
+                    count: count_forest(&state.doc.children),
+                }],
+                "0".into(),
+            ),
+        }
+    } else {
+        (Vec::new(), String::new())
+    };
     BatchDesign {
-        state: state.clone(),
+        state: program.then(|| state.clone()),
         pages,
         active_page_id,
-        existing_ids: state.collect_node_ids(),
-        id_seed: state.next_node_id_seed(),
+        existing_ids: if insert {
+            state.collect_node_ids()
+        } else {
+            HashSet::new()
+        },
+        id_seed: insert.then(|| state.next_node_id_seed()).flatten(),
     }
 }
 
 impl BatchDesign {
+    fn run_program(&self, operations: &str, args: &BTreeMap<String, String>) -> ToolOutcome {
+        match &self.state {
+            Some(state) => super::batch_program::run_batch_design_program(state, operations, args),
+            None => ToolOutcome::Err(
+                ToolErrorCode::ToolFailed,
+                "batch_design request-scoped snapshot cannot run a different payload".into(),
+            ),
+        }
+    }
+
     fn insert_with_result(
         &self,
         args: &BTreeMap<String, String>,
@@ -167,10 +242,7 @@ impl BatchDesign {
 
         // TS nodeCount = countNodes(getDocChildren(doc, pageId)) AFTER insert =
         // target page's pre-insert node count + every inserted node (map.len()).
-        let base = self
-            .resolve_page(args)
-            .map(|page| count_forest(&page.roots))
-            .unwrap_or(0);
+        let base = self.resolve_page(args).map(|page| page.count).unwrap_or(0);
         let node_count = base + map.len();
 
         // Phase E3 — report the legacy role frames normalized into widget
@@ -218,7 +290,7 @@ impl BatchDesign {
 
     /// Resolve the target page for the node-count base, mirroring the host's
     /// `command_apply::command_page_index` (id-match → numeric index → active).
-    fn resolve_page(&self, args: &BTreeMap<String, String>) -> Option<&PageNodes> {
+    fn resolve_page(&self, args: &BTreeMap<String, String>) -> Option<&PageNodeCount> {
         match optional_page_id(args)
             .as_deref()
             .map(str::trim)
@@ -249,3 +321,7 @@ fn count_subtree(node: &PenNode) -> usize {
         .map(|children| children.iter().map(count_subtree).sum::<usize>())
         .unwrap_or(0)
 }
+
+#[cfg(test)]
+#[path = "batch_design_snapshot_tests.rs"]
+mod snapshot_tests;

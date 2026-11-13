@@ -202,7 +202,7 @@ pub use op_editor_core::{
 pub use batch_design::{
     design_content_snapshot, design_skeleton_snapshot, DesignContent, DesignSkeleton,
 };
-pub use batch_design_result::{batch_design_snapshot, BatchDesign};
+pub use batch_design_result::{batch_design_snapshot, batch_design_snapshot_for_call, BatchDesign};
 pub use batch_get::{batch_get_snapshot, BatchGet};
 pub use batch_program_objects::parse_program_objects;
 pub use bulk_vars::{

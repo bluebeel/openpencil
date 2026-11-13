@@ -333,8 +333,9 @@ where
             )));
         }
     }
-    let requested_tool = call.map(|call| call.tool);
-    let registry = rebuild_registry(state, requested_tool.as_deref(), profile);
+    let requested_tool = call.as_ref().map(|call| call.tool.as_str());
+    let arguments = call.as_ref().map(|call| &call.arguments);
+    let registry = rebuild_registry(state, requested_tool, profile, arguments);
     process_tool_message_with_registry(&registry, line, |tool_name, cmd| {
         apply(tool_name, state, cmd)
     })

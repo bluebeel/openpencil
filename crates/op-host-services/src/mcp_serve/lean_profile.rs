@@ -11,7 +11,7 @@
 //! composing wrappers extend their input schema, with the arguments they
 //! forward to the tools they delegate to.
 
-use std::sync::OnceLock;
+use std::{collections::BTreeMap, sync::OnceLock};
 
 use op_editor_core::EditorState;
 use op_mcp::{
@@ -147,7 +147,11 @@ pub(crate) fn lean_tool_schemas() -> &'static [String] {
 
 /// The lean registry. Like the full one it snapshots per call and, for a
 /// direct call, builds only the requested tool.
-pub(super) fn lean_registry(doc: &EditorState, requested_tool: Option<&str>) -> ToolRegistry {
+pub(super) fn lean_registry(
+    doc: &EditorState,
+    requested_tool: Option<&str>,
+    arguments: Option<&BTreeMap<String, String>>,
+) -> ToolRegistry {
     let mut registry = ToolRegistry::default();
     let wants = |name: &str| requested_tool.is_none_or(|requested| requested == name);
     if wants("get_editor_state") {
@@ -157,7 +161,10 @@ pub(super) fn lean_registry(doc: &EditorState, requested_tool: Option<&str>) -> 
         registry.register(Box::new(get_guidelines_snapshot()));
     }
     if wants("batch_design") {
-        registry.register(Box::new(batch_design_snapshot(doc)));
+        registry.register(Box::new(match arguments {
+            Some(args) => op_mcp::batch_design_snapshot_for_call(doc, args),
+            None => batch_design_snapshot(doc),
+        }));
     }
     if wants("snapshot_layout") {
         registry.register(Box::new(snapshot_layout_snapshot(doc)));

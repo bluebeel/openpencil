@@ -10,11 +10,12 @@ pub(super) fn rebuild_registry(
     doc: &EditorState,
     requested_tool: Option<&str>,
     profile: tool_profile::McpAccessProfile,
+    arguments: Option<&std::collections::BTreeMap<String, String>>,
 ) -> ToolRegistry {
     // The lean catalog has its own six-tool registry (two of them compose
     // several full-catalog tools); nothing else is constructed for it.
     if profile.catalog == tool_catalog::McpToolCatalog::Lean {
-        return lean_profile::lean_registry(doc, requested_tool);
+        return lean_profile::lean_registry(doc, requested_tool, arguments);
     }
     let mut r = ToolRegistry::default();
 
@@ -181,7 +182,13 @@ pub(super) fn rebuild_registry(
     register_tool!("move_node", move_node_snapshot());
     register_tool!("copy_node", copy_node_snapshot());
     register_tool!("replace_node", replace_node_snapshot());
-    register_tool!("batch_design", batch_design_snapshot(doc));
+    register_tool!(
+        "batch_design",
+        match arguments {
+            Some(args) => op_mcp::batch_design_snapshot_for_call(doc, args),
+            None => batch_design_snapshot(doc),
+        }
+    );
     register_tool!(
         "create_generator",
         op_mcp::generator_tools::create_generator_snapshot(doc)
