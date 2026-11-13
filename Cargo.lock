@@ -4520,6 +4520,7 @@ dependencies = [
  "base64 0.22.1",
  "flate2",
  "jian-ops-schema",
+ "jian-skia",
  "op-editor-core",
  "op-editor-ui",
  "op-host-services",
