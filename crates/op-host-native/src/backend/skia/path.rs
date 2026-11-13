@@ -1,3 +1,4 @@
+use super::svg_raster_cache::{SvgRasterCacheEntry, SvgRasterKey};
 use super::{jian_color_to_color4f, to_sk_rect, NativeBackend};
 use op_editor_ui::{Color, Point2D, Rect};
 use std::hash::{Hash, Hasher};
@@ -12,7 +13,6 @@ use std::hash::{Hash, Hasher};
 /// entry cap as the safety bound on tiny paths.
 const SVG_PATH_CACHE_BYTE_BUDGET: usize = 64 * 1024 * 1024;
 const SVG_PATH_CACHE_MAX_ENTRIES: usize = 65536;
-const SVG_RASTER_CACHE_CAP: usize = 256;
 const SVG_RASTER_COMPLEXITY_MIN: usize = 4096;
 const SVG_RASTER_MAX_PIXELS: i32 = 2_000_000;
 const SVG_RASTER_PAD: f32 = 2.0;
@@ -21,23 +21,6 @@ pub(super) struct SvgPathCacheEntry {
     d: String,
     path: Option<skia_safe::Path>,
     even_odd: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(super) struct SvgRasterKey {
-    path_key: u64,
-    d_len: usize,
-    even_odd: bool,
-    color_rgba: u32,
-    size_bits: u32,
-    viewbox_bits: u32,
-    dpi_bits: u32,
-}
-
-pub(super) struct SvgRasterCacheEntry {
-    image: skia_safe::Image,
-    offset: Point2D,
-    size: Point2D,
 }
 
 struct SvgRasterRequest<'a> {
@@ -174,15 +157,6 @@ impl NativeBackend {
             size: Point2D::new(width as f32 / dpi, height as f32 / dpi),
         };
         self.svg_raster_cache.insert(key, entry);
-        self.svg_raster_cache_order.push_back(key);
-        while self.svg_raster_cache.len() > SVG_RASTER_CACHE_CAP {
-            match self.svg_raster_cache_order.pop_front() {
-                Some(oldest) => {
-                    self.svg_raster_cache.remove(&oldest);
-                }
-                None => break,
-            }
-        }
         self.svg_raster_cache.get(&key)
     }
 

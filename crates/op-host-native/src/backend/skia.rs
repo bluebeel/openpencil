@@ -78,6 +78,7 @@ mod layer;
 mod path;
 mod sampled_clip;
 mod shaped_text;
+mod svg_raster_cache;
 mod text;
 mod vector_text;
 #[cfg(test)]
@@ -127,8 +128,7 @@ pub struct NativeBackend {
     /// Sum of `SvgPathCacheEntry` d-string lengths — the byte proxy the
     /// path-cache budget evicts against (parsed path size tracks d length).
     svg_path_cache_bytes: usize,
-    svg_raster_cache: std::collections::HashMap<path::SvgRasterKey, path::SvgRasterCacheEntry>,
-    svg_raster_cache_order: std::collections::VecDeque<path::SvgRasterKey>,
+    svg_raster_cache: svg_raster_cache::SvgRasterCache,
     dot_point_buffer: Vec<skia_safe::Point>,
     /// Compiled-SkSL `RuntimeEffect` cache (same spirit as the typeface
     /// cache above): compile-once-per-unique-source so per-frame
@@ -262,8 +262,7 @@ impl NativeBackend {
             svg_path_cache: std::collections::HashMap::new(),
             svg_path_cache_order: std::collections::VecDeque::new(),
             svg_path_cache_bytes: 0,
-            svg_raster_cache: std::collections::HashMap::new(),
-            svg_raster_cache_order: std::collections::VecDeque::new(),
+            svg_raster_cache: svg_raster_cache::SvgRasterCache::default(),
             dot_point_buffer: Vec::new(),
             shader_cache: jian_skia::ShaderCache::new(),
         };
