@@ -694,7 +694,7 @@ fn array_to_color(a: [f32; 4]) -> Color {
 /// `NodePayload.kind` string → shell-core `NodeKind`. Mirrors
 /// `payload::str_to_kind` so the scene's per-kind paint dispatch
 /// matches the `Document` path exactly.
-fn str_to_kind(s: &str) -> NodeKind {
+pub(crate) fn str_to_kind(s: &str) -> NodeKind {
     match s {
         "frame" => NodeKind::Frame,
         "group" => NodeKind::Group,

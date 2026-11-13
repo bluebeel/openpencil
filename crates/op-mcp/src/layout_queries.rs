@@ -1,5 +1,6 @@
 //! Request-bound computed geometry; never retains an EditorState clone.
 use super::*;
+use op_pen_loader::ComputedGeometry;
 use std::collections::HashSet;
 
 struct PageScope<'a> {
@@ -54,12 +55,9 @@ fn prepare_layout(
         })
     })?;
     let parent = arg_alias(args, &["parentId", "parent_id", "parent"]);
-    let scene = op_pen_loader::editor_state_to_page_item_layout_scene(state, page.index, parent);
-    let roots = scene
-        .pages
-        .get(page.index)
-        .map_or(&[][..], |page| page.children.as_slice());
-    let records = limited_records(roots, page.roots, parent, depth);
+    let roots = op_pen_loader::editor_state_to_page_item_geometry(state, page.index, parent);
+    let records = limited_records(&roots, page.roots, parent, depth);
+    drop(roots);
     Ok(snapshot_layout_outcome(
         &PageLayout {
             id: page.id.into(),
@@ -84,12 +82,16 @@ pub fn snapshot_layout_snapshot_for_call(
 }
 
 fn limited_records(
-    roots: &[SceneNode],
+    roots: &[ComputedGeometry],
     raw: &[PenNode],
     parent: Option<&str>,
     max_depth: u32,
 ) -> Vec<LayoutRecord> {
-    fn first<'a>(nodes: &'a [SceneNode], id: &str, depth: u32) -> Option<(&'a SceneNode, u32)> {
+    fn first<'a>(
+        nodes: &'a [ComputedGeometry],
+        id: &str,
+        depth: u32,
+    ) -> Option<(&'a ComputedGeometry, u32)> {
         nodes.iter().find_map(|node| {
             if node.id == id {
                 Some((node, depth))
@@ -104,12 +106,12 @@ fn limited_records(
     }
     let cutoff = parent_node.map_or(max_depth, |(_, depth)| depth + max_depth + 1);
     fn walk(
-        nodes: &[SceneNode],
+        nodes: &[ComputedGeometry],
         ancestors: &mut Vec<String>,
         depth: u32,
         cutoff: u32,
         parent: Option<&str>,
-        first_parent: Option<&SceneNode>,
+        first_parent: Option<&ComputedGeometry>,
         out: &mut Vec<LayoutRecord>,
     ) {
         if depth > cutoff {
@@ -199,23 +201,19 @@ fn prepare_empty_space(
     }
     let page = page_scope(state, args)?;
     let node_id = arg_alias(args, &["nodeId", "node_id", "node"]);
-    let scene = op_pen_loader::editor_state_to_page_item_layout_scene(state, page.index, node_id);
-    let scene_page = scene.pages.get(page.index);
+    let scene = op_pen_loader::editor_state_to_page_item_geometry(state, page.index, node_id);
     let (roots, all) = match node_id {
         Some(id) => (
             Vec::new(),
-            scene_page
-                .and_then(|page| page.find(id))
-                .map(bounds_record)
+            scene
+                .iter()
+                .find_map(|node| node.find(id))
+                .map(geometry_bounds_record)
                 .into_iter()
                 .collect(),
         ),
         None => (
-            scene_page
-                .into_iter()
-                .flat_map(|page| &page.children)
-                .map(bounds_record)
-                .collect(),
+            scene.iter().map(geometry_bounds_record).collect(),
             Vec::new(),
         ),
     };
@@ -229,6 +227,17 @@ fn prepare_empty_space(
         prepared: None,
     }
     .call(args))
+}
+
+fn geometry_bounds_record(node: &ComputedGeometry) -> BoundsRecord {
+    let b = node.aggregate_bounds();
+    BoundsRecord {
+        id: node.id.clone(),
+        x: b.origin.x as i32,
+        y: b.origin.y as i32,
+        w: b.size.x as i32,
+        h: b.size.y as i32,
+    }
 }
 
 /// Retain only requested computed bounds, rather than every page's descendants.

@@ -47,9 +47,19 @@ impl McpTool for GetCanvasBounds {
 }
 
 pub fn get_canvas_bounds_snapshot(state: &EditorState) -> GetCanvasBounds {
-    let scene = op_pen_loader::editor_state_to_active_page_layout_scene(state);
+    let page = match &state.doc.pages {
+        Some(pages) if pages.is_empty() => return GetCanvasBounds { bounds: None },
+        Some(pages) => state.ui.active_page_index.min(pages.len() - 1),
+        None => 0,
+    };
+    let roots = op_pen_loader::editor_state_to_page_item_geometry(state, page, None);
     GetCanvasBounds {
-        bounds: scene.content_bounds().map(|bounds| {
+        bounds: jian_scene::layout_scene::LayoutScene::content_bounds_from_rects(
+            roots
+                .iter()
+                .map(op_pen_loader::ComputedGeometry::visual_bounds),
+        )
+        .map(|bounds| {
             (
                 bounds.origin.x as i32,
                 bounds.origin.y as i32,
@@ -420,5 +430,38 @@ mod tests {
             Some((900, 100, 20, 30)),
             "fixed-size bounds and active-page selection stay unchanged"
         );
+    }
+
+    #[test]
+    fn compact_canvas_bounds_match_paint_visible_overflow_clips_hidden_and_workspace() {
+        let state = EditorState::from_document(jian_ops_schema::load_str(r#"{
+          "version":"1.0.0","pages":[{"id":"p","name":"P","children":[
+           {"id":"open","type":"frame","x":10.5,"y":20.25,"width":5,"height":5,"clipContent":false,
+            "children":[{"id":"escaped","type":"rectangle","x":40,"y":50,"width":10,"height":20}]},
+           {"id":"closed","type":"frame","width":5,"height":5,"clipContent":true,
+            "children":[{"id":"clipped","type":"rectangle","x":1000,"y":1000,"width":10,"height":20}]},
+           {"id":"hidden","type":"rectangle","width":20000,"height":20000,"enabled":false}
+          ]},{"id":"other","name":"Other","children":[]}] }"#).unwrap().value);
+        for active in [0, 1, usize::MAX] {
+            for preserve in [false, true] {
+                for workspace in [false, true] {
+                    let mut state = state.clone();
+                    state.ui.active_page_index = active;
+                    state.editor_ui.preserve_authored_geometry = preserve;
+                    state.editor_ui.workspace.visible = workspace;
+                    let expected = op_pen_loader::editor_state_to_active_page_layout_scene(&state)
+                        .content_bounds()
+                        .map(|b| {
+                            (
+                                b.origin.x as i32,
+                                b.origin.y as i32,
+                                b.size.x as i32,
+                                b.size.y as i32,
+                            )
+                        });
+                    assert_eq!(get_canvas_bounds_snapshot(&state).bounds, expected);
+                }
+            }
+        }
     }
 }

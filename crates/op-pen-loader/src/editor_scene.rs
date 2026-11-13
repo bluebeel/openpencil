@@ -220,6 +220,23 @@ pub(crate) fn roots_to_scene_children(
     paged: bool,
     full_content: bool,
 ) -> Vec<jian_scene::layout_scene::SceneNode> {
+    let payload = roots_to_page_payload(state, roots, page, page_index, paged, full_content);
+    let var_table = editor_state_var_table(state);
+    payload
+        .children
+        .iter()
+        .map(|node| crate::layout_scene::node_payload_to_scene(node, &var_table, 1.0))
+        .collect()
+}
+
+pub(crate) fn roots_to_page_payload(
+    state: &op_editor_core::EditorState,
+    roots: &[jian_ops_schema::node::PenNode],
+    page: &ScenePage,
+    page_index: usize,
+    paged: bool,
+    full_content: bool,
+) -> crate::payload::PagePayload {
     let page_id = state.doc.pages.as_ref().map(|_| page.id.as_str());
     let mut prepared = std::borrow::Cow::Borrowed(roots);
     if op_editor_core::ref_resolve::roots_have_refs(prepared.as_ref()) {
@@ -267,12 +284,10 @@ pub(crate) fn roots_to_scene_children(
         page_index,
         state.editor_ui.preserve_authored_geometry,
     );
-    let var_table = editor_state_var_table(state);
+    // Every payload field is owned/shared; release expanded canonical roots
+    // before a second representation is allocated by the caller.
+    drop(prepared);
     payload
-        .children
-        .iter()
-        .map(|node| crate::layout_scene::node_payload_to_scene(node, &var_table, 1.0))
-        .collect()
 }
 
 fn prepare_presentation(

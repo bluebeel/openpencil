@@ -124,6 +124,51 @@ pub fn editor_state_to_page_item_layout_scene(
     let Some(roots) = roots else {
         return crate::editor_state_to_layout_scene(state);
     };
+    let selected = selected_page_roots(state, page_index, item_id)
+        .map(|(_, roots)| roots)
+        .unwrap_or(roots);
+    pages[page_index].children = crate::editor_scene::roots_to_scene_children(
+        state,
+        selected,
+        &pages[page_index],
+        page_index,
+        false,
+        false,
+    );
+    LayoutScene {
+        active_page_index: state
+            .ui
+            .active_page_index
+            .min(pages.len().saturating_sub(1)),
+        pages,
+    }
+}
+
+pub(crate) fn selected_page_roots<'a>(
+    state: &'a EditorState,
+    page_index: usize,
+    item_id: Option<&str>,
+) -> Option<(ScenePage, &'a [PenNode])> {
+    let (id, name, roots) = match &state.doc.pages {
+        Some(pages) => {
+            let page = pages.get(page_index)?;
+            (
+                page.id.as_str(),
+                page.name.as_str(),
+                page.children.as_slice(),
+            )
+        }
+        None if page_index == 0 => (
+            if state.doc.children.is_empty() {
+                "n1"
+            } else {
+                "page-1"
+            },
+            state.doc.name.as_deref().unwrap_or("Page 1"),
+            state.doc.children.as_slice(),
+        ),
+        None => return None,
+    };
     fn count(nodes: &[PenNode], id: &str) -> usize {
         use op_editor_core::pen_node_ext::PenNodeExt;
         nodes
@@ -152,19 +197,12 @@ pub fn editor_state_to_page_item_layout_scene(
             found.map(std::slice::from_ref)
         })
         .unwrap_or(roots);
-    pages[page_index].children = crate::editor_scene::roots_to_scene_children(
-        state,
+    Some((
+        ScenePage {
+            id: id.into(),
+            name: name.into(),
+            children: Vec::new(),
+        },
         selected,
-        &pages[page_index],
-        page_index,
-        false,
-        false,
-    );
-    LayoutScene {
-        active_page_index: state
-            .ui
-            .active_page_index
-            .min(pages.len().saturating_sub(1)),
-        pages,
-    }
+    ))
 }

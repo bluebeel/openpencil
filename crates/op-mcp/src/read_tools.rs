@@ -17,6 +17,8 @@ use super::tools::kind_label;
 use super::{McpTool, ToolErrorCode, ToolOutcome};
 
 type ToolCallError = (ToolErrorCode, String);
+#[path = "layout_json.rs"]
+mod layout_json;
 #[path = "layout_queries.rs"]
 mod layout_queries;
 pub use layout_queries::{find_empty_space_snapshot_for_call, snapshot_layout_snapshot_for_call};
@@ -124,8 +126,11 @@ fn snapshot_layout_outcome(page: &PageLayout, args: &BTreeMap<String, String>) -
     // children); children nest up to maxDepth. The flat `selected` set is
     // already depth-bounded, so we just re-nest it by parent.
     let root_key = parent_id.unwrap_or("");
-    let layout = layout_children_values(&selected, root_key, parent_offset);
-    ToolOutcome::OkJson(json!({ "layout": layout }).to_string())
+    ToolOutcome::OkJson(layout_json::serialize_layout(
+        &selected,
+        root_key,
+        parent_offset,
+    ))
 }
 
 /// Build the ordered list of `LayoutEntry` JSON objects whose immediate

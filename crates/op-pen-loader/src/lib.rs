@@ -21,6 +21,7 @@
 
 mod adapter;
 mod authored_geometry;
+mod computed_geometry;
 mod editor_meta;
 mod editor_meta_error;
 mod editor_meta_family;
@@ -31,6 +32,7 @@ mod effects;
 mod full_content_snapshot;
 mod initial_text_snapshot;
 mod item_scene;
+pub use computed_geometry::{editor_state_to_page_item_geometry, ComputedGeometry};
 #[cfg(test)]
 mod item_scene_tests;
 mod layout_repair;
