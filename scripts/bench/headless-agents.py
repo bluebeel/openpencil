@@ -183,6 +183,7 @@ async def benchmark(args):
               "expectedMutationRequests": args.clients * args.rounds,
               "expectedDrawingEdits": args.clients * args.rounds * args.batch,
               "oneSharedServiceProcess": True, "oneSharedDocumentAuthority": True,
+              "agentContextsOptIn": args.agent_contexts,
               "externalLlmProcesses": 0, "requestRetryPolicy": "none: ambiguous writes never replayed"}
     log = (output / "server.stderr.log").open("wb")
     process = None
@@ -236,8 +237,10 @@ async def benchmark(args):
                                         "width": 6, "height": 6, "fill_hex": ["#2563eb", "#059669", "#d97706", "#dc2626"][client % 4]})
                     started = time.perf_counter()
                     try:
-                        result = await tool(port, f"{client}-{round_index}", "batch_design",
-                                            {"nodes_json": json.dumps(entries, separators=(",", ":"))})
+                        arguments = {"nodes_json": json.dumps(entries, separators=(",", ":"))}
+                        if args.agent_contexts:
+                            arguments["agentId"] = f"agent-{client:04}"
+                        result = await tool(port, f"{client}-{round_index}", "batch_design", arguments)
                         if str(result.get("wrote")).lower() != "true" or int(result.get("count", -1)) != args.batch:
                             raise RuntimeError(f"wrongeditack: {result}")
                         accepted += 1
@@ -352,6 +355,7 @@ def main():
     parser.add_argument("--rounds", type=int, default=2)
     parser.add_argument("--batch", type=int, default=4)
     parser.add_argument("--no-render", action="store_true")
+    parser.add_argument("--agent-contexts", action="store_true", help="opt in to a distinct agentId/UI context per logical client")
     parser.add_argument("--max-bytes", type=int, default=1_000_000_000, help="aggregate sampled RSS/physical-footprint budget")
     parser.add_argument("--timeout", type=float, default=90, help="deadline per logical-client case")
     parser.add_argument("--idle-seconds", type=float, default=.5)

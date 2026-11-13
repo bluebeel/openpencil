@@ -101,7 +101,7 @@ async def matrix(args):
                "--config-root", str(output / "config")]
     report = {"binary": str(args.binary.resolve()), "binarySha256": shared.sha(args.binary), "command": command,
               "initialNodes": args.nodes, "topology": args.topology, "logicalClients": 1, "maxInflightRequests": 1,
-              "iterations": args.iterations, "externalAssets": False, "operationSamples": {}, "invariants": {},
+              "iterations": args.iterations, "externalAssets": False, "agentContextsOptIn": args.agent_contexts, "operationSamples": {}, "invariants": {},
               "note": "Serial per-operation latency. Concurrent shared-state insert coverage is in headless-agents.py."}
     process = sampler = None
     stderr = (output / "server.stderr.log").open("wb")
@@ -123,6 +123,9 @@ async def matrix(args):
             shared.phase(label)
             before = shared.usage(process.pid)
             started = time.perf_counter()
+            if args.agent_contexts:
+                agent = "matrix-B" if label.startswith("context-B") else "matrix-A" if label.startswith("context-A") else "matrix-main"
+                arguments = {**arguments, "agentId": agent}
             result = await shared.tool(port, f"matrix-{request_id}", tool, arguments)
             elapsed = time.perf_counter() - started
             after = shared.usage(process.pid)
@@ -238,6 +241,17 @@ async def matrix(args):
             "agentAExpectedZoom": 125, "agentAObservedZoom": int(viewport["zoom_percent"]),
             "isolated": copied["name"] == baseline["n7"]["name"] and int(viewport["zoom_percent"]) == 125,
             "scope": "Current service has one global MCP UI context; logical agent labels do not create isolated sessions."}
+        if args.agent_contexts:
+            assert report["globalUiContextGap"]["isolated"], report["globalUiContextGap"]
+            report["globalUiContextGap"]["scope"] = "Opt-in agentId isolates UI context; document and undo history remain shared."
+            report["invariants"]["agentContextIsolation"] = True
+            second_path = output / "clipboard-destination.op"
+            second_path.write_text(json.dumps({"version": "1.0.0", "children": [], "pages": [
+                {"id": "destination", "name": "Destination", "children": []}]}))
+            await call("context-A-cross-file-paste", "paste_clipboard", {"offset_px": "0", "filePath": str(second_path)})
+            pasted = list(shared.nodes(json.loads(second_path.read_text())))
+            assert len(pasted) == 1 and pasted[0]["name"] == baseline["n7"]["name"]
+            report["invariants"]["crossFileAgentClipboard"] = True
         await call("cleanup", "delete_node", {"node_id": next(iter(added))})
         response, state = await document()
         assert len(state) == args.nodes and set(state) == set(baseline)
@@ -282,6 +296,7 @@ def main():
     parser.add_argument("--nodes", type=int, default=10000)
     parser.add_argument("--iterations", type=int, default=3)
     parser.add_argument("--topology", choices=["flat", "nested"], default="flat")
+    parser.add_argument("--agent-contexts", action="store_true", help="verify isolated agentId selection/clipboard/viewport and cross-file paste")
     parser.add_argument("--max-bytes", type=int, default=1_000_000_000)
     parser.add_argument("--timeout", type=float, default=90)
     args = parser.parse_args()
