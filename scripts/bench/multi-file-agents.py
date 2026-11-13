@@ -43,7 +43,8 @@ async def benchmark(args, clients, output):
               "expectedMutationRequests": clients * args.rounds,
               "expectedDrawingEdits": clients * args.rounds * args.batch,
               "oneSharedServiceProcess": True, "oneAuthorityPerFile": True,
-              "externalLlmProcesses": 0, "globalUiIsolationExercised": False,
+              "externalLlmProcesses": 0, "agentContextsOptIn": args.agent_contexts,
+              "globalUiIsolationExercised": False,
               "requestRetryPolicy": "none: ambiguous writes are never replayed"}
     process = sampler = None
     child_before = resource.getrusage(resource.RUSAGE_CHILDREN)
@@ -83,8 +84,10 @@ async def benchmark(args, clients, output):
                     peak_inflight = max(peak_inflight, inflight)
                     started = time.perf_counter()
                     try:
-                        result = await shared.tool(port, f"{identifier}-{turn}", "batch_design", {
-                            "filePath": str(paths[file_index]), "nodes_json": json.dumps(nodes)})
+                        arguments = {"filePath": str(paths[file_index]), "nodes_json": json.dumps(nodes)}
+                        if args.agent_contexts:
+                            arguments["agentId"] = f"multi-client-{identifier}"
+                        result = await shared.tool(port, f"{identifier}-{turn}", "batch_design", arguments)
                         assert str(result.get("wrote")).lower() == "true" and int(result.get("count", -1)) == args.batch, result
                         accepted += 1
                         latencies.append(time.perf_counter() - started)
@@ -101,6 +104,7 @@ async def benchmark(args, clients, output):
         assert accepted == report["expectedMutationRequests"]
         shared.phase("verify")
         report["documents"] = []
+        contexts = []
         for i, path in enumerate(paths):
             memory = await shared.tool(port, f"verify-{i}", "read_nodes", {"filePath": str(path), "depth": "0"})
             nodes = memory["nodes"]
@@ -135,6 +139,26 @@ async def benchmark(args, clients, output):
                 item.update(renderSeconds=time.perf_counter() - started, pngSha256=shared.sha(png_path),
                             expectedColorVerified=True)
             report["documents"].append(item)
+            if args.agent_contexts and len(nodes) >= 2:
+                # Reuse the same two agents across every file. Alternating IDs
+                # and zooms detect both agent and document context leakage.
+                for agent in range(2):
+                    context = {"filePath": str(path), "agentId": f"multi-client-{agent}"}
+                    identifier = nodes[(i + agent) % 2]["id"]
+                    zoom = 110 + i + agent * 100
+                    await shared.tool(port, f"select-{i}-{agent}", "set_selection", {**context, "node_id": identifier})
+                    await shared.tool(port, f"zoom-{i}-{agent}", "set_viewport", {**context, "zoom_percent": str(zoom)})
+                    contexts.append((i, agent, context, identifier, zoom))
+        for i, agent, context, identifier, zoom in contexts:
+            selection = await shared.tool(port, f"selection-{i}-{agent}", "get_selection_set", context)
+            viewport = await shared.tool(port, f"viewport-{i}-{agent}", "get_viewport", context)
+            assert selection["anchor"] == identifier and selection["ids"] == identifier, selection
+            assert int(viewport["zoom_percent"]) == zoom, viewport
+        if args.agent_contexts:
+            assert contexts, "context workload requires nonempty files"
+            assert all(shared.sha(path) == item["persistedSha256"] for path, item in zip(paths, report["documents"]))
+            report.update(globalUiIsolationExercised=True, agentDocumentContextsVerified=len(contexts),
+                          uiOnlyChangesPreservedPersistedBytes=True)
         report["correctness"] = True
     except BaseException as error:
         report.update(correctness=False, error=f"{type(error).__name__}: {error}")
@@ -187,6 +211,7 @@ if __name__ == "__main__":
     parser.add_argument("--max-inflight", type=int, default=32)
     parser.add_argument("--rounds", type=int, default=2)
     parser.add_argument("--batch", type=int, default=4)
+    parser.add_argument("--agent-contexts", action="store_true", help="use distinct agentId values and verify UI isolation across files")
     parser.add_argument("--max-bytes", type=int, default=1_000_000_000)
     parser.add_argument("--timeout", type=float, default=90)
     args = parser.parse_args()

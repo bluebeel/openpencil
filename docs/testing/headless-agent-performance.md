@@ -5,6 +5,10 @@ service. External model/agent processes are excluded; the load generator is
 included in the aggregate memory measurement. Each client sends sequential
 MCP batches, and a bounded request window provides backpressure.
 
+The latest [optimized checkpoint](optimized-engine-checkpoint.md) includes
+agent contexts, multiple resident files and flat/nested operation matrices.
+The development measurements below are earlier historical checkpoints.
+
 ```sh
 cargo build -j1 -p op-host-web-server
 python3 scripts/bench/headless-agents.py \
@@ -60,10 +64,9 @@ evict acceleration caches without changing raster resolution or document data.
 
 The shared-service target remains below 1 GB, with low idle CPU and bounded
 render concurrency. Large `.fig` import is not there yet: OpenBridge cold
-import now peaks around 2.82 GB (previously about 4.1 GB). All six candidate
-PNGs are byte-identical after constraining instance overrides to active masters. Move, resize, duplicate, text, effects,
-components, SVG, images, copy/paste, viewport changes and multiple simultaneously
-open documents need their own operation and pixel benchmarks. The six frozen
+import now peaks around 2.44 GB (previous checkpoints: 2.82 GB and about 4.1 GB). All six candidate
+PNGs are byte-identical after compact GUID storage. The optimized checkpoint
+now includes separate operation and multiple-file benchmarks. The six frozen
 Figma comparisons remain the independent fidelity gate; speed does not imply
 pixel parity.
 
@@ -91,10 +94,11 @@ used 14.01 seconds of service CPU versus 14.54 seconds before; its wall time
 was similar, so these changes are not presented as a major insertion-throughput
 improvement.
 
-A deterministic two-client case also reproduces an existing global UI-context
-limitation: interleaved selection/clipboard and viewport calls share state.
-These tools are not independent per-agent clipboards or cameras. Targeted node
-operations and shared-document insertion correctness are measured separately.
+A deterministic two-client case reproduces the legacy global UI-context
+behavior when `agentId` is absent: interleaved selection/clipboard and viewport
+calls share state. Opt-in [agent contexts](agent-contexts.md) isolate these
+values; the latest operation matrices verify that behavior and cross-file paste.
+Undo history remains shared.
 
 Run the operation matrix separately from contention tests:
 
