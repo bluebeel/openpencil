@@ -12,6 +12,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+#[path = "kiwi/compact_guid.rs"]
+mod compact_guid;
 #[path = "kiwi/import_projection.rs"]
 mod import_projection;
 #[path = "kiwi/text_evidence.rs"]
@@ -308,7 +310,7 @@ pub fn decode_binary_schema(bytes: &[u8]) -> Result<Schema, KiwiError> {
 
 /// Dynamically-typed decoded value — the Rust equivalent of the
 /// untyped `any` tree the TS parser works with.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum FigValue {
     /// Absent / unresolved (e.g. an unknown enum ordinal).
     Null,
@@ -317,6 +319,8 @@ pub enum FigValue {
     Uint(u32),
     Int64(i64),
     Uint64(u64),
+    /// Import-only exact GUID struct; numeric access avoids a tiny heap object.
+    Guid(u32, u32),
     Float(f32),
     Str(String),
     Bytes(Vec<u8>),
@@ -348,6 +352,7 @@ impl FigValue {
     /// Mutable field lookup on an object value. Explicit `Null`
     /// remains absent, matching [`get`](Self::get).
     pub fn get_mut(&mut self, key: &str) -> Option<&mut FigValue> {
+        self.materialize_guid();
         match self {
             FigValue::Object(pairs) => pairs
                 .iter_mut()
@@ -400,12 +405,13 @@ impl FigValue {
     }
 
     pub fn is_object(&self) -> bool {
-        matches!(self, FigValue::Object(_))
+        matches!(self, FigValue::Object(_) | FigValue::Guid(_, _))
     }
 
     /// Numeric field read (`obj.key` coerced to f64).
     pub fn get_f64(&self, key: &str) -> Option<f64> {
-        self.get(key).and_then(|v| v.as_f64())
+        self.guid_number(key)
+            .or_else(|| self.get(key).and_then(|v| v.as_f64()))
     }
 
     /// String field read.
@@ -434,6 +440,7 @@ impl FigValue {
     /// Insert or overwrite a field on an object value (no-op for
     /// non-objects).
     pub fn set(&mut self, key: &str, value: FigValue) {
+        self.materialize_guid();
         if let FigValue::Object(pairs) = self {
             if let Some(slot) = pairs.iter_mut().find(|(k, _)| k.as_ref() == key) {
                 slot.1 = value;
@@ -476,6 +483,7 @@ struct Decoder<'a, 'b> {
     /// struct can occur hundreds of thousands of times, so cloning these
     /// `Arc`s avoids allocating a fresh `String` for every occurrence.
     object_keys: Vec<Vec<Arc<str>>>,
+    compact_guids: Vec<Option<bool>>,
 }
 
 impl<'a, 'b> Decoder<'a, 'b> {
@@ -540,6 +548,7 @@ impl<'a, 'b> Decoder<'a, 'b> {
             field_types,
             field_by_value,
             object_keys,
+            compact_guids: compact_guid::definitions(schema),
         })
     }
 
@@ -647,6 +656,9 @@ impl<'a, 'b> Decoder<'a, 'b> {
         depth: u32,
         scope: DecodeScope,
     ) -> Result<FigValue, KiwiError> {
+        if let Some(guid) = self.decode_compact_guid(def_index, depth, scope)? {
+            return Ok(guid);
+        }
         let field_count = self.schema.definitions[def_index].fields.len();
         let mut pairs = Vec::with_capacity(scope.retained_fields(&self.object_keys[def_index]));
         for field_index in 0..field_count {

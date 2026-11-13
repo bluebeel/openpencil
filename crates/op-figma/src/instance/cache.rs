@@ -103,6 +103,9 @@ fn fig_values_equal(left: &[FigValue], right: &[FigValue]) -> bool {
 }
 
 fn fig_value_equal(left: &FigValue, right: &FigValue) -> bool {
+    if let (Some(left), Some(right)) = (left.guid_parts(), right.guid_parts()) {
+        return left == right;
+    }
     match (left, right) {
         (FigValue::Null, FigValue::Null) => true,
         (FigValue::Bool(a), FigValue::Bool(b)) => a == b,
@@ -134,6 +137,11 @@ fn hash_fig_values<H: Hasher>(values: &[FigValue], state: &mut H) {
 }
 
 fn hash_fig_value<H: Hasher>(value: &FigValue, state: &mut H) {
+    if let Some(guid) = value.guid_parts() {
+        "GUID".hash(state);
+        guid.hash(state);
+        return;
+    }
     std::mem::discriminant(value).hash(state);
     match value {
         FigValue::Null => {}
@@ -142,6 +150,7 @@ fn hash_fig_value<H: Hasher>(value: &FigValue, state: &mut H) {
         FigValue::Uint(value) => value.hash(state),
         FigValue::Int64(value) => value.hash(state),
         FigValue::Uint64(value) => value.hash(state),
+        FigValue::Guid(session, local) => (session, local).hash(state),
         FigValue::Float(value) => value.to_bits().hash(state),
         FigValue::Str(value) => value.hash(state),
         FigValue::Bytes(value) => value.hash(state),
@@ -338,6 +347,29 @@ pub(crate) fn apply_instance_overrides_memoized(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compact_and_generic_guid_cache_keys_have_identical_equality_and_hashes() {
+        use std::collections::hash_map::DefaultHasher;
+        let forms = [
+            FigValue::Guid(1, 2),
+            guid(1, 2),
+            obj(vec![
+                ("localID", FigValue::Uint(2)),
+                ("sessionID", FigValue::Uint(1)),
+            ]),
+        ];
+        let mut hashes = Vec::new();
+        for value in &forms {
+            for other in &forms {
+                assert!(fig_value_equal(value, other));
+            }
+            let mut hash = DefaultHasher::new();
+            hash_fig_value(value, &mut hash);
+            hashes.push(hash.finish());
+        }
+        assert!(hashes.iter().all(|hash| *hash == hashes[0]));
+    }
 
     fn obj(pairs: Vec<(&str, FigValue)>) -> FigValue {
         FigValue::Object(
