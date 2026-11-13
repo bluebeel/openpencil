@@ -166,9 +166,27 @@ pub fn export_item_snapshot(state: &EditorState) -> ExportItem {
     }
 }
 
-pub(crate) fn export_item_snapshot_admitted(state: &EditorState) -> ExportItem {
+pub(crate) fn export_item_snapshot_for_call(
+    state: &EditorState,
+    args: Option<&BTreeMap<String, String>>,
+) -> ExportItem {
     ExportItem {
-        scene: RasterSnapshot::admitted(|| op_pen_loader::editor_state_to_layout_scene(state)),
+        scene: RasterSnapshot::admitted(|| {
+            let item_id = args
+                .and_then(|args| args.get("itemId"))
+                .map(|id| id.trim())
+                .or_else(|| {
+                    state
+                        .selection
+                        .anchor
+                        .is_real()
+                        .then(|| state.selection.anchor.as_str())
+                });
+            match item_id {
+                Some(id) => op_pen_loader::editor_state_to_item_layout_scene(state, id),
+                None => op_pen_loader::editor_state_to_layout_scene(state),
+            }
+        }),
         selected_node_id: state
             .selection
             .anchor
@@ -320,3 +338,7 @@ mod tests {
         ));
     }
 }
+
+#[cfg(test)]
+#[path = "export_item_scene_tests.rs"]
+mod item_scene_tests;

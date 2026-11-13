@@ -83,7 +83,7 @@ pub(super) fn rebuild_registry(
     register_tool!(
         "export_item",
         if requested_tool.is_some() {
-            export_item_tool::export_item_snapshot_admitted(doc)
+            export_item_tool::export_item_snapshot_for_call(doc, arguments)
         } else {
             export_item_snapshot(doc)
         }

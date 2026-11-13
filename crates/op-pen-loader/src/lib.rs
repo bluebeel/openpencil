@@ -30,6 +30,9 @@ mod editor_scene;
 mod effects;
 mod full_content_snapshot;
 mod initial_text_snapshot;
+mod item_scene;
+#[cfg(test)]
+mod item_scene_tests;
 mod layout_repair;
 mod layout_scene;
 mod legacy_payload_repair;
@@ -94,6 +97,7 @@ pub use editor_scene::{
     editor_state_to_active_page_layout_scene, editor_state_to_export_layout_scene,
     editor_state_to_layout_scene,
 };
+pub use item_scene::editor_state_to_item_layout_scene;
 pub use layout_scene::{
     pen_document_to_layout_scene, pen_document_to_layout_scene_for_preview,
     pen_document_to_layout_scene_for_preview_with_measure,

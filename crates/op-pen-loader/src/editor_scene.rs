@@ -195,6 +195,32 @@ fn active_scene(
         )
     };
 
+    pages[active_page_index].children = roots_to_scene_children(
+        state,
+        roots,
+        &pages[active_page_index],
+        active_page_index,
+        paged,
+        full_content,
+    );
+
+    LayoutScene {
+        pages,
+        active_page_index,
+    }
+}
+
+/// Resolve and lay out complete top-level roots against the original document.
+/// Unrelated roots may be omitted, but ancestors and flex siblings may not.
+pub(crate) fn roots_to_scene_children(
+    state: &op_editor_core::EditorState,
+    roots: &[jian_ops_schema::node::PenNode],
+    page: &ScenePage,
+    page_index: usize,
+    paged: bool,
+    full_content: bool,
+) -> Vec<jian_scene::layout_scene::SceneNode> {
+    let page_id = state.doc.pages.as_ref().map(|_| page.id.as_str());
     let mut prepared = std::borrow::Cow::Borrowed(roots);
     if op_editor_core::ref_resolve::roots_have_refs(prepared.as_ref()) {
         prepared = std::borrow::Cow::Owned(if state.document_revision() == 0 {
@@ -231,33 +257,22 @@ fn active_scene(
     }
     if full_content && !state.editor_ui.preserve_authored_geometry {
         let mut nodes = prepared.into_owned();
-        let page_id = state
-            .doc
-            .pages
-            .as_ref()
-            .map(|_| pages[active_page_index].id.as_str());
         prepare_presentation(&mut nodes, &state.doc, page_id);
         prepared = std::borrow::Cow::Owned(nodes);
     }
-    let active_meta = &pages[active_page_index];
     let payload = crate::adapter::pen_roots_to_page_payload(
-        &active_meta.id,
-        &active_meta.name,
+        &page.id,
+        &page.name,
         prepared.as_ref(),
-        active_page_index,
+        page_index,
         state.editor_ui.preserve_authored_geometry,
     );
     let var_table = editor_state_var_table(state);
-    pages[active_page_index].children = payload
+    payload
         .children
         .iter()
         .map(|node| crate::layout_scene::node_payload_to_scene(node, &var_table, 1.0))
-        .collect();
-
-    LayoutScene {
-        pages,
-        active_page_index,
-    }
+        .collect()
 }
 
 fn prepare_presentation(
