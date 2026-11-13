@@ -2,17 +2,41 @@
 
 use crate::{DocumentIdAllocator, EditorCommand, EditorState};
 
+#[path = "command_allocation_policy.rs"]
+mod allocation_policy;
+
+/// Private to one top-level InsertNode/BatchInsert. Its initial counter is
+/// above every current node/page id, and these commands introduce only ids
+/// minted through this same allocator. Mixed batches keep full collision sets.
+struct LeafHighWaterAllocator(DocumentIdAllocator);
+
+impl crate::IdAllocator for LeafHighWaterAllocator {
+    fn document_collision_ids(
+        &self,
+        _document: &jian_ops_schema::PenDocument,
+    ) -> std::collections::HashSet<crate::NodeId> {
+        std::collections::HashSet::new()
+    }
+
+    fn allocate(
+        &mut self,
+        taken: &mut std::collections::HashSet<crate::NodeId>,
+    ) -> Result<crate::NodeId, crate::IdAllocError> {
+        crate::IdAllocator::allocate(&mut self.0, taken)
+    }
+}
+
+#[cfg(test)]
+#[path = "command_allocation_tests.rs"]
+mod allocation_tests;
+
 impl EditorState {
     /// Apply one command with the historical sequential document id policy.
     ///
     /// Returns `false` on validation or id exhaustion. Collaboration hosts
     /// must call [`Self::apply_with_allocator`] with their session allocator.
     pub fn apply(&mut self, command: EditorCommand) -> bool {
-        // The existing dirty classification excludes only commands that never
-        // allocate document ids (viewport, selection, clipboard copy, undo,
-        // redo and view-only state). They must not walk every node to seed an
-        // allocator they will never call, nor fail because ids are exhausted.
-        let mut allocator = if crate::command_apply::command_marks_document_dirty(&command) {
+        let mut allocator = if allocation_policy::requires_id_seed(&command) {
             let Ok(allocator) = DocumentIdAllocator::sequential_for_document(&self.doc) else {
                 return false;
             };
@@ -20,8 +44,16 @@ impl EditorState {
         } else {
             DocumentIdAllocator::sequential(1)
         };
-        self.apply_with_allocator(command, &mut allocator)
-            .unwrap_or(false)
+        if matches!(
+            command,
+            EditorCommand::InsertNode { .. } | EditorCommand::BatchInsert { .. }
+        ) {
+            self.apply_with_allocator(command, &mut LeafHighWaterAllocator(allocator))
+                .unwrap_or(false)
+        } else {
+            self.apply_with_allocator(command, &mut allocator)
+                .unwrap_or(false)
+        }
     }
 }
 

@@ -33,6 +33,14 @@ impl std::error::Error for IdAllocError {}
 
 /// A document id source that reserves fresh ids in the caller's live set.
 pub trait IdAllocator {
+    /// Supply the collision domain used by leaf insertion. The default keeps
+    /// every live node/page id. An allocator may omit existing ids only when
+    /// it guarantees that every emitted candidate is already above that exact
+    /// document's complete high-water and no intervening edit can introduce ids.
+    fn document_collision_ids(&self, document: &PenDocument) -> HashSet<NodeId> {
+        collect_document_ids(document)
+    }
+
     /// Allocate and reserve one id.
     ///
     /// Existing candidates are skipped. No fallback id is produced when the

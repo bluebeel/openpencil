@@ -63,7 +63,7 @@ impl EditorState {
                 _ => return Ok(false),
             }
         }
-        let mut taken = self.collect_node_ids();
+        let mut taken = allocator.document_collision_ids(&self.doc);
         let new_id = allocator.allocate(&mut taken)?;
         let Some(mut node) = build_leaf_node(kind, new_id.as_str(), name, x, y, width, height)
         else {
@@ -383,7 +383,7 @@ impl EditorState {
             }
         }
         // Allocate every fresh id up front; bail on id-space exhaustion.
-        let mut live: HashSet<NodeId> = self.collect_node_ids();
+        let mut live: HashSet<NodeId> = allocator.document_collision_ids(&self.doc);
         let mut ids: Vec<NodeId> = Vec::with_capacity(items.len());
         for _ in 0..items.len() {
             ids.push(allocator.allocate(&mut live)?);
