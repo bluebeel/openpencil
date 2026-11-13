@@ -159,9 +159,15 @@ pub(crate) fn normalize_icon_paths_after_apply(
     report
 }
 
-/// Run the two cheap, idempotent repair passes shared by every bare-MCP
-/// document write after the command itself has applied and before it saves.
+/// Maintain generated-document output after a bare-MCP write, before save.
+/// Preserve-mode imports keep their authored content outside the explicit edit.
 pub(crate) fn run_write_repairs_after_apply(state: &mut EditorState) -> bool {
+    // Preserve-mode imports carry authored screen chrome, paths and container
+    // choices. Heuristics for generated documents must not rewrite unrelated
+    // imported content after an explicit edit, nor scan that whole document.
+    if state.editor_ui.preserve_authored_geometry {
+        return false;
+    }
     normalize_mobile_screens_after_apply(state);
     normalize_icon_paths_after_apply(state);
     let mobile_nav_reflowed = op_orchestrator::repair_mobile_trailing_nav_reflow(state);

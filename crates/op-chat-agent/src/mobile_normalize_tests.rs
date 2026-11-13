@@ -42,6 +42,33 @@ fn is_canonical(node: &PenNode) -> bool {
 }
 
 #[test]
+fn status_bar_pruning_preserves_unrelated_absent_reference_and_leaf_children() {
+    let content = serde_json::json!([
+        {"type":"ref","id":"instance","ref":"button"},
+        {"type":"rectangle","id":"rect"},
+        {"type":"group","id":"group"},
+        {"type":"tabs","id":"tabs"}
+    ]);
+    let expected: Vec<PenNode> = serde_json::from_value(content.clone()).unwrap();
+    let mut state = EditorState::new();
+    state
+        .active_children_mut()
+        .push(mobile_root(serde_json::json!(812), Some(content)));
+    let report = normalize_mobile_screens(&mut state);
+    assert_eq!(report.status_bars_inserted, 1);
+    assert_eq!(
+        &state.active_children()[0].children().unwrap()[1..],
+        expected
+    );
+    let canonical = state.doc.clone();
+    assert_eq!(
+        normalize_mobile_screens(&mut state),
+        MobileNormalizeReport::default()
+    );
+    assert_eq!(state.doc, canonical);
+}
+
+#[test]
 fn replaces_hand_drawn_status_bar_without_changing_root_child_count() {
     let mut state = EditorState::new();
     state.active_children_mut().push(mobile_root(

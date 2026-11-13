@@ -181,6 +181,36 @@ fn ui_commands_skip_document_repairs_but_writes_keep_them() {
 }
 
 #[test]
+fn preserve_mode_edits_do_not_rewrite_authored_chrome_paths_or_image_containers() {
+    let document = jian_ops_schema::load_str(
+        r##"{
+      "version":"1.0.0","children":[{"type":"frame","id":"screen",
+      "name":"Authored screen","width":375,"height":812,"children":[
+        {"type":"frame","id":"bar","name":"Status Bar","width":375,"height":62},
+        {"type":"path","id":"chevron","width":14,"height":14,"d":"M6 9l6 6 6-6"},
+        {"type":"rectangle","id":"slot","width":24,"height":16,"fill":[{"type":"image","url":""}]},
+        {"type":"ref","id":"instance","ref":"button"}
+      ]}]}"##,
+    )
+    .unwrap()
+    .value;
+    let mut state = EditorState::from_document(document);
+    state.editor_ui.preserve_authored_geometry = true;
+    let revision = state.document_revision();
+    assert!(state.apply(EditorCommand::SetNodeName {
+        node_id: op_editor_core::NodeId::new("screen"),
+        name: "Explicit edit".into(),
+    }));
+    let edited = state.doc.clone();
+    assert!(!repair_after_document_change(&mut state, revision));
+    assert_eq!(
+        state.doc, edited,
+        "only the explicit edit may change an authored import"
+    );
+    assert!(state.editor_ui.preserve_authored_geometry);
+}
+
+#[test]
 fn find_empty_space_returns_padded_position_from_active_page_bounds() {
     let mut state = op_editor_core::EditorState::new();
     assert!(state.apply(EditorCommand::InsertNode {
