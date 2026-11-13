@@ -146,10 +146,19 @@ impl Resolver {
     }
 
     fn resolve_fields(&self, value: &mut FigValue, modes: &Modes) {
-        if let Some(color) = value
+        if let Some(mut color) = value
             .get("colorVar")
             .and_then(|binding| self.color(binding, modes, &mut HashSet::new()))
         {
+            if value.get_str("type") == Some("SOLID") {
+                // A solid paint stores the bound RGBA's alpha in `opacity`,
+                // with an opaque RGB `color`. Keeping that cached opacity and
+                // copying RGBA into `color` would apply the alpha twice. Write
+                // both fields so a different variable mode can change alpha.
+                let alpha = color.get("a").cloned().unwrap_or(FigValue::Float(1.0));
+                color.set("a", FigValue::Float(1.0));
+                value.set("opacity", alpha);
+            }
             value.set("color", color);
         }
         match value {

@@ -122,7 +122,7 @@ fn palette() -> Vec<FigValue> {
 }
 
 #[test]
-fn bound_alias_chain_replaces_stale_fallback_and_preserves_alpha_and_paint_opacity() {
+fn bound_alias_chain_replaces_stale_color_and_splits_solid_alpha_into_opacity() {
     let mut nodes = palette();
     nodes.push(layer(100, 10, None, None));
     resolve_color_variables(&mut nodes);
@@ -134,11 +134,114 @@ fn bound_alias_chain_replaces_stale_fallback_and_preserves_alpha_and_paint_opaci
             channel(node, "b"),
             channel(node, "a")
         ),
-        (1.0, 0.0, 0.0, 0.25)
+        (1.0, 0.0, 0.0, 1.0)
     );
     let paint = &node.get_array("fillPaints").unwrap()[0];
     assert!(paint.get("colorVar").is_some());
-    assert!((paint.get_f64("opacity").unwrap() - 0.8).abs() < 0.0001);
+    assert_eq!(paint.get_f64("opacity"), Some(0.25));
+}
+
+#[test]
+fn bound_solid_alpha_reaches_the_fill_mapper_once_including_zero_and_one() {
+    use crate::mappers::map_figma_fills;
+    use jian_ops_schema::style::PenFill;
+
+    for alpha in [0.08_f32, 0.6, 0.87, 0.38, 0.0, 1.0] {
+        let mut node = layer(100, 10, None, None);
+        node.set("opacity", FigValue::Float(0.5));
+        let mut nodes = vec![
+            variable(10, 20, vec![(30, literal(color(0.0, 0.0, 0.0, alpha)))]),
+            node,
+        ];
+        resolve_color_variables(&mut nodes);
+        let node = &nodes[1];
+        let fills = map_figma_fills(node.get_array("fillPaints")).unwrap();
+        let PenFill::Solid(fill) = &fills[0] else {
+            panic!("expected the original solid paint");
+        };
+        assert_eq!(fill.color, "#000000");
+        assert_eq!(fill.opacity, Some(alpha));
+        assert_eq!(node.get_f64("opacity"), Some(0.5));
+        if alpha == 0.08 {
+            // The imported black 8% panel on white must be 235, rather than
+            // the 253 produced by multiplying the same 8% alpha twice.
+            assert_eq!((255.0 * (1.0 - fill.opacity.unwrap())).round(), 235.0);
+        }
+    }
+}
+
+#[test]
+fn variable_mode_alpha_replaces_cached_solid_opacity() {
+    let mut nodes = palette();
+    nodes.extend([
+        layer(100, 10, None, Some(30)),
+        layer(101, 10, None, Some(31)),
+    ]);
+    resolve_color_variables(&mut nodes);
+    assert_eq!(
+        nodes[4].get_array("fillPaints").unwrap()[0].get_f64("opacity"),
+        Some(0.25)
+    );
+    assert_eq!(
+        nodes[5].get_array("fillPaints").unwrap()[0].get_f64("opacity"),
+        Some(1.0)
+    );
+}
+
+#[test]
+fn gradient_stops_and_effects_keep_inline_variable_alpha() {
+    let mut nodes = palette();
+    let mut node = layer(100, 10, None, None);
+    node.set(
+        "fillPaints",
+        FigValue::Array(vec![obj(vec![
+            ("type", FigValue::Str("GRADIENT_LINEAR".into())),
+            ("opacity", FigValue::Float(0.4)),
+            (
+                "stops",
+                FigValue::Array(vec![obj(vec![
+                    ("position", FigValue::Float(0.0)),
+                    ("color", color(0.0, 1.0, 0.0, 1.0)),
+                    ("colorVar", alias(10)),
+                ])]),
+            ),
+        ])]),
+    );
+    node.set(
+        "effects",
+        FigValue::Array(vec![obj(vec![
+            ("type", FigValue::Str("DROP_SHADOW".into())),
+            ("color", color(0.0, 1.0, 0.0, 1.0)),
+            ("colorVar", alias(10)),
+        ])]),
+    );
+    nodes.push(node);
+    resolve_color_variables(&mut nodes);
+    let node = &nodes[4];
+    let gradient = &node.get_array("fillPaints").unwrap()[0];
+    let stop = &gradient.get_array("stops").unwrap()[0];
+    let effect = &node.get_array("effects").unwrap()[0];
+    for value in [stop, effect] {
+        assert_eq!(value.get("color").unwrap().get_f64("a"), Some(0.25));
+        assert!(value.get("opacity").is_none());
+    }
+    assert!((gradient.get_f64("opacity").unwrap() - 0.4).abs() < 0.00001);
+}
+
+#[test]
+fn unbound_and_unresolved_solid_paints_retain_the_original_encoding() {
+    let mut nodes = palette();
+    let unbound = obj(vec![
+        ("type", FigValue::Str("SOLID".into())),
+        ("color", color(0.1, 0.2, 0.3, 0.4)),
+        ("opacity", FigValue::Float(0.6)),
+    ]);
+    let mut node = layer(100, 999, None, None);
+    node.set("fillPaints", FigValue::Array(vec![unbound, paint(999)]));
+    let original = node.clone();
+    nodes.push(node);
+    resolve_color_variables(&mut nodes);
+    assert_eq!(nodes[4], original);
 }
 
 #[test]
