@@ -1,0 +1,7 @@
+{
+  "name": "openpencil-render-parity",
+  "private": true,
+  "type": "module",
+  "scripts": { "compare": "node compare-png.mjs", "test": "node --test compare-png.test.mjs" },
+  "devDependencies": { "playwright": "1.65.0" }
+}

@@ -27,6 +27,9 @@ mismatch instead of resizing either render. Report pixel error and a perceptual
 metric alongside an overlay or heatmap. Keep reference and candidate hashes in
 the result so later runs cannot silently change the baseline.
 
+The [PNG comparator](../../scripts/fig-render-parity/README.md) provides JSON
+metrics, overlays and heatmaps to inspect each case.
+
 Image similarity measures rendering differences for the selected frame. Feature
 coverage needs separate cases for text styles, instance overrides, variables,
 images, masks, effects and layout. A matching frame does not establish full
