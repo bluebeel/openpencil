@@ -141,17 +141,7 @@ impl EditorState {
     /// Every node + page id live in the document. Backs the
     /// allocator's collision check.
     pub fn collect_node_ids(&self) -> HashSet<NodeId> {
-        let mut out = HashSet::new();
-        if let Some(pages) = self.doc.pages.as_ref() {
-            for page in pages {
-                if let Some(id) = NodeId::new_opt(page.id.as_str()) {
-                    out.insert(id);
-                }
-                walkers::collect_ids(&page.children, &mut out);
-            }
-        }
-        walkers::collect_ids(&self.doc.children, &mut out);
-        out
+        crate::id_allocator::collect_document_ids(&self.doc)
     }
 
     /// Right-rail PropertyPanel visibility gate. Design and Interact require
