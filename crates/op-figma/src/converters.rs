@@ -171,7 +171,7 @@ fn convert_frame(
         .map(|s| s != "NONE")
         .unwrap_or(false);
     let container = build_container(figma, parent_stack_mode, has_auto_layout, ctx);
-    let ordered = order_children(children, has_auto_layout, ctx.layout_mode);
+    let ordered = order_children(children, figma, ctx.layout_mode);
     let base = common_props(figma, id);
     frame_node(
         base,
@@ -207,7 +207,7 @@ fn convert_component(
         .map(|s| s != "NONE")
         .unwrap_or(false);
     let container = build_container(figma, parent_stack_mode, has_auto_layout, ctx);
-    let ordered = order_children(children, has_auto_layout, ctx.layout_mode);
+    let ordered = order_children(children, figma, ctx.layout_mode);
     let base = common_props(figma, id);
     frame_node(
         base,

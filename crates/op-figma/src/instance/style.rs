@@ -6,6 +6,7 @@ use crate::tree::guid_to_string;
 /// Layout fields consumed by the canonical container and sizing mappers.
 const LAYOUT_KEYS: &[&str] = &[
     "stackMode",
+    "stackReverseZIndex",
     "stackSpacing",
     "stackPadding",
     "stackHorizontalPadding",

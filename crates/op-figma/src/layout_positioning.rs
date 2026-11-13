@@ -69,14 +69,19 @@ pub(crate) fn apply_layout_positioning(
 /// Auto-layout flow order is ascending while the tree builder stores
 /// descending paint order (topmost first). OpenPencil mode clears authored
 /// coordinates and feeds children to flex layout, so it must emit flow order.
-/// Preserve mode keeps authored coordinates and bypasses flex layout; retaining
-/// topmost-first order is therefore required for canonical canvas z-order.
+/// Preserve mode keeps authored coordinates and bypasses flex layout, so its
+/// child list can honor Figma's reversed paint order without changing flow.
 pub(crate) fn order_children(
     children: Vec<PenNode>,
-    has_auto_layout: bool,
+    figma: &FigValue,
     layout_mode: FigLayoutMode,
 ) -> Vec<PenNode> {
-    if layout_mode == FigLayoutMode::OpenPencil && has_auto_layout && children.len() > 1 {
+    let reverse = is_auto_layout(figma.get_str("stackMode"))
+        && match layout_mode {
+            FigLayoutMode::OpenPencil => true,
+            FigLayoutMode::Preserve => figma.get_bool("stackReverseZIndex") == Some(true),
+        };
+    if reverse && children.len() > 1 {
         children.into_iter().rev().collect()
     } else {
         children

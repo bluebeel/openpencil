@@ -11,6 +11,9 @@ use jian_ops_schema::node::{MaskType, PenNode};
 use std::collections::HashMap;
 use std::sync::Mutex;
 
+#[path = "tests_stack_z_order.rs"]
+mod stack_z_order;
+
 /// Serialise tests that touch the process-global icon-lookup so they
 /// don't race with each other under cargo's parallel runner.
 pub(super) static LOOKUP_GUARD: Mutex<()> = Mutex::new(());
