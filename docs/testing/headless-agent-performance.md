@@ -5,8 +5,10 @@ service. External model/agent processes are excluded; the load generator is
 included in the aggregate memory measurement. Each client sends sequential
 MCP batches, and a bounded request window provides backpressure.
 
-The latest [optimized checkpoint](optimized-engine-checkpoint.md) includes
-agent contexts, multiple resident files and flat/nested operation matrices.
+The latest [batched checkpoint](engine-checkpoint-3.md) includes faster large
+queries, bounded worker reuse, multiple resident files and improved fidelity.
+The [earlier optimized checkpoint](optimized-engine-checkpoint.md) also includes
+flat/nested operation matrices.
 The development measurements below are earlier historical checkpoints.
 
 ```sh

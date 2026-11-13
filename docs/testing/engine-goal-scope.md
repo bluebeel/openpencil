@@ -64,3 +64,11 @@ Current reports and entry points: [shared headless workloads](headless-agent-per
 Initial priorities: agent isolation and multi-file authority; optimized
 operation measurements; incremental layout/redraw and node indexing; durable
 batch writes; remaining cold-import memory and exact Figma pixel differences.
+
+## Iteration cadence
+
+Batch several independent fixes across parallel agents before rebuilding the
+shared optimized binaries. Use focused checks and small probes during the
+batch. Run the full reference gate once when the combined batch is ready;
+avoid repeating the complete test suites after each small change. Recheck
+earlier results when a new failure, code change or unresolved concern warrants it.
