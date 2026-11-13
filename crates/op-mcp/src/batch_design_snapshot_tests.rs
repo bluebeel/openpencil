@@ -111,3 +111,58 @@ fn batch_snapshot_ambiguous_and_script_inputs_keep_validation_contract() {
         );
     }
 }
+
+#[cfg(feature = "script")]
+#[test]
+fn batch_snapshot_script_inserts_expand_once_without_editor_snapshot() {
+    let state = fixture();
+    let args = args(
+        "script",
+        "const x = I(null, {type:'text',content:String(Math.random()),width:20,height:20});",
+    );
+    let tool = batch_design_snapshot_for_call(&state, &args);
+    assert!(tool.state.is_none());
+    assert_eq!(tool.pages[0].count, 2);
+    let prepared = tool.prepared.as_ref().unwrap().expanded.as_ref().unwrap();
+    assert!(!prepared.contains_key("script"));
+    let first = tool.call(&args);
+    assert!(matches!(first, ToolOutcome::OkJsonWithCommand(_, _)));
+    assert_eq!(
+        first,
+        tool.call(&args),
+        "random script result is cached, never reevaluated"
+    );
+    assert_eq!(first, tool.call_uncached(prepared));
+    let changed = self::args("script", "throw new Error('must not execute');");
+    let ToolOutcome::Err(code, message) = tool.call(&changed) else {
+        panic!("request mismatch")
+    };
+    assert_eq!(code, ToolErrorCode::InvalidArgument);
+    assert!(message.contains("different arguments"));
+}
+
+#[cfg(feature = "script")]
+#[test]
+fn batch_snapshot_mixed_script_keeps_atomic_rollback_and_cached_errors() {
+    let state = fixture();
+    let args = args(
+        "script",
+        "U('label',{content:'Updated'}); U('missing',{content:'Reject'});",
+    );
+    let tool = batch_design_snapshot_for_call(&state, &args);
+    assert!(tool.state.is_some());
+    let actual = tool.call(&args);
+    assert_eq!(actual, batch_design_snapshot(&state).call(&args));
+    let ToolOutcome::OkJson(json) = actual else {
+        panic!("rollback has no command")
+    };
+    assert_eq!(
+        serde_json::from_str::<Value>(&json).unwrap()["applied"],
+        false
+    );
+    let args = self::args("script", "throw new Error('same cached error');");
+    let tool = batch_design_snapshot_for_call(&state, &args);
+    assert!(tool.state.is_none());
+    assert!(tool.existing_ids.is_empty());
+    assert_eq!(tool.call(&args), batch_design_snapshot(&state).call(&args));
+}

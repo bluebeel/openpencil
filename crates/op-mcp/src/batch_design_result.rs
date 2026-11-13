@@ -40,6 +40,12 @@ pub struct BatchDesign {
     active_page_id: String,
     existing_ids: HashSet<NodeId>,
     id_seed: Option<u64>,
+    prepared: Option<PreparedArguments>,
+}
+
+struct PreparedArguments {
+    original: BTreeMap<String, String>,
+    expanded: Result<BTreeMap<String, String>, ToolOutcome>,
 }
 
 struct PageNodeCount {
@@ -52,6 +58,24 @@ impl McpTool for BatchDesign {
         "batch_design"
     }
     fn call(&self, args: &BTreeMap<String, String>) -> ToolOutcome {
+        if let Some(prepared) = &self.prepared {
+            if args != &prepared.original {
+                return ToolOutcome::Err(
+                    ToolErrorCode::InvalidArgument,
+                    "batch_design request-scoped snapshot cannot run different arguments".into(),
+                );
+            }
+            return match &prepared.expanded {
+                Ok(args) => self.call_uncached(args),
+                Err(outcome) => outcome.clone(),
+            };
+        }
+        self.call_uncached(args)
+    }
+}
+
+impl BatchDesign {
+    fn call_uncached(&self, args: &BTreeMap<String, String>) -> ToolOutcome {
         // `script` must be gated BEFORE the `operations` shortcut below —
         // otherwise a caller that (invalidly) sends both `script` and
         // `operations` would silently run the `operations` path instead of
@@ -61,7 +85,7 @@ impl McpTool for BatchDesign {
         // `operations` program.
         if let Some(result) = expand_script_arg(args) {
             return match result {
-                Ok(forwarded) => self.call(&forwarded),
+                Ok(forwarded) => self.call_uncached(&forwarded),
                 Err(outcome) => outcome,
             };
         }
@@ -116,10 +140,18 @@ pub fn batch_design_snapshot_for_call(
     state: &EditorState,
     args: &BTreeMap<String, String>,
 ) -> BatchDesign {
-    // Script expansion starts a sandbox. Keep its existing one-evaluation
-    // contract; argument-aware preparation must never execute it twice.
-    if args.contains_key("script") {
-        return batch_design_snapshot(state);
+    // Expand in one short-lived sandbox before choosing the snapshot. Only
+    // ordinary owned arguments/errors survive; no VM survives into apply.
+    if let Some(expanded) = expand_script_arg(args) {
+        let mut tool = match &expanded {
+            Ok(args) => batch_design_snapshot_for_call(state, args),
+            Err(_) => snapshot(state, false, false),
+        };
+        tool.prepared = Some(PreparedArguments {
+            original: args.clone(),
+            expanded,
+        });
+        return tool;
     }
     if !matches!(select_batch_input(args), Ok(BatchInputKind::Operations)) {
         return snapshot(state, false, false);
@@ -173,6 +205,7 @@ fn snapshot(state: &EditorState, program: bool, insert: bool) -> BatchDesign {
             HashSet::new()
         },
         id_seed: insert.then(|| state.next_node_id_seed()).flatten(),
+        prepared: None,
     }
 }
 
