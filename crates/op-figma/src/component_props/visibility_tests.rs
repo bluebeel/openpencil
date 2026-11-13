@@ -64,6 +64,37 @@ fn overrides(instance: &FigValue) -> &[FigValue] {
 }
 
 #[test]
+fn no_effective_assignments_preserve_missing_and_opaque_legacy_override_data() {
+    let without_overrides = obj(vec![
+        ("guid", guid(100)),
+        ("type", FigValue::Str("INSTANCE".into())),
+        ("symbolData", obj(vec![("symbolID", guid(1))])),
+    ]);
+    let legacy = obj(vec![
+        ("guidPath", path_value(vec![guid(2)])),
+        ("visible", FigValue::Bool(false)),
+        (
+            "opaqueLegacyData",
+            FigValue::Array(vec![obj(vec![(
+                "unknownField",
+                FigValue::Str("keep".into()),
+            )])]),
+        ),
+    ]);
+    let mut nodes = vec![
+        visibility_layer(2, true),
+        without_overrides,
+        instance(vec![assignment(true, false)], vec![legacy]),
+    ];
+    let original = nodes.clone();
+    resolve_component_property_swaps(&mut nodes);
+    assert_eq!(
+        nodes, original,
+        "unrelated routes and authoritative legacy overrides must not rewrite nodes"
+    );
+}
+
+#[test]
 fn explicit_false_hides_all_referenced_layers_after_instance_expansion() {
     for variable_encoding in [false, true] {
         let left = visibility_layer(2, true);

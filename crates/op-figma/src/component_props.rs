@@ -114,7 +114,10 @@ fn path_value(guids: Vec<FigValue>) -> FigValue {
 }
 
 fn same_path(entry: &FigValue, path: &[FigValue]) -> bool {
-    let Some(existing) = guid_path(entry) else {
+    let Some(existing) = entry
+        .get("guidPath")
+        .and_then(|value| value.get_array("guids"))
+    else {
         return false;
     };
     existing.len() == path.len()
@@ -188,6 +191,7 @@ fn upsert_property_override(
 fn normalize_node(node: &mut FigValue, routes: &HashMap<String, Vec<PropertyRoute>>) {
     let direct = resolved_assignments(node, routes);
     let node_guid = node.get("guid").and_then(guid_to_string);
+    let mut direct_updates: Vec<(&'static str, FigValue)> = Vec::new();
     let mut additions = Vec::new();
     for (owner, field, target) in direct {
         if node_guid.as_deref()
@@ -196,34 +200,67 @@ fn normalize_node(node: &mut FigValue, routes: &HashMap<String, Vec<PropertyRout
                 .and_then(|_| guid_to_string(&owner))
                 .as_deref()
         {
-            if field == "visible" || node.get(field).is_none() {
-                node.set(field, target);
+            if field == "visible" {
+                if let Some((_, value)) = direct_updates.iter_mut().find(|(key, _)| *key == field) {
+                    *value = target;
+                } else {
+                    direct_updates.push((field, target));
+                }
+            } else if node.get(field).is_none()
+                && !direct_updates.iter().any(|(key, _)| *key == field)
+            {
+                direct_updates.push((field, target));
             }
         } else {
             additions.push((vec![owner], field, target));
         }
     }
 
-    let Some(symbol_data) = node.get_mut("symbolData") else {
-        return;
-    };
-    let mut overrides = symbol_data
-        .get_array("symbolOverrides")
-        .map(<[FigValue]>::to_vec)
-        .unwrap_or_default();
-    let authored = overrides.clone();
-    for entry in &authored {
+    // Inspect authored overrides by reference. Large documents can carry
+    // deeply nested override graphs even when no property needs normalizing.
+    let authored = node
+        .get("symbolData")
+        .and_then(|data| data.get_array("symbolOverrides"))
+        .unwrap_or(&[]);
+    for entry in authored {
+        let assignments = resolved_assignments(entry, routes);
+        if assignments.is_empty() {
+            continue;
+        }
         let prefix = guid_path(entry).unwrap_or_default();
-        for (owner, field, target) in resolved_assignments(entry, routes) {
+        for (owner, field, target) in assignments {
             let mut path = prefix.clone();
             path.push(owner);
             additions.push((path, field, target));
         }
     }
-    for (path, field, target) in additions {
-        upsert_property_override(&mut overrides, path, field, target);
+    additions.retain(|(path, field, _)| {
+        !authored
+            .iter()
+            .any(|entry| same_path(entry, path) && entry.get(field).is_some())
+    });
+    direct_updates.retain(|(field, target)| node.get(field) != Some(target));
+    if direct_updates.is_empty() && additions.is_empty() {
+        return;
     }
-    symbol_data.set("symbolOverrides", FigValue::Array(overrides));
+    for (field, target) in direct_updates {
+        node.set(field, target);
+    }
+    if additions.is_empty() {
+        return;
+    }
+    let Some(symbol_data) = node.get_mut("symbolData") else {
+        return;
+    };
+    if symbol_data.get_array("symbolOverrides").is_none() {
+        symbol_data.set("symbolOverrides", FigValue::Array(Vec::new()));
+    }
+    let Some(FigValue::Array(overrides)) = symbol_data.get_mut("symbolOverrides") else {
+        return;
+    };
+    for (path, field, target) in additions {
+        upsert_property_override(overrides, path, field, target);
+    }
 }
 
 pub(crate) fn resolve_component_property_swaps(nodes: &mut [FigValue]) {
