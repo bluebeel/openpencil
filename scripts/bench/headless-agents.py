@@ -38,10 +38,20 @@ class DarwinUsage(ctypes.Structure):
 
 
 USAGE_API = None
+CPU_TICK_NANOSECONDS = 1.0
 if sys.platform == "darwin":
     USAGE_API = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True).proc_pid_rusage
     USAGE_API.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_void_p]
     USAGE_API.restype = ctypes.c_int
+    # rusage_info user/system times use Mach absolute ticks, whose scale is
+    # 125/3 ns on current Apple Silicon and 1 ns on Intel Macs.
+    timebase = (ctypes.c_uint32 * 2)()
+    timebase_api = ctypes.CDLL("/usr/lib/libSystem.B.dylib").mach_timebase_info
+    timebase_api.argtypes = [ctypes.c_void_p]
+    timebase_api.restype = ctypes.c_int
+    if timebase_api(ctypes.byref(timebase)) != 0 or not timebase[1]:
+        raise RuntimeError("cannot establish Mach CPU-time units")
+    CPU_TICK_NANOSECONDS = timebase[0] / timebase[1]
 
 
 def usage(pid):
@@ -49,7 +59,7 @@ def usage(pid):
         info = DarwinUsage()
         if USAGE_API(pid, 2, ctypes.byref(info)) == 0:
             return {"rss": info.resident_size, "footprint": info.phys_footprint,
-                    "cpuSeconds": (info.user_time + info.system_time) / 1e9}
+                    "cpuSeconds": (info.user_time + info.system_time) * CPU_TICK_NANOSECONDS / 1e9}
         return None
     try:
         fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
@@ -65,6 +75,7 @@ async def monitor(process, report, limit):
     report["memorySampleIntervalSeconds"] = .05
     report["memoryScope"] = "shared service/renderer process + load-generator process; no external LLMs"
     report["physicalFootprintAvailable"] = bool(USAGE_API)
+    report["cpuTickNanoseconds"] = CPU_TICK_NANOSECONDS if USAGE_API else None
     report["peakAggregateRssBytes"] = report["peakServiceRssBytes"] = 0
     report["peakAggregatePhysicalFootprintBytes"] = report["peakServicePhysicalFootprintBytes"] = 0 if USAGE_API else None
     report["phaseMemoryPeaks"] = {}

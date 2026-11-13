@@ -60,8 +60,51 @@ evict acceleration caches without changing raster resolution or document data.
 
 The shared-service target remains below 1 GB, with low idle CPU and bounded
 render concurrency. Large `.fig` import is not there yet: OpenBridge cold
-import still peaks around 4.1 GB. Move, resize, duplicate, text, effects,
+import now peaks around 2.82 GB (previously about 4.1 GB). All six candidate
+PNGs are byte-identical after constraining instance overrides to active masters. Move, resize, duplicate, text, effects,
 components, SVG, images, copy/paste, viewport changes and multiple simultaneously
 open documents need their own operation and pixel benchmarks. The six frozen
 Figma comparisons remain the independent fidelity gate; speed does not imply
 pixel parity.
+
+## Borrowed identity queries
+
+The allocator high-water query now visits borrowed ID strings instead of
+allocating a second document-wide collision set. The real collision set remains
+complete and reserves the known root count. The same 10,000-node operation
+matrix passed all semantic, pixel and persistence checks with the following
+serial median latencies (three samples per repeated operation):
+
+| Operation | Previous | Borrowed ID query |
+| --- | ---: | ---: |
+| Move | 22.8 ms | 10.1 ms |
+| Resize | 21.6 ms | 7.4 ms |
+| Text | 21.8 ms | 5.6 ms |
+| Shadow | 18.6 ms | 6.9 ms |
+| Duplicate | 27.9 ms | 9.7 ms |
+| Component instance | 34.7 ms | 16.1 ms |
+| Zoom | 17.2 ms | 4.9 ms |
+
+The complete case used 3.98 seconds of service CPU versus 5.40 seconds before,
+with 432 MB aggregate peak physical footprint. The 1,000-client insertion case
+used 14.01 seconds of service CPU versus 14.54 seconds before; its wall time
+was similar, so these changes are not presented as a major insertion-throughput
+improvement.
+
+A deterministic two-client case also reproduces an existing global UI-context
+limitation: interleaved selection/clipboard and viewport calls share state.
+These tools are not independent per-agent clipboards or cameras. Targeted node
+operations and shared-document insertion correctness are measured separately.
+
+Run the operation matrix separately from contention tests:
+
+```sh
+python3 scripts/bench/operation-matrix.py \
+  --binary target/debug/op-host-web-server --nodes 10000 --iterations 3 \
+  --output /tmp/openpencil-operation-matrix
+```
+
+This serial matrix covers production move, resize, duplicate, text, shadow,
+component creation/instancing, SVG import, PNG image export, selection,
+copy/paste, viewport changes and undo/redo. Its `svg-export` metric means an
+imported SVG rendered to PNG; vector SVG serialization is separate coverage.
