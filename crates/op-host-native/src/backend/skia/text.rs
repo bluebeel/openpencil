@@ -10,6 +10,12 @@ use op_editor_ui::{Point2D, TextBaselineRequest, TextLayout};
 use super::shaped_text::ShapedRun;
 use super::NativeBackend;
 
+// Font parsing uses the render thread on Windows; these raster proofs run on
+// the same macOS/Linux targets as the variable-font outline regressions.
+#[cfg(all(test, not(target_os = "windows")))]
+#[path = "text_raster_tests.rs"]
+mod text_raster_tests;
+
 pub(super) fn draw_text_runs(layout: &TextLayout) -> &[jian_core::render::TextRun] {
     layout.runs()
 }
@@ -248,6 +254,14 @@ impl NativeBackend {
                     if segment.synthetic_italic {
                         font.set_skew_x(jian_skia::SYNTHETIC_ITALIC_SKEW);
                     }
+                    // Keep advances identical to FontResolver's measurement;
+                    // raster flags must not move following fallback segments.
+                    let (mut advance, _) = font.measure_str(&segment.text, None);
+                    // Document text follows scalable outlines at authored
+                    // fractional positions. Platform grid fitting changes
+                    // stem weight and rounds adjacent labels differently.
+                    font.set_hinting(skia_safe::FontHinting::None);
+                    font.set_subpixel(true);
                     if want_bold && segment.synthetic_bold {
                         paint.set_style(skia_safe::PaintStyle::StrokeAndFill);
                         paint.set_stroke_width(run.font_size * 0.06);
@@ -256,7 +270,6 @@ impl NativeBackend {
                         paint.set_stroke_width(0.0);
                     }
                     canvas.draw_str(&segment.text, (x, y), &font, &paint);
-                    let (mut advance, _) = font.measure_str(&segment.text, None);
                     if segment.synthetic_bold {
                         advance *= jian_skia::SYNTHETIC_BOLD_WIDTH_FACTOR;
                     }
