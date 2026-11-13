@@ -187,3 +187,53 @@ fn missing_text_characters_do_not_erase_an_authored_label() {
     resolve_component_property_swaps(&mut nodes);
     assert_eq!(nodes, original);
 }
+
+#[test]
+fn text_assignments_target_only_the_known_master_variant_and_nested_instance() {
+    let master = |id| {
+        object(vec![
+            ("guid", guid(id)),
+            ("type", FigValue::Str("SYMBOL".into())),
+        ])
+    };
+    let mut left = text_layer(2);
+    left.set("parentIndex", object(vec![("guid", guid(1))]));
+    let mut right = text_layer(3);
+    right.set("parentIndex", object(vec![("guid", guid(4))]));
+    let nested = object(vec![
+        ("guid", guid(7)),
+        ("type", FigValue::Str("INSTANCE".into())),
+        ("symbolData", object(vec![("symbolID", guid(4))])),
+    ]);
+    let nested_assignment = object(vec![
+        ("guidPath", path_value(vec![guid(7)])),
+        (
+            "componentPropAssignments",
+            FigValue::Array(vec![assignment(text("Nested"), false)]),
+        ),
+    ]);
+    let mut nodes = vec![
+        master(1),
+        master(4),
+        left,
+        right,
+        nested,
+        instance(
+            vec![assignment(text("Local"), false)],
+            vec![nested_assignment],
+        ),
+    ];
+    resolve_component_property_swaps(&mut nodes);
+    let entries = overrides(&nodes[5]);
+    assert!(entries.iter().any(|entry| same_path(entry, &[guid(2)])));
+    assert!(
+        !entries.iter().any(|entry| same_path(entry, &[guid(3)])),
+        "another variant must not receive this placement's text"
+    );
+    assert!(entries
+        .iter()
+        .any(|entry| same_path(entry, &[guid(7), guid(3)])));
+    assert!(!entries
+        .iter()
+        .any(|entry| same_path(entry, &[guid(7), guid(2)])));
+}

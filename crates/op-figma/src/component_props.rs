@@ -10,22 +10,25 @@ use crate::kiwi::FigValue;
 use crate::tree::guid_to_string;
 use std::collections::HashMap;
 
-fn assignment_target(assignment: &FigValue) -> Option<FigValue> {
+mod path_index;
+use path_index::{PathIndex, PathKey};
+mod text_scope;
+use text_scope::TextScopes;
+
+fn assignment_target(assignment: &FigValue) -> Option<&FigValue> {
     assignment
         .get("value")
         .and_then(|value| value.get("guidValue"))
-        .cloned()
         .or_else(|| {
             assignment
                 .get("varValue")?
                 .get("value")?
                 .get("symbolIdValue")?
                 .get("guid")
-                .cloned()
         })
 }
 
-fn assignment_value(assignment: &FigValue, field: &str) -> Option<FigValue> {
+fn assignment_value<'a>(assignment: &'a FigValue, field: &str) -> Option<&'a FigValue> {
     if field == "overriddenSymbolID" {
         return assignment_target(assignment);
     }
@@ -40,19 +43,19 @@ fn assignment_value(assignment: &FigValue, field: &str) -> Option<FigValue> {
                     .get("value")?
                     .get("textDataValue")
                     .filter(|value| value.get_str("characters").is_some())
-            })
-            .cloned();
+            });
     }
     assignment
         .get("value")
-        .and_then(|value| value.get_bool("boolValue"))
+        .and_then(|value| value.get("boolValue"))
+        .filter(|value| value.as_bool().is_some())
         .or_else(|| {
             assignment
                 .get("varValue")?
                 .get("value")?
-                .get_bool("boolValue")
+                .get("boolValue")
+                .filter(|value| value.as_bool().is_some())
         })
-        .map(FigValue::Bool)
 }
 
 #[derive(Clone)]
@@ -117,17 +120,15 @@ fn component_property_routes(nodes: &[FigValue]) -> HashMap<String, Vec<Property
     routes
 }
 
-fn guid_path(value: &FigValue) -> Option<Vec<FigValue>> {
-    value
-        .get("guidPath")?
-        .get_array("guids")
-        .map(<[FigValue]>::to_vec)
+fn guid_path(value: &FigValue) -> Option<&[FigValue]> {
+    value.get("guidPath")?.get_array("guids")
 }
 
 fn path_value(guids: Vec<FigValue>) -> FigValue {
     FigValue::Object(vec![("guids".into(), FigValue::Array(guids))])
 }
 
+#[cfg(test)]
 fn same_path(entry: &FigValue, path: &[FigValue]) -> bool {
     let Some(existing) = entry
         .get("guidPath")
@@ -142,11 +143,11 @@ fn same_path(entry: &FigValue, path: &[FigValue]) -> bool {
         })
 }
 
-fn assignment_entries(holder: &FigValue) -> Vec<FigValue> {
+fn assignment_entries(holder: &FigValue) -> Vec<&FigValue> {
     let mut entries = holder
         .get("symbolData")
         .and_then(|data| data.get_array("componentPropAssignments"))
-        .map(<[FigValue]>::to_vec)
+        .map(|entries| entries.iter().collect::<Vec<_>>())
         .unwrap_or_default();
     for assignment in holder.get_array("componentPropAssignments").unwrap_or(&[]) {
         let id = assignment.get("defID").and_then(guid_to_string);
@@ -154,106 +155,90 @@ fn assignment_entries(holder: &FigValue) -> Vec<FigValue> {
             .iter_mut()
             .find(|entry| id.is_some() && entry.get("defID").and_then(guid_to_string) == id)
         {
-            *existing = assignment.clone();
+            *existing = assignment;
         } else {
-            entries.push(assignment.clone());
+            entries.push(assignment);
         }
     }
     entries
 }
 
-fn resolved_assignments(
-    holder: &FigValue,
-    routes: &HashMap<String, Vec<PropertyRoute>>,
-) -> Vec<(FigValue, &'static str, FigValue)> {
-    assignment_entries(holder)
-        .iter()
-        .flat_map(|assignment| {
-            let targets = assignment
-                .get("defID")
-                .and_then(guid_to_string)
-                .and_then(|id| routes.get(&id));
-            targets.into_iter().flatten().filter_map(move |route| {
-                Some((
-                    route.owner.clone(),
-                    route.field,
-                    assignment_value(assignment, route.field)?,
-                ))
-            })
-        })
-        .collect()
-}
-
-fn upsert_property_override(
-    overrides: &mut Vec<FigValue>,
-    path: Vec<FigValue>,
-    field: &str,
-    target: FigValue,
+fn visit_assignments<'a>(
+    holder: &'a FigValue,
+    routes: &'a HashMap<String, Vec<PropertyRoute>>,
+    scopes: &TextScopes,
+    mut visit: impl FnMut(&'a FigValue, &'static str, &'a FigValue),
 ) {
-    if let Some(existing) = overrides.iter_mut().find(|entry| same_path(entry, &path)) {
-        // Legacy direct overrides are authoritative when both encodings exist.
-        if existing.get(field).is_none() {
-            existing.set(field, target);
+    let text_master = scopes.target(holder);
+    for assignment in assignment_entries(holder) {
+        let targets = assignment
+            .get("defID")
+            .and_then(guid_to_string)
+            .and_then(|id| routes.get(&id));
+        for route in targets.into_iter().flatten() {
+            if route.field == "textData"
+                && text_master
+                    .as_ref()
+                    .is_some_and(|master| !scopes.contains(master, &route.owner))
+            {
+                continue;
+            }
+            if let Some(target) = assignment_value(assignment, route.field) {
+                visit(&route.owner, route.field, target);
+            }
         }
-        return;
     }
-    overrides.push(FigValue::Object(vec![
-        ("guidPath".into(), path_value(path)),
-        (field.into(), target),
-    ]));
 }
 
-fn normalize_node(node: &mut FigValue, routes: &HashMap<String, Vec<PropertyRoute>>) {
-    let direct = resolved_assignments(node, routes);
-    let node_guid = node.get("guid").and_then(guid_to_string);
-    let mut direct_updates: Vec<(&'static str, FigValue)> = Vec::new();
-    let mut additions = Vec::new();
-    for (owner, field, target) in direct {
-        if node_guid.as_deref()
-            == owner
-                .get("sessionID")
-                .and_then(|_| guid_to_string(&owner))
-                .as_deref()
-        {
-            if matches!(field, "visible" | "textData") {
-                if let Some((_, value)) = direct_updates.iter_mut().find(|(key, _)| *key == field) {
-                    *value = target;
-                } else {
-                    direct_updates.push((field, target));
-                }
-            } else if node.get(field).is_none()
-                && !direct_updates.iter().any(|(key, _)| *key == field)
-            {
-                direct_updates.push((field, target));
-            }
-        } else {
-            additions.push((vec![owner], field, target));
-        }
-    }
-
-    // Inspect authored overrides by reference. Large documents can carry
-    // deeply nested override graphs even when no property needs normalizing.
+fn normalize_node(
+    node: &mut FigValue,
+    routes: &HashMap<String, Vec<PropertyRoute>>,
+    scopes: &TextScopes,
+) {
     let authored = node
         .get("symbolData")
         .and_then(|data| data.get_array("symbolOverrides"))
         .unwrap_or(&[]);
-    for entry in authored {
-        let assignments = resolved_assignments(entry, routes);
-        if assignments.is_empty() {
-            continue;
+    let mut paths = PathIndex::authored(authored);
+    let node_guid = node.get("guid").and_then(guid_to_string);
+    let mut direct_updates: Vec<(&'static str, FigValue)> = Vec::new();
+    let mut additions = Vec::new();
+    visit_assignments(node, routes, scopes, |owner, field, target| {
+        if node_guid.as_deref()
+            == owner
+                .get("sessionID")
+                .and_then(|_| guid_to_string(owner))
+                .as_deref()
+        {
+            if matches!(field, "visible" | "textData") {
+                if let Some((_, value)) = direct_updates.iter_mut().find(|(key, _)| *key == field) {
+                    *value = target.clone();
+                } else {
+                    direct_updates.push((field, target.clone()));
+                }
+            } else if node.get(field).is_none()
+                && !direct_updates.iter().any(|(key, _)| *key == field)
+            {
+                direct_updates.push((field, target.clone()));
+            }
+        } else {
+            let key = PathKey::new(std::iter::once(owner));
+            if paths.accepts(key.as_ref(), field) {
+                additions.push((vec![owner.clone()], key, field, target.clone()));
+            }
         }
-        let prefix = guid_path(entry).unwrap_or_default();
-        for (owner, field, target) in assignments {
-            let mut path = prefix.clone();
-            path.push(owner);
-            additions.push((path, field, target));
-        }
-    }
-    additions.retain(|(path, field, _)| {
-        !authored
-            .iter()
-            .any(|entry| same_path(entry, path) && entry.get(field).is_some())
     });
+    for entry in authored {
+        let prefix = guid_path(entry).unwrap_or(&[]);
+        visit_assignments(entry, routes, scopes, |owner, field, target| {
+            let key = PathKey::new(prefix.iter().chain(std::iter::once(owner)));
+            if paths.accepts(key.as_ref(), field) {
+                let mut path = prefix.to_vec();
+                path.push(owner.clone());
+                additions.push((path, key, field, target.clone()));
+            }
+        });
+    }
     direct_updates.retain(|(field, target)| node.get(field) != Some(target));
     if direct_updates.is_empty() && additions.is_empty() {
         return;
@@ -273,8 +258,8 @@ fn normalize_node(node: &mut FigValue, routes: &HashMap<String, Vec<PropertyRout
     let Some(FigValue::Array(overrides)) = symbol_data.get_mut("symbolOverrides") else {
         return;
     };
-    for (path, field, target) in additions {
-        upsert_property_override(overrides, path, field, target);
+    for (path, key, field, target) in additions {
+        paths.apply(overrides, key, path, field, target);
     }
 }
 
@@ -283,9 +268,10 @@ pub(crate) fn resolve_component_property_swaps(nodes: &mut [FigValue]) {
     if routes.is_empty() {
         return;
     }
+    let scopes = TextScopes::new(nodes);
     nodes
         .iter_mut()
-        .for_each(|node| normalize_node(node, &routes));
+        .for_each(|node| normalize_node(node, &routes, &scopes));
 }
 
 #[cfg(test)]
