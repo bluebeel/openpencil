@@ -30,6 +30,7 @@ pub fn resolve_style_references(node_changes: &mut [FigValue]) {
         }
     }
     if style_map.is_empty() {
+        crate::color_variables::resolve_color_variables(node_changes);
         compact_transient_text_caches(node_changes);
         return;
     }
@@ -45,6 +46,7 @@ pub fn resolve_style_references(node_changes: &mut [FigValue]) {
             }
         }
     }
+    crate::color_variables::resolve_color_variables(node_changes);
     compact_transient_text_caches(node_changes);
 }
 

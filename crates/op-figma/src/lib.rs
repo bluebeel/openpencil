@@ -9,6 +9,7 @@
 mod boolean_fallback;
 mod clipboard;
 mod color;
+mod color_variables;
 mod common;
 mod component_props;
 mod container;
