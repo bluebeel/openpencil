@@ -35,7 +35,7 @@ fn minified(mode: ImageDrawMode, affine: bool) -> Vec<u8> {
         ImageBlendMode::Normal,
     );
     let info = ImageInfo::new((17, 17), ColorType::RGBA8888, AlphaType::Unpremul, None);
-    let mut pixels = vec![0; 17 * 17 * 4];
+    let mut pixels = vec![0_u8; 17 * 17 * 4];
     assert!(target.image_snapshot().read_pixels(
         &info,
         &mut pixels,
@@ -63,10 +63,57 @@ fn minification_filters_source_detail_for_affine_and_standard_image_modes() {
                 for x in 2..15 {
                     let offset = (y * 17 + x) * 4;
                     assert_eq!(pixels[offset + 3], 255);
-                    assert!((i16::from(pixels[offset]) - 128).abs() <= 2,
-                        "minification should integrate source detail: mode={mode:?}, affine={affine}, pixel={}", pixels[offset]);
+                    assert!(
+                        (i16::from(pixels[offset]) - 128).abs() <= 2,
+                        "minification should integrate source detail: mode={mode:?}, affine={affine}, pixel={}",
+                        pixels[offset]
+                    );
                 }
             }
         }
     }
+}
+
+#[test]
+fn deep_minification_preserves_average_brightness_without_changing_cached_pixels() {
+    let mut source = Vec::with_capacity(512 * 512 * 4);
+    let mut sum = 0_u64;
+    for index in 0_u32..512 * 512 {
+        let value = (index.wrapping_mul(1_664_525).wrapping_add(1_013_904_223) >> 24) as u8;
+        source.extend_from_slice(&[value, value, value, 255]);
+        sum += u64::from(value);
+    }
+    let info = ImageInfo::new((512, 512), ColorType::RGBA8888, AlphaType::Premul, None);
+    let image =
+        skia_safe::images::raster_from_data(&info, skia_safe::Data::new_copy(&source), 512 * 4)
+            .unwrap();
+    let mut backend = NativeBackend::with_dpi(1.0);
+    backend.install_raster_image(1, image, u32::MAX);
+    let mut target = skia_safe::surfaces::raster_n32_premul((17, 17)).unwrap();
+    backend.draw_image_with_mode(
+        target.canvas(),
+        Rect::xywh(0.0, 0.0, 17.0, 17.0),
+        1,
+        &[],
+        ImageDrawMode::Fit,
+    );
+    let info = ImageInfo::new((17, 17), ColorType::RGBA8888, AlphaType::Unpremul, None);
+    let mut pixels = vec![0_u8; 17 * 17 * 4];
+    assert!(target.image_snapshot().read_pixels(
+        &info,
+        &mut pixels,
+        17 * 4,
+        (0, 0),
+        skia_safe::image::CachingHint::Allow
+    ));
+    let actual = pixels.chunks_exact(4).map(|p| f64::from(p[0])).sum::<f64>() / (17.0 * 17.0);
+    let expected = sum as f64 / (512.0 * 512.0);
+    assert!(
+        (actual - expected).abs() < 0.6,
+        "mip levels must retain fractional averages: expected={expected}, actual={actual}"
+    );
+    assert_eq!(
+        backend.raster_image(1).unwrap().color_type(),
+        ColorType::RGBA8888
+    );
 }

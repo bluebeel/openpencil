@@ -71,6 +71,7 @@ mod caches;
 mod gradient;
 mod image;
 mod image_diagnostics;
+mod image_precision;
 mod layer;
 mod path;
 mod shaped_text;

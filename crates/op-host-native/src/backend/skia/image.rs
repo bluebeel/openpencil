@@ -323,9 +323,34 @@ impl NativeBackend {
         } else {
             transform
         };
-        if let Some(local) = transform.and_then(|affine| {
+        let local = transform.and_then(|affine| {
             figma_image_local_matrix(rect, image.width() as f32, image.height() as f32, affine)
-        }) {
+        });
+        let image = if mode == ImageDrawMode::Tile {
+            image
+        } else {
+            let mapping = local.unwrap_or_else(|| {
+                let dst = match mode {
+                    ImageDrawMode::Fit => {
+                        contain_rect(rect, image.width() as f32, image.height() as f32)
+                    }
+                    ImageDrawMode::Fill | ImageDrawMode::Crop => {
+                        cover_rect(rect, image.width() as f32, image.height() as f32)
+                    }
+                    _ => rect,
+                };
+                [
+                    dst.size.x / image.width() as f32,
+                    0.0,
+                    dst.origin.x,
+                    0.0,
+                    dst.size.y / image.height() as f32,
+                    dst.origin.y,
+                ]
+            });
+            super::image_precision::minification_source(&image, canvas, mapping)
+        };
+        if let Some(local) = local {
             let local_matrix = skia_safe::Matrix::new_all(
                 local[0], local[1], local[2], local[3], local[4], local[5], 0.0, 0.0, 1.0,
             );
