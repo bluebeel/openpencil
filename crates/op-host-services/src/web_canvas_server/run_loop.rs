@@ -1,4 +1,4 @@
-//! Daemon lifecycle: bind the listener, spawn per-connection threads, honor
+//! Daemon lifecycle: bind the listener, reuse bounded connection workers, honor
 //! the managed-mode stdin lease, and the Origin / CORS gates the
 //! connection loop consults. Split out of `web_canvas_server.rs` to keep the
 //! spine under the 800-line cap. Managed mode is tokenless per request: its
@@ -148,6 +148,7 @@ pub fn run_web_canvas(options: ServeWebOptions) -> Result<()> {
     // The collaboration pump. It observes `shutdown` itself, so it retires
     // within one tick of the daemon being asked to stop.
     collab_driver::spawn(&state, &hub, &shutdown);
+    let mut workers = connection_pool::ConnectionPool::new(MAX_CONNS, "op-serve-web-conn");
     for stream in listener.incoming() {
         if shutdown.load(Ordering::Acquire) {
             break;
@@ -174,10 +175,11 @@ pub fn run_web_canvas(options: ServeWebOptions) -> Result<()> {
         let hub = Arc::clone(&hub);
         let conns = Arc::clone(&conn_count);
         let shutdown_flag = Arc::clone(&shutdown);
-        let spawned = thread::Builder::new()
-            .name("op-serve-web-conn".into())
-            .spawn(move || {
-                let _conn_guard = ConnGuard(conns);
+        let connection = ConnGuard(conns);
+        let dispatched = workers.submit(
+            conn_count.load(Ordering::Acquire),
+            Box::new(move || {
+                let _conn_guard = connection;
                 let _ = s.set_read_timeout(Some(IO_TIMEOUT));
                 let _ = s.set_write_timeout(Some(IO_TIMEOUT));
                 match serve_one_with_authority(&mut s, &state, &hub, mode, &authority) {
@@ -191,9 +193,10 @@ pub fn run_web_canvas(options: ServeWebOptions) -> Result<()> {
                     Ok(false) => {}
                     Err(e) => eprintln!("openpencil-desktop --serve-web: {e}"),
                 }
-            });
-        if spawned.is_err() {
-            conn_count.fetch_sub(1, Ordering::AcqRel);
+            }),
+        );
+        if let Err(error) = dispatched {
+            eprintln!("openpencil-desktop --serve-web: {error}");
         }
     }
     eprintln!("openpencil-desktop --serve-web: shutdown requested; exiting");

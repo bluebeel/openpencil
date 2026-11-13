@@ -1,7 +1,7 @@
 //! The public multi-account accept loop (`--serve-web --online`).
 //!
 //! Structurally the same daemon as [`run_web_canvas`](super::run_web_canvas):
-//! bind, thread per connection, bounded concurrency. The difference is where
+//! bind, reusable connection workers, bounded concurrency. The difference is where
 //! the document comes from. The single-user loop builds one
 //! `Mutex<WebCanvasState>` up front and hands every connection the same one;
 //! this loop builds none, and each connection resolves its own from the
@@ -210,6 +210,8 @@ pub fn run_online_web_canvas(options: ServeWebOptions) -> Result<()> {
     // loop already observes, so the existing exit path (which flushes) runs.
     install_shutdown_signals(&shutdown, local_addr)?;
     spawn_sweeper(&registry, &shutdown)?;
+    let mut workers =
+        connection_pool::ConnectionPool::new(limits.max_conns, "op-serve-web-online-conn");
 
     for stream in listener.incoming() {
         if shutdown.load(Ordering::Acquire) {
@@ -237,10 +239,11 @@ pub fn run_online_web_canvas(options: ServeWebOptions) -> Result<()> {
         let conns = Arc::clone(&conn_count);
         let write_barrier = Arc::clone(&write_barrier);
         let shutdown_flag = Arc::clone(&shutdown);
-        let spawned = thread::Builder::new()
-            .name("op-serve-web-online-conn".into())
-            .spawn(move || {
-                let _conn_guard = ConnGuard(conns);
+        let connection = ConnGuard(conns);
+        let dispatched = workers.submit(
+            conn_count.load(Ordering::Acquire),
+            Box::new(move || {
+                let _conn_guard = connection;
                 let _ = s.set_read_timeout(Some(IO_TIMEOUT));
                 let _ = s.set_write_timeout(Some(IO_TIMEOUT));
                 match serve_one_online(
@@ -256,9 +259,10 @@ pub fn run_online_web_canvas(options: ServeWebOptions) -> Result<()> {
                     Ok(false) => {}
                     Err(e) => eprintln!("openpencil --serve-web --online: {e}"),
                 }
-            });
-        if spawned.is_err() {
-            conn_count.fetch_sub(1, Ordering::AcqRel);
+            }),
+        );
+        if let Err(error) = dispatched {
+            eprintln!("openpencil --serve-web --online: {error}");
         }
     }
     // The sweeper observes the same flag and retires on its next wake.
