@@ -1,4 +1,4 @@
-use super::{contain_rect, layer::to_skia_blend_mode, to_sk_rect, NativeBackend};
+use super::{NativeBackend, contain_rect, layer::to_skia_blend_mode, to_sk_rect};
 use op_editor_ui::{ImageAdjustments, ImageBlendMode, ImageDrawMode, Point2D, Rect};
 
 const THUMB_CACHE_BYTE_BUDGET: usize = 4 * 1024 * 1024;
@@ -283,6 +283,30 @@ impl NativeBackend {
         let Some(image) = self.raster_image(id) else {
             return;
         };
+        if super::image_supersample::draw(
+            canvas,
+            to_sk_rect(rect),
+            opacity,
+            to_skia_blend_mode(blend_mode),
+            |inner| {
+                self.draw_image_with_options_transform_blend_and_tile_scale(
+                    inner,
+                    rect,
+                    id,
+                    _encoded,
+                    mode,
+                    adjustments,
+                    1.0,
+                    corner_radius,
+                    transform,
+                    ImageBlendMode::Normal,
+                    original_size,
+                    tile_scale,
+                )
+            },
+        ) {
+            return;
+        }
         super::image_diagnostics::record_sharp_raster_hit();
         // Rounded image nodes clip the BITMAP, not just the
         // placeholder fill/stroke (TS `clipRRect` parity,
@@ -295,7 +319,7 @@ impl NativeBackend {
                 corner_radius,
                 corner_radius,
             );
-            canvas.clip_rrect(rrect, skia_safe::ClipOp::Intersect, true);
+            super::sampled_clip::clip_rrect(canvas, &rrect);
         }
         let mut paint = skia_safe::Paint::default();
         paint.set_anti_alias(true);

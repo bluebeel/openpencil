@@ -72,8 +72,10 @@ mod gradient;
 mod image;
 mod image_diagnostics;
 mod image_precision;
+mod image_supersample;
 mod layer;
 mod path;
+mod sampled_clip;
 mod shaped_text;
 mod text;
 #[cfg(test)]
@@ -366,7 +368,7 @@ impl NativeBackend {
     /// `canvas.clipRRect(..., ClipOp.Intersect, true)`).
     pub fn clip_round_rect(&self, canvas: &skia_safe::Canvas, rect: Rect, radius: f32) {
         let rrect = skia_safe::RRect::new_rect_xy(to_sk_rect(rect), radius, radius);
-        canvas.clip_rrect(rrect, skia_safe::ClipOp::Intersect, true);
+        sampled_clip::clip_rrect(canvas, &rrect);
     }
 
     pub fn clip_round_rect_per_corner(
@@ -377,12 +379,12 @@ impl NativeBackend {
     ) {
         let vectors = radii.map(|radius| skia_safe::Vector::new(radius, radius));
         let rrect = skia_safe::RRect::new_rect_radii(to_sk_rect(rect), &vectors);
-        canvas.clip_rrect(rrect, skia_safe::ClipOp::Intersect, true);
+        sampled_clip::clip_rrect(canvas, &rrect);
     }
 
     pub fn clip_oval(&self, canvas: &skia_safe::Canvas, bounds: Rect) {
         let oval = skia_safe::RRect::new_oval(to_sk_rect(bounds));
-        canvas.clip_rrect(oval, skia_safe::ClipOp::Intersect, true);
+        sampled_clip::clip_rrect(canvas, &oval);
     }
 
     pub fn clip_polygon(&self, canvas: &skia_safe::Canvas, points: &[Point2D]) {
