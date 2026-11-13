@@ -46,6 +46,8 @@ pub(crate) struct ShapedRun<'a> {
     pub font_size: f32,
     pub weight: u16,
     pub italic: bool,
+    pub kerning: Option<bool>,
+    pub letter_spacing: f32,
     pub line_height: f32,
     pub color: skia_safe::Color,
 }
@@ -81,6 +83,7 @@ impl ShapedText {
             let mut paragraph = self.build(font_resolver, run);
             paragraph.layout(NATURAL_LAYOUT_BUDGET);
             paragraph.max_intrinsic_width()
+                + run.text.chars().count().saturating_sub(1) as f32 * run.letter_spacing
         })
     }
 
@@ -110,6 +113,58 @@ impl ShapedText {
             paragraph.layout(NATURAL_LAYOUT_BUDGET);
             let natural = paragraph.max_intrinsic_width();
             paragraph.layout(natural.ceil());
+            if run.kerning == Some(true)
+                && !op_editor_core::text_script::needs_complex_shaping(run.text)
+            {
+                // HarfBuzz supplies pair positioning; the direct native font
+                // path supplies the same raster treatment as unkerned text.
+                // Paragraph's visitor origin contains a rounded line baseline,
+                // so retain the caller's authored baseline for this one line.
+                let mut paint = skia_safe::Paint::default();
+                paint.set_color(run.color);
+                paint.set_anti_alias(true);
+                let character_offsets = run
+                    .text
+                    .char_indices()
+                    .map(|(offset, _)| offset)
+                    .collect::<Vec<_>>();
+                paragraph.visit(|_, info| {
+                    let Some(info) = info else { return };
+                    let source = info.font();
+                    let mut font = skia_safe::Font::new(source.typeface(), source.size());
+                    font.set_skew_x(source.skew_x());
+                    font.set_embolden(source.is_embolden());
+                    font.set_hinting(skia_safe::FontHinting::None);
+                    font.set_subpixel(true);
+                    let positions;
+                    let glyph_positions = if run.letter_spacing != 0.0 {
+                        positions = info
+                            .positions()
+                            .iter()
+                            .zip(info.utf8_starts())
+                            .map(|(position, offset)| {
+                                let character = character_offsets
+                                    .partition_point(|start| *start < *offset as usize);
+                                skia_safe::Point::new(
+                                    position.x + character as f32 * run.letter_spacing,
+                                    position.y,
+                                )
+                            })
+                            .collect::<Vec<_>>();
+                        positions.as_slice()
+                    } else {
+                        info.positions()
+                    };
+                    canvas.draw_glyphs_at(
+                        info.glyphs(),
+                        glyph_positions,
+                        (x + info.origin().x, baseline_y),
+                        &font,
+                        &paint,
+                    );
+                });
+                return;
+            }
             // `Paragraph::paint` places the line-box top; callers hand us a
             // baseline.
             let top = baseline_y - paragraph.alphabetic_baseline();
@@ -128,8 +183,20 @@ impl ShapedText {
             BaseDirection::Ltr => skia_safe::textlayout::TextDirection::LTR,
         });
 
+        if run.kerning == Some(true) {
+            paragraph_style.turn_hinting_off();
+        }
         let mut text_style = TextStyle::new();
         text_style.set_font_size(run.font_size);
+        if let Some(kerning) = run.kerning {
+            text_style.add_font_feature("kern", u32::from(kerning) as i32);
+            if kerning {
+                text_style.add_font_feature("liga", 0);
+                text_style.add_font_feature("calt", 0);
+                text_style.set_font_hinting(skia_safe::FontHinting::None);
+            }
+        }
+
         text_style.set_color(run.color);
         let families = font_resolver.font_families_for_shaping(if run.family.is_empty() {
             None

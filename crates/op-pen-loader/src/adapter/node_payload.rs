@@ -81,7 +81,7 @@ fn apply_vertical_center_text_child_parity(
     let Some(context) = context else {
         return;
     };
-    if !matches!(node, PenNode::Text(_)) || text_has_explicit_non_left_align(node) {
+    if !matches!(node, PenNode::Text(_)) || text_has_explicit_align(node) {
         return;
     }
     payload.text_align = "center".to_string();
@@ -91,15 +91,11 @@ fn apply_vertical_center_text_child_parity(
     }
 }
 
-fn text_has_explicit_non_left_align(node: &PenNode) -> bool {
+fn text_has_explicit_align(node: &PenNode) -> bool {
     matches!(
         node,
         PenNode::Text(TextNode {
-            text_align: Some(
-                jian_ops_schema::node::TextAlign::Center
-                    | jian_ops_schema::node::TextAlign::Right
-                    | jian_ops_schema::node::TextAlign::Justify,
-            ),
+            text_align: Some(_),
             ..
         })
     )

@@ -44,6 +44,7 @@ pub struct TextEditLayout {
     pub family: String,
     /// Node-level italic, measured alongside the family.
     pub italic: bool,
+    pub font_kerning: Option<bool>,
     pub text_align: SceneTextAlign,
 }
 
@@ -69,12 +70,9 @@ pub fn text_edit_layout(backend: &mut dyn RenderBackend, node: &SceneNode) -> Te
         1.2
     };
     let wrap_width_doc = if node.text_wrap {
-        // Same tolerance as the painter (TS renderer parity): without
-        // it CJK strings that exactly fit can wrap differently here
-        // than on the painted canvas.
-        let doc_width = node.bounds.size.x;
-        let tolerance = (doc_width * 0.05).ceil().min((font_size * 0.5).ceil());
-        Some(doc_width + tolerance)
+        // The authored box is the wrap budget. Enlarging it can pull a word
+        // from the next saved line into this one, shifting the paragraph.
+        Some(node.bounds.size.x)
     } else {
         None
     };
@@ -94,6 +92,7 @@ pub fn text_edit_layout(backend: &mut dyn RenderBackend, node: &SceneNode) -> Te
                 letter_spacing,
                 family,
                 italic: node.italic,
+                kerning: node.font_kerning,
             },
             doc_wrap_width,
         )
@@ -117,7 +116,7 @@ pub fn text_edit_layout(backend: &mut dyn RenderBackend, node: &SceneNode) -> Te
                     font_size,
                     weight,
                     letter_spacing,
-                    (family, node.italic),
+                    (family, node.italic, node.font_kerning),
                 )
             })
             .fold(0.0_f32, f32::max);
@@ -140,6 +139,7 @@ pub fn text_edit_layout(backend: &mut dyn RenderBackend, node: &SceneNode) -> Te
         text_align: node.text_align,
         family: family.to_string(),
         italic: node.italic,
+        font_kerning: node.font_kerning,
         lines,
     }
 }
@@ -168,9 +168,10 @@ pub fn measure_line_width(
     font_size: f32,
     weight: u16,
     letter_spacing: f32,
-    (family, italic): (&str, bool),
+    (family, italic, kerning): (&str, bool, Option<bool>),
 ) -> f32 {
-    let base = backend.measure_text_family_styled(line, font_size, family, weight, italic);
+    let base =
+        backend.measure_text_family_kerned(line, font_size, family, weight, italic, kerning, 0.0);
     let extra = line.chars().count().saturating_sub(1) as f32 * letter_spacing;
     base + extra
 }
@@ -213,7 +214,7 @@ impl TextEditLayout {
                     self.font_size,
                     self.weight,
                     self.letter_spacing,
-                    (&self.family, self.italic),
+                    (&self.family, self.italic, self.font_kerning),
                 );
                 self.origin.x + (self.align_width - line_w).max(0.0) / 2.0
             }
@@ -224,7 +225,7 @@ impl TextEditLayout {
                     self.font_size,
                     self.weight,
                     self.letter_spacing,
-                    (&self.family, self.italic),
+                    (&self.family, self.italic, self.font_kerning),
                 );
                 self.origin.x + (self.align_width - line_w).max(0.0)
             }
@@ -242,14 +243,22 @@ impl TextEditLayout {
             return 0.0;
         }
         let prefix = &line[..offset];
-        if self.letter_spacing.abs() < f32::EPSILON {
-            backend.measure_text_family_styled(
+        if self.letter_spacing.abs() < f32::EPSILON || self.font_kerning == Some(true) {
+            let advance = backend.measure_text_family_kerned(
                 prefix,
                 self.font_size,
                 &self.family,
                 self.weight,
                 self.italic,
-            )
+                self.font_kerning,
+                self.letter_spacing,
+            );
+            advance
+                + if offset < line.len() {
+                    self.letter_spacing
+                } else {
+                    0.0
+                }
         } else {
             let mut w = 0.0;
             for ch in prefix.chars() {

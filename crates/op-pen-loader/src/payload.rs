@@ -184,6 +184,8 @@ pub struct NodePayload {
     /// CSS-style font weight (100-900). 0 = default 400. Text-only.
     #[serde(default)]
     pub font_weight: u16,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub font_kerning: Option<bool>,
     /// Node-level `fontStyle: italic`. Text-only.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub italic: bool,

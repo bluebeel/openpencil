@@ -216,3 +216,55 @@ fn typed_evidence_and_full_cache_resolve_identical_authored_styles() {
         assert_eq!(summarized, full);
     }
 }
+
+#[test]
+fn linked_kerning_off_uses_saved_family_tracking_proof_and_keeps_explicit_overrides() {
+    let features =
+        |names: &[&str]| FigValue::Array(names.iter().map(|name| string(name)).collect());
+    for explicit in [false, true] {
+        let mut style = linked_style();
+        style.set("toggledOffOTFeatures", features(&["LIGA", "KERN", "CALT"]));
+        let mut local = node("Linked Font", -1.0);
+        local.set("toggledOffOTFeatures", features(&["LIGA", "CALT"]));
+        local.set("isOverrideOverTextStyle", FigValue::Bool(explicit));
+        let mut changes = vec![style, local];
+        resolve_style_references(&mut changes);
+        assert_eq!(
+            map_figma_text_props(&changes[1]).font_kerning,
+            Some(explicit)
+        );
+    }
+    let mut style = linked_style();
+    style.set("toggledOffOTFeatures", features(&["KERN"]));
+    let mut local = node("Linked Font", 0.0);
+    local.set("toggledOffOTFeatures", features(&[]));
+    let mut changes = vec![style, local];
+    resolve_style_references(&mut changes);
+    assert_eq!(
+        map_figma_text_props(&changes[1]).font_kerning,
+        Some(true),
+        "unconfirmed local feature override remains authored"
+    );
+}
+
+#[test]
+fn linked_line_height_uses_auto_height_geometry_when_cache_stores_natural_metrics() {
+    for (height, expected) in [(24.0, 24.0), (30.0, 12.0)] {
+        let mut local = node("Linked Font", -1.0);
+        local.set("textAutoResize", string("HEIGHT"));
+        local.set(
+            "size",
+            object(vec![("x", number(200.0)), ("y", number(height))]),
+        );
+        local
+            .get_mut("derivedTextData")
+            .unwrap()
+            .get_array_mut("baselines")
+            .unwrap()[0]
+            .set("lineHeight", number(27.24));
+        let mut changes = vec![linked_style(), local];
+        resolve_style_references(&mut changes);
+        assert_eq!(effective_line_height_px(&changes[1]), Some(expected));
+        assert_eq!(changes[1].get_f64("fontSize"), Some(20.0));
+    }
+}

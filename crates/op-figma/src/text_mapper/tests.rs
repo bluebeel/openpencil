@@ -14,6 +14,36 @@ fn plain_text_when_no_style_runs() {
     )]);
     let props = map_figma_text_props(&node);
     assert_eq!(props.content, TextContent::Plain("Hello".into()));
+    assert_eq!(props.text_align, Some(TextAlign::Left));
+}
+
+#[test]
+fn kerning_maps_figma_default_enabled_and_explicit_disabled_features() {
+    let features = |names: &[&str]| {
+        FigValue::Array(
+            names
+                .iter()
+                .map(|name| FigValue::Str((*name).into()))
+                .collect(),
+        )
+    };
+    for (off, on, expected) in [
+        (None, None, Some(true)),
+        (Some(vec![]), None, Some(true)),
+        (Some(vec!["LIGA", "CALT"]), None, Some(true)),
+        (Some(vec!["KERN"]), None, Some(false)),
+        (None, Some(vec!["KERN"]), Some(true)),
+        (Some(vec!["KERN"]), Some(vec!["KERN"]), Some(false)),
+    ] {
+        let mut node = obj(vec![]);
+        if let Some(off) = off {
+            node.set("toggledOffOTFeatures", features(&off));
+        }
+        if let Some(on) = on {
+            node.set("toggledOnOTFeatures", features(&on));
+        }
+        assert_eq!(map_figma_text_props(&node).font_kerning, expected);
+    }
 }
 
 #[test]

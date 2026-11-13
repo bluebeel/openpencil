@@ -295,6 +295,7 @@ pub(crate) fn node_payload_to_scene(
         font_family: node.font_family.clone(),
         font_size: node.font_size,
         font_weight: node.font_weight,
+        font_kerning: node.font_kerning,
         italic: node.italic,
         underline: node.underline,
         strikethrough: node.strikethrough,

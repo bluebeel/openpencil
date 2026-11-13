@@ -341,6 +341,7 @@ fn build_text_node(
     let (state, bindings, events) = parse_interactivity(obj);
 
     Some(PenNode::Text(TextNode {
+        font_kerning: None,
         base,
         width,
         height,

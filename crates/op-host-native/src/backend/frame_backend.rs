@@ -696,6 +696,28 @@ impl<'a> RenderBackend for NativeFrameBackend<'a> {
         self.inner.measure_text_family(text, font_size, family)
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn measure_text_family_kerned(
+        &mut self,
+        text: &str,
+        font_size: f32,
+        family: &str,
+        weight: u16,
+        italic: bool,
+        kerning: Option<bool>,
+        letter_spacing: f32,
+    ) -> f32 {
+        self.inner.measure_text_family_kerned(
+            text,
+            font_size,
+            family,
+            weight,
+            italic,
+            kerning,
+            letter_spacing,
+        )
+    }
+
     fn measure_text_family_styled(
         &mut self,
         text: &str,

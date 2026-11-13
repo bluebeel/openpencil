@@ -58,6 +58,7 @@ fn image_node(id: &str, src: &str, query: Option<&str>) -> PenNode {
 
 fn text_label(id: &str, role: Option<&str>, content: &str) -> PenNode {
     PenNode::Text(TextNode {
+        font_kerning: None,
         base: PenNodeBase {
             id: id.to_string(),
             name: Some("Label".into()),

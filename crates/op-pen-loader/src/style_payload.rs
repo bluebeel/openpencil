@@ -63,6 +63,7 @@ pub(crate) fn base_payload(base: &PenNodeBase, kind: &str) -> NodePayload {
         svg_path: None,
         font_size: 0.0,
         font_weight: 0,
+        font_kerning: None,
         italic: false,
         underline: false,
         strikethrough: false,

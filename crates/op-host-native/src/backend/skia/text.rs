@@ -111,6 +111,8 @@ impl NativeBackend {
                     font_size,
                     weight,
                     italic,
+                    kerning: None,
+                    letter_spacing: 0.0,
                     line_height: 0.0,
                     color: skia_safe::Color::BLACK,
                 },
@@ -118,6 +120,39 @@ impl NativeBackend {
         }
         self.font_resolver
             .measure_text(text, font_size, Some(family), weight, italic)
+    }
+
+    /// Explicit kerning follows the same Paragraph path as paint.
+    #[allow(clippy::too_many_arguments)]
+    pub fn measure_text_family_kerned(
+        &mut self,
+        text: &str,
+        font_size: f32,
+        family: &str,
+        weight: u16,
+        italic: bool,
+        kerning: Option<bool>,
+        letter_spacing: f32,
+    ) -> f32 {
+        if kerning == Some(true) {
+            self.shaped_text.measure(
+                &self.font_resolver,
+                &ShapedRun {
+                    text,
+                    family,
+                    font_size,
+                    weight,
+                    italic,
+                    kerning,
+                    letter_spacing,
+                    line_height: 0.0,
+                    color: skia_safe::Color::BLACK,
+                },
+            )
+        } else {
+            self.measure_text_family_styled(text, font_size, family, weight, italic)
+                + text.chars().count().saturating_sub(1) as f32 * letter_spacing
+        }
     }
 
     /// Family-aware width at the default weight/upright — the measurement
@@ -199,7 +234,7 @@ impl NativeBackend {
             let italic = layout.italic();
             for run in draw_text_runs(layout) {
                 let jc = run.color;
-                if needs_complex_shaping(run.content.as_str()) {
+                if needs_complex_shaping(run.content.as_str()) || layout.kerning() == Some(true) {
                     // Arabic and friends need bidi reordering plus contextual
                     // joining, neither of which `draw_str` performs. Hand the
                     // whole run to the cached Paragraph shaper; segmentation
@@ -214,6 +249,8 @@ impl NativeBackend {
                             font_size: run.font_size,
                             weight: run.font_weight,
                             italic,
+                            kerning: layout.kerning(),
+                            letter_spacing: layout.letter_spacing(),
                             line_height: run.line_height,
                             color: skia_safe::Color::from_argb(jc.a(), jc.r(), jc.g(), jc.b()),
                         },

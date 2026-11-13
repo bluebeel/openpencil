@@ -219,6 +219,7 @@ fn build_text_node_in_path(
     let text_box = layout::map_text_box(block_style, path, context);
     let effects = crate::mapper::map_text_shadow(block_style, context);
     let mut text = TextNode {
+        font_kerning: None,
         base: PenNodeBase {
             id: context.generate_id(),
             name: Some("Text".to_string()),

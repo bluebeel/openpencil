@@ -455,6 +455,7 @@ pub(super) fn wrap_text(
             letter_spacing,
             family: "",
             italic: false,
+            kerning: None,
         },
         max_w,
     )
@@ -473,6 +474,7 @@ pub(super) struct WrapFont<'a> {
     /// Empty = the backend default face (the historical family-blind path).
     pub(super) family: &'a str,
     pub(super) italic: bool,
+    pub(super) kerning: Option<bool>,
 }
 
 /// [`wrap_text`] measured in `font`'s family (see [`WrapFont`]).
@@ -570,12 +572,14 @@ fn measure_text_with_letter_spacing(
     let base = if font.family.is_empty() {
         backend.measure_text_weighted(text, font.font_size, font.weight)
     } else {
-        backend.measure_text_family_styled(
+        backend.measure_text_family_kerned(
             text,
             font.font_size,
             font.family,
             font.weight,
             font.italic,
+            font.kerning,
+            0.0,
         )
     };
     let gaps = text.chars().count().saturating_sub(1) as f32;

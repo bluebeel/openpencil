@@ -18,6 +18,7 @@ pub struct TextProps {
     pub font_size: Option<f64>,
     pub font_weight: Option<u32>,
     pub font_style: Option<FontStyleKind>,
+    pub font_kerning: Option<bool>,
     pub letter_spacing: Option<f64>,
     pub line_height: Option<f64>,
     pub text_align: Option<TextAlign>,
@@ -47,9 +48,14 @@ pub fn map_figma_text_props(node: &FigValue) -> TextProps {
         } else {
             None
         },
+        font_kerning: map_font_kerning(node),
         letter_spacing: map_letter_spacing(node),
         line_height: map_line_height(node),
-        text_align: map_text_align(node.get_str("textAlignHorizontal")),
+        // Figma omits LEFT defaults. Make it explicit so a centered parent
+        // cannot reinterpret this text as an unspecified legacy .op label.
+        text_align: Some(
+            map_text_align(node.get_str("textAlignHorizontal")).unwrap_or(TextAlign::Left),
+        ),
         text_align_vertical: map_text_align_vertical(node.get_str("textAlignVertical")),
         text_growth: map_text_growth(node.get_str("textAutoResize")),
         underline: None,
@@ -61,6 +67,20 @@ pub fn map_figma_text_props(node: &FigValue) -> TextProps {
         _ => {}
     }
     props
+}
+
+/// Figma enables kerning by default, including when feature arrays are omitted.
+/// Canonical `.op` files bypass this mapper and retain their optional setting.
+fn map_font_kerning(node: &FigValue) -> Option<bool> {
+    Some(
+        !node
+            .get_array("toggledOffOTFeatures")
+            .is_some_and(|disabled| {
+                disabled
+                    .iter()
+                    .any(|feature| feature.as_str() == Some("KERN"))
+            }),
+    )
 }
 
 /// Build the text content — plain string, or per-run styled segments

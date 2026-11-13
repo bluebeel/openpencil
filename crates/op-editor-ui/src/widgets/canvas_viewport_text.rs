@@ -168,12 +168,14 @@ fn measure_line_slices(
             run.map(|i| &node.text_runs[i]),
         );
         let slice = &text[start..end];
-        w += backend.measure_text_family_styled(
+        w += backend.measure_text_family_kerned(
             slice,
             style.font_size,
             family,
             style.weight,
             style.italic,
+            node.font_kerning,
+            0.0,
         );
         chars += slice.chars().count();
     });
@@ -190,23 +192,28 @@ fn draw_slice(
     baseline_y: f32,
     letter_spacing: f32,
     justify_extra: f32,
+    kerning: Option<bool>,
 ) -> (f32, f32) {
     let jc = (style.color).to_jian();
-    if letter_spacing.abs() < f32::EPSILON && justify_extra <= 0.0 {
+    if (letter_spacing.abs() < f32::EPSILON || kerning == Some(true)) && justify_extra <= 0.0 {
         backend.draw_text(
             &TextLayout::single_run(slice, family, style.font_size, jc, Point2D::ZERO)
                 .with_font_weight(style.weight)
-                .with_italic(style.italic),
+                .with_italic(style.italic)
+                .with_kerning(kerning)
+                .with_letter_spacing(letter_spacing),
             Point2D::new(x, baseline_y),
         );
-        let advance = backend.measure_text_family_styled(
+        let advance = backend.measure_text_family_kerned(
             slice,
             style.font_size,
             family,
             style.weight,
             style.italic,
+            kerning,
+            letter_spacing,
         );
-        return (x + advance, x + advance);
+        return (x + advance + letter_spacing, x + advance);
     }
     // Per-char path — letter spacing after every glyph (legacy painter
     // model) plus the justify share after each space.
@@ -218,7 +225,9 @@ fn draw_slice(
         backend.draw_text(
             &TextLayout::single_run(s, family, style.font_size, jc, Point2D::ZERO)
                 .with_font_weight(style.weight)
-                .with_italic(style.italic),
+                .with_italic(style.italic)
+                .with_kerning(kerning)
+                .with_letter_spacing(letter_spacing),
             Point2D::new(cursor, baseline_y),
         );
         let adv = backend.measure_text_family_styled(
@@ -450,6 +459,7 @@ pub(crate) fn paint_text_node(
                         baseline_y,
                         letter_spacing,
                         justify_extra,
+                        paint_node.font_kerning,
                     );
                     decorate_slice(cx.backend, style, slice_x0, glyph_end, baseline_y);
                     x = next_x;

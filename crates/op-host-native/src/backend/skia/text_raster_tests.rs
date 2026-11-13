@@ -113,3 +113,92 @@ fn latin_cap_horizontal_bounds_follow_the_selected_font_outline() {
         );
     });
 }
+
+#[test]
+fn explicit_kerning_changes_latin_advances_and_paint_while_absence_stays_legacy() {
+    jian_skia::with_font_lock(|| {
+        let mut backend = backend();
+        backend.shaped_text = super::super::shaped_text::ShapedText::new(&backend.font_resolver);
+        let plain = backend.measure_text_family_styled("AVATAR", 40.0, "Inter", 700, false);
+        let absent =
+            backend.measure_text_family_kerned("AVATAR", 40.0, "Inter", 700, false, None, 0.0);
+        let off = backend.measure_text_family_kerned(
+            "AVATAR",
+            40.0,
+            "Inter",
+            700,
+            false,
+            Some(false),
+            0.0,
+        );
+        let on = backend.measure_text_family_kerned(
+            "AVATAR",
+            40.0,
+            "Inter",
+            700,
+            false,
+            Some(true),
+            0.0,
+        );
+        let tracked = backend.measure_text_family_kerned(
+            "AVATAR",
+            40.0,
+            "Inter",
+            700,
+            false,
+            Some(true),
+            2.0,
+        );
+        assert!(
+            (tracked - on - 10.0).abs() < 0.001,
+            "tracking adds five gaps without removing real pair kerning"
+        );
+        assert_eq!(plain, absent);
+        assert_eq!(plain, off);
+        assert!(
+            on < off - 1.0,
+            "real font kerning changes pair advances: {on} vs {off}"
+        );
+        let paint = |backend: &mut NativeBackend, kerning, spacing| {
+            let mut surface = skia_safe::surfaces::raster_n32_premul((300, 110)).unwrap();
+            surface.canvas().clear(skia_safe::Color::WHITE);
+            let layout = TextLayout::single_run(
+                "AVATAR",
+                "Inter",
+                40.0,
+                op_editor_ui::Color::BLACK.to_jian(),
+                Point2D::ZERO,
+            )
+            .with_font_weight(700)
+            .with_kerning(kerning)
+            .with_letter_spacing(spacing);
+            backend.draw_text(surface.canvas(), &layout, Point2D::new(16.0, 85.0));
+            surface
+                .image_snapshot()
+                .peek_pixels()
+                .unwrap()
+                .bytes()
+                .unwrap()
+                .to_vec()
+        };
+        let legacy_pixels = paint(&mut backend, None, 0.0);
+        assert!(
+            legacy_pixels == paint(&mut backend, Some(false), 0.0),
+            "explicit off preserves unkerned paint"
+        );
+        let kerned_pixels = paint(&mut backend, Some(true), 0.0);
+        let tracked_pixels = paint(&mut backend, Some(true), 2.0);
+        assert!(
+            ink_bounds(&tracked_pixels).2 >= ink_bounds(&kerned_pixels).2 + 9,
+            "paint applies tracking to shaped glyph positions"
+        );
+        assert!(
+            legacy_pixels != kerned_pixels,
+            "paint uses the selected kerning"
+        );
+        assert!(
+            ink_bounds(&kerned_pixels).2 < ink_bounds(&legacy_pixels).2,
+            "the kerned paint has the measured narrower extent"
+        );
+    });
+}

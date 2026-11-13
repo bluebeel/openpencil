@@ -28,6 +28,20 @@ fn vertical_centered_text_child_infers_center_text_align_like_ts_layout() {
 }
 
 #[test]
+fn vertical_centered_parent_preserves_explicit_left_text_alignment() {
+    let src = r##"{"version":"1.0.0","pages":[{"id":"p","name":"P","children":[
+        {"type":"frame","id":"parent","width":1000,"height":112,"layout":"vertical","alignItems":"center",
+         "children":[{"type":"text","id":"label","width":986,"height":64,"content":"Authored left",
+                      "fontSize":56,"textAlign":"left"}]}]}],"children":[]}"##;
+    let scene = editor_state_to_layout_scene(&state_from(src));
+    let label = scene.pages[0].find("label").expect("text child");
+    assert_eq!(
+        label.text_align,
+        jian_scene::layout_scene::SceneTextAlign::Left
+    );
+}
+
+#[test]
 fn implicit_horizontal_layout_applies_padding_to_children_like_ts_layout() {
     // TS `inferLayout` treats a frame with padding as horizontal auto-layout.
     // Badge labels in pencil-demo.op rely on that padding even though the

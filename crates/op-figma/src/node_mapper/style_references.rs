@@ -159,6 +159,29 @@ fn derived_confirms_text_style(node: &FigValue, style: &FigValue, field: &str) -
     )
 }
 
+/// Cached baseline lineHeight can be the font's natural metrics rather than
+/// the authored line box. Auto-height geometry supplies independent proof
+/// when the saved glyph size already confirms a stale direct typography pair.
+fn derived_confirms_auto_line_height(node: &FigValue, style: &FigValue) -> bool {
+    if node.get_str("textAutoResize") != Some("HEIGHT") {
+        return false;
+    }
+    let (Some(current), Some(referenced), Some(height), Some(cache)) = (
+        effective_line_height_px(node),
+        effective_line_height_px(style),
+        node.get("size").and_then(|size| size.get_f64("y")),
+        node.get("derivedTextData"),
+    ) else {
+        return false;
+    };
+    let Some(lines) = TextEvidence::from_cache(cache).saved_line_count() else {
+        return false;
+    };
+    referenced > 0.0
+        && !nearly_equal(current, referenced)
+        && nearly_equal(height, referenced * lines as f64)
+}
+
 fn resolve_on_node(
     nc: &mut FigValue,
     style_map: &HashMap<String, FigValue>,
@@ -187,9 +210,16 @@ fn resolve_on_node(
         let use_derived = text_priority == TextStylePriority::DerivedMetrics
             && nc.get_bool("isOverrideOverTextStyle") != Some(true);
         let replace_font_size = use_derived && derived_confirms_text_style(nc, &ts, "fontSize");
-        let replace_line_height = use_derived && derived_confirms_text_style(nc, &ts, "lineHeight");
         let replace_font_name = use_derived && derived_uses_style_font(nc, &ts);
+        let replace_line_height = use_derived
+            && (derived_confirms_text_style(nc, &ts, "lineHeight")
+                || (replace_font_size
+                    && replace_font_name
+                    && derived_confirms_auto_line_height(nc, &ts)));
         let replace_tracking = use_derived && derived_confirms_style_tracking(nc, &ts);
+        // Restore stale feature flags only with the same independent saved
+        // family + tracking proof. Explicit node/instance overrides still win.
+        let replace_features = replace_font_name && replace_tracking;
         for key in [
             "fontName",
             "fontSize",
@@ -199,12 +229,15 @@ fn resolve_on_node(
             "textAlignVertical",
             "textDecoration",
             "textCase",
+            "toggledOnOTFeatures",
+            "toggledOffOTFeatures",
         ] {
             let replace_metric = match key {
                 "fontName" => replace_font_name,
                 "fontSize" => replace_font_size,
                 "lineHeight" => replace_line_height,
                 "letterSpacing" => replace_tracking,
+                "toggledOnOTFeatures" | "toggledOffOTFeatures" => replace_features,
                 _ => false,
             };
             if replace_metric || nc.get(key).is_none() {

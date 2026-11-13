@@ -233,6 +233,10 @@ impl TextEvidence {
         }
     }
 
+    pub(crate) fn saved_line_count(&self) -> Option<usize> {
+        self.line_height.value().map(|_| self.line_height.count)
+    }
+
     pub(crate) fn uses_font(&self, font: &FigValue) -> bool {
         !self.invalid_font
             && matches!((&self.font, font.get_str("family"), font.get_str("style")),
