@@ -37,8 +37,11 @@ float quantizeByte(float value) {
     return base;
 }
 float4 storeRGBA8(float4 value) {
-    return float4(quantizeByte(value.r), quantizeByte(value.g),
-                  quantizeByte(value.b), quantizeByte(value.a)) / 255.0;
+    float4 bytes = float4(quantizeByte(value.r), quantizeByte(value.g),
+                          quantizeByte(value.b), quantizeByte(value.a));
+    // Framebuffer destination loads expand UNORM8 to UNORM16 before float
+    // blending. Keep the integer expansion: reciprocal255 has different ties.
+    return float4(int4(bytes) * 257) * (1.0 / 65535.0);
 }
 float4 sampleBytes(float2 p, float2 offset) {
     float2 q = p + float2(deviceInverse.x * offset.x + deviceInverse.y * offset.y,
@@ -142,6 +145,50 @@ mod tests {
     use super::*;
 
     #[test]
+    fn framebuffer_normalization_preserves_even_byte_ties_during_blending() {
+        // Four independent source groups resolve to16,45,30,30. The second
+        // atlas write is exactly30.5 bytes: the UNORM16 destination load
+        // keeps the ties-even result30, whereas a reciprocal255 load gives31.
+        let groups = [[5, 7, 13, 15], [0, 2, 8, 10], [4, 6, 12, 14], [1, 3, 9, 11]];
+        let mut pixels = vec![0_u8; 4 * 4 * 4];
+        for (group, value) in groups.into_iter().zip([16, 45, 30, 30]) {
+            for index in group {
+                pixels[index * 4..index * 4 + 4].copy_from_slice(&[value, 80, 160, 255]);
+            }
+        }
+        let info = skia_safe::ImageInfo::new(
+            (4, 4),
+            skia_safe::ColorType::RGBA8888,
+            skia_safe::AlphaType::Unpremul,
+            None,
+        );
+        let image =
+            skia_safe::images::raster_from_data(&info, Data::new_copy(&pixels), 16).unwrap();
+        let mut surface = skia_safe::surfaces::raster_n32_premul((1, 1)).unwrap();
+        let rect = skia_safe::Rect::from_wh(1.0, 1.0);
+        let shader = make(
+            surface.canvas(),
+            &image,
+            &Matrix::scale((0.25, 0.25)),
+            &RRect::new_rect_xy(rect, 0.0, 0.0),
+            2.0,
+        )
+        .unwrap();
+        let mut paint = skia_safe::Paint::default();
+        paint.set_shader(shader);
+        surface.canvas().draw_rect(rect, &paint);
+        let pixel = surface
+            .image_snapshot()
+            .peek_pixels()
+            .unwrap()
+            .get_color((0, 0));
+        assert_eq!(
+            (pixel.r(), pixel.g(), pixel.b(), pixel.a()),
+            (30, 80, 160, 255)
+        );
+    }
+
+    #[test]
     fn atlas_writes_match_independent_captured_running_average_math() {
         let mut pixels: Vec<u8> = (0..16)
             .flat_map(|i| [((i * 37 + 11) % 256) as u8, 90, 170, 255])
@@ -157,10 +204,9 @@ mod tests {
                 .into_iter()
                 .map(|i| f32::from(pixels[i * 4]))
                 .sum::<f32>()
-                / 4.0
-                / 255.0;
-            stored =
-                ((incoming * weight + (stored / 255.0) * (1.0 - weight)) * 255.0).round_ties_even();
+                * (1.0_f32 / 1020.0);
+            let destination = ((stored as u32 * 257) as f32) * (1.0_f32 / 65535.0);
+            stored = ((incoming * weight + destination * (1.0 - weight)) * 255.0).round_ties_even();
         }
         let single_average =
             (pixels.chunks_exact(4).map(|p| f32::from(p[0])).sum::<f32>() / 16.0).round_ties_even();
