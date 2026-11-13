@@ -184,6 +184,40 @@ pub fn export_node_raster_with_margin(
     })
 }
 
+/// Export a node into an explicit document-space viewport, retaining transparent
+/// frame padding. The viewport selects the surface; pixels are never resized.
+pub fn export_node_raster_with_viewport(
+    scene: &LayoutScene,
+    node_id: &str,
+    target: &StdPath,
+    format: RasterFormat,
+    scale: f32,
+    viewport: Rect,
+) -> Result<(), ExportError> {
+    format.ensure_supported()?;
+    let page = scene.active_page().ok_or(ExportError::NoActivePage)?;
+    let node = page
+        .find(node_id)
+        .ok_or_else(|| ExportError::NodeNotFoundOnActivePage {
+            node_id: node_id.to_string(),
+        })?;
+    if node.hidden {
+        return Err(ExportError::NodeHidden {
+            node_id: node_id.to_string(),
+        });
+    }
+    render_raster(
+        viewport,
+        target,
+        format,
+        clamp_scale(scale),
+        0.0,
+        |canvas| {
+            paint_node(canvas, node);
+        },
+    )
+}
+
 /// In-memory variant of [`export_node_raster`] — renders a single node
 /// by id and returns the encoded bytes instead of writing a file. Used
 /// by the `get_screenshot` MCP tool so the render core is shared with
@@ -461,3 +495,5 @@ pub mod test_support {
 mod shadow_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod viewport_tests;

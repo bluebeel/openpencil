@@ -22,6 +22,8 @@ for maintained benchmark cases.
 
 `--expect-bounds '[0,0,100,80]'` validates painted bounds within 0.02 document
 pixels. `--expect-size 100x80` validates actual PNG dimensions without resizing.
+`--authored-bounds` exports the selected scene node's own rectangle, preserving
+transparent frame padding. Without it, export remains cropped to painted bounds.
 `--scale` accepts 0.5 through 8, defaulting to 1. `--font path` also registers a
 font explicitly. `--phase-events` emits stdout JSONL phase-start events for a
 process-tree resource observer, including the importer's container, schema,

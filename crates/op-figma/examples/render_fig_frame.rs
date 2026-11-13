@@ -15,7 +15,9 @@ use error::{IoOperation, RenderFigError};
 use jian_ops_schema::node::PenNode;
 use op_editor_core::PenNodeExt;
 use op_figma::{prepare_fig_binary_with_observer, FigImportPhase, FigLayoutMode};
-use op_host_services::export::{export_node_raster_with_margin, node_bounds, RasterFormat};
+use op_host_services::export::{
+    export_node_raster_with_margin, export_node_raster_with_viewport, node_bounds, RasterFormat,
+};
 use std::path::Path;
 use std::time::Instant;
 
@@ -148,9 +150,13 @@ fn run() -> Result<serde_json::Value, RenderFigError> {
     if node.hidden {
         return Err(RenderFigError::HiddenNode { id: frame_id });
     }
-    let bounds = node_bounds(node).ok_or_else(|| RenderFigError::NoPaintedBounds {
-        id: frame_id.clone(),
-    })?;
+    let bounds = if args.authored_bounds {
+        node.bounds
+    } else {
+        node_bounds(node).ok_or_else(|| RenderFigError::NoPaintedBounds {
+            id: frame_id.clone(),
+        })?
+    };
     let actual_bounds = [
         bounds.origin.x as f64,
         bounds.origin.y as f64,
@@ -161,14 +167,25 @@ fn run() -> Result<serde_json::Value, RenderFigError> {
     phase(&args, "render");
     let started = Instant::now();
     stage("render-started", None);
-    export_node_raster_with_margin(
-        &scene,
-        &frame_id,
-        Path::new(&args.output),
-        RasterFormat::Png,
-        args.scale,
-        0.0,
-    )?;
+    if args.authored_bounds {
+        export_node_raster_with_viewport(
+            &scene,
+            &frame_id,
+            Path::new(&args.output),
+            RasterFormat::Png,
+            args.scale,
+            bounds,
+        )?;
+    } else {
+        export_node_raster_with_margin(
+            &scene,
+            &frame_id,
+            Path::new(&args.output),
+            RasterFormat::Png,
+            args.scale,
+            0.0,
+        )?;
+    }
     let render_ms = started.elapsed().as_secs_f64() * 1000.0;
     let pixels = cli::png_dimensions(Path::new(&args.output))?;
     args.check_pixels(pixels)?;
@@ -179,6 +196,7 @@ fn run() -> Result<serde_json::Value, RenderFigError> {
         "selectedPath":selected_path,"output":args.output,"bounds":actual_bounds,
         "pixels":{"width":pixels.0,"height":pixels.1},"scale":args.scale,
         "preserveAuthoredGeometry":true,"warnings":import.warnings,"fonts":fonts,
+        "exportBounds":if args.authored_bounds { "authored" } else { "painted" },
         "resourceInstrumentation":"Registered font files and importer warnings; per-style fallback events are not exposed",
         "importPhases":import_phases,
         "timingsMs":{"read":read_ms,"fonts":font_ms,"prepare":prepare_ms,"load":read_ms+prepare_ms,"convert":convert_ms,"layout":layout_ms,"render":render_ms}

@@ -11,6 +11,7 @@ pub struct Arguments {
     pub selector: Selector,
     pub scale: f32,
     pub phase_events: bool,
+    pub authored_bounds: bool,
     expected_bounds: Option<[f64; 4]>,
     expected_pixels: Option<(u32, u32)>,
 }
@@ -29,6 +30,7 @@ impl Arguments {
             selector: Selector::top_level(args[2].clone()),
             scale: 1.0,
             phase_events: false,
+            authored_bounds: false,
             expected_bounds: None,
             expected_pixels: None,
         };
@@ -38,6 +40,11 @@ impl Arguments {
             let option = args[index].as_str();
             if option == "--phase-events" {
                 result.phase_events = true;
+                index += 1;
+                continue;
+            }
+            if option == "--authored-bounds" {
+                result.authored_bounds = true;
                 index += 1;
                 continue;
             }
