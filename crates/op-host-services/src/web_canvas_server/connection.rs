@@ -564,9 +564,10 @@ pub(super) fn dispatch<S: Read + Write>(
                     refused = Some(reason);
                     return false;
                 }
+                let revision_before = editor.document_revision();
                 let ok = editor.apply(cmd.clone());
                 if ok {
-                    crate::mcp_serve::run_write_repairs_after_apply(editor);
+                    crate::mcp_serve::repair_after_document_change(editor, revision_before);
                 }
                 applied_any |= ok;
                 ok

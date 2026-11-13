@@ -170,6 +170,12 @@ pub(crate) fn run_write_repairs_after_apply(state: &mut EditorState) -> bool {
     mobile_nav_reflowed || image_slots_materialized
 }
 
+/// UI-only commands must not traverse or normalize document content. Undo and
+/// redo are detected through the actual revision change, just like writes.
+pub(crate) fn repair_after_document_change(state: &mut EditorState, before: u64) -> bool {
+    state.document_revision() != before && run_write_repairs_after_apply(state)
+}
+
 /// Process one JSON-RPC message line against the editor state.
 #[cfg(test)]
 fn process_message(
@@ -210,12 +216,13 @@ fn process_message_with_auto_finalize(
         // `EditorState::apply` runs the pre-validate-then-mutate
         // discipline; `false` means the command rejected and the
         // document was NOT changed.
+        let revision_before = state.document_revision();
         if !state.apply(cmd.clone()) {
             apply_rejected = true;
             return false;
         }
         if !annotation_only {
-            run_write_repairs_after_apply(state);
+            repair_after_document_change(state, revision_before);
         }
         if let Err(e) = save_editor_state(state, path) {
             applier_failed = Some(format!("save failed: {e}"));

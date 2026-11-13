@@ -7,6 +7,39 @@
 use super::*;
 
 #[test]
+fn ui_commands_skip_document_repairs_but_writes_keep_them() {
+    let doc = jian_ops_schema::load_str(
+        r#"{
+        "version":"1.0.0","children":[{"type":"rectangle","id":"slot",
+        "width":24,"height":16,"fill":[{"type":"image","url":""}]}]
+    }"#,
+    )
+    .unwrap();
+    let mut state = EditorState::from_document(doc.value);
+    let original = state.doc.clone();
+    let revision = state.document_revision();
+    assert!(state.apply(EditorCommand::SetViewport {
+        pan_x: Some(10),
+        pan_y: None,
+        zoom_percent: Some(125),
+    }));
+    assert!(!repair_after_document_change(&mut state, revision));
+    assert_eq!(state.doc, original, "zoom must not materialize image slots");
+
+    let revision = state.document_revision();
+    assert!(state.apply(EditorCommand::PatchNodeData {
+        node_id: op_editor_core::NodeId::new("slot"),
+        patch_json: r#"{"name":"Edited slot"}"#.into(),
+        page_id: None,
+    }));
+    assert!(repair_after_document_change(&mut state, revision));
+    assert!(matches!(
+        state.active_children()[0],
+        jian_ops_schema::node::PenNode::Image(_)
+    ));
+}
+
+#[test]
 fn find_empty_space_returns_padded_position_from_active_page_bounds() {
     let mut state = op_editor_core::EditorState::new();
     assert!(state.apply(EditorCommand::InsertNode {
