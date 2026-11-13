@@ -2,14 +2,14 @@ use std::collections::BTreeMap;
 
 use base64::Engine as _;
 use op_editor_core::EditorState;
-use op_editor_ui::layout_scene::LayoutScene;
 use op_mcp::{McpTool, ToolErrorCode, ToolOutcome};
 
-use crate::export::{render_node_on_page_raster_bytes, render_page_raster_bytes, RasterFormat};
+use super::raster_snapshot::RasterSnapshot;
+use crate::export::{RasterFormat, SharedRasterTarget};
 use crate::export_pdf::{render_node_on_page_pdf_bytes, render_page_pdf_bytes};
 
 pub struct ExportItem {
-    scene: LayoutScene,
+    scene: RasterSnapshot,
     selected_node_id: Option<String>,
 }
 
@@ -19,6 +19,9 @@ impl McpTool for ExportItem {
     }
 
     fn call(&self, args: &BTreeMap<String, String>) -> ToolOutcome {
+        if let Err(error) = self.scene.ready() {
+            return ToolOutcome::Err(ToolErrorCode::ToolFailed, error.to_string());
+        }
         let format = match args.get("format").map(|value| value.trim()) {
             Some(format) if !format.is_empty() => format,
             _ => {
@@ -52,41 +55,75 @@ impl McpTool for ExportItem {
             .and_then(|value| value.trim().parse::<f32>().ok())
             .unwrap_or(1.0);
 
-        let (bytes, item_type) = if let Some(page) =
-            self.scene.pages.iter().find(|page| page.id == item_id)
-        {
-            let result = match format {
-                "png" => render_page_raster_bytes(page, RasterFormat::Png, scale),
-                "jpeg" | "jpg" => render_page_raster_bytes(page, RasterFormat::Jpeg, scale),
-                "webp" => render_page_raster_bytes(page, RasterFormat::Webp, scale),
-                "pdf" => render_page_pdf_bytes(page),
-                other => return unsupported_format(other),
+        let (bytes, item_type) =
+            if let Some(page) = self.scene.pages.iter().find(|page| page.id == item_id) {
+                let result = match format {
+                    "png" => self.scene.render(
+                        SharedRasterTarget::Page {
+                            page_id: page.id.clone(),
+                        },
+                        RasterFormat::Png,
+                        scale,
+                    ),
+                    "jpeg" | "jpg" => self.scene.render(
+                        SharedRasterTarget::Page {
+                            page_id: page.id.clone(),
+                        },
+                        RasterFormat::Jpeg,
+                        scale,
+                    ),
+                    "webp" => self.scene.render(
+                        SharedRasterTarget::Page {
+                            page_id: page.id.clone(),
+                        },
+                        RasterFormat::Webp,
+                        scale,
+                    ),
+                    "pdf" => render_page_pdf_bytes(page),
+                    other => return unsupported_format(other),
+                };
+                (result, "page")
+            } else if let Some(page) = self
+                .scene
+                .pages
+                .iter()
+                .find(|page| page.find(item_id).is_some())
+            {
+                let result = match format {
+                    "png" => self.scene.render(
+                        SharedRasterTarget::Node {
+                            page_id: page.id.clone(),
+                            node_id: item_id.to_string(),
+                        },
+                        RasterFormat::Png,
+                        scale,
+                    ),
+                    "jpeg" | "jpg" => self.scene.render(
+                        SharedRasterTarget::Node {
+                            page_id: page.id.clone(),
+                            node_id: item_id.to_string(),
+                        },
+                        RasterFormat::Jpeg,
+                        scale,
+                    ),
+                    "webp" => self.scene.render(
+                        SharedRasterTarget::Node {
+                            page_id: page.id.clone(),
+                            node_id: item_id.to_string(),
+                        },
+                        RasterFormat::Webp,
+                        scale,
+                    ),
+                    "pdf" => render_node_on_page_pdf_bytes(page, item_id),
+                    other => return unsupported_format(other),
+                };
+                (result, "node")
+            } else {
+                return ToolOutcome::Err(
+                    ToolErrorCode::InvalidArgument,
+                    format!("item {item_id} is not a page or node in the document"),
+                );
             };
-            (result, "page")
-        } else if let Some(page) = self
-            .scene
-            .pages
-            .iter()
-            .find(|page| page.find(item_id).is_some())
-        {
-            let result = match format {
-                "png" => render_node_on_page_raster_bytes(page, item_id, RasterFormat::Png, scale),
-                "jpeg" | "jpg" => {
-                    render_node_on_page_raster_bytes(page, item_id, RasterFormat::Jpeg, scale)
-                }
-                "webp" => {
-                    render_node_on_page_raster_bytes(page, item_id, RasterFormat::Webp, scale)
-                }
-                "pdf" => render_node_on_page_pdf_bytes(page, item_id),
-                other => return unsupported_format(other),
-            };
-            (result, "node")
-        } else {
-            return ToolOutcome::Err(
-                ToolErrorCode::InvalidArgument,
-                format!("item {item_id} is not a page or node in the document"),
-            );
-        };
 
         match bytes {
             Ok(bytes) => ToolOutcome::OkJson(
@@ -120,7 +157,18 @@ fn unsupported_format(format: &str) -> ToolOutcome {
 
 pub fn export_item_snapshot(state: &EditorState) -> ExportItem {
     ExportItem {
-        scene: op_pen_loader::editor_state_to_layout_scene(state),
+        scene: RasterSnapshot::from_scene(op_pen_loader::editor_state_to_layout_scene(state)),
+        selected_node_id: state
+            .selection
+            .anchor
+            .is_real()
+            .then(|| state.selection.anchor.to_string()),
+    }
+}
+
+pub(crate) fn export_item_snapshot_admitted(state: &EditorState) -> ExportItem {
+    ExportItem {
+        scene: RasterSnapshot::admitted(|| op_pen_loader::editor_state_to_layout_scene(state)),
         selected_node_id: state
             .selection
             .anchor
@@ -173,7 +221,7 @@ mod tests {
 
     fn tool_from_scene(scene: LayoutScene, selected_node_id: Option<String>) -> ExportItem {
         ExportItem {
-            scene,
+            scene: RasterSnapshot::from_scene(scene),
             selected_node_id,
         }
     }

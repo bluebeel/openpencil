@@ -14,8 +14,8 @@
 
 use std::collections::BTreeMap;
 
+use super::raster_snapshot::RasterSnapshot;
 use op_editor_core::EditorState;
-use op_editor_ui::layout_scene::LayoutScene;
 use op_mcp::{
     document_info_snapshot, get_active_theme_snapshot, get_editor_state_snapshot,
     list_pages_snapshot, list_variables_snapshot, read_nodes_snapshot, McpTool, ToolErrorCode,
@@ -23,8 +23,8 @@ use op_mcp::{
 };
 use serde_json::{Map, Value};
 
-use super::export_tool::export_nodes_from_scene;
-use super::screenshot_tool::{get_screenshot_from_scene, scene_root_node_id};
+use super::export_tool::export_nodes_from_snapshot;
+use super::screenshot_tool::{get_screenshot_from_snapshot, scene_root_node_id};
 
 /// Arguments that make the lean `get_editor_state` include node JSON.
 const NODE_READ_ARGS: &[&str] = &["nodeIds", "node_ids", "ids", "depth"];
@@ -131,15 +131,24 @@ impl McpTool for LeanEditorState {
 /// Lean `get_screenshot`: an inline PNG for visual verification, or — when
 /// `format` is given — the `export_nodes` file bytes for that node.
 pub(crate) struct LeanScreenshot {
-    scene: LayoutScene,
+    scene: RasterSnapshot,
 }
 
 impl LeanScreenshot {
     pub(crate) fn snapshot(state: &EditorState) -> Self {
-        // One layout derive serves both paths; each call builds the tool it
-        // needs over a clone, which is far cheaper than a second derive.
+        // Both tool delegates share this immutable scene and its admission.
         Self {
-            scene: op_pen_loader::editor_state_to_active_page_layout_scene(state),
+            scene: RasterSnapshot::from_scene(
+                op_pen_loader::editor_state_to_active_page_layout_scene(state),
+            ),
+        }
+    }
+
+    pub(crate) fn snapshot_admitted(state: &EditorState) -> Self {
+        Self {
+            scene: RasterSnapshot::admitted(|| {
+                op_pen_loader::editor_state_to_active_page_layout_scene(state)
+            }),
         }
     }
 
@@ -175,7 +184,7 @@ impl LeanScreenshot {
         if let Some(scale) = args.get("scale") {
             forwarded.insert("scale".to_string(), scale.clone());
         }
-        export_nodes_from_scene(self.scene.clone()).call(&forwarded)
+        export_nodes_from_snapshot(self.scene.clone()).call(&forwarded)
     }
 }
 
@@ -185,13 +194,16 @@ impl McpTool for LeanScreenshot {
     }
 
     fn call(&self, args: &BTreeMap<String, String>) -> ToolOutcome {
+        if let Err(error) = self.scene.ready() {
+            return ToolOutcome::Err(ToolErrorCode::ToolFailed, error.to_string());
+        }
         match args
             .get("format")
             .map(|format| format.trim())
             .filter(|format| !format.is_empty())
         {
             Some(format) => self.export(args, format),
-            None => get_screenshot_from_scene(self.scene.clone()).call(args),
+            None => get_screenshot_from_snapshot(self.scene.clone()).call(args),
         }
     }
 }

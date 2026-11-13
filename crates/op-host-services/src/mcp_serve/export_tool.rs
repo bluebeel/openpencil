@@ -25,14 +25,15 @@ use op_editor_core::EditorState;
 use op_editor_ui::layout_scene::LayoutScene;
 use op_mcp::{McpTool, ToolErrorCode, ToolOutcome};
 
-use crate::export::{render_node_raster_bytes, RasterFormat};
+use super::raster_snapshot::RasterSnapshot;
+use crate::export::RasterFormat;
 use crate::export_pdf::render_nodes_pdf_bytes;
 
 /// MCP tool struct — stores the layout-resolved scene snapshot derived
 /// at registration time from the live `EditorState`.
 pub struct ExportNodes {
     /// Layout-resolved scene snapshot.
-    scene: LayoutScene,
+    scene: RasterSnapshot,
 }
 
 impl McpTool for ExportNodes {
@@ -41,6 +42,9 @@ impl McpTool for ExportNodes {
     }
 
     fn call(&self, args: &BTreeMap<String, String>) -> ToolOutcome {
+        if let Err(error) = self.scene.ready() {
+            return ToolOutcome::Err(ToolErrorCode::ToolFailed, error.to_string());
+        }
         // --- parse nodeIds (required, JSON array encoded as flat string) ---
         // The MCP wire layer delivers structured array values as a JSON
         // string in the flat BTreeMap; callers pass either a JSON-encoded
@@ -113,6 +117,16 @@ pub fn export_nodes_snapshot(state: &EditorState) -> ExportNodes {
 /// Build the tool over an already-derived scene (see
 /// `screenshot_tool::get_screenshot_from_scene`).
 pub(crate) fn export_nodes_from_scene(scene: LayoutScene) -> ExportNodes {
+    export_nodes_from_snapshot(RasterSnapshot::from_scene(scene))
+}
+
+pub(crate) fn export_nodes_snapshot_admitted(state: &EditorState) -> ExportNodes {
+    export_nodes_from_snapshot(RasterSnapshot::admitted(|| {
+        op_pen_loader::editor_state_to_active_page_layout_scene(state)
+    }))
+}
+
+pub(super) fn export_nodes_from_snapshot(scene: RasterSnapshot) -> ExportNodes {
     ExportNodes { scene }
 }
 
@@ -120,7 +134,7 @@ pub(crate) fn export_nodes_from_scene(scene: LayoutScene) -> ExportNodes {
 /// Unknown node ids and nodes that paint nothing are skipped; each
 /// skipped entry records an `error` field instead of `bytes_base64`.
 fn render_raster(
-    scene: &LayoutScene,
+    scene: &RasterSnapshot,
     node_ids: &[String],
     format: RasterFormat,
     scale: f32,
@@ -132,7 +146,7 @@ fn render_raster(
     };
     let mut files: Vec<serde_json::Value> = Vec::new();
     for id in node_ids {
-        match render_node_raster_bytes(scene, id, format, scale) {
+        match scene.render_active_node(id, format, scale) {
             Ok(bytes) => {
                 let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
                 files.push(serde_json::json!({
@@ -280,7 +294,9 @@ mod tests {
     /// Build a minimal `ExportNodes` tool directly from a `LayoutScene` to
     /// avoid the `EditorState` round-trip in unit tests.
     fn tool_from_scene(scene: op_editor_ui::layout_scene::LayoutScene) -> ExportNodes {
-        ExportNodes { scene }
+        ExportNodes {
+            scene: RasterSnapshot::from_scene(scene),
+        }
     }
 
     fn call_tool(tool: &ExportNodes, node_ids_json: &str, format: &str) -> ToolOutcome {

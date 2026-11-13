@@ -72,9 +72,30 @@ pub(super) fn rebuild_registry(
         "ToolSearch",
         tool_search_snapshot(tool_profile::tool_search_schemas(profile))
     );
-    register_tool!("get_screenshot", get_screenshot_snapshot(doc));
-    register_tool!("export_item", export_item_snapshot(doc));
-    register_tool!("export_nodes", export_nodes_snapshot(doc));
+    register_tool!(
+        "get_screenshot",
+        if requested_tool.is_some() {
+            screenshot_tool::get_screenshot_snapshot_admitted(doc)
+        } else {
+            get_screenshot_snapshot(doc)
+        }
+    );
+    register_tool!(
+        "export_item",
+        if requested_tool.is_some() {
+            export_item_tool::export_item_snapshot_admitted(doc)
+        } else {
+            export_item_snapshot(doc)
+        }
+    );
+    register_tool!(
+        "export_nodes",
+        if requested_tool.is_some() {
+            export_tool::export_nodes_snapshot_admitted(doc)
+        } else {
+            export_nodes_snapshot(doc)
+        }
+    );
     register_tool!("export_deck", export_deck_snapshot(doc));
     register_tool!("export_frames", export_frames_snapshot(doc));
     register_tool!("get_deck_boards", get_deck_boards_snapshot(doc));

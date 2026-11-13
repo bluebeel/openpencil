@@ -38,6 +38,12 @@ thread_local! {
         RefCell::new(NativeBackend::with_dpi(1.0));
 }
 
+/// Called on the shared worker itself: the non-Send backend stays on this
+/// thread for every subsequent job, just like synchronous canvas painting.
+pub(crate) fn initialize_backend() {
+    EXPORT_BACKEND.with(|_| {});
+}
+
 /// Cull rect covering all finite doc-space geometry. Export never
 /// culls — the offscreen surface is already cropped to the painted
 /// bounds, so every node the surface can show must paint.

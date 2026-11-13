@@ -170,7 +170,11 @@ pub(super) fn lean_registry(
         registry.register(Box::new(snapshot_layout_snapshot(doc)));
     }
     if wants("get_screenshot") {
-        registry.register(Box::new(LeanScreenshot::snapshot(doc)));
+        registry.register(Box::new(if requested_tool.is_some() {
+            LeanScreenshot::snapshot_admitted(doc)
+        } else {
+            LeanScreenshot::snapshot(doc)
+        }));
     }
     if wants("finalize_design") {
         registry.register(Box::new(finalize_design_snapshot(doc)));

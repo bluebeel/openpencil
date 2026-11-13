@@ -1,0 +1,177 @@
+//! Request-scoped raster admission, taken before layout snapshots are built.
+
+use std::{ops::Deref, sync::Arc};
+
+use op_editor_ui::layout_scene::LayoutScene;
+
+use crate::export::{
+    shared_raster_worker, ExportError, RasterAdmission, RasterFormat, SharedRasterTarget,
+};
+
+#[derive(Clone)]
+pub(super) struct RasterSnapshot {
+    scene: Arc<LayoutScene>,
+    admission: Option<Result<Arc<RasterAdmission>, ExportError>>,
+}
+
+impl RasterSnapshot {
+    /// Legacy/discovery construction claims no headless request capacity.
+    pub fn from_scene(scene: LayoutScene) -> Self {
+        Self {
+            scene: Arc::new(scene),
+            admission: None,
+        }
+    }
+
+    /// The factory is never called when the shared renderer is saturated.
+    pub fn admitted(derive: impl FnOnce() -> LayoutScene) -> Self {
+        Self::from_admission(
+            shared_raster_worker().and_then(|worker| worker.try_acquire()),
+            derive,
+        )
+    }
+
+    fn from_admission(
+        admission: Result<RasterAdmission, ExportError>,
+        derive: impl FnOnce() -> LayoutScene,
+    ) -> Self {
+        match admission {
+            Ok(admission) => Self {
+                scene: Arc::new(derive()),
+                admission: Some(Ok(Arc::new(admission))),
+            },
+            Err(error) => Self {
+                scene: Arc::new(LayoutScene {
+                    pages: Vec::new(),
+                    active_page_index: 0,
+                }),
+                admission: Some(Err(error)),
+            },
+        }
+    }
+
+    pub fn ready(&self) -> Result<(), ExportError> {
+        match &self.admission {
+            Some(Err(error)) => Err(error.clone()),
+            _ => Ok(()),
+        }
+    }
+
+    pub fn render(
+        &self,
+        target: SharedRasterTarget,
+        format: RasterFormat,
+        scale: f32,
+    ) -> Result<Vec<u8>, ExportError> {
+        let admission = match &self.admission {
+            Some(Ok(admission)) => admission.as_ref(),
+            Some(Err(error)) => return Err(error.clone()),
+            None => {
+                // Preserve synchronous public-factory/discovery behavior.
+                // Only request-specific constructors enter the shared worker.
+                let page_id = match &target {
+                    SharedRasterTarget::Page { page_id }
+                    | SharedRasterTarget::Node { page_id, .. } => page_id,
+                };
+                let page = self
+                    .scene
+                    .pages
+                    .iter()
+                    .find(|page| &page.id == page_id)
+                    .ok_or_else(|| ExportError::PageNotFound {
+                        page_id: page_id.clone(),
+                    })?;
+                return match target {
+                    SharedRasterTarget::Page { .. } => {
+                        crate::export::render_page_raster_bytes(page, format, scale)
+                    }
+                    SharedRasterTarget::Node { node_id, .. } => {
+                        crate::export::render_node_on_page_raster_bytes(
+                            page, &node_id, format, scale,
+                        )
+                    }
+                };
+            }
+        };
+        admission.render(Arc::clone(&self.scene), target, format, scale)
+    }
+
+    pub fn render_active_node(
+        &self,
+        node_id: &str,
+        format: RasterFormat,
+        scale: f32,
+    ) -> Result<Vec<u8>, ExportError> {
+        self.ready()?;
+        let page = self.active_page().ok_or(ExportError::NoActivePage)?;
+        // Preserve the legacy active-page error variant before queuing.
+        if page.find(node_id).is_none() {
+            return Err(ExportError::NodeNotFoundOnActivePage {
+                node_id: node_id.to_string(),
+            });
+        }
+        self.render(
+            SharedRasterTarget::Node {
+                page_id: page.id.clone(),
+                node_id: node_id.to_string(),
+            },
+            format,
+            scale,
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::export::SharedRasterWorker;
+    use std::cell::Cell;
+
+    fn empty_scene() -> LayoutScene {
+        LayoutScene {
+            pages: Vec::new(),
+            active_page_index: 0,
+        }
+    }
+
+    #[test]
+    fn saturated_renderer_rejects_before_scene_derivation() {
+        let worker = SharedRasterWorker::new().unwrap();
+        let _first = worker.try_acquire().unwrap();
+        let _second = worker.try_acquire().unwrap();
+        let called = Cell::new(false);
+        let snapshot = RasterSnapshot::from_admission(worker.try_acquire(), || {
+            called.set(true);
+            empty_scene()
+        });
+        assert!(
+            !called.get(),
+            "busy requests must not derive or clone a scene"
+        );
+        assert_eq!(
+            snapshot.ready(),
+            Err(ExportError::RenderWorkerBusy { max_admitted: 2 })
+        );
+    }
+
+    #[test]
+    fn lean_delegates_share_scene_and_request_admission() {
+        let worker = SharedRasterWorker::new().unwrap();
+        let snapshot = RasterSnapshot::from_admission(worker.try_acquire(), empty_scene);
+        let delegate = snapshot.clone();
+        assert!(Arc::ptr_eq(&snapshot.scene, &delegate.scene));
+        assert_eq!(worker.stats().admitted, 1);
+        drop(snapshot);
+        assert_eq!(worker.stats().admitted, 1);
+        drop(delegate);
+        assert_eq!(worker.stats().admitted, 0);
+    }
+}
+
+impl Deref for RasterSnapshot {
+    type Target = LayoutScene;
+
+    fn deref(&self) -> &Self::Target {
+        &self.scene
+    }
+}

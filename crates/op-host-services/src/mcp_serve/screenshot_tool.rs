@@ -19,14 +19,15 @@ use op_editor_core::EditorState;
 use op_editor_ui::layout_scene::LayoutScene;
 use op_mcp::{McpTool, ToolErrorCode, ToolOutcome};
 
-use crate::export::{render_node_raster_bytes, RasterFormat};
+use super::raster_snapshot::RasterSnapshot;
+use crate::export::RasterFormat;
 
 /// MCP tool struct — stores the layout-resolved scene (derived at
 /// registration time) and the first top-level node id on the active page
 /// for resolving the `"root"` alias at call time.
 pub struct GetScreenshot {
     /// Layout-resolved scene snapshot — same derive the live canvas uses.
-    scene: LayoutScene,
+    scene: RasterSnapshot,
     /// Id of the first top-level node on the active page, used to resolve
     /// the `"root"` alias. `None` when the active page is empty.
     root_node_id: Option<String>,
@@ -38,6 +39,9 @@ impl McpTool for GetScreenshot {
     }
 
     fn call(&self, args: &BTreeMap<String, String>) -> ToolOutcome {
+        if let Err(error) = self.scene.ready() {
+            return ToolOutcome::Err(ToolErrorCode::ToolFailed, error.to_string());
+        }
         // The browser loads the shipped simple-icons catalog from the daemon,
         // but this exact PNG is rendered server-side. Install the same catalog
         // before painting so brand icon_font nodes do not degrade to the
@@ -71,7 +75,10 @@ impl McpTool for GetScreenshot {
         };
 
         // Render to PNG bytes via the shared raster pipeline.
-        let bytes = match render_node_raster_bytes(&self.scene, node_id, RasterFormat::Png, 1.0) {
+        let bytes = match self
+            .scene
+            .render_active_node(node_id, RasterFormat::Png, 1.0)
+        {
             Ok(b) => b,
             Err(e) => return ToolOutcome::Err(ToolErrorCode::ToolFailed, e.to_string()),
         };
@@ -107,6 +114,16 @@ pub fn get_screenshot_snapshot(state: &EditorState) -> GetScreenshot {
 /// same scene for another tool (the lean profile's export path) derives the
 /// layout once.
 pub(crate) fn get_screenshot_from_scene(scene: LayoutScene) -> GetScreenshot {
+    get_screenshot_from_snapshot(RasterSnapshot::from_scene(scene))
+}
+
+pub(crate) fn get_screenshot_snapshot_admitted(state: &EditorState) -> GetScreenshot {
+    get_screenshot_from_snapshot(RasterSnapshot::admitted(|| {
+        op_pen_loader::editor_state_to_active_page_layout_scene(state)
+    }))
+}
+
+pub(super) fn get_screenshot_from_snapshot(scene: RasterSnapshot) -> GetScreenshot {
     let root_node_id = scene_root_node_id(&scene);
     GetScreenshot {
         scene,
@@ -145,7 +162,7 @@ mod tests {
             .and_then(|p| p.children.first())
             .map(|n| n.id.clone());
         GetScreenshot {
-            scene,
+            scene: RasterSnapshot::from_scene(scene),
             root_node_id,
         }
     }

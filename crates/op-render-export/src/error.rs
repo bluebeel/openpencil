@@ -35,32 +35,60 @@ pub enum ExportError {
     /// rather than a shared one with a branchy `Display`.
     NothingToCapture,
     /// A named page resolved but contributes no visible pixels.
-    PageEmpty { page_id: String },
+    PageEmpty {
+        page_id: String,
+    },
+    PageNotFound {
+        page_id: String,
+    },
+    RenderWorkerBusy {
+        max_admitted: usize,
+    },
+    RenderWorkerStart {
+        message: String,
+    },
+    RenderWorkerUnavailable,
     /// The requested node id is absent from the scene's active page.
-    NodeNotFoundOnActivePage { node_id: String },
+    NodeNotFoundOnActivePage {
+        node_id: String,
+    },
     /// The requested node id is absent from the explicitly named page.
-    NodeNotFoundOnPage { node_id: String, page_id: String },
+    NodeNotFoundOnPage {
+        node_id: String,
+        page_id: String,
+    },
     /// The node exists but its subtree paints nothing, so there are no
     /// bounds to size a surface from.
-    NodePaintsNothing { node_id: String },
+    NodePaintsNothing {
+        node_id: String,
+    },
     /// The node is hidden; exporting it would produce an empty image, so the
     /// request is refused rather than silently satisfied.
-    NodeHidden { node_id: String },
+    NodeHidden {
+        node_id: String,
+    },
     /// Corrupt bounds or scale produced a non-finite surface size.
     NonFiniteOutputSize,
     /// The requested surface exceeds [`MAX_RASTER_SIDE_PX`] per side or
     /// [`MAX_RASTER_TOTAL_PX`] in total — the guard against a giant
     /// UI-thread allocation.
-    OutputTooLarge { width_px: i64, height_px: i64 },
+    OutputTooLarge {
+        width_px: i64,
+        height_px: i64,
+    },
     /// Skia refused to allocate the offscreen raster surface.
     SurfaceAlloc,
     /// Skia's encoder failed for the requested format ("PNG" / "JPEG" /
     /// "WEBP").
-    Encode { format: &'static str },
+    Encode {
+        format: &'static str,
+    },
     /// The selected build deliberately omits an optional encoder. Mobile
     /// release archives omit WebP, so callers must not fall through to a
     /// generic Skia encode failure.
-    UnsupportedFormat { format: &'static str },
+    UnsupportedFormat {
+        format: &'static str,
+    },
     /// Skia's PDF backend closed the document without emitting any bytes.
     PdfEncoderEmpty,
     /// A multi-node PDF export was asked for an empty id list.
@@ -87,6 +115,15 @@ impl fmt::Display for ExportError {
             ExportError::PageEmpty { page_id } => {
                 write!(f, "page {page_id} has no visible content to export")
             }
+            ExportError::PageNotFound { page_id } => write!(f, "page {page_id} not found"),
+            ExportError::RenderWorkerBusy { max_admitted } => write!(
+                f,
+                "raster renderer is busy ({max_admitted} requests admitted); retry later"
+            ),
+            ExportError::RenderWorkerStart { message } => {
+                write!(f, "could not start raster renderer: {message}")
+            }
+            ExportError::RenderWorkerUnavailable => f.write_str("raster renderer is unavailable"),
             ExportError::NodeNotFoundOnActivePage { node_id } => {
                 write!(f, "node {node_id} not found on the active page")
             }

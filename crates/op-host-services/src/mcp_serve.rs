@@ -726,6 +726,7 @@ pub use doc_sync::*;
 
 mod lean_profile;
 mod lean_tools;
+mod raster_snapshot;
 pub(crate) mod schemas;
 pub mod tool_catalog;
 mod tools_list;

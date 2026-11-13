@@ -33,6 +33,7 @@ mod editor;
 mod error;
 pub mod pdf;
 mod scene_painter;
+mod shared_raster;
 mod svg;
 
 pub use editor::{
@@ -41,6 +42,10 @@ pub use editor::{
 };
 pub use error::ExportError;
 pub use scene_painter::{paint_node, paint_nodes};
+pub use shared_raster::{
+    shared_raster_worker, RasterAdmission, RasterWorkerStats, SharedRasterTarget,
+    SharedRasterWorker,
+};
 pub use svg::{export_node_svg, export_svg, render_node_svg_bytes, render_svg_bytes};
 
 const MARGIN: f32 = 0.0;
