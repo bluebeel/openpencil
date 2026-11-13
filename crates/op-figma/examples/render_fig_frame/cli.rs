@@ -12,6 +12,7 @@ pub struct Arguments {
     pub scale: f32,
     pub phase_events: bool,
     pub authored_bounds: bool,
+    pub raster_sampling: op_host_services::export::RasterSampling,
     expected_bounds: Option<[f64; 4]>,
     expected_pixels: Option<(u32, u32)>,
 }
@@ -31,6 +32,7 @@ impl Arguments {
             scale: 1.0,
             phase_events: false,
             authored_bounds: false,
+            raster_sampling: op_host_services::export::RasterSampling::Native,
             expected_bounds: None,
             expected_pixels: None,
         };
@@ -120,6 +122,9 @@ impl Arguments {
                     }
                     result.scale = scale;
                 }
+                "--raster-sampling" => {
+                    result.raster_sampling = op_host_services::export::RasterSampling::parse(value)?
+                }
                 "--font" => result.fonts.push(value.clone()),
                 _ => {
                     return Err(RenderFigError::UnknownOption {
@@ -182,6 +187,20 @@ pub fn png_dimensions(path: &Path) -> Result<(u32, u32), RenderFigError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn raster_sampling_is_opt_in_and_unknown_modes_are_errors() {
+        assert_eq!(
+            Arguments::parse(args(&[])).unwrap().raster_sampling,
+            op_host_services::export::RasterSampling::Native
+        );
+        assert_eq!(
+            Arguments::parse(args(&["--raster-sampling", "correlated4x2"]))
+                .unwrap()
+                .raster_sampling,
+            op_host_services::export::RasterSampling::Correlated4x2
+        );
+        assert!(Arguments::parse(args(&["--raster-sampling", "unknown"])).is_err());
+    }
     fn args(extra: &[&str]) -> Vec<String> {
         ["file.fig", "page", "card", "output.png"]
             .iter()

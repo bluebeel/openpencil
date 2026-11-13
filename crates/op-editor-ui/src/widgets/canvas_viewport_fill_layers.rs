@@ -155,6 +155,7 @@ pub(super) fn paint_image_fill_layer(
         fit,
         transform,
         original_size,
+        rotation_degrees,
         tile_scale,
         adjustments,
         opacity,
@@ -173,6 +174,7 @@ pub(super) fn paint_image_fill_layer(
     image.image_nearest_sampling = *nearest_sampling;
     image.image_fit = *fit;
     image.image_transform = *transform;
+    image.image_rotation_degrees = *rotation_degrees;
     image.image_original_size = *original_size;
     image.image_tile_scale = *tile_scale;
     image.image_adjustments = *adjustments;
@@ -466,6 +468,7 @@ mod tests {
                 transform: None,
                 original_size: None,
                 tile_scale: 1.0,
+                rotation_degrees: None,
                 adjustments: Default::default(),
                 opacity: 1.0,
                 blend_mode: ImageBlendMode::Normal,

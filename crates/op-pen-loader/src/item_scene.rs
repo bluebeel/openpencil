@@ -82,3 +82,89 @@ pub fn editor_state_to_item_layout_scene(state: &EditorState, item_id: &str) -> 
         pages,
     }
 }
+
+/// Build only one requested page, or the complete root containing a raw node.
+/// Layout still uses the original document's component/token definitions. Unknown
+/// and virtual IDs retain the entire requested page; duplicate raw IDs do too.
+pub fn editor_state_to_page_item_layout_scene(
+    state: &EditorState,
+    page_index: usize,
+    item_id: Option<&str>,
+) -> LayoutScene {
+    if state.editor_ui.workspace.visible {
+        return crate::editor_state_to_layout_scene(state);
+    }
+    let mut pages: Vec<ScenePage> = match &state.doc.pages {
+        Some(pages) if !pages.is_empty() => pages
+            .iter()
+            .map(|page| ScenePage {
+                id: page.id.clone(),
+                name: page.name.clone(),
+                children: Vec::new(),
+            })
+            .collect(),
+        Some(_) => return crate::editor_state_to_layout_scene(state),
+        None => vec![ScenePage {
+            id: if state.doc.children.is_empty() {
+                "n1"
+            } else {
+                "page-1"
+            }
+            .into(),
+            name: state.doc.name.as_deref().unwrap_or("Page 1").into(),
+            children: Vec::new(),
+        }],
+    };
+    let roots = match &state.doc.pages {
+        Some(doc_pages) => doc_pages
+            .get(page_index)
+            .map(|page| page.children.as_slice()),
+        None => (page_index == 0).then_some(state.doc.children.as_slice()),
+    };
+    let Some(roots) = roots else {
+        return crate::editor_state_to_layout_scene(state);
+    };
+    fn count(nodes: &[PenNode], id: &str) -> usize {
+        use op_editor_core::pen_node_ext::PenNodeExt;
+        nodes
+            .iter()
+            .map(|node| {
+                usize::from(node.id_str() == id)
+                    + node.children().map_or(0, |children| count(children, id))
+            })
+            .sum()
+    }
+    let selected = item_id
+        .filter(|id| !id.contains("__"))
+        .and_then(|id| {
+            let mut found = None;
+            let mut matches = 0;
+            for root in roots {
+                let hits = count(std::slice::from_ref(root), id);
+                if hits > 0 {
+                    found = Some(root);
+                    matches += hits;
+                }
+                if matches > 1 {
+                    return None;
+                }
+            }
+            found.map(std::slice::from_ref)
+        })
+        .unwrap_or(roots);
+    pages[page_index].children = crate::editor_scene::roots_to_scene_children(
+        state,
+        selected,
+        &pages[page_index],
+        page_index,
+        false,
+        false,
+    );
+    LayoutScene {
+        active_page_index: state
+            .ui
+            .active_page_index
+            .min(pages.len().saturating_sub(1)),
+        pages,
+    }
+}

@@ -26,6 +26,7 @@ fn shaped_advance_grid_preserves_kerning_and_adds_tracking_afterwards() {
             font_features: None,
             line_height: 0.0,
             color: skia_safe::Color::BLACK,
+            source_color: None,
         };
         let on = shaped.measure(&resolver, &run);
         let grid = run.font_size / 1024.0;

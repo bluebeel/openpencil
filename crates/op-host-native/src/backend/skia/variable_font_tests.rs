@@ -85,6 +85,7 @@ fn run(weight: u16) -> ShapedRun<'static> {
         font_features: None,
         line_height: 0.0,
         color: skia_safe::Color::BLACK,
+        source_color: None,
     }
 }
 

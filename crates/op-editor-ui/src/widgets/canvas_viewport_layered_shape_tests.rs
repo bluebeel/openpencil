@@ -159,6 +159,7 @@ fn image_layer() -> SceneFillLayer {
         transform: None,
         original_size: Some([1.0, 1.0]),
         tile_scale: 0.38618907,
+        rotation_degrees: None,
         adjustments: Default::default(),
         opacity: 0.75,
         blend_mode: ImageBlendMode::Multiply,

@@ -129,6 +129,7 @@ impl NativeBackend {
                     font_features: None,
                     line_height: 0.0,
                     color: skia_safe::Color::BLACK,
+                    source_color: None,
                 },
             );
         }
@@ -163,6 +164,7 @@ impl NativeBackend {
                     font_features: Some(font_features),
                     line_height: 0.0,
                     color: skia_safe::Color::BLACK,
+                    source_color: None,
                 },
             )
         } else if uses_advance_grid(text, kerning, Some(font_features)) {
@@ -297,6 +299,11 @@ impl NativeBackend {
             let italic = layout.italic();
             for run in draw_text_runs(layout) {
                 let jc = run.color;
+                let source_color = if jian_skia::raster_sampling::is_point_sampling() {
+                    layout.source_color().map(super::jian_color_to_color4f)
+                } else {
+                    None
+                };
                 if needs_complex_shaping(run.content.as_str())
                     || layout.kerning() == Some(true)
                     || layout.font_features().values().any(|value| *value != 0)
@@ -320,6 +327,7 @@ impl NativeBackend {
                             font_features: Some(layout.font_features()),
                             line_height: run.line_height,
                             color: skia_safe::Color::from_argb(jc.a(), jc.r(), jc.g(), jc.b()),
+                            source_color,
                         },
                         origin.x + run.origin.x,
                         origin.y + run.origin.y,
@@ -344,7 +352,10 @@ impl NativeBackend {
                     ),
                     None,
                 );
-                paint.set_anti_alias(true);
+                if let Some(color) = source_color {
+                    paint.set_color4f(color, None);
+                }
+                jian_skia::raster_sampling::configure_geometry(&mut paint);
                 // Synthetic bold for typefaces the system serves at one
                 // weight only (notably the bundled Roboto-Regular for
                 // ASCII at weight ≥600). Stroke width scales with size

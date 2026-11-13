@@ -78,6 +78,19 @@ pub enum ExportError {
     },
     /// Skia refused to allocate the offscreen raster surface.
     SurfaceAlloc,
+    UnknownRasterSampling {
+        value: String,
+    },
+    CorrelatedPhysicalSize {
+        width_px: i64,
+        height_px: i64,
+        max_side_px: i64,
+    },
+    CorrelatedWorkingSet {
+        requested_bytes: u64,
+        max_bytes: u64,
+    },
+    PointSampling(op_host_native::raster_sampling::PointSamplingError),
     /// Skia's encoder failed for the requested format ("PNG" / "JPEG" /
     /// "WEBP").
     Encode {
@@ -149,6 +162,10 @@ impl fmt::Display for ExportError {
                  lower the scale / padding or export a smaller node"
             ),
             ExportError::SurfaceAlloc => f.write_str("alloc surface"),
+            ExportError::UnknownRasterSampling { value } => write!(f, "unknown raster sampling {value}; expected native or correlated4x2"),
+            ExportError::CorrelatedPhysicalSize { width_px, height_px, max_side_px } => write!(f, "correlated source {width_px}x{height_px} exceeds the physical edge cap {max_side_px}"),
+            ExportError::CorrelatedWorkingSet { requested_bytes, max_bytes } => write!(f, "correlated raster working set {requested_bytes} bytes exceeds {max_bytes} bytes"),
+            ExportError::PointSampling(error) => error.fmt(f),
             ExportError::Encode { format } => write!(f, "encode {format} failed"),
             ExportError::UnsupportedFormat { format } => {
                 write!(f, "{format} export is not supported by this build")

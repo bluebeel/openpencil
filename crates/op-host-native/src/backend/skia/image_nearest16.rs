@@ -13,13 +13,24 @@ use super::{
 use op_editor_ui::{ImageDrawMode, ImagePaintOptions, Rect};
 use skia_safe::{Canvas, Image, Matrix, RRect};
 
-fn mapping(rect: Rect, image: &Image, options: &ImagePaintOptions<'_>) -> Option<Matrix> {
-    if let Some(transform) = options.transform {
+struct ImageMapping {
+    local: Matrix,
+    rotation_uv: Option<[f32; 6]>,
+}
+
+fn mapping(rect: Rect, image: &Image, options: &ImagePaintOptions<'_>) -> Option<ImageMapping> {
+    let rotation_uv = super::image_rotation::supported(
+        rect,
+        [image.width() as f32, image.height() as f32],
+        options,
+    );
+    if let Some(transform) = options.transform.or(rotation_uv) {
         let m =
             figma_image_local_matrix(rect, image.width() as f32, image.height() as f32, transform)?;
-        return Some(Matrix::new_all(
-            m[0], m[1], m[2], m[3], m[4], m[5], 0.0, 0.0, 1.0,
-        ));
+        return Some(ImageMapping {
+            local: Matrix::new_all(m[0], m[1], m[2], m[3], m[4], m[5], 0.0, 0.0, 1.0),
+            rotation_uv,
+        });
     }
     let [w, h] = options
         .original_size
@@ -31,17 +42,20 @@ fn mapping(rect: Rect, image: &Image, options: &ImagePaintOptions<'_>) -> Option
         ImageDrawMode::Stretch => rect,
         ImageDrawMode::Tile => return None,
     };
-    Some(Matrix::new_all(
-        destination.size.x / image.width() as f32,
-        0.0,
-        destination.origin.x,
-        0.0,
-        destination.size.y / image.height() as f32,
-        destination.origin.y,
-        0.0,
-        0.0,
-        1.0,
-    ))
+    Some(ImageMapping {
+        local: Matrix::new_all(
+            destination.size.x / image.width() as f32,
+            0.0,
+            destination.origin.x,
+            0.0,
+            destination.size.y / image.height() as f32,
+            destination.origin.y,
+            0.0,
+            0.0,
+            1.0,
+        ),
+        rotation_uv: None,
+    })
 }
 
 fn adequate(canvas: &Canvas, local: &Matrix, grid: f32) -> bool {
@@ -70,9 +84,11 @@ pub(super) fn draw(
     // Repeating image coordinates retain the existing Tile path until its
     // wrap-address sampling contract is supported by this point shader.
     if options.mode == ImageDrawMode::Tile {
+        jian_skia::raster_sampling::mark_unsupported("nearest tiled image coordinates");
         return false;
     }
-    let grid = if sampled_clip::is_four_sample_pass() {
+    let point = jian_skia::raster_sampling::is_point_sampling();
+    let grid = if point || sampled_clip::is_four_sample_pass() {
         1.0
     } else {
         2.0
@@ -83,7 +99,7 @@ pub(super) fn draw(
         .and_then(|thumb| backend.raster_image(thumb.id))
         .and_then(|image| {
             let local = mapping(rect, &image, options)?;
-            adequate(canvas, &local, grid).then_some((image, local))
+            adequate(canvas, &local.local, grid).then_some((image, local))
         });
     let selected = thumbnail.or_else(|| {
         let image = backend.raster_image(id)?;
@@ -98,7 +114,17 @@ pub(super) fn draw(
         options.corner_radius.max(0.0),
         options.corner_radius.max(0.0),
     );
-    let Some(shader) = shader::make(canvas, &image, &local, &shape, grid) else {
+    let Some(shader) = shader::make_with_rotation(
+        canvas,
+        &image,
+        &local.local,
+        local.rotation_uv,
+        &shape,
+        if point { 0.0 } else { grid },
+    ) else {
+        if point {
+            jian_skia::raster_sampling::mark_unsupported("nearest point image shader");
+        }
         return false;
     };
     let device = canvas.local_to_device_as_3x3();
@@ -115,6 +141,7 @@ pub(super) fn draw(
     if let Some(matrix) = image_adjustment_matrix(options.adjustments) {
         paint.set_color_filter(skia_safe::color_filters::matrix_row_major(&matrix, None));
     }
+    jian_skia::raster_sampling::configure_paint(&mut paint);
     canvas.draw_rect(draw_bounds, &paint);
     super::image_diagnostics::record_sharp_raster_hit();
     true

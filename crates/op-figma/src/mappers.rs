@@ -135,6 +135,10 @@ fn map_single_fill(paint: &FigValue) -> Option<PenFill> {
                 url: url.into(),
                 thumbnail_url: image_reference_url(paint.get("imageThumbnail")).map(Into::into),
                 nearest_sampling: Some(true),
+                rotation: paint
+                    .get_f64("rotation")
+                    .map(|value| value as f32)
+                    .filter(|value| value.is_finite()),
                 mode: Some(mode.clone()),
                 original_size: normalize_original_size(
                     paint.get_f64("originalImageWidth"),

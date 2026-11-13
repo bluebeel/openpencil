@@ -170,7 +170,10 @@ pub(super) fn lean_registry(
         }));
     }
     if wants("snapshot_layout") {
-        registry.register(Box::new(snapshot_layout_snapshot(doc)));
+        registry.register(Box::new(match arguments {
+            Some(args) => op_mcp::snapshot_layout_snapshot_for_call(doc, args),
+            None => snapshot_layout_snapshot(doc),
+        }));
     }
     if wants("get_screenshot") {
         registry.register(Box::new(if requested_tool.is_some() {

@@ -80,6 +80,7 @@ pub(crate) fn base_payload(base: &PenNodeBase, kind: &str) -> NodePayload {
         image_src: None,
         image_thumbnail_src: None,
         image_nearest_sampling: None,
+        image_rotation_degrees: None,
         video: None,
         image_fit: None,
         image_blend_mode: None,
@@ -148,6 +149,7 @@ pub(crate) fn assign_first_fill(p: &mut NodePayload, fills: Option<&[PenFill]>) 
         if let Some(PenFill::Image(body)) = fills.and_then(|fills| fills.first()) {
             p.image_thumbnail_src = body.thumbnail_url.clone();
             p.image_nearest_sampling = body.nearest_sampling;
+            p.image_rotation_degrees = body.rotation;
         }
     }
 }

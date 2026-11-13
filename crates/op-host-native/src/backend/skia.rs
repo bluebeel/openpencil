@@ -73,9 +73,11 @@ mod image;
 mod image_diagnostics;
 mod image_nearest16;
 mod image_precision;
+mod image_rotation;
 mod image_supersample;
 mod layer;
 mod path;
+mod raster_point;
 mod sampled_clip;
 mod shaped_text;
 mod svg_raster_cache;
@@ -323,6 +325,9 @@ impl NativeBackend {
     /// a solid `Paint`.
     #[tracing::instrument(skip(self, canvas))]
     pub fn fill_rect(&mut self, canvas: &skia_safe::Canvas, rect: Rect, color: Color) {
+        if raster_point::rect(canvas, rect, color, None) {
+            return;
+        }
         // jian-skia multiplies authored colour alpha by `Paint.opacity`.
         // This bridge has no separate opacity, so leave the paint at 1.0;
         // copying `color.a` there would square every translucent fill.
@@ -343,6 +348,9 @@ impl NativeBackend {
         color: Color,
         width: f32,
     ) {
+        if raster_point::rect(canvas, rect, color, Some(width)) {
+            return;
+        }
         let paint = jian_core::render::Paint {
             fill: None,
             stroke: Some(jian_core::render::StrokeOp {
@@ -390,7 +398,11 @@ impl NativeBackend {
 
     pub fn clip_polygon(&self, canvas: &skia_safe::Canvas, points: &[Point2D]) {
         if points.len() < 3 {
-            canvas.clip_rect(to_sk_rect(Rect::ZERO), skia_safe::ClipOp::Intersect, true);
+            canvas.clip_rect(
+                to_sk_rect(Rect::ZERO),
+                skia_safe::ClipOp::Intersect,
+                jian_skia::raster_sampling::geometry_antialias(),
+            );
             return;
         }
         let mut builder = skia_safe::PathBuilder::new();
@@ -399,7 +411,11 @@ impl NativeBackend {
             builder.line_to((point.x, point.y));
         }
         builder.close();
-        canvas.clip_path(&builder.detach(), skia_safe::ClipOp::Intersect, true);
+        canvas.clip_path(
+            &builder.detach(),
+            skia_safe::ClipOp::Intersect,
+            jian_skia::raster_sampling::geometry_antialias(),
+        );
     }
 
     /// Stroke a single line segment. Step 4 visual lift addition —
@@ -419,7 +435,7 @@ impl NativeBackend {
         let mut paint = skia_safe::Paint::new(jian_color_to_color4f(color), None);
         paint.set_stroke(true);
         paint.set_stroke_width(width);
-        paint.set_anti_alias(true);
+        jian_skia::raster_sampling::configure_geometry(&mut paint);
         paint.set_stroke_cap(skia_safe::PaintCap::Round);
         canvas.draw_line((from.x, from.y), (to.x, to.y), &paint);
     }
@@ -438,7 +454,7 @@ impl NativeBackend {
         // Skia paints aren't AA by default — chip / button edges
         // come out stair-stepped without this. Same call mirrored
         // into stroke_round_rect / stroke_line / stroke_svg_path.
-        paint.set_anti_alias(true);
+        jian_skia::raster_sampling::configure_geometry(&mut paint);
         canvas.draw_round_rect(to_sk_rect(rect), radius, radius, &paint);
     }
 
@@ -452,7 +468,7 @@ impl NativeBackend {
         let vectors = radii.map(|radius| skia_safe::Vector::new(radius, radius));
         let rrect = skia_safe::RRect::new_rect_radii(to_sk_rect(rect), &vectors);
         let mut paint = skia_safe::Paint::new(jian_color_to_color4f(color), None);
-        paint.set_anti_alias(true);
+        jian_skia::raster_sampling::configure_geometry(&mut paint);
         canvas.draw_rrect(rrect, &paint);
     }
 
@@ -470,7 +486,7 @@ impl NativeBackend {
         color: Color,
     ) {
         let mut paint = skia_safe::Paint::new(jian_color_to_color4f(color), None);
-        paint.set_anti_alias(true);
+        jian_skia::raster_sampling::configure_geometry(&mut paint);
         let sigma = blur * 0.5;
         if sigma > 0.0 {
             if let Some(mask) =
@@ -495,7 +511,7 @@ impl NativeBackend {
         let mut paint = skia_safe::Paint::new(jian_color_to_color4f(color), None);
         paint.set_stroke(true);
         paint.set_stroke_width(width);
-        paint.set_anti_alias(true);
+        jian_skia::raster_sampling::configure_geometry(&mut paint);
         canvas.draw_round_rect(to_sk_rect(rect), radius, radius, &paint);
     }
 
@@ -512,7 +528,7 @@ impl NativeBackend {
         let mut paint = skia_safe::Paint::new(jian_color_to_color4f(color), None);
         paint.set_stroke(true);
         paint.set_stroke_width(width);
-        paint.set_anti_alias(true);
+        jian_skia::raster_sampling::configure_geometry(&mut paint);
         canvas.draw_rrect(rrect, &paint);
     }
 
@@ -520,14 +536,14 @@ impl NativeBackend {
     /// oval primitive so the curve is properly anti-aliased.
     pub fn fill_oval(&self, canvas: &skia_safe::Canvas, bounds: Rect, color: Color) {
         let mut paint = skia_safe::Paint::new(jian_color_to_color4f(color), None);
-        paint.set_anti_alias(true);
+        jian_skia::raster_sampling::configure_geometry(&mut paint);
         canvas.draw_oval(to_sk_rect(bounds), &paint);
     }
 
     /// Stroked ellipse inscribed in `bounds`.
     pub fn stroke_oval(&self, canvas: &skia_safe::Canvas, bounds: Rect, color: Color, width: f32) {
         let mut paint = skia_safe::Paint::new(jian_color_to_color4f(color), None);
-        paint.set_anti_alias(true);
+        jian_skia::raster_sampling::configure_geometry(&mut paint);
         paint.set_stroke(true);
         paint.set_stroke_width(width);
         canvas.draw_oval(to_sk_rect(bounds), &paint);
@@ -550,7 +566,7 @@ impl NativeBackend {
         builder.close();
         let path = builder.detach();
         let mut paint = skia_safe::Paint::new(jian_color_to_color4f(color), None);
-        paint.set_anti_alias(true);
+        jian_skia::raster_sampling::configure_geometry(&mut paint);
         canvas.draw_path(&path, &paint);
     }
 
@@ -577,7 +593,7 @@ impl NativeBackend {
         builder.close();
         let path = builder.detach();
         let mut paint = skia_safe::Paint::new(jian_color_to_color4f(color), None);
-        paint.set_anti_alias(true);
+        jian_skia::raster_sampling::configure_geometry(&mut paint);
         paint.set_stroke(true);
         paint.set_stroke_width(width);
         paint.set_stroke_join(skia_safe::PaintJoin::Round);
@@ -601,7 +617,7 @@ impl NativeBackend {
             return;
         }
         let mut paint = skia_safe::Paint::new(jian_color_to_color4f(color), None);
-        paint.set_anti_alias(true);
+        jian_skia::raster_sampling::configure_geometry(&mut paint);
         paint.set_stroke(true);
         paint.set_stroke_cap(skia_safe::PaintCap::Round);
         paint.set_stroke_width(radius * 2.0);
@@ -636,7 +652,7 @@ impl NativeBackend {
         let filter =
             skia_safe::image_filters::blur((sigma, sigma), skia_safe::TileMode::Decal, None, None);
         let mut paint = skia_safe::Paint::default();
-        paint.set_anti_alias(true);
+        jian_skia::raster_sampling::configure_geometry(&mut paint);
         if let Some(f) = filter {
             paint.set_image_filter(f);
         }
@@ -658,9 +674,14 @@ impl NativeBackend {
             canvas.save();
             return;
         };
-        let rec = skia_safe::canvas::SaveLayerRec::default()
+        let mut paint = skia_safe::Paint::default();
+        jian_skia::raster_sampling::configure_paint(&mut paint);
+        let mut rec = skia_safe::canvas::SaveLayerRec::default()
             .backdrop(&filter)
             .backdrop_tile_mode(skia_safe::TileMode::Clamp);
+        if jian_skia::raster_sampling::is_point_sampling() {
+            rec = rec.paint(&paint);
+        }
         canvas.save_layer(&rec);
     }
 

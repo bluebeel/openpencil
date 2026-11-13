@@ -50,6 +50,13 @@ impl NativeBackend {
         {
             return;
         }
+        let rotation_uv = self.raster_image(id).and_then(|image| {
+            super::image_rotation::supported(
+                rect,
+                [image.width() as f32, image.height() as f32],
+                options,
+            )
+        });
         self.draw_image_with_options_transform_blend_and_tile_scale(
             canvas,
             rect,
@@ -59,7 +66,7 @@ impl NativeBackend {
             options.adjustments,
             options.opacity,
             options.corner_radius,
-            options.transform,
+            options.transform.or(rotation_uv),
             options.blend_mode,
             options.original_size,
             options.tile_scale,
@@ -86,7 +93,11 @@ impl NativeBackend {
             skia_safe::MipmapMode::None,
         );
         let save = canvas.save();
-        canvas.clip_rect(to_sk_rect(rect), None, Some(true));
+        canvas.clip_rect(
+            to_sk_rect(rect),
+            None,
+            Some(jian_skia::raster_sampling::geometry_antialias()),
+        );
         canvas.draw_image_rect_with_sampling_options(
             &image,
             None,
@@ -350,8 +361,8 @@ impl NativeBackend {
             super::sampled_clip::clip_rrect(canvas, &rrect);
         }
         let mut paint = skia_safe::Paint::default();
-        paint.set_anti_alias(true);
-        paint.set_blend_mode(to_skia_blend_mode(blend_mode));
+        jian_skia::raster_sampling::configure_geometry(&mut paint);
+        jian_skia::raster_sampling::set_blend_mode(&mut paint, to_skia_blend_mode(blend_mode));
         // Node-level opacity dims the raster (rasters carry no fill
         // colour to bake the opacity into at scene-build).
         paint.set_alpha_f(opacity.clamp(0.0, 1.0));
@@ -413,7 +424,11 @@ impl NativeBackend {
             ) {
                 paint.set_shader(shader);
                 let save = canvas.save();
-                canvas.clip_rect(to_sk_rect(rect), None, Some(true));
+                canvas.clip_rect(
+                    to_sk_rect(rect),
+                    None,
+                    Some(jian_skia::raster_sampling::geometry_antialias()),
+                );
                 canvas.draw_rect(to_sk_rect(rect), &paint);
                 canvas.restore_to_count(save);
                 if clip_round {
@@ -449,7 +464,11 @@ impl NativeBackend {
             ImageDrawMode::Fill | ImageDrawMode::Crop => {
                 let dst = cover_rect(rect, image.width() as f32, image.height() as f32);
                 let save = canvas.save();
-                canvas.clip_rect(to_sk_rect(rect), None, Some(true));
+                canvas.clip_rect(
+                    to_sk_rect(rect),
+                    None,
+                    Some(jian_skia::raster_sampling::geometry_antialias()),
+                );
                 canvas.draw_image_rect_with_sampling_options(
                     &image,
                     None,
@@ -574,7 +593,11 @@ fn draw_tiled_image(
     }
 
     let save = canvas.save();
-    canvas.clip_rect(to_sk_rect(rect), None, Some(true));
+    canvas.clip_rect(
+        to_sk_rect(rect),
+        None,
+        Some(jian_skia::raster_sampling::geometry_antialias()),
+    );
 
     let centered_x = rect.origin.x + (rect.size.x - tile_w) / 2.0;
     let centered_y = rect.origin.y + (rect.size.y - tile_h) / 2.0;

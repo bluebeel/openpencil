@@ -240,6 +240,9 @@ pub struct NodePayload {
     pub image_thumbnail_src: Option<jian_ops_schema::node::ImageSrc>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image_nearest_sampling: Option<bool>,
+    /// Authored image-paint rotation in degrees (including full turns).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_rotation_degrees: Option<f32>,
     /// Video playback metadata carried by an image poster. The video source
     /// is never externalized into the image table.
     #[serde(default, skip_serializing_if = "Option::is_none")]

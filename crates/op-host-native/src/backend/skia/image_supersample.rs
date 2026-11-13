@@ -28,7 +28,8 @@ pub(super) fn draw(
     blend: BlendMode,
     paint_image: impl FnOnce(&Canvas),
 ) -> bool {
-    if super::sampled_clip::is_four_sample_pass() {
+    if jian_skia::raster_sampling::is_point_sampling() || super::sampled_clip::is_four_sample_pass()
+    {
         return false;
     }
     let matrix = canvas.local_to_device_as_3x3();

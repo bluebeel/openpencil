@@ -57,6 +57,7 @@ pub mod context;
     target_os = "android"
 ))]
 pub mod backend;
+pub use jian_skia::raster_sampling;
 #[cfg(feature = "gl-host")]
 #[cfg(any(
     target_os = "macos",

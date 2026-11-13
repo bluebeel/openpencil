@@ -12,6 +12,8 @@ uniform float4 bottomRadii;
 uniform float4 deviceInverse;
 uniform float4 imageInverse;
 uniform float2 imageOffset;
+uniform float2 sourceSize;
+uniform float directRotationUv;
 uniform float grid;
 float ellipse(float2 p, float2 center, float2 radius) {
     float2 q = (p - center) / radius;
@@ -48,10 +50,17 @@ float4 sampleBytes(float2 p, float2 offset) {
                           deviceInverse.z * offset.x + deviceInverse.w * offset.y);
     float2 uv = float2(imageInverse.x * q.x + imageInverse.y * q.y,
                        imageInverse.z * q.x + imageInverse.w * q.y) + imageOffset;
-    if (inside(q) == 0.0 || any(lessThan(uv, float2(0.0))) || any(greaterThan(uv, float2(1.0)))) return float4(0.0);
+    float2 imagePoint = q;
+    if (directRotationUv != 0.0) {
+        float2 unit = (q - bounds.xy) / (bounds.zw - bounds.xy);
+        uv = float2(imageInverse.x * unit.x + imageInverse.y * unit.y,
+                    imageInverse.z * unit.x + imageInverse.w * unit.y) + imageOffset;
+        imagePoint = uv * sourceSize;
+    }
+    if (inside(q) == 0.0 || (directRotationUv == 0.0 && (any(lessThan(uv, float2(0.0))) || any(greaterThan(uv, float2(1.0)))))) return float4(0.0);
     // The source pass writes the point-sampled premultiplied color to RGBA8
     // before its 2x resolve. Recover those byte values before averaging.
-    float4 color = float4(image.eval(q));
+    float4 color = float4(image.eval(imagePoint));
     return float4(quantizeByte(color.r), quantizeByte(color.g),
                   quantizeByte(color.b), quantizeByte(color.a));
 }
@@ -68,6 +77,7 @@ float4 resolvePass(float2 p, float2 jitter) {
     return (bytes / (grid * grid)) / 255.0;
 }
 half4 main(float2 p) {
+    if (grid == 0.0) return half4(sampleBytes(p, float2(0.0)) / 255.0);
     // Resolve each camera jitter before blending into an RGBA8 running
     // average. The order matters because every atlas write is quantized.
     float4 atlas = storeRGBA8(resolvePass(p, float2(.625, .875)));
@@ -83,10 +93,22 @@ thread_local! {
     static EFFECT: Option<RuntimeEffect> = RuntimeEffect::make_for_shader(SOURCE, None).ok();
 }
 
+#[cfg(test)]
 pub(super) fn make(
     canvas: &Canvas,
     image: &Image,
     local: &Matrix,
+    shape: &RRect,
+    grid: f32,
+) -> Option<Shader> {
+    make_with_rotation(canvas, image, local, None, shape, grid)
+}
+
+pub(super) fn make_with_rotation(
+    canvas: &Canvas,
+    image: &Image,
+    local: &Matrix,
+    rotation_uv: Option<[f32; 6]>,
     shape: &RRect,
     grid: f32,
 ) -> Option<Shader> {
@@ -99,12 +121,20 @@ pub(super) fn make(
     let child = image.to_shader(
         (skia_safe::TileMode::Clamp, skia_safe::TileMode::Clamp),
         skia_safe::SamplingOptions::default(),
-        local,
+        rotation_uv.is_none().then_some(local),
     )?;
     let rect = shape.rect();
     let radii = shape.radii_ref();
     let w = image.width() as f32;
     let h = image.height() as f32;
+    let uv_values = rotation_uv.unwrap_or([
+        uv.scale_x() / w,
+        uv.skew_x() / w,
+        uv.translate_x() / w,
+        uv.skew_y() / h,
+        uv.scale_y() / h,
+        uv.translate_y() / h,
+    ]);
     let uniforms = [
         rect.left,
         rect.top,
@@ -122,12 +152,15 @@ pub(super) fn make(
         inverse.skew_x(),
         inverse.skew_y(),
         inverse.scale_y(),
-        uv.scale_x() / w,
-        uv.skew_x() / w,
-        uv.skew_y() / h,
-        uv.scale_y() / h,
-        uv.translate_x() / w,
-        uv.translate_y() / h,
+        uv_values[0],
+        uv_values[1],
+        uv_values[3],
+        uv_values[4],
+        uv_values[2],
+        uv_values[5],
+        w,
+        h,
+        if rotation_uv.is_some() { 1.0 } else { 0.0 },
         grid,
     ];
     let bytes: Vec<u8> = uniforms.iter().flat_map(|v| v.to_ne_bytes()).collect();
@@ -143,6 +176,54 @@ pub(super) fn make(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn direct_rotated_uv_preserves_point_texels_at_nonzero_origins_and_zoom() {
+        let pixels: Vec<u8> = (0..16)
+            .flat_map(|i| [(i % 4 * 50) as u8, (i / 4 * 50) as u8, 17, 255])
+            .collect();
+        let info = skia_safe::ImageInfo::new(
+            (4, 4),
+            skia_safe::ColorType::RGBA8888,
+            skia_safe::AlphaType::Unpremul,
+            None,
+        );
+        let image =
+            skia_safe::images::raster_from_data(&info, Data::new_copy(&pixels), 16).unwrap();
+        for (x, y, zoom) in [(0.0, 0.0, 1.0), (7.0, 11.0, 1.0), (2.0, 3.0, 2.0)] {
+            let rect = op_editor_ui::Rect::xywh(x, y, 4.0, 4.0);
+            let uv = super::super::super::image_rotation::source_fit([4.0, 4.0], [4.0, 4.0], 90.0)
+                .unwrap();
+            let values =
+                super::super::super::image::figma_image_local_matrix(rect, 4.0, 4.0, uv).unwrap();
+            let local = Matrix::new_all(
+                values[0], values[1], values[2], values[3], values[4], values[5], 0.0, 0.0, 1.0,
+            );
+            let mut surface = skia_safe::surfaces::raster_n32_premul((40, 40)).unwrap();
+            surface.canvas().scale((zoom, zoom));
+            let shape = RRect::new_rect_xy(skia_safe::Rect::from_xywh(x, y, 4.0, 4.0), 0.0, 0.0);
+            let shader =
+                make_with_rotation(surface.canvas(), &image, &local, Some(uv), &shape, 0.0)
+                    .unwrap();
+            let mut paint = skia_safe::Paint::default();
+            paint.set_shader(shader);
+            surface.canvas().draw_rect(shape.rect(), &paint);
+            let snapshot = surface.image_snapshot();
+            let actual = snapshot.peek_pixels().unwrap();
+            for py in 0..4 {
+                for px in 0..4 {
+                    let color = actual.get_color((
+                        ((x + px as f32 + 0.5) * zoom) as i32,
+                        ((y + py as f32 + 0.5) * zoom) as i32,
+                    ));
+                    assert_eq!(
+                        [color.r(), color.g(), color.b(), color.a()],
+                        [(py * 50) as u8, ((3 - px) * 50) as u8, 17, 255]
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn framebuffer_normalization_preserves_even_byte_ties_during_blending() {

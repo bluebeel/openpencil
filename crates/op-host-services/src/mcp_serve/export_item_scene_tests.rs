@@ -99,3 +99,23 @@ fn request_without_item_id_uses_the_captured_selection() {
     assert_eq!(tool.scene.pages[1].children.len(), 1);
     assert!(matches!(tool.call(&args), ToolOutcome::OkJson(_)));
 }
+
+#[test]
+fn requested_page_geometry_builder_matches_full_nested_flex_component_shadow_crop_pixels() {
+    for preserve in [false, true] {
+        let mut state = fixture();
+        state.editor_ui.preserve_authored_geometry = preserve;
+        let mut full = export_item_snapshot(&state);
+        let scene = op_pen_loader::editor_state_to_page_item_layout_scene(&state, 1, Some("photo"));
+        assert!(scene.pages[0].children.is_empty());
+        let root = full.scene.pages[1].find("root").unwrap();
+        assert_eq!(scene.pages[1].find("root"), Some(root));
+        let args = BTreeMap::from([
+            ("itemId".into(), "root".into()),
+            ("format".into(), "png".into()),
+        ]);
+        let expected = full.call(&args);
+        full.scene = RasterSnapshot::from_scene(scene);
+        assert_eq!(full.call(&args), expected, "preserve={preserve}");
+    }
+}

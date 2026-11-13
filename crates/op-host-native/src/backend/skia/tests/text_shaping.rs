@@ -99,7 +99,7 @@ fn skia_measure_matches_native_weighted_font_resolution() {
 
     for case in cases {
         let run = StyledRun {
-        font_features: None,
+            font_features: None,
             text: case.text,
             font_family: Some(case.family),
             font_size: case.size,
@@ -187,7 +187,7 @@ fn skia_measure_multiline_height_matches_native_painted_line_height() {
     let skia = jian_skia::SkiaMeasure::new();
     for case in cases {
         let run = StyledRun {
-        font_features: None,
+            font_features: None,
             text: case.text,
             font_family: Some("system-ui"),
             font_size: case.size,

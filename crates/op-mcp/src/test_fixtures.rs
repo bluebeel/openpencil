@@ -47,7 +47,7 @@ pub fn rect(id: &str, name: &str, x: f64, y: f64, w: f64, h: f64) -> PenNode {
 /// A text leaf at `(x, y)` sized `w × h`.
 pub fn text(id: &str, name: &str, x: f64, y: f64, w: f64, h: f64, content: &str) -> PenNode {
     PenNode::Text(TextNode {
-            font_features: None,
+        font_features: None,
         font_kerning: None,
         base: PenNodeBase {
             id: id.to_string(),

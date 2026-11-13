@@ -54,6 +54,7 @@ pub(crate) struct ShapedRun<'a> {
     pub font_features: Option<&'a std::collections::BTreeMap<String, u32>>,
     pub line_height: f32,
     pub color: skia_safe::Color,
+    pub source_color: Option<skia_safe::Color4f>,
 }
 
 pub(crate) struct ShapedText {
@@ -152,11 +153,12 @@ impl ShapedText {
             paragraph.layout(NATURAL_LAYOUT_BUDGET);
             let natural = paragraph.max_intrinsic_width();
             paragraph.layout(natural.ceil());
-            if (run.kerning == Some(true)
-                || run
-                    .font_features
-                    .is_some_and(|f| f.values().any(|value| *value != 0)))
-                && !op_editor_core::text_script::needs_complex_shaping(run.text)
+            if jian_skia::raster_sampling::is_point_sampling()
+                || (run.kerning == Some(true)
+                    || run
+                        .font_features
+                        .is_some_and(|f| f.values().any(|value| *value != 0)))
+                    && !op_editor_core::text_script::needs_complex_shaping(run.text)
             {
                 // HarfBuzz supplies pair positioning; the direct native font
                 // path supplies the same raster treatment as unkerned text.
@@ -164,7 +166,10 @@ impl ShapedText {
                 // so retain the caller's authored baseline for this one line.
                 let mut paint = skia_safe::Paint::default();
                 paint.set_color(run.color);
-                paint.set_anti_alias(true);
+                if let Some(color) = run.source_color {
+                    paint.set_color4f(color, None);
+                }
+                jian_skia::raster_sampling::configure_geometry(&mut paint);
                 let character_offsets = run
                     .text
                     .char_indices()

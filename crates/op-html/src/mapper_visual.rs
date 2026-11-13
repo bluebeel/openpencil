@@ -68,6 +68,7 @@ pub(super) fn map_fill(
                     original_size: None,
                     transform: geometry.transform,
                     tile_scale: None,
+                    rotation: None,
                     explain: None,
                     opacity: None,
                     blend_mode: blend,

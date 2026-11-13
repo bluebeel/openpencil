@@ -11,7 +11,7 @@ use std::sync::{
 
 use op_editor_ui::layout_scene::LayoutScene;
 
-use crate::{ExportError, RasterFormat};
+use crate::{ExportError, RasterFormat, RasterSampling};
 
 const MAX_ADMITTED: usize = 2;
 
@@ -41,6 +41,7 @@ struct Job {
     target: SharedRasterTarget,
     format: RasterFormat,
     scale: f32,
+    sampling: RasterSampling,
     reply: mpsc::SyncSender<Result<Vec<u8>, ExportError>>,
 }
 
@@ -134,6 +135,17 @@ impl RasterAdmission {
         format: RasterFormat,
         scale: f32,
     ) -> Result<Vec<u8>, ExportError> {
+        self.render_with_sampling(scene, target, format, scale, RasterSampling::Native)
+    }
+
+    pub fn render_with_sampling(
+        &self,
+        scene: Arc<LayoutScene>,
+        target: SharedRasterTarget,
+        format: RasterFormat,
+        scale: f32,
+        sampling: RasterSampling,
+    ) -> Result<Vec<u8>, ExportError> {
         let _submission = self
             .submission
             .lock()
@@ -146,6 +158,7 @@ impl RasterAdmission {
                 target,
                 format,
                 scale,
+                sampling,
                 reply,
             })
             .map_err(|_| ExportError::RenderWorkerUnavailable)?;
@@ -185,10 +198,16 @@ fn render_job(job: &Job) -> Result<Vec<u8>, ExportError> {
         })?;
     match &job.target {
         SharedRasterTarget::Page { .. } => {
-            crate::render_page_raster_bytes(page, job.format, job.scale)
+            crate::render_page_raster_bytes_with_sampling(page, job.format, job.scale, job.sampling)
         }
         SharedRasterTarget::Node { node_id, .. } => {
-            crate::render_node_on_page_raster_bytes(page, node_id, job.format, job.scale)
+            crate::render_node_on_page_raster_bytes_with_sampling(
+                page,
+                node_id,
+                job.format,
+                job.scale,
+                job.sampling,
+            )
         }
     }
 }

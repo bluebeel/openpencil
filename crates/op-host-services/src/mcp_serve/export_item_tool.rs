@@ -5,7 +5,7 @@ use op_editor_core::EditorState;
 use op_mcp::{McpTool, ToolErrorCode, ToolOutcome};
 
 use super::raster_snapshot::RasterSnapshot;
-use crate::export::{RasterFormat, SharedRasterTarget};
+use crate::export::{RasterFormat, RasterSampling, SharedRasterTarget};
 use crate::export_pdf::{render_node_on_page_pdf_bytes, render_page_pdf_bytes};
 
 pub struct ExportItem {
@@ -31,6 +31,21 @@ impl McpTool for ExportItem {
                 );
             }
         };
+        let sampling = match RasterSampling::parse(
+            args.get("rasterSampling")
+                .map_or("native", |value| value.trim()),
+        ) {
+            Ok(sampling) => sampling,
+            Err(error) => {
+                return ToolOutcome::Err(ToolErrorCode::InvalidArgument, error.to_string())
+            }
+        };
+        if format == "pdf" && sampling != RasterSampling::Native {
+            return ToolOutcome::Err(
+                ToolErrorCode::InvalidArgument,
+                "rasterSampling applies only to PNG/JPEG/WebP exports".into(),
+            );
+        }
         let explicit_item_id = args.get("itemId").map(|value| value.trim());
         if explicit_item_id == Some("") {
             return ToolOutcome::Err(
@@ -58,26 +73,29 @@ impl McpTool for ExportItem {
         let (bytes, item_type) =
             if let Some(page) = self.scene.pages.iter().find(|page| page.id == item_id) {
                 let result = match format {
-                    "png" => self.scene.render(
+                    "png" => self.scene.render_with_sampling(
                         SharedRasterTarget::Page {
                             page_id: page.id.clone(),
                         },
                         RasterFormat::Png,
                         scale,
+                        sampling,
                     ),
-                    "jpeg" | "jpg" => self.scene.render(
+                    "jpeg" | "jpg" => self.scene.render_with_sampling(
                         SharedRasterTarget::Page {
                             page_id: page.id.clone(),
                         },
                         RasterFormat::Jpeg,
                         scale,
+                        sampling,
                     ),
-                    "webp" => self.scene.render(
+                    "webp" => self.scene.render_with_sampling(
                         SharedRasterTarget::Page {
                             page_id: page.id.clone(),
                         },
                         RasterFormat::Webp,
                         scale,
+                        sampling,
                     ),
                     "pdf" => render_page_pdf_bytes(page),
                     other => return unsupported_format(other),
@@ -90,29 +108,32 @@ impl McpTool for ExportItem {
                 .find(|page| page.find(item_id).is_some())
             {
                 let result = match format {
-                    "png" => self.scene.render(
+                    "png" => self.scene.render_with_sampling(
                         SharedRasterTarget::Node {
                             page_id: page.id.clone(),
                             node_id: item_id.to_string(),
                         },
                         RasterFormat::Png,
                         scale,
+                        sampling,
                     ),
-                    "jpeg" | "jpg" => self.scene.render(
+                    "jpeg" | "jpg" => self.scene.render_with_sampling(
                         SharedRasterTarget::Node {
                             page_id: page.id.clone(),
                             node_id: item_id.to_string(),
                         },
                         RasterFormat::Jpeg,
                         scale,
+                        sampling,
                     ),
-                    "webp" => self.scene.render(
+                    "webp" => self.scene.render_with_sampling(
                         SharedRasterTarget::Node {
                             page_id: page.id.clone(),
                             node_id: item_id.to_string(),
                         },
                         RasterFormat::Webp,
                         scale,
+                        sampling,
                     ),
                     "pdf" => render_node_on_page_pdf_bytes(page, item_id),
                     other => return unsupported_format(other),

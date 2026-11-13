@@ -580,6 +580,7 @@ fn paint_image_node_with_stroke(
                 0.0
             },
             transform: node.image_transform,
+            rotation_degrees: node.image_rotation_degrees,
             blend_mode: node.image_blend_mode,
             original_size: node.image_original_size,
             tile_scale,

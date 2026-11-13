@@ -66,6 +66,7 @@ pub(super) fn default_fill_of_type(kind: FillType, hex: &str) -> PenFill {
             original_size: None,
             transform: None,
             tile_scale: None,
+            rotation: None,
             explain: None,
             opacity: None,
             blend_mode: None,

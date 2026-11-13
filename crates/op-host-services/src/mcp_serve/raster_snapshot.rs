@@ -5,7 +5,8 @@ use std::{ops::Deref, sync::Arc};
 use op_editor_ui::layout_scene::LayoutScene;
 
 use crate::export::{
-    shared_raster_worker, ExportError, RasterAdmission, RasterFormat, SharedRasterTarget,
+    shared_raster_worker, ExportError, RasterAdmission, RasterFormat, RasterSampling,
+    SharedRasterTarget,
 };
 
 #[derive(Clone)]
@@ -63,6 +64,16 @@ impl RasterSnapshot {
         format: RasterFormat,
         scale: f32,
     ) -> Result<Vec<u8>, ExportError> {
+        self.render_with_sampling(target, format, scale, RasterSampling::Native)
+    }
+
+    pub fn render_with_sampling(
+        &self,
+        target: SharedRasterTarget,
+        format: RasterFormat,
+        scale: f32,
+        sampling: RasterSampling,
+    ) -> Result<Vec<u8>, ExportError> {
         let admission = match &self.admission {
             Some(Ok(admission)) => admission.as_ref(),
             Some(Err(error)) => return Err(error.clone()),
@@ -83,17 +94,19 @@ impl RasterSnapshot {
                     })?;
                 return match target {
                     SharedRasterTarget::Page { .. } => {
-                        crate::export::render_page_raster_bytes(page, format, scale)
+                        crate::export::render_page_raster_bytes_with_sampling(
+                            page, format, scale, sampling,
+                        )
                     }
                     SharedRasterTarget::Node { node_id, .. } => {
-                        crate::export::render_node_on_page_raster_bytes(
-                            page, &node_id, format, scale,
+                        crate::export::render_node_on_page_raster_bytes_with_sampling(
+                            page, &node_id, format, scale, sampling,
                         )
                     }
                 };
             }
         };
-        admission.render(Arc::clone(&self.scene), target, format, scale)
+        admission.render_with_sampling(Arc::clone(&self.scene), target, format, scale, sampling)
     }
 
     pub fn render_active_node(

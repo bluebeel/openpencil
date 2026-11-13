@@ -297,6 +297,7 @@ fn apply_result_overwrites_only_url_of_empty_image_fill_rectangle() {
             original_size: None,
             transform: None,
             tile_scale: Some(2.0),
+            rotation: None,
             explain: None,
             opacity: Some(0.75),
             blend_mode: None,

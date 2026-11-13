@@ -1,7 +1,6 @@
 //! `EditorState` → [`LayoutScene`] builder.
 //!
-//! Produces the paint-only, layout-resolved render scene that the
-//! `CanvasViewport` painter walks.
+//! Produces the paint-only, layout-resolved scene walked by `CanvasViewport`.
 //!
 //! The flex layout pass is NOT re-implemented here. `EditorState.doc`
 //! is a `PenDocument`; [`pen_document_to_payload`] runs each page-root
@@ -328,6 +327,7 @@ pub(crate) fn node_payload_to_scene(
             .map(stable_image_source_id)
             .unwrap_or(0),
         image_nearest_sampling: node.image_nearest_sampling.unwrap_or(false),
+        image_rotation_degrees: node.image_rotation_degrees,
         video: node.video.as_ref().map(|video| SceneVideo {
             src: Arc::from(video.src.as_str()),
             autoplay: video.autoplay,
@@ -562,6 +562,7 @@ fn fill_layers_to_scene(
                             .map(stable_image_source_id)
                             .unwrap_or(0),
                         nearest_sampling: body.nearest_sampling.unwrap_or(false),
+                        rotation_degrees: body.rotation,
                         fit: image_fit_to_scene(Some(&fit)),
                         transform: body
                             .transform
@@ -782,8 +783,7 @@ fn payload_shader_to_scene(s: &ShaderPayload, k: f32, size: [f32; 2]) -> SceneSh
     }
 }
 
-/// `NodePayload.fill_type` string → scene `SceneFillType`. Mirrors
-/// `payload::str_to_fill_type` followed by `fill_type_to_scene`.
+/// Map `NodePayload.fill_type` via `str_to_fill_type` / `fill_type_to_scene`.
 fn str_to_scene_fill_type(s: &str) -> SceneFillType {
     match s {
         "linear" => SceneFillType::LinearGradient,

@@ -50,7 +50,7 @@ impl NativeBackend {
             return;
         };
         let mut paint = skia_safe::Paint::default();
-        paint.set_anti_alias(true);
+        jian_skia::raster_sampling::configure_geometry(&mut paint);
         paint.set_shader(shader);
         canvas.draw_round_rect(to_sk_rect(rect), radius, radius, &paint);
     }
@@ -103,7 +103,7 @@ impl NativeBackend {
             return;
         };
         let mut paint = skia_safe::Paint::default();
-        paint.set_anti_alias(true);
+        jian_skia::raster_sampling::configure_geometry(&mut paint);
         paint.set_shader(shader);
         canvas.draw_round_rect(to_sk_rect(rect), radius, radius, &paint);
     }
@@ -126,6 +126,9 @@ impl NativeBackend {
         colors: &[Color],
         opacity: f32,
     ) {
+        if super::raster_point::mesh(canvas, rect, radius, rows, cols, colors, opacity) {
+            return;
+        }
         let rows = rows.max(2);
         let cols = cols.max(2);
         let vcount = (rows * cols) as usize;
@@ -191,9 +194,17 @@ impl NativeBackend {
                     skia_safe::Point::new(radius, radius),
                 ],
             );
-            canvas.clip_rrect(rrect, None, Some(true));
+            canvas.clip_rrect(
+                rrect,
+                None,
+                Some(jian_skia::raster_sampling::geometry_antialias()),
+            );
         } else {
-            canvas.clip_rect(to_sk_rect(rect), None, Some(true));
+            canvas.clip_rect(
+                to_sk_rect(rect),
+                None,
+                Some(jian_skia::raster_sampling::geometry_antialias()),
+            );
         }
         // `draw_vertices` with no shader combines each interpolated vertex
         // colour with the paint's colour via `mode`. A default Paint is
@@ -202,7 +213,7 @@ impl NativeBackend {
         // through unchanged (white × vertex == vertex). `opacity` rides in
         // the paint's alpha.
         let mut paint = skia_safe::Paint::default();
-        paint.set_anti_alias(true);
+        jian_skia::raster_sampling::configure_geometry(&mut paint);
         paint.set_color4f(
             skia_safe::Color4f::new(1.0, 1.0, 1.0, opacity.clamp(0.0, 1.0)),
             None,
@@ -247,7 +258,7 @@ impl NativeBackend {
         });
 
         let mut paint = skia_safe::Paint::default();
-        paint.set_anti_alias(true);
+        jian_skia::raster_sampling::configure_geometry(&mut paint);
         paint.set_alpha_f(opacity.clamp(0.0, 1.0));
         match shader {
             Some(s) => {

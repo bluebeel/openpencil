@@ -84,6 +84,9 @@ impl NativeBackend {
         &mut self,
         req: SvgRasterRequest<'_>,
     ) -> Option<&SvgRasterCacheEntry> {
+        if jian_skia::raster_sampling::is_point_sampling() {
+            return None;
+        }
         let SvgRasterRequest {
             path_key,
             d_len,
@@ -144,7 +147,7 @@ impl NativeBackend {
             raster_path.set_fill_type(skia_safe::PathFillType::EvenOdd);
         }
         let mut paint = skia_safe::Paint::new(jian_color_to_color4f(color), None);
-        paint.set_anti_alias(true);
+        jian_skia::raster_sampling::configure_geometry(&mut paint);
         raster_canvas.draw_path(&raster_path, &paint);
         raster_canvas.restore_to_count(save);
 
@@ -182,7 +185,7 @@ impl NativeBackend {
         let mut paint = skia_safe::Paint::new(jian_color_to_color4f(color), None);
         paint.set_stroke(true);
         paint.set_stroke_width(width);
-        paint.set_anti_alias(true);
+        jian_skia::raster_sampling::configure_geometry(&mut paint);
         paint.set_stroke_cap(skia_safe::PaintCap::Round);
         paint.set_stroke_join(skia_safe::PaintJoin::Round);
         canvas.draw_path(&path, &paint);
@@ -207,7 +210,7 @@ impl NativeBackend {
         let mut paint = skia_safe::Paint::new(jian_color_to_color4f(color), None);
         paint.set_stroke(true);
         paint.set_stroke_width(width);
-        paint.set_anti_alias(true);
+        jian_skia::raster_sampling::configure_geometry(&mut paint);
         paint.set_stroke_cap(skia_safe::PaintCap::Round);
         paint.set_stroke_join(skia_safe::PaintJoin::Round);
         canvas.draw_path(&path, &paint);
@@ -271,7 +274,7 @@ impl NativeBackend {
                 size: raster.size,
             };
             let mut paint = skia_safe::Paint::default();
-            paint.set_anti_alias(true);
+            jian_skia::raster_sampling::configure_geometry(&mut paint);
             canvas.draw_image_rect(&raster.image, None, to_sk_rect(dst), &paint);
             return;
         }
@@ -283,7 +286,7 @@ impl NativeBackend {
             path.set_fill_type(skia_safe::PathFillType::EvenOdd);
         }
         let mut paint = skia_safe::Paint::new(jian_color_to_color4f(color), None);
-        paint.set_anti_alias(true);
+        jian_skia::raster_sampling::configure_geometry(&mut paint);
         canvas.draw_path(&path, &paint);
     }
 
@@ -319,14 +322,22 @@ impl NativeBackend {
         even_odd: bool,
     ) {
         let Some((_, path, _)) = self.cached_svg_path(d) else {
-            canvas.clip_rect(to_sk_rect(Rect::ZERO), skia_safe::ClipOp::Intersect, true);
+            canvas.clip_rect(
+                to_sk_rect(Rect::ZERO),
+                skia_safe::ClipOp::Intersect,
+                jian_skia::raster_sampling::geometry_antialias(),
+            );
             return;
         };
         let mut path = fit_path_to_rect(&path, rect);
         if even_odd {
             path.set_fill_type(skia_safe::PathFillType::EvenOdd);
         }
-        canvas.clip_path(&path, skia_safe::ClipOp::Intersect, true);
+        canvas.clip_path(
+            &path,
+            skia_safe::ClipOp::Intersect,
+            jian_skia::raster_sampling::geometry_antialias(),
+        );
     }
 
     fn fill_svg_path_in_rect_impl(
@@ -346,7 +357,7 @@ impl NativeBackend {
             path.set_fill_type(skia_safe::PathFillType::EvenOdd);
         }
         let mut paint = skia_safe::Paint::new(jian_color_to_color4f(color), None);
-        paint.set_anti_alias(true);
+        jian_skia::raster_sampling::configure_geometry(&mut paint);
         canvas.draw_path(&path, &paint);
     }
 
@@ -557,7 +568,7 @@ impl NativeBackend {
                 None,
             ),
         };
-        paint.set_anti_alias(true);
+        jian_skia::raster_sampling::configure_geometry(&mut paint);
         canvas.draw_path(path, &paint);
     }
 
@@ -639,16 +650,20 @@ impl NativeBackend {
         };
 
         canvas.save();
-        canvas.clip_path(&path, skia_safe::ClipOp::Intersect, true);
+        canvas.clip_path(
+            &path,
+            skia_safe::ClipOp::Intersect,
+            jian_skia::raster_sampling::geometry_antialias(),
+        );
         canvas.save_layer(&skia_safe::canvas::SaveLayerRec::default());
 
         let mut fill = skia_safe::Paint::new(jian_color_to_color4f(color), None);
-        fill.set_anti_alias(true);
+        jian_skia::raster_sampling::configure_geometry(&mut fill);
         canvas.draw_path(&path, &fill);
 
         let mut cut = skia_safe::Paint::default();
-        cut.set_anti_alias(true);
-        cut.set_blend_mode(skia_safe::BlendMode::DstOut);
+        jian_skia::raster_sampling::configure_geometry(&mut cut);
+        jian_skia::raster_sampling::set_blend_mode(&mut cut, skia_safe::BlendMode::DstOut);
         let sigma = blur * 0.5;
         if sigma > 0.0 {
             if let Some(mask) =

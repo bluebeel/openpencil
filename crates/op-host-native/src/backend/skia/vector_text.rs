@@ -23,10 +23,19 @@ pub(super) fn draw(
     paint: &Paint,
     modern: bool,
 ) -> bool {
-    if !modern || glyphs.len() != positions.len() || glyphs.len() > MAX_GLYPHS {
+    let point = jian_skia::raster_sampling::is_point_sampling();
+    if (!modern && !point) || glyphs.len() != positions.len() || glyphs.len() > MAX_GLYPHS {
+        if point {
+            jian_skia::raster_sampling::mark_unsupported("invalid or oversized glyph outline run");
+        }
         return false;
     }
     if font.is_embolden() || paint.mask_filter().is_some() || paint.image_filter().is_some() {
+        if point {
+            jian_skia::raster_sampling::mark_unsupported(
+                "filtered or synthetic emboldened glyph run",
+            );
+        }
         return false;
     }
     let face = font.typeface();
@@ -34,6 +43,9 @@ pub(super) fn draw(
         .iter()
         .any(|tag| face.get_table_size(u32::from_be_bytes(*tag)).is_some())
     {
+        if point {
+            jian_skia::raster_sampling::mark_unsupported("color or bitmap glyph outlines");
+        }
         return false;
     }
     let mut path = PathBuilder::new();
@@ -49,6 +61,9 @@ pub(super) fn draw(
             let mut bounds = [Rect::default()];
             font.get_bounds(&[glyph], &mut bounds, None);
             if !bounds[0].is_empty() {
+                if point {
+                    jian_skia::raster_sampling::mark_unsupported("missing glyph outline");
+                }
                 return false;
             }
         }
@@ -58,6 +73,12 @@ pub(super) fn draw(
 
 fn draw_path(canvas: &Canvas, path: &Path, paint: &Paint) -> bool {
     if path.is_empty() {
+        return true;
+    }
+    if jian_skia::raster_sampling::is_point_sampling() {
+        let mut point_paint = paint.clone();
+        jian_skia::raster_sampling::configure_paint(&mut point_paint);
+        canvas.draw_path(path, &point_paint);
         return true;
     }
     let matrix = canvas.local_to_device_as_3x3();

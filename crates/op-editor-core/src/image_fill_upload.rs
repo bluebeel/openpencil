@@ -73,6 +73,7 @@ impl EditorState {
                     original_size,
                     transform: None,
                     tile_scale: None,
+                    rotation: None,
                     explain: None,
                     opacity: None,
                     blend_mode: None,

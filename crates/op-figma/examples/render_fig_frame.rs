@@ -16,7 +16,8 @@ use jian_ops_schema::node::PenNode;
 use op_editor_core::PenNodeExt;
 use op_figma::{prepare_fig_binary_with_observer, FigImportPhase, FigLayoutMode};
 use op_host_services::export::{
-    export_node_raster_with_margin, export_node_raster_with_viewport, node_bounds, RasterFormat,
+    export_node_raster_with_margin, export_node_raster_with_viewport,
+    export_node_raster_with_viewport_and_sampling, node_bounds, RasterFormat, RasterSampling,
 };
 use std::path::Path;
 use std::time::Instant;
@@ -167,7 +168,17 @@ fn run() -> Result<serde_json::Value, RenderFigError> {
     phase(&args, "render");
     let started = Instant::now();
     stage("render-started", None);
-    if args.authored_bounds {
+    if args.raster_sampling != RasterSampling::Native {
+        export_node_raster_with_viewport_and_sampling(
+            &scene,
+            &frame_id,
+            Path::new(&args.output),
+            RasterFormat::Png,
+            args.scale,
+            bounds,
+            args.raster_sampling,
+        )?;
+    } else if args.authored_bounds {
         export_node_raster_with_viewport(
             &scene,
             &frame_id,
@@ -195,6 +206,7 @@ fn run() -> Result<serde_json::Value, RenderFigError> {
         "frameName":frame_name,"frameId":frame_id,"frameNodeCount":frame_node_count,
         "selectedPath":selected_path,"output":args.output,"bounds":actual_bounds,
         "pixels":{"width":pixels.0,"height":pixels.1},"scale":args.scale,
+        "rasterSampling":args.raster_sampling.as_str(),
         "preserveAuthoredGeometry":true,"warnings":import.warnings,"fonts":fonts,
         "exportBounds":if args.authored_bounds { "authored" } else { "painted" },
         "resourceInstrumentation":"Registered font files and importer warnings; per-style fallback events are not exposed",

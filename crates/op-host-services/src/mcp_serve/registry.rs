@@ -149,8 +149,20 @@ pub(super) fn rebuild_registry(
         "replace_all_matching_properties",
         replace_all_matching_properties_snapshot(doc)
     );
-    register_tool!("snapshot_layout", snapshot_layout_snapshot(doc));
-    register_tool!("find_empty_space", find_empty_space_snapshot(doc));
+    register_tool!(
+        "snapshot_layout",
+        match arguments {
+            Some(args) => op_mcp::snapshot_layout_snapshot_for_call(doc, args),
+            None => snapshot_layout_snapshot(doc),
+        }
+    );
+    register_tool!(
+        "find_empty_space",
+        match arguments {
+            Some(args) => op_mcp::find_empty_space_snapshot_for_call(doc, args),
+            None => find_empty_space_snapshot(doc),
+        }
+    );
     register_tool!("get_canvas_bounds", get_canvas_bounds_snapshot(doc));
     register_tool!(
         "find_node_by_name",

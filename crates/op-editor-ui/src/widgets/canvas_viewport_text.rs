@@ -204,6 +204,7 @@ fn draw_slice(
     {
         backend.draw_text(
             &TextLayout::single_run(slice, family, style.font_size, jc, Point2D::ZERO)
+                .with_source_color(style.color)
                 .with_font_weight(style.weight)
                 .with_italic(style.italic)
                 .with_kerning(kerning)
@@ -232,6 +233,7 @@ fn draw_slice(
         let s = ch.encode_utf8(&mut buf);
         backend.draw_text(
             &TextLayout::single_run(s, family, style.font_size, jc, Point2D::ZERO)
+                .with_source_color(style.color)
                 .with_font_weight(style.weight)
                 .with_italic(style.italic)
                 .with_kerning(kerning)

@@ -97,7 +97,7 @@ pub use editor_scene::{
     editor_state_to_active_page_layout_scene, editor_state_to_export_layout_scene,
     editor_state_to_layout_scene,
 };
-pub use item_scene::editor_state_to_item_layout_scene;
+pub use item_scene::{editor_state_to_item_layout_scene, editor_state_to_page_item_layout_scene};
 pub use layout_scene::{
     pen_document_to_layout_scene, pen_document_to_layout_scene_for_preview,
     pen_document_to_layout_scene_for_preview_with_measure,

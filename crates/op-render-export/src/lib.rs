@@ -29,19 +29,23 @@ use op_editor_ui::Rect;
 use skia_safe::{Canvas, EncodedImageFormat};
 use std::path::Path as StdPath;
 
+mod correlated_raster;
 mod editor;
 mod error;
 pub mod pdf;
 mod scene_painter;
+mod scene_sampling;
 mod shared_raster;
 mod svg;
 
+pub use correlated_raster::{RasterSampling, MAX_CORRELATED_WORKING_BYTES};
 pub use editor::{
     default_export_file_name, export_editor_state, export_editor_state_to_path, EditorExportScope,
     ExportArtifact,
 };
 pub use error::ExportError;
 pub use scene_painter::{paint_node, paint_nodes};
+pub use scene_sampling::*;
 pub use shared_raster::{
     shared_raster_worker, RasterAdmission, RasterWorkerStats, SharedRasterTarget,
     SharedRasterWorker,

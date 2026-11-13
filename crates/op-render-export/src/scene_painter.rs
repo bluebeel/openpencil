@@ -65,19 +65,29 @@ pub fn paint_node(canvas: &Canvas, node: &SceneNode) {
 /// are ordered topmost-first (layer-panel order), so the painter walks
 /// them in reverse — same as `canvas_viewport.rs`'s paint loop.
 pub fn paint_nodes(canvas: &Canvas, nodes: &[SceneNode]) {
+    with_prepared_nodes(nodes, |paint| paint(canvas));
+}
+
+/// Discover/decode once, then repeat only the immutable ordered paint loop.
+/// The backend and its caches remain on this thread across every camera.
+pub(crate) fn with_prepared_nodes<R>(
+    nodes: &[SceneNode],
+    action: impl FnOnce(&mut dyn FnMut(&Canvas)) -> R,
+) -> R {
     EXPORT_BACKEND.with(|cell| {
         let mut backend = cell.borrow_mut();
         ensure_images_decoded(&mut backend, nodes);
-        let mut frame = NativeFrameBackend::new(&mut backend, canvas);
-        let mut cx = PaintCx {
-            backend: &mut frame,
+        let mut paint = |canvas: &Canvas| {
+            let mut frame = NativeFrameBackend::new(&mut backend, canvas);
+            let mut cx = PaintCx {
+                backend: &mut frame,
+            };
+            for node in nodes.iter().rev() {
+                canvas_viewport_paint::paint_node(&mut cx, node, Point2D::ZERO, 1.0, no_cull());
+            }
         };
-        for node in nodes.iter().rev() {
-            // `paint_node` is the off-canvas public entry: base scene only,
-            // no editor overlays (reveal/hover/selection/pen).
-            canvas_viewport_paint::paint_node(&mut cx, node, Point2D::ZERO, 1.0, no_cull());
-        }
-    });
+        action(&mut paint)
+    })
 }
 
 /// Serializes concurrent exports through the decode pump. The pending-decode

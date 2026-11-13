@@ -84,3 +84,51 @@ fn item_scene_keeps_presentation_contract_and_implicit_page_identity() {
     assert_eq!(item.pages[0].children.len(), 1);
     assert_eq!(item.pages[0].children[0].id, "b");
 }
+
+#[test]
+fn requested_page_item_keeps_full_containing_root_and_virtual_page_scope() {
+    let mut state = state();
+    state.ui.active_page_index = 0;
+    for preserve in [false, true] {
+        state.editor_ui.preserve_authored_geometry = preserve;
+        let full = editor_state_to_layout_scene(&state);
+        let scoped = crate::editor_state_to_page_item_layout_scene(&state, 1, Some("instance"));
+        assert!(scoped.pages[0].children.is_empty());
+        assert_eq!(
+            scoped.pages[1].children,
+            vec![full.pages[1].children[1].clone()]
+        );
+        assert_eq!(scoped.active_page_index, full.active_page_index);
+        for id in [None, Some("instance__badge"), Some("unknown")] {
+            let scoped = crate::editor_state_to_page_item_layout_scene(&state, 1, id);
+            assert!(scoped.pages[0].children.is_empty());
+            assert_eq!(scoped.pages[1], full.pages[1]);
+        }
+    }
+}
+
+#[test]
+fn image_rotation_degrees_survives_payload_and_scene_layers() {
+    use jian_scene::layout_scene::SceneFillLayer;
+    for rotation in [None, Some(0.0), Some(90.0), Some(360.0), Some(-45.0)] {
+        let mut value = serde_json::json!({"version":"1.0.0","children":[{
+            "id":"photo","type":"rectangle","width":40,"height":30,
+            "fill":[{"type":"image","url":"data:image/png;base64,AA==","mode":"fill"}]}]});
+        if let Some(rotation) = rotation {
+            value["children"][0]["fill"][0]["rotation"] = serde_json::json!(rotation);
+        }
+        let doc = jian_ops_schema::load_str(&value.to_string()).unwrap().value;
+        let payload = crate::pen_document_to_payload(&doc).payload;
+        assert_eq!(
+            payload.pages[0].children[0].image_rotation_degrees,
+            rotation
+        );
+        let state = EditorState::from_document(doc);
+        let scene = editor_state_to_layout_scene(&state);
+        let node = scene.pages[0].find("photo").unwrap();
+        assert_eq!(node.image_rotation_degrees, rotation);
+        assert!(
+            matches!(&node.fill_layers[0], SceneFillLayer::Image { rotation_degrees, .. } if *rotation_degrees == rotation)
+        );
+    }
+}

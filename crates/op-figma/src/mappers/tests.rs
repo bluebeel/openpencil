@@ -530,3 +530,33 @@ fn height_sizing_fit_content_in_vertical_stack() {
         SizingBehavior::Keyword(SizingKeyword::FitContent)
     ));
 }
+
+#[test]
+fn image_fill_rotation_retains_degrees_and_full_turns_without_nonfinite_values() {
+    for rotation in [0.0, 90.0, 360.0, -45.0] {
+        let paint = obj(vec![
+            ("type", FigValue::Str("IMAGE".into())),
+            ("rotation", FigValue::Float(rotation)),
+        ]);
+        let Some(PenFill::Image(image)) = map_single_fill(&paint) else {
+            panic!()
+        };
+        assert_eq!(image.rotation, Some(rotation as f32));
+    }
+    for rotation in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+        let paint = obj(vec![
+            ("type", FigValue::Str("IMAGE".into())),
+            ("rotation", FigValue::Float(rotation)),
+        ]);
+        let Some(PenFill::Image(image)) = map_single_fill(&paint) else {
+            panic!()
+        };
+        assert_eq!(image.rotation, None);
+    }
+    let Some(PenFill::Image(image)) =
+        map_single_fill(&obj(vec![("type", FigValue::Str("IMAGE".into()))]))
+    else {
+        panic!()
+    };
+    assert_eq!(image.rotation, None);
+}

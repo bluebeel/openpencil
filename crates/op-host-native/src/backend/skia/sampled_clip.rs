@@ -34,6 +34,7 @@ float sampleAt(float2 p, float2 offset) {
                              deviceInverse.z * offset.x + deviceInverse.w * offset.y));
 }
 half4 main(float2 p) {
+    if (grid == 0.0) return half4(inside(p));
     float coverage = 0.0;
     for (int y = 0; y < 2; ++y) {
         for (int x = 0; x < 2; ++x) {
@@ -101,7 +102,14 @@ pub(super) fn clip_rrect(canvas: &Canvas, rrect: &RRect) {
                             inverse.scale_y(),
                         ],
                     ),
-                    ("grid", &[GRID.with(Cell::get)]),
+                    (
+                        "grid",
+                        &[if jian_skia::raster_sampling::is_point_sampling() {
+                            0.0
+                        } else {
+                            GRID.with(Cell::get)
+                        }],
+                    ),
                 ];
                 for (name, value) in values {
                     builder.set_uniform_float(name, value).ok()?;
@@ -112,7 +120,12 @@ pub(super) fn clip_rrect(canvas: &Canvas, rrect: &RRect) {
     if let Some(shader) = shader {
         canvas.clip_shader(shader, skia_safe::ClipOp::Intersect);
     } else {
-        canvas.clip_rrect(rrect, skia_safe::ClipOp::Intersect, true);
+        jian_skia::raster_sampling::mark_unsupported("rounded clip shader unavailable");
+        canvas.clip_rrect(
+            rrect,
+            skia_safe::ClipOp::Intersect,
+            jian_skia::raster_sampling::geometry_antialias(),
+        );
     }
 }
 
