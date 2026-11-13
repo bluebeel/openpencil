@@ -20,6 +20,27 @@ fn chevron_lookup(d: &str) -> Option<&'static str> {
 }
 
 #[test]
+fn no_op_icon_walk_preserves_absent_reference_overrides_and_leaf_children() {
+    let mut state = state_with_node(json!({
+        "type":"frame","id":"root","children":[
+            {"type":"rectangle","id":"rect"},
+            {"type":"group","id":"group"},
+            {"type":"ref","id":"instance","ref":"button"},
+            {"type":"tabs","id":"tabs"},
+            {"type":"frame","id":"empty","children":[]}
+        ]
+    }));
+    let before = state.doc.clone();
+    let revision = state.document_revision();
+    assert_eq!(
+        normalize_icon_paths(&mut state, |_| None),
+        IconPathNormalizeReport::default()
+    );
+    assert_eq!(state.doc, before);
+    assert_eq!(state.document_revision(), revision);
+}
+
+#[test]
 fn known_chevron_becomes_icon_font_and_keeps_box_and_stroke_fill() {
     let mut state = state_with_node(json!({
         "type": "path",

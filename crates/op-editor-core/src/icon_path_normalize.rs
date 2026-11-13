@@ -87,8 +87,12 @@ fn normalize_icon_paths_in_nodes_with_report<F>(
             }
             None => {}
         }
-        if let Some(children) = node.children_mut() {
-            normalize_icon_paths_in_nodes_with_report(children, lookup, report);
+        // `children_mut` is also the insertion API and materializes None.
+        // A traversal must preserve an absent Ref override and untouched leaves.
+        if node.children().is_some_and(|children| !children.is_empty()) {
+            if let Some(children) = node.children_mut() {
+                normalize_icon_paths_in_nodes_with_report(children, lookup, report);
+            }
         }
     }
 }
