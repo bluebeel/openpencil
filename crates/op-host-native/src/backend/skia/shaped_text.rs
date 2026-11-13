@@ -34,6 +34,9 @@ const NATURAL_LAYOUT_BUDGET: f32 = 1.0e6;
 
 // Font parsing uses DirectWrite on Windows and must stay on its render thread.
 #[cfg(all(test, not(target_os = "windows")))]
+#[path = "shaped_advance_tests.rs"]
+mod shaped_advance_tests;
+#[cfg(all(test, not(target_os = "windows")))]
 #[path = "variable_font_tests.rs"]
 mod variable_font_tests;
 
@@ -83,8 +86,43 @@ impl ShapedText {
         jian_skia::with_font_lock(|| {
             let mut paragraph = self.build(font_resolver, run);
             paragraph.layout(NATURAL_LAYOUT_BUDGET);
-            paragraph.max_intrinsic_width()
-                + run.text.chars().count().saturating_sub(1) as f32 * run.letter_spacing
+            let mut width = paragraph.max_intrinsic_width();
+            if super::text::uses_advance_grid(run.text, run.kerning, run.font_features) {
+                let mut corrections = std::collections::BTreeMap::<usize, f32>::new();
+                paragraph.visit(|line, info| {
+                    if let Some(info) = info {
+                        if let Some(adjusted) = jian_skia::advance_grid::adjust_glyph_run(
+                            info.font(),
+                            info.glyphs(),
+                            info.positions(),
+                            info.utf8_starts(),
+                            info.advance_x(),
+                        ) {
+                            *corrections.entry(line).or_default() += adjusted.advance_correction;
+                        }
+                    }
+                });
+                if run.text.contains('\n') {
+                    width = paragraph
+                        .get_line_metrics()
+                        .iter()
+                        .enumerate()
+                        .map(|(line, metrics)| {
+                            jian_skia::advance_grid::quantize_advance(
+                                metrics.width as f32
+                                    + corrections.get(&line).copied().unwrap_or(0.0),
+                                run.font_size,
+                            )
+                        })
+                        .fold(0.0, f32::max);
+                } else {
+                    width = jian_skia::advance_grid::quantize_advance(
+                        width + corrections.get(&0).copied().unwrap_or(0.0),
+                        run.font_size,
+                    );
+                }
+            }
+            width + run.text.chars().count().saturating_sub(1) as f32 * run.letter_spacing
         })
     }
 
@@ -132,6 +170,9 @@ impl ShapedText {
                     .char_indices()
                     .map(|(offset, _)| offset)
                     .collect::<Vec<_>>();
+                let use_grid =
+                    super::text::uses_advance_grid(run.text, run.kerning, run.font_features);
+                let mut advance_correction = 0.0;
                 paragraph.visit(|_, info| {
                     let Some(info) = info else { return };
                     let source = info.font();
@@ -140,10 +181,27 @@ impl ShapedText {
                     font.set_embolden(source.is_embolden());
                     font.set_hinting(skia_safe::FontHinting::None);
                     font.set_subpixel(true);
+                    let adjusted = if use_grid {
+                        jian_skia::advance_grid::adjust_glyph_run(
+                            source,
+                            info.glyphs(),
+                            info.positions(),
+                            info.utf8_starts(),
+                            info.advance_x(),
+                        )
+                    } else {
+                        None
+                    };
+                    let base_positions = adjusted
+                        .as_ref()
+                        .map_or(info.positions(), |run| run.positions.as_slice());
+                    let origin_correction = advance_correction;
+                    if let Some(run) = &adjusted {
+                        advance_correction += run.advance_correction;
+                    }
                     let positions;
                     let glyph_positions = if run.letter_spacing != 0.0 {
-                        positions = info
-                            .positions()
+                        positions = base_positions
                             .iter()
                             .zip(info.utf8_starts())
                             .map(|(position, offset)| {
@@ -157,15 +215,30 @@ impl ShapedText {
                             .collect::<Vec<_>>();
                         positions.as_slice()
                     } else {
-                        info.positions()
+                        base_positions
                     };
-                    canvas.draw_glyphs_at(
+                    let origin = (x + info.origin().x + origin_correction, baseline_y);
+                    let modern = run.kerning.is_some()
+                        || run
+                            .font_features
+                            .is_some_and(|features| !features.is_empty());
+                    if !super::vector_text::draw(
+                        canvas,
+                        &font,
                         info.glyphs(),
                         glyph_positions,
-                        (x + info.origin().x, baseline_y),
-                        &font,
+                        origin.into(),
                         &paint,
-                    );
+                        modern,
+                    ) {
+                        canvas.draw_glyphs_at(
+                            info.glyphs(),
+                            glyph_positions,
+                            origin,
+                            &font,
+                            &paint,
+                        );
+                    }
                 });
                 return;
             }
@@ -203,10 +276,8 @@ impl ShapedText {
             } else {
                 features.entry("kern".into()).or_insert(1);
             }
-            if kerning {
-                features.entry("liga".into()).or_insert(0);
-                features.entry("calt".into()).or_insert(0);
-            }
+            features.entry("liga".into()).or_insert(0);
+            features.entry("calt".into()).or_insert(0);
         }
         for (tag, value) in features {
             if tag.len() == 4 && tag.is_ascii() {

@@ -1,4 +1,4 @@
-use super::{NativeBackend, contain_rect, layer::to_skia_blend_mode, to_sk_rect};
+use super::{contain_rect, layer::to_skia_blend_mode, to_sk_rect, NativeBackend};
 use op_editor_ui::{ImageAdjustments, ImageBlendMode, ImageDrawMode, Point2D, Rect};
 
 const THUMB_CACHE_BYTE_BUDGET: usize = 4 * 1024 * 1024;
@@ -38,6 +38,34 @@ pub(super) fn cover_rect(outer: Rect, img_w: f32, img_h: f32) -> Rect {
 }
 
 impl NativeBackend {
+    pub fn draw_image_with_paint_options(
+        &mut self,
+        canvas: &skia_safe::Canvas,
+        rect: Rect,
+        id: u64,
+        encoded: &[u8],
+        options: &op_editor_ui::ImagePaintOptions<'_>,
+    ) {
+        if options.nearest_sampling && super::image_nearest16::draw(self, canvas, rect, id, options)
+        {
+            return;
+        }
+        self.draw_image_with_options_transform_blend_and_tile_scale(
+            canvas,
+            rect,
+            id,
+            encoded,
+            options.mode,
+            options.adjustments,
+            options.opacity,
+            options.corner_radius,
+            options.transform,
+            options.blend_mode,
+            options.original_size,
+            options.tile_scale,
+        );
+    }
+
     /// Decode and draw a bounded blur-up JPEG. Unlike full images, these
     /// <=32px thumbnails are explicitly allowed to decode during paint and
     /// live in a dedicated small LRU so they cannot displace sharp rasters.

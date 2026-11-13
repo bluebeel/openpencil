@@ -477,6 +477,17 @@ impl<'a> RenderBackend for NativeFrameBackend<'a> {
             );
     }
 
+    fn draw_image_with_paint_options(
+        &mut self,
+        rect: Rect,
+        image_id: u64,
+        encoded: &[u8],
+        options: &op_editor_ui::ImagePaintOptions<'_>,
+    ) {
+        self.inner
+            .draw_image_with_paint_options(self.canvas, rect, image_id, encoded, options);
+    }
+
     fn fill_round_rect_linear_gradient(
         &mut self,
         rect: Rect,

@@ -321,6 +321,13 @@ pub(crate) fn node_payload_to_scene(
         arc_inner_radius: node.arc_inner_radius,
         polygon_sides: node.polygon_sides.clamp(3, 100),
         image_src: node.image_src.as_ref().map(|s| s.as_arc()),
+        image_thumbnail_src: node.image_thumbnail_src.as_ref().map(|src| src.as_arc()),
+        image_thumbnail_src_id: node
+            .image_thumbnail_src
+            .as_deref()
+            .map(stable_image_source_id)
+            .unwrap_or(0),
+        image_nearest_sampling: node.image_nearest_sampling.unwrap_or(false),
         video: node.video.as_ref().map(|video| SceneVideo {
             src: Arc::from(video.src.as_str()),
             autoplay: video.autoplay,
@@ -548,6 +555,13 @@ fn fill_layers_to_scene(
                     Some(SceneFillLayer::Image {
                         src: body.url.as_arc(),
                         src_id: stable_image_source_id(body.url.as_ref()),
+                        thumbnail_src: body.thumbnail_url.as_ref().map(|src| src.as_arc()),
+                        thumbnail_src_id: body
+                            .thumbnail_url
+                            .as_deref()
+                            .map(stable_image_source_id)
+                            .unwrap_or(0),
+                        nearest_sampling: body.nearest_sampling.unwrap_or(false),
                         fit: image_fit_to_scene(Some(&fit)),
                         transform: body
                             .transform

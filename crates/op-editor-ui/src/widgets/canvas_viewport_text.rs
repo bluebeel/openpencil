@@ -239,12 +239,15 @@ fn draw_slice(
                 .with_font_features(font_features),
             Point2D::new(cursor, baseline_y),
         );
-        let adv = backend.measure_text_family_styled(
+        let adv = backend.measure_text_family_kerned(
             s,
             style.font_size,
             family,
             style.weight,
             style.italic,
+            kerning,
+            0.0,
+            font_features,
         );
         glyph_end = cursor + adv;
         cursor = glyph_end + letter_spacing;

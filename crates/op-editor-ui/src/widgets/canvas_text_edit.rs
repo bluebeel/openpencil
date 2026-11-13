@@ -293,12 +293,15 @@ impl TextEditLayout {
             let mut w = 0.0;
             for ch in prefix.chars() {
                 let mut buf = [0u8; 4];
-                w += backend.measure_text_family_styled(
+                w += backend.measure_text_family_kerned(
                     ch.encode_utf8(&mut buf),
                     self.font_size,
                     &self.family,
                     self.weight,
                     self.italic,
+                    self.font_kerning,
+                    0.0,
+                    &self.font_features,
                 ) + self.letter_spacing;
             }
             // Tracking belongs between glyphs. Internal caret boundaries

@@ -56,8 +56,8 @@ pub mod widgets;
 // Re-export the primary API for the hosts / widgets / tests.
 pub use layout_scene::{SceneTextAlign, SceneTextVerticalAlign};
 pub use op_editor_core::render_backend::{
-    Color, ImageAdjustments, ImageBlendMode, ImageDrawMode, Point2D, Rect, RenderBackend,
-    TextBaselineRequest, TextLayout,
+    Color, ImageAdjustments, ImageBlendMode, ImageDrawMode, ImagePaintOptions, ImagePaintThumbnail,
+    Point2D, Rect, RenderBackend, TextBaselineRequest, TextLayout,
 };
 pub use theme::Theme;
 // Brand-logo catalog registration, surfaced at the crate root so non-widget

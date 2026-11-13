@@ -84,6 +84,8 @@ pub fn apply_result(state: &mut EditorState, node_id: &NodeId, url: &str) -> boo
                 _ => {
                     frame.container.fill = Some(vec![PenFill::Image(ImageFillBody {
                         url: url.into(),
+                        thumbnail_url: None,
+                        nearest_sampling: None,
                         mode: Some(ImageFillMode::Crop),
                         original_size: None,
                         transform: None,
@@ -114,6 +116,8 @@ pub fn apply_result(state: &mut EditorState, node_id: &NodeId, url: &str) -> boo
                 _ => {
                     rect.container.fill = Some(vec![PenFill::Image(ImageFillBody {
                         url: url.into(),
+                        thumbnail_url: None,
+                        nearest_sampling: None,
                         mode: Some(ImageFillMode::Crop),
                         original_size: None,
                         transform: None,

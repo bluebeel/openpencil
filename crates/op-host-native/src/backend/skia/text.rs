@@ -20,6 +20,19 @@ pub(super) fn draw_text_runs(layout: &TextLayout) -> &[jian_core::render::TextRu
     layout.runs()
 }
 
+pub(super) fn quantize_advance(value: f32, font_size: f32) -> f32 {
+    jian_skia::advance_grid::quantize_advance(value, font_size)
+}
+
+pub(super) fn uses_advance_grid(
+    text: &str,
+    kerning: Option<bool>,
+    features: Option<&std::collections::BTreeMap<String, u32>>,
+) -> bool {
+    (kerning.is_some() || features.is_some_and(|features| !features.is_empty()))
+        && jian_skia::advance_grid::supports_text(text)
+}
+
 impl NativeBackend {
     /// Resolve a typeface that covers `c`. Cached per codepoint —
     /// `FontMgr::match_family_style_character` is fast on first call
@@ -152,10 +165,57 @@ impl NativeBackend {
                     color: skia_safe::Color::BLACK,
                 },
             )
+        } else if uses_advance_grid(text, kerning, Some(font_features)) {
+            self.measure_nominal_grid(text, font_size, family, weight, italic)
+                + text.chars().count().saturating_sub(1) as f32 * letter_spacing
         } else {
             self.measure_text_family_styled(text, font_size, family, weight, italic)
                 + text.chars().count().saturating_sub(1) as f32 * letter_spacing
         }
+    }
+
+    fn measure_nominal_grid(
+        &mut self,
+        text: &str,
+        font_size: f32,
+        family: &str,
+        weight: u16,
+        italic: bool,
+    ) -> f32 {
+        jian_skia::with_font_lock(|| {
+            let segments = self
+                .font_resolver
+                .segment_text(text, Some(family), weight, italic);
+            if segments.is_empty() {
+                return self.font_resolver.measure_text(
+                    text,
+                    font_size,
+                    Some(family),
+                    weight,
+                    italic,
+                );
+            }
+            segments
+                .into_iter()
+                .map(|segment| {
+                    let mut font = skia_safe::Font::new(&segment.typeface, font_size);
+                    font.set_hinting(skia_safe::FontHinting::None);
+                    font.set_subpixel(true);
+                    let glyphs = font.str_to_glyphs_vec(&segment.text);
+                    let mut widths = vec![0.0; glyphs.len()];
+                    font.get_widths(&glyphs, &mut widths);
+                    let factor = if segment.synthetic_bold {
+                        jian_skia::SYNTHETIC_BOLD_WIDTH_FACTOR
+                    } else {
+                        1.0
+                    };
+                    widths
+                        .into_iter()
+                        .map(|width| quantize_advance(width * factor, font_size))
+                        .sum::<f32>()
+                })
+                .sum()
+        })
     }
 
     /// Family-aware width at the default weight/upright — the measurement
@@ -291,6 +351,12 @@ impl NativeBackend {
                 // so 28pt headline gets the same visual weight relative
                 // to its glyph as 13pt body text.
                 let want_bold = run.font_weight >= 600;
+                let modern = layout.kerning().is_some() || !layout.font_features().is_empty();
+                let advance_grid = uses_advance_grid(
+                    run.content.as_str(),
+                    layout.kerning(),
+                    Some(layout.font_features()),
+                );
                 let mut x = origin.x + run.origin.x;
                 let y = origin.y + run.origin.y;
                 for segment in segments {
@@ -313,9 +379,61 @@ impl NativeBackend {
                         paint.set_style(skia_safe::PaintStyle::Fill);
                         paint.set_stroke_width(0.0);
                     }
-                    canvas.draw_str(&segment.text, (x, y), &font, &paint);
-                    if segment.synthetic_bold {
-                        advance *= jian_skia::SYNTHETIC_BOLD_WIDTH_FACTOR;
+                    if advance_grid {
+                        let glyphs = font.str_to_glyphs_vec(&segment.text);
+                        let mut widths = vec![0.0; glyphs.len()];
+                        font.get_widths(&glyphs, &mut widths);
+                        let factor = if segment.synthetic_bold {
+                            jian_skia::SYNTHETIC_BOLD_WIDTH_FACTOR
+                        } else {
+                            1.0
+                        };
+                        let mut cursor = 0.0;
+                        let positions: Vec<_> = widths
+                            .into_iter()
+                            .map(|width| {
+                                let point = skia_safe::Point::new(cursor, 0.0);
+                                cursor += quantize_advance(width * factor, run.font_size)
+                                    + layout.letter_spacing();
+                                point
+                            })
+                            .collect();
+                        if !super::vector_text::draw(
+                            canvas,
+                            &font,
+                            &glyphs,
+                            &positions,
+                            (x, y).into(),
+                            &paint,
+                            modern,
+                        ) {
+                            canvas.draw_glyphs_at(
+                                &glyphs,
+                                positions.as_slice(),
+                                (x, y),
+                                &font,
+                                &paint,
+                            );
+                        }
+                        advance = cursor;
+                    } else {
+                        let glyphs = font.str_to_glyphs_vec(&segment.text);
+                        let mut positions = vec![skia_safe::Point::default(); glyphs.len()];
+                        font.get_pos(&glyphs, &mut positions, None);
+                        if !super::vector_text::draw(
+                            canvas,
+                            &font,
+                            &glyphs,
+                            &positions,
+                            (x, y).into(),
+                            &paint,
+                            modern,
+                        ) {
+                            canvas.draw_str(&segment.text, (x, y), &font, &paint);
+                        }
+                        if segment.synthetic_bold {
+                            advance *= jian_skia::SYNTHETIC_BOLD_WIDTH_FACTOR;
+                        }
                     }
                     x += advance;
                 }

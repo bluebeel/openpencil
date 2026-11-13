@@ -433,15 +433,52 @@ fn paint_image_node_with_stroke(
     };
     let max_edge_px =
         required_raster_edge_with_transform(world_rect, cx.backend.dpi_scale(), decode_transform);
+    // Point sampling needs native source texels. Keep retained previews
+    // intact; the primary image can still use progressive decoding when a
+    // preview is available. Bound untrusted/oversized sources as usual.
+    let source_edge = if node.image_nearest_sampling && node.image_thumbnail_src.is_none() {
+        4096
+    } else {
+        max_edge_px
+    };
     let sharp_enough = bytes
         .as_deref()
-        .is_some_and(|encoded| cx.backend.image_decoded(id, encoded, max_edge_px));
+        .is_some_and(|encoded| cx.backend.image_decoded(id, encoded, source_edge));
     if bytes.is_some() && !sharp_enough {
-        note_pending_decode(id, max_edge_px);
+        note_pending_decode(id, source_edge);
     }
     // A raster that is merely too coarse still draws: sharpening must
     // refine the picture in place, never flash back to placeholder art.
-    let decode_ready = sharp_enough || (bytes.is_some() && cx.backend.image_resident(id));
+    let primary_ready = sharp_enough || (bytes.is_some() && cx.backend.image_resident(id));
+    let thumbnail_id = node.image_thumbnail_src.as_deref().map(|src| {
+        if node.image_thumbnail_src_id == 0 {
+            stable_image_source_id(src)
+        } else {
+            node.image_thumbnail_src_id
+        }
+    });
+    let thumbnail_bytes = node
+        .image_thumbnail_src
+        .as_deref()
+        .and_then(|src| image_source_bytes(src, thumbnail_id.unwrap_or(0)));
+    let thumbnail_ready =
+        if let (Some(thumbnail_id), Some(encoded)) = (thumbnail_id, thumbnail_bytes.as_deref()) {
+            let preview_edge = if node.image_nearest_sampling {
+                4096
+            } else {
+                max_edge_px
+            };
+            let ready = cx
+                .backend
+                .image_decoded(thumbnail_id, encoded, preview_edge);
+            if !ready {
+                note_pending_decode(thumbnail_id, preview_edge);
+            }
+            ready || cx.backend.image_resident(thumbnail_id)
+        } else {
+            false
+        };
+    let decode_ready = primary_ready || thumbnail_ready;
     let r = node.corner_radius * zoom;
     let use_round = r > 0.5;
     let per_corner = scaled_non_uniform_corner_radii(node, zoom);
@@ -504,7 +541,19 @@ fn paint_image_node_with_stroke(
         }
     }
     if decode_ready {
-        let bytes = bytes.expect("decode-ready image has encoded bytes");
+        let (draw_id, encoded) = if primary_ready {
+            (
+                id,
+                bytes.as_deref().expect("ready original has encoded bytes"),
+            )
+        } else {
+            (
+                thumbnail_id.expect("ready thumbnail has id"),
+                thumbnail_bytes
+                    .as_deref()
+                    .expect("ready thumbnail has encoded bytes"),
+            )
+        };
         if let Some(radii) = per_corner {
             cx.backend.save();
             cx.backend.clip_round_rect_per_corner(world_rect, radii);
@@ -521,24 +570,33 @@ fn paint_image_node_with_stroke(
             1.0
         };
         let tile_scale = authored_tile_scale * tile_zoom;
+        let options = crate::ImagePaintOptions {
+            mode: node.image_fit.to_draw_mode(),
+            adjustments: node.image_adjustments,
+            opacity: node.opacity,
+            corner_radius: if per_corner.is_none() && use_round {
+                r
+            } else {
+                0.0
+            },
+            transform: node.image_transform,
+            blend_mode: node.image_blend_mode,
+            original_size: node.image_original_size,
+            tile_scale,
+            nearest_sampling: node.image_nearest_sampling,
+            thumbnail: if thumbnail_ready {
+                Some(crate::ImagePaintThumbnail {
+                    id: thumbnail_id.expect("ready thumbnail has id"),
+                    encoded: thumbnail_bytes
+                        .as_deref()
+                        .expect("ready thumbnail has encoded bytes"),
+                })
+            } else {
+                None
+            },
+        };
         cx.backend
-            .draw_image_with_options_transform_blend_and_tile_scale(
-                world_rect,
-                id,
-                bytes.as_ref(),
-                node.image_fit.to_draw_mode(),
-                node.image_adjustments,
-                node.opacity,
-                if per_corner.is_none() && use_round {
-                    r
-                } else {
-                    0.0
-                },
-                node.image_transform,
-                node.image_blend_mode,
-                node.image_original_size,
-                tile_scale,
-            );
+            .draw_image_with_paint_options(world_rect, draw_id, encoded, &options);
         if per_corner.is_some() {
             cx.backend.restore();
         }

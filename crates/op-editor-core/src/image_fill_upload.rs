@@ -67,6 +67,8 @@ impl EditorState {
                 };
                 let body = PenFill::Image(ImageFillBody {
                     url: src.into(),
+                    thumbnail_url: None,
+                    nearest_sampling: None,
                     mode: mode.map(ImageFillMode::to_schema),
                     original_size,
                     transform: None,

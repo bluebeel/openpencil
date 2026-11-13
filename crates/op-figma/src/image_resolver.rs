@@ -210,6 +210,9 @@ fn collect_fill_refs(fills: Option<&[PenFill]>, refs: &mut ReferencedImages) {
             continue;
         };
         collect_source_ref(&image.url, refs);
+        if let Some(thumbnail) = &image.thumbnail_url {
+            collect_source_ref(thumbnail, refs);
+        }
     }
 }
 
@@ -356,11 +359,9 @@ fn patch_fills(fills: &mut Option<Vec<PenFill>>, cache: &mut BlobCache) -> usize
     if let Some(fills) = fills {
         for fill in fills {
             if let PenFill::Image(img) = fill {
-                if img.url.starts_with("__blob:") || img.url.starts_with("__hash:") {
-                    if let Some(url) = cache.resolve(&img.url) {
-                        img.url = url;
-                        count += 1;
-                    }
+                count += patch_source(&mut img.url, cache);
+                if let Some(thumbnail) = &mut img.thumbnail_url {
+                    count += patch_source(thumbnail, cache);
                 }
             }
         }

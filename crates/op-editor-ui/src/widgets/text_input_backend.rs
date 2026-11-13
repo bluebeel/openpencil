@@ -379,6 +379,17 @@ impl RenderBackend for BaselineAdjustingBackend<'_> {
             );
     }
 
+    fn draw_image_with_paint_options(
+        &mut self,
+        rect: Rect,
+        image_id: u64,
+        encoded: &[u8],
+        options: &crate::ImagePaintOptions<'_>,
+    ) {
+        self.inner
+            .draw_image_with_paint_options(rect, image_id, encoded, options);
+    }
+
     fn fill_round_rect_linear_gradient(
         &mut self,
         rect: Rect,

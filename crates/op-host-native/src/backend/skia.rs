@@ -71,6 +71,7 @@ mod caches;
 mod gradient;
 mod image;
 mod image_diagnostics;
+mod image_nearest16;
 mod image_precision;
 mod image_supersample;
 mod layer;
@@ -78,6 +79,7 @@ mod path;
 mod sampled_clip;
 mod shaped_text;
 mod text;
+mod vector_text;
 #[cfg(test)]
 use image::{cover_rect, figma_image_local_matrix, image_adjustment_matrix};
 pub use image_diagnostics::{

@@ -1,0 +1,160 @@
+//! Device-space sampled coverage for document glyph outlines.
+//!
+//! Shaping owns positions and advances. Only the local alphabetic baseline is
+//! snapped here; fractional horizontal placement survives zoom and rotation.
+
+use skia_safe::{
+    AlphaType, BlendMode, Canvas, Color, Color4f, ColorType, Font, GlyphId, ImageInfo, Matrix,
+    Paint, Path, PathBuilder, Point, Rect, SamplingOptions, TileMode,
+};
+
+const MAX_EDGE: i32 = 8192;
+const MAX_PIXELS: i64 = 16 * 1024 * 1024;
+const MAX_GLYPHS: usize = 4096;
+
+/// False leaves the canvas untouched so callers can retain their glyph-mask
+/// fallback for legacy documents, color/bitmap faces and allocation limits.
+pub(super) fn draw(
+    canvas: &Canvas,
+    font: &Font,
+    glyphs: &[GlyphId],
+    positions: &[Point],
+    origin: Point,
+    paint: &Paint,
+    modern: bool,
+) -> bool {
+    if !modern || glyphs.len() != positions.len() || glyphs.len() > MAX_GLYPHS {
+        return false;
+    }
+    if font.is_embolden() || paint.mask_filter().is_some() || paint.image_filter().is_some() {
+        return false;
+    }
+    let face = font.typeface();
+    if [*b"COLR", *b"CBDT", *b"sbix", *b"SVG "]
+        .iter()
+        .any(|tag| face.get_table_size(u32::from_be_bytes(*tag)).is_some())
+    {
+        return false;
+    }
+    let mut path = PathBuilder::new();
+    for (&glyph, position) in glyphs.iter().zip(positions) {
+        let x = origin.x + position.x;
+        let y = origin.y.round() + position.y;
+        if !x.is_finite() || !y.is_finite() {
+            return false;
+        }
+        if let Some(outline) = font.get_path(glyph) {
+            path.add_path_with_offset(&outline, (x, y), None);
+        } else {
+            let mut bounds = [Rect::default()];
+            font.get_bounds(&[glyph], &mut bounds, None);
+            if !bounds[0].is_empty() {
+                return false;
+            }
+        }
+    }
+    draw_path(canvas, &path.detach(), paint)
+}
+
+fn draw_path(canvas: &Canvas, path: &Path, paint: &Paint) -> bool {
+    if path.is_empty() {
+        return true;
+    }
+    let matrix = canvas.local_to_device_as_3x3();
+    if !matrix.is_finite() || matrix.has_perspective() {
+        return false;
+    }
+    let Some(inverse) = matrix.invert() else {
+        return false;
+    };
+    // Include synthetic stroke geometry in coverage. Original color, shader,
+    // alpha and backdrop blend still run exactly once after coverage resolves.
+    let mut filled = PathBuilder::new();
+    if !skia_safe::path_utils::fill_path_with_paint(path, paint, &mut filled, None, matrix) {
+        return false;
+    }
+    let path = filled.detach().with_transform(&matrix);
+    let Some(clip) = canvas.device_clip_bounds() else {
+        return true;
+    };
+    let mut bounds = *path.bounds();
+    bounds.outset((1.0, 1.0));
+    if !bounds.is_finite() || !bounds.intersect(Rect::from_irect(clip)) {
+        return bounds.is_finite();
+    }
+    bounds = Rect::new(
+        bounds.left.floor(),
+        bounds.top.floor(),
+        bounds.right.ceil(),
+        bounds.bottom.ceil(),
+    );
+    let (width, height) = (bounds.width() as i32, bounds.height() as i32);
+    if width <= 0
+        || height <= 0
+        || width > MAX_EDGE
+        || height > MAX_EDGE
+        || i64::from(width) * i64::from(height) > MAX_PIXELS
+    {
+        return false;
+    }
+    let info = ImageInfo::new((width, height), ColorType::RGBAF16, AlphaType::Premul, None);
+    let Some(mut mask) = skia_safe::surfaces::raster(&info, None, None) else {
+        return false;
+    };
+    let grid = if super::sampled_clip::is_four_sample_pass() {
+        1
+    } else {
+        2
+    };
+    let mut coverage = Paint::default();
+    coverage.set_color4f(
+        Color4f::new(1.0, 1.0, 1.0, 1.0 / (4 * grid * grid) as f32),
+        None,
+    );
+    coverage.set_blend_mode(BlendMode::Plus);
+    coverage.set_anti_alias(false);
+    let inner = mask.canvas();
+    inner.clear(Color::TRANSPARENT);
+    inner.translate((-bounds.left, -bounds.top));
+    for y in 0..grid {
+        for x in 0..grid {
+            for (sx, sy) in [
+                (0.375, 0.125),
+                (0.875, 0.375),
+                (0.125, 0.625),
+                (0.625, 0.875),
+            ] {
+                let saved = inner.save();
+                inner.translate((
+                    0.5 - (x as f32 + sx) / grid as f32,
+                    0.5 - (y as f32 + sy) / grid as f32,
+                ));
+                inner.draw_path(&path, &coverage);
+                inner.restore_to_count(saved);
+            }
+        }
+    }
+    let image_to_local = Matrix::concat(&inverse, &Matrix::translate((bounds.left, bounds.top)));
+    let Some(shader) = mask.image_snapshot().to_shader(
+        (TileMode::Decal, TileMode::Decal),
+        SamplingOptions::default(),
+        &image_to_local,
+    ) else {
+        return false;
+    };
+    let saved = canvas.save();
+    // A shader clip has no finite raster bounds. Restrict the final paint to
+    // the device mask before restoring the text transform; otherwise every
+    // short text run evaluates its coverage across the entire export surface.
+    canvas.reset_matrix();
+    canvas.clip_rect(bounds, skia_safe::ClipOp::Intersect, false);
+    canvas.concat(&matrix);
+    canvas.clip_shader(shader, skia_safe::ClipOp::Intersect);
+    canvas.draw_paint(paint);
+    canvas.restore_to_count(saved);
+    true
+}
+
+#[cfg(all(test, not(target_os = "windows")))]
+#[path = "vector_text_tests.rs"]
+mod tests;

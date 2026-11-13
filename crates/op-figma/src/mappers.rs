@@ -130,26 +130,11 @@ fn map_single_fill(paint: &FigValue) -> Option<PenFill> {
                 (ImageFillMode::Stretch, Some(_)) => ImageFillMode::Crop,
                 (mode, _) => mode,
             };
-            let image = paint.get("image");
-            let url = image
-                .and_then(|i| i.get("hash"))
-                .and_then(|h| h.as_bytes())
-                .filter(|b| !b.is_empty())
-                .map(|bytes| {
-                    let mut s = String::from("__hash:");
-                    for b in bytes {
-                        s.push_str(&format!("{b:02x}"));
-                    }
-                    s
-                })
-                .or_else(|| {
-                    image
-                        .and_then(|i| i.get_f64("dataBlob"))
-                        .map(|n| format!("__blob:{}", n as i64))
-                })
-                .unwrap_or_default();
+            let url = image_reference_url(paint.get("image")).unwrap_or_default();
             Some(PenFill::Image(ImageFillBody {
                 url: url.into(),
+                thumbnail_url: image_reference_url(paint.get("imageThumbnail")).map(Into::into),
+                nearest_sampling: Some(true),
                 mode: Some(mode.clone()),
                 original_size: normalize_original_size(
                     paint.get_f64("originalImageWidth"),
@@ -208,6 +193,25 @@ pub(crate) fn map_blend_mode(value: Option<&str>) -> Option<BlendMode> {
 /// use the UI slider range `[-100, 100]`. Prefer the current sparse
 /// `paintFilter` message and fill missing channels from the legacy
 /// `filterColorAdjust` struct. Neutral values remain absent on the wire.
+fn image_reference_url(image: Option<&FigValue>) -> Option<String> {
+    image
+        .and_then(|image| image.get("hash"))
+        .and_then(FigValue::as_bytes)
+        .filter(|bytes| !bytes.is_empty())
+        .map(|bytes| {
+            let mut source = String::from("__hash:");
+            for byte in bytes {
+                source.push_str(&format!("{byte:02x}"));
+            }
+            source
+        })
+        .or_else(|| {
+            image
+                .and_then(|image| image.get_f64("dataBlob"))
+                .map(|index| format!("__blob:{}", index as i64))
+        })
+}
+
 fn image_adjustment(paint: &FigValue, keys: &[&str]) -> Option<f32> {
     let value = ["paintFilter", "filterColorAdjust"]
         .into_iter()

@@ -158,10 +158,33 @@ fn image_fill_hash_url() {
     match &map_figma_fills(Some(&paints)).unwrap()[0] {
         PenFill::Image(img) => {
             assert_eq!(img.url, "__hash:abcd");
+            assert_eq!(img.thumbnail_url, None);
+            assert_eq!(img.nearest_sampling, Some(true));
             assert_eq!(img.mode, Some(ImageFillMode::Fit));
         }
         _ => panic!("expected image fill"),
     }
+}
+
+#[test]
+fn image_fill_preserves_thumbnail_hash_and_nearest_sampling() {
+    let paint = obj(vec![
+        ("type", FigValue::Str("IMAGE".into())),
+        (
+            "image",
+            obj(vec![("hash", FigValue::Bytes(vec![0xab, 0xcd]))]),
+        ),
+        (
+            "imageThumbnail",
+            obj(vec![("hash", FigValue::Bytes(vec![0x12, 0xef]))]),
+        ),
+    ]);
+    let Some(PenFill::Image(image)) = map_single_fill(&paint) else {
+        panic!("expected image fill");
+    };
+    assert_eq!(image.url, "__hash:abcd");
+    assert_eq!(image.thumbnail_url.as_deref(), Some("__hash:12ef"));
+    assert_eq!(image.nearest_sampling, Some(true));
 }
 
 #[test]

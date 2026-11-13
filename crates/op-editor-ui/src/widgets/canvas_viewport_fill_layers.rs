@@ -149,6 +149,9 @@ pub(super) fn paint_image_fill_layer(
     let SceneFillLayer::Image {
         src,
         src_id,
+        thumbnail_src,
+        thumbnail_src_id,
+        nearest_sampling,
         fit,
         transform,
         original_size,
@@ -165,6 +168,9 @@ pub(super) fn paint_image_fill_layer(
     image.corner_radii = node.corner_radii;
     image.image_src = Some(Arc::clone(src));
     image.image_src_id = *src_id;
+    image.image_thumbnail_src = thumbnail_src.clone();
+    image.image_thumbnail_src_id = *thumbnail_src_id;
+    image.image_nearest_sampling = *nearest_sampling;
     image.image_fit = *fit;
     image.image_transform = *transform;
     image.image_original_size = *original_size;
@@ -453,6 +459,9 @@ mod tests {
             SceneFillLayer::Image {
                 src: Arc::from("placeholder://missing-background"),
                 src_id: 42,
+                thumbnail_src: None,
+                thumbnail_src_id: 0,
+                nearest_sampling: false,
                 fit: Default::default(),
                 transform: None,
                 original_size: None,

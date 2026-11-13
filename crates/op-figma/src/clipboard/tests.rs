@@ -177,6 +177,8 @@ fn fix_unresolved_images_swaps_blob_image_fill_on_rect() {
         container: ContainerProps {
             fill: Some(vec![PenFill::Image(ImageFillBody {
                 url: "__hash:abc".into(),
+                thumbnail_url: None,
+                nearest_sampling: None,
                 mode: None,
                 original_size: None,
                 transform: None,
@@ -328,7 +330,7 @@ fn enrich_nodes_from_html_hints_fills_missing_text_props() {
         },
     );
     let mut nodes = vec![PenNode::Text(TextNode {
-            font_features: None,
+        font_features: None,
         font_kerning: None,
         base: base(),
         width: None,
@@ -382,7 +384,7 @@ fn enrich_does_not_overwrite_explicit_values() {
         },
     );
     let mut nodes = vec![PenNode::Text(TextNode {
-            font_features: None,
+        font_features: None,
         font_kerning: None,
         base: base(),
         width: None,
@@ -473,6 +475,8 @@ fn ellipse_with_blob_fill_keeps_other_fill_replaced() {
         sweep_angle: None,
         fill: Some(vec![PenFill::Image(ImageFillBody {
             url: "__blob:7".into(),
+            thumbnail_url: None,
+            nearest_sampling: None,
             mode: None,
             original_size: None,
             transform: None,

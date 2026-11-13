@@ -62,6 +62,8 @@ pub(super) fn map_fill(
                 position_dropped |= geometry.position_dropped;
                 fills.push(PenFill::Image(ImageFillBody {
                     url: ImageSrc::from(url),
+                    thumbnail_url: None,
+                    nearest_sampling: None,
                     mode: geometry.mode,
                     original_size: None,
                     transform: geometry.transform,

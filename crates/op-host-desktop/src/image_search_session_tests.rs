@@ -58,7 +58,7 @@ fn image_node(id: &str, src: &str, query: Option<&str>) -> PenNode {
 
 fn text_label(id: &str, role: Option<&str>, content: &str) -> PenNode {
     PenNode::Text(TextNode {
-            font_features: None,
+        font_features: None,
         font_kerning: None,
         base: PenNodeBase {
             id: id.to_string(),
@@ -181,6 +181,8 @@ fn solid_fill() -> PenFill {
 fn image_fill(url: &str) -> PenFill {
     PenFill::Image(ImageFillBody {
         url: url.into(),
+        thumbnail_url: None,
+        nearest_sampling: None,
         mode: Some(ImageFillMode::Crop),
         original_size: None,
         transform: None,

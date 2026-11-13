@@ -60,6 +60,8 @@ pub(super) fn default_fill_of_type(kind: FillType, hex: &str) -> PenFill {
         FillType::Shader => PenFill::Shader(default_shader_body(hex)),
         FillType::Image => PenFill::Image(ImageFillBody {
             url: "".into(),
+            thumbnail_url: None,
+            nearest_sampling: None,
             mode: None,
             original_size: None,
             transform: None,
