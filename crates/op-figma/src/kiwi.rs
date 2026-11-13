@@ -10,7 +10,8 @@
 //! the `Message` definition.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+mod object_key;
+pub use object_key::FigKey;
 
 #[path = "kiwi/compact_affine.rs"]
 mod compact_affine;
@@ -335,8 +336,8 @@ pub enum FigValue {
     Bytes(Vec<u8>),
     Array(Vec<FigValue>),
     /// Insertion-ordered key/value pairs (Kiwi struct/message). Keys decoded
-    /// from the schema share one allocation across every object instance.
-    Object(Vec<(Arc<str>, FigValue)>),
+    /// from the schema share their owned storage across object instances.
+    Object(Vec<(FigKey, FigValue)>),
     /// Import-only, constant-space proof for linked text styles. Removed after
     /// style resolution; generic decoding never produces this variant.
     TextEvidence(Box<crate::text_cache::evidence::TextEvidence>),
@@ -486,7 +487,7 @@ struct Decoder<'a, 'b> {
     /// Object keys parallel to `Schema::definitions[*].fields`. A decoded
     /// struct can occur hundreds of thousands of times, so cloning these
     /// `Arc`s avoids allocating a fresh `String` for every occurrence.
-    object_keys: Vec<Vec<Arc<str>>>,
+    object_keys: Vec<Vec<FigKey>>,
     compact_guids: Vec<Option<bool>>,
     compact_affines: Vec<Option<[u8; 6]>>,
     compact_floats: Vec<Option<(compact_float::FloatKind, [u8; 4])>>,
@@ -526,7 +527,7 @@ impl<'a, 'b> Decoder<'a, 'b> {
         let mut field_types = Vec::with_capacity(schema.definitions.len());
         let mut field_by_value = Vec::with_capacity(schema.definitions.len());
         let mut object_keys = Vec::with_capacity(schema.definitions.len());
-        let mut interned_keys: HashMap<&str, Arc<str>> = HashMap::new();
+        let mut interned_keys: HashMap<&str, FigKey> = HashMap::new();
         for def in &schema.definitions {
             let mut types = Vec::with_capacity(def.fields.len());
             let mut values = HashMap::with_capacity(def.fields.len());
@@ -540,8 +541,8 @@ impl<'a, 'b> Decoder<'a, 'b> {
                 values.insert(field.value, field_index);
                 let key = interned_keys
                     .entry(field.name.as_str())
-                    .or_insert_with(|| Arc::from(field.name.as_str()));
-                keys.push(Arc::clone(key));
+                    .or_insert_with(|| FigKey::from(field.name.as_str()));
+                keys.push(FigKey::clone(key));
             }
             field_types.push(types);
             field_by_value.push(values);
@@ -675,7 +676,7 @@ impl<'a, 'b> Decoder<'a, 'b> {
                 let resolved = self.field_types[def_index][field_index]
                     .ok_or_else(|| KiwiError::BadType(field.type_name.clone()))?;
                 (
-                    Arc::clone(&self.object_keys[def_index][field_index]),
+                    FigKey::clone(&self.object_keys[def_index][field_index]),
                     resolved,
                     field.is_array,
                 )
@@ -698,7 +699,7 @@ impl<'a, 'b> Decoder<'a, 'b> {
         scope: DecodeScope,
     ) -> Result<FigValue, KiwiError> {
         let field_count = self.schema.definitions[def_index].fields.len();
-        let mut pairs: Vec<(Arc<str>, FigValue)> = Vec::new();
+        let mut pairs: Vec<(FigKey, FigValue)> = Vec::new();
         let mut pair_slots: Vec<Option<usize>> = vec![None; field_count];
         if scope.exact_message_capacity() {
             let count = self.import_message_capacity(def_index, depth, scope, &mut pair_slots)?;
@@ -724,7 +725,7 @@ impl<'a, 'b> Decoder<'a, 'b> {
                     .ok_or_else(|| KiwiError::BadType(field.type_name.clone()))?;
                 (resolved, field.is_array)
             };
-            let field_name = Arc::clone(&self.object_keys[def_index][field_index]);
+            let field_name = FigKey::clone(&self.object_keys[def_index][field_index]);
             let Some(child_scope) = scope.field(&field_name) else {
                 self.skip_field(resolved, is_array, depth)?;
                 continue;

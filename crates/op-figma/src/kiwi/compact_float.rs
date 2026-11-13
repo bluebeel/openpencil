@@ -1,8 +1,8 @@
 //! Exact import-only vectors and colors; scalar field borrows materialize
 //! a small read view lazily while numeric access stays allocation-free.
+use super::FigKey;
 use super::{DecodeScope, Decoder, DefKind, FigValue, KiwiError, Schema, MAX_DEPTH};
 use std::sync::atomic::{AtomicPtr, Ordering};
-use std::sync::Arc;
 
 pub struct FloatRecord<const N: usize> {
     values: [f32; N],
@@ -276,7 +276,7 @@ impl FigValue {
             if let Some(slot) = pairs.iter_mut().find(|(k, _)| k.as_ref() == key) {
                 slot.1 = value;
             } else {
-                pairs.push((Arc::from(key), value));
+                pairs.push((FigKey::from(key), value));
             }
         }
     }

@@ -20,7 +20,7 @@ pub(super) enum DecodeScope {
 }
 
 impl DecodeScope {
-    pub(super) fn retained_fields(self, keys: &[std::sync::Arc<str>]) -> usize {
+    pub(super) fn retained_fields(self, keys: &[super::FigKey]) -> usize {
         if matches!(self, Self::Full) {
             keys.len()
         } else {

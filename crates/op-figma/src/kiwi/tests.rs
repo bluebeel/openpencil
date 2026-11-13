@@ -224,8 +224,8 @@ fn repeated_struct_instances_share_schema_object_keys() {
 
     assert_eq!(first[0].0.as_ref(), "x");
     assert_eq!(second[0].0.as_ref(), "x");
-    assert!(Arc::ptr_eq(&first[0].0, &second[0].0));
-    assert!(Arc::ptr_eq(&first[1].0, &second[1].0));
+    assert!(FigKey::ptr_eq(&first[0].0, &second[0].0));
+    assert!(FigKey::ptr_eq(&first[1].0, &second[1].0));
 }
 
 #[test]

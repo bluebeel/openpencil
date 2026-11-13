@@ -62,11 +62,15 @@ impl InstanceExpansionKey {
     }
 
     fn structural_bytes(&self) -> usize {
-        self.component_guid.len()
+        // The key is Rc-shared by the map and FIFO queue. Count its actual
+        // backing vectors, including capacity not occupied by live values.
+        std::mem::size_of::<Self>()
+            + 2 * std::mem::size_of::<usize>()
+            + self.component_guid.capacity()
+            + (self.overrides.capacity() - self.overrides.len()) * std::mem::size_of::<FigValue>()
             + self.overrides.iter().map(fig_value_bytes).sum::<usize>()
+            + (self.derived.capacity() - self.derived.len()) * std::mem::size_of::<FigValue>()
             + self.derived.iter().map(fig_value_bytes).sum::<usize>()
-            + std::mem::size_of::<Option<ExactSize>>()
-            + 2 * std::mem::size_of::<u64>()
     }
 }
 
@@ -198,25 +202,38 @@ fn hash_fig_value<H: Hasher>(value: &FigValue, state: &mut H) {
 }
 
 fn fig_value_bytes(value: &FigValue) -> usize {
-    std::mem::size_of::<FigValue>()
-        + match value {
-            FigValue::Vec2(value) => value.retained_bytes(),
-            FigValue::Color(value) => value.retained_bytes(),
-            FigValue::Str(value) => value.len(),
-            FigValue::Bytes(value) => value.len(),
-            FigValue::TextEvidence(value) => value.retained_bytes(),
-            FigValue::TextLayout(value) => value.retained_bytes(),
-            FigValue::Array(values) => values.iter().map(fig_value_bytes).sum(),
-            FigValue::Object(pairs) => pairs
-                .iter()
-                .map(|(key, value)| key.len() + fig_value_bytes(value))
-                .sum(),
-            _ => 0,
+    std::mem::size_of::<FigValue>() + fig_value_owned_bytes(value)
+}
+
+/// Include spare Vec/String capacities. Charging the full shared key payload
+/// for every occurrence deliberately overcounts sharing and stays conservative.
+fn fig_value_owned_bytes(value: &FigValue) -> usize {
+    match value {
+        FigValue::Vec2(value) => value.retained_bytes(),
+        FigValue::Color(value) => value.retained_bytes(),
+        FigValue::Str(value) => value.capacity(),
+        FigValue::Bytes(value) => value.capacity(),
+        FigValue::TextEvidence(value) => value.retained_bytes(),
+        FigValue::TextLayout(value) => value.retained_bytes(),
+        FigValue::Array(values) => {
+            values.capacity() * std::mem::size_of::<FigValue>()
+                + values.iter().map(fig_value_owned_bytes).sum::<usize>()
         }
+        FigValue::Object(pairs) => {
+            pairs.capacity() * std::mem::size_of::<(crate::kiwi::FigKey, FigValue)>()
+                + pairs
+                    .iter()
+                    .map(|(key, value)| key.retained_bytes() + fig_value_owned_bytes(value))
+                    .sum::<usize>()
+        }
+        _ => 0,
+    }
 }
 
 fn tree_structural_bytes(node: &TreeNode) -> usize {
-    fig_value_bytes(&node.figma)
+    std::mem::size_of::<TreeNode>()
+        + fig_value_owned_bytes(&node.figma)
+        + (node.children.capacity() - node.children.len()) * std::mem::size_of::<TreeNode>()
         + node
             .children
             .iter()
@@ -379,6 +396,65 @@ pub(crate) fn apply_instance_overrides_memoized(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ledger_counts_spare_capacities_and_conservatively_charges_shared_keys() {
+        let mut text = String::with_capacity(256);
+        text.push('x');
+        let text_capacity = text.capacity();
+        let mut fields = Vec::with_capacity(128);
+        fields.push((crate::kiwi::FigKey::from("field"), FigValue::Str(text)));
+        let expected = std::mem::size_of::<FigValue>()
+            + fields.capacity() * std::mem::size_of::<(crate::kiwi::FigKey, FigValue)>()
+            + fields[0].0.retained_bytes()
+            + text_capacity;
+        let value = FigValue::Object(fields);
+        assert_eq!(fig_value_bytes(&value), expected);
+        let mut array = Vec::with_capacity(64);
+        array.push(FigValue::Bool(true));
+        let array_capacity = array.capacity();
+        assert_eq!(
+            fig_value_bytes(&FigValue::Array(array)),
+            (array_capacity + 1) * std::mem::size_of::<FigValue>()
+        );
+        let mut overrides = Vec::with_capacity(32);
+        overrides.push(value);
+        let key = InstanceExpansionKey::new("1:2", overrides, Vec::new(), None, 0, 0);
+        let bound = key.structural_bytes() - 1;
+        let mut cache = InstanceExpansionCache::with_limits(4, bound);
+        cache.insert(key, &[]);
+        assert!(
+            cache.entries.is_empty(),
+            "an oversized reserved payload is not retained"
+        );
+        assert_eq!(cache.structural_bytes, 0);
+    }
+
+    #[test]
+    fn stricter_byte_budget_falls_back_to_identical_expansion() {
+        let symbol = symbol();
+        let overrides = vec![override_value(1, 10, "renamed")];
+        let derived = vec![path(1, 10)];
+        let expected = apply_instance_overrides_cached(
+            &symbol,
+            Some(&overrides),
+            Some(&derived),
+            None,
+            &mut HashMap::new(),
+        );
+        let mut cache = InstanceExpansionCache::with_limits(4, 1);
+        let actual = apply_instance_overrides_memoized(
+            &mut cache,
+            "0:0",
+            &symbol,
+            Some(overrides),
+            Some(derived),
+            None,
+            &mut HashMap::new(),
+        );
+        assert_trees_equal(&actual, &expected);
+        assert!(cache.entries.is_empty());
+    }
 
     #[test]
     fn packed_float_cache_keys_preserve_bits_order_independence_and_view_accounting() {
