@@ -48,6 +48,7 @@ mod load;
 mod load_report;
 #[cfg(test)]
 mod load_report_tests;
+mod save_buffer;
 #[cfg(test)]
 #[path = "doc_io/work_family_tests.rs"]
 mod work_family_tests;
@@ -175,15 +176,11 @@ fn save_serializable_document_with_thumbnails_to_path<
     // leave a half-written file on disk.
     let (tmp, file) = create_sibling_temp(path)?;
     let write_result = (|| {
-        let mut writer = std::io::BufWriter::with_capacity(1024 * 1024, file);
-        canonical_save::write_serializable_document_with_thumbnails(
-            &mut writer,
-            document,
-            meta,
-            thumbnails,
-        )?;
-        std::io::Write::flush(&mut writer).map_err(|e| DocIoError::Io(e.to_string()))?;
-        drop(writer);
+        save_buffer::with_buffered_file(file, |writer| {
+            canonical_save::write_serializable_document_with_thumbnails(
+                writer, document, meta, thumbnails,
+            )
+        })?;
         commit_staged_document(&tmp, path)
     })();
     if write_result.is_err() {
