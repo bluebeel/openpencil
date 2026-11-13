@@ -222,13 +222,23 @@ pub fn commit_staged_document(
 /// close-time prompt. A serialization failure (not expected for a
 /// valid document) yields a sentinel that simply reads as "changed".
 pub fn document_fingerprint(state: &EditorState) -> u64 {
-    use std::hash::{Hash, Hasher};
-    match serde_json::to_vec(&state.doc) {
-        Ok(bytes) => {
-            let mut hasher = std::collections::hash_map::DefaultHasher::new();
-            bytes.hash(&mut hasher);
-            hasher.finish()
+    use std::hash::Hasher;
+    // Fingerprints are transient editor state, so their hash has no on-disk
+    // compatibility contract. Stream the canonical bytes instead of retaining
+    // a second serialized copy of a potentially image-heavy document.
+    struct HashWriter(std::collections::hash_map::DefaultHasher);
+    impl std::io::Write for HashWriter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.write(bytes);
+            Ok(bytes.len())
         }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut writer = HashWriter(std::collections::hash_map::DefaultHasher::new());
+    match serde_json::to_writer(&mut writer, &state.doc) {
+        Ok(()) => writer.0.finish(),
         Err(_) => 0,
     }
 }
