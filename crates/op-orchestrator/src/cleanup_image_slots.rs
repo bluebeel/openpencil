@@ -26,6 +26,21 @@ pub(crate) fn materialize_empty_image_fill_slots(sink: &mut dyn DocSink, root_id
         collect_materialize_patches(root, &mut patches);
         patches
     };
+    apply_materialize_patches(sink, patches)
+}
+
+/// Scan the active forest once. Resolving each already-borrowed top-level
+/// root by id would scan the forest again for every root, even when no node
+/// carries an image fill. MCP hosts run this after every ordinary write.
+pub(crate) fn materialize_active_page_image_slots(sink: &mut dyn DocSink) -> bool {
+    let mut patches = Vec::new();
+    for root in sink.state().active_children() {
+        collect_materialize_patches(root, &mut patches);
+    }
+    apply_materialize_patches(sink, patches)
+}
+
+fn apply_materialize_patches(sink: &mut dyn DocSink, patches: Vec<(NodeId, String)>) -> bool {
     let mut changed = false;
     for (node_id, patch_json) in patches {
         changed |= sink.apply(EditorCommand::PatchNodeData {

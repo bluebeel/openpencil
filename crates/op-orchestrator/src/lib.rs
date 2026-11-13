@@ -99,24 +99,13 @@ mod clipped_media_strip;
 /// time. The whole-document cleanup driver uses the same underlying pass.
 pub mod cleanup_image_slots {
     use crate::types::DocSink;
-    use op_editor_core::{EditorCommand, EditorState, PenNodeExt};
+    use op_editor_core::{EditorCommand, EditorState};
 
     /// Convert childless frame/rectangle nodes with an empty image fill into
     /// real image nodes across the active page.
     pub fn materialize_empty_image_fill_slots(state: &mut EditorState) -> bool {
-        let root_ids: Vec<String> = state
-            .active_children()
-            .iter()
-            .map(|node| node.id_str().to_string())
-            .collect();
         let mut sink = EditorStateSink { state };
-        root_ids.into_iter().fold(false, |changed, root_id| {
-            let root_changed =
-                crate::cleanup::cleanup_image_slots::materialize_empty_image_fill_slots(
-                    &mut sink, &root_id,
-                );
-            changed || root_changed
-        })
+        crate::cleanup::cleanup_image_slots::materialize_active_page_image_slots(&mut sink)
     }
 
     struct EditorStateSink<'a> {

@@ -201,3 +201,45 @@ fn multi_fill_stack_untouched() {
     };
     assert_eq!(rect.container.fill.as_ref().map(Vec::len), Some(2));
 }
+
+#[test]
+fn active_page_materialization_preserves_root_nested_and_other_page_semantics() {
+    let mut sink = VecDocSink::new();
+    let document = serde_json::from_value(serde_json::json!({
+        "version": "1.0.0", "children": [], "pages": [
+            {"id":"active", "name":"Active", "children":[
+                {"type":"frame", "id":"root-slot", "x":12, "y":24, "width":120, "height":80,
+                 "fill":[{"type":"image", "url":""}]},
+                {"type":"rectangle", "id":"plain", "width":10, "height":10},
+                {"type":"frame", "id":"container", "children":[
+                    {"type":"rectangle", "id":"nested-slot", "width":30, "height":20,
+                     "fill":[{"type":"image", "url":"data:image/svg+xml;charset=utf-8,%3Csvg-placeholder"}]},
+                    {"type":"rectangle", "id":"landed", "fill":[{"type":"image", "url":"photo.png"}]}
+                ]}
+            ]},
+            {"id":"other", "name":"Other", "children":[
+                {"type":"rectangle", "id":"other-slot", "fill":[{"type":"image", "url":""}]}
+            ]}
+        ]
+    })).unwrap();
+    sink.state.replace_document(document);
+    assert!(crate::cleanup_image_slots::materialize_empty_image_fill_slots(&mut sink.state));
+    let pages = sink.state.doc.pages.as_ref().unwrap();
+    let PenNode::Image(root) = &pages[0].children[0] else {
+        panic!("top-level slot")
+    };
+    assert_eq!((root.base.x, root.base.y), (Some(12.0), Some(24.0)));
+    assert_eq!(root.width, Some(SizingBehavior::Number(120.0)));
+    assert!(matches!(pages[0].children[1], PenNode::Rectangle(_)));
+    let nested = pages[0].children[2].children().unwrap();
+    assert!(matches!(nested[0], PenNode::Image(_)));
+    assert!(matches!(nested[1], PenNode::Rectangle(_)));
+    assert!(
+        matches!(pages[1].children[0], PenNode::Rectangle(_)),
+        "inactive page stays untouched"
+    );
+    assert!(
+        !crate::cleanup_image_slots::materialize_empty_image_fill_slots(&mut sink.state),
+        "second pass is a no-op"
+    );
+}
