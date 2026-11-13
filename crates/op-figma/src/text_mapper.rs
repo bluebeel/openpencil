@@ -8,6 +8,7 @@ use crate::figma_types::FigColor;
 use crate::kiwi::FigValue;
 use jian_ops_schema::node::text::{TextAlign, TextAlignVertical, TextContent, TextGrowth};
 use jian_ops_schema::style::{FontStyleKind, StyledTextSegment};
+use std::collections::HashMap;
 
 /// Mapped text props — spread onto a `TextNode` by the converter.
 #[derive(Debug, Clone, PartialEq)]
@@ -82,6 +83,13 @@ fn build_content(node: &FigValue) -> TextContent {
         return TextContent::Plain(characters.to_string());
     }
 
+    // Binary Figma tables are compact records keyed by styleID, which need
+    // not match their array offsets. Older clipboard payloads omit the keys.
+    let keyed_overrides: HashMap<i32, &FigValue> = table
+        .iter()
+        .filter_map(|entry| entry.get_f64("styleID").map(|id| (id as i32, entry)))
+        .collect();
+
     // Figma indexes characterStyleIDs by UTF-16 code unit.
     let units: Vec<u16> = characters.encode_utf16().collect();
     let style_at = |i: usize| -> i32 {
@@ -100,7 +108,7 @@ fn build_content(node: &FigValue) -> TextContent {
         if sid != current || i == units.len() {
             if i > seg_start {
                 let seg_text = String::from_utf16_lossy(&units[seg_start..i]);
-                segments.push(build_segment(&seg_text, current, table));
+                segments.push(build_segment(&seg_text, current, table, &keyed_overrides));
             }
             current = sid;
             seg_start = i;
@@ -111,7 +119,10 @@ fn build_content(node: &FigValue) -> TextContent {
         s.font_family.is_some()
             || s.font_size.is_some()
             || s.font_weight.is_some()
+            || s.font_style.is_some()
             || s.fill.is_some()
+            || s.underline.is_some()
+            || s.strikethrough.is_some()
     });
     if has_override {
         TextContent::Styled(segments)
@@ -121,7 +132,12 @@ fn build_content(node: &FigValue) -> TextContent {
 }
 
 /// Build one styled segment from a style-override-table entry.
-fn build_segment(text: &str, style_id: i32, table: &[FigValue]) -> StyledTextSegment {
+fn build_segment(
+    text: &str,
+    style_id: i32,
+    table: &[FigValue],
+    keyed_overrides: &HashMap<i32, &FigValue>,
+) -> StyledTextSegment {
     let mut seg = StyledTextSegment {
         text: text.to_string(),
         font_family: None,
@@ -137,7 +153,12 @@ fn build_segment(text: &str, style_id: i32, table: &[FigValue]) -> StyledTextSeg
         return seg;
     }
     let idx = style_id as usize;
-    let Some(ov) = table.get(idx).or_else(|| table.get(idx - 1)) else {
+    let override_style = if keyed_overrides.is_empty() {
+        table.get(idx).or_else(|| table.get(idx - 1))
+    } else {
+        keyed_overrides.get(&style_id).copied()
+    };
+    let Some(ov) = override_style else {
         return seg;
     };
     let font_name = ov.get("fontName");

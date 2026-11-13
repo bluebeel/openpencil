@@ -151,3 +151,108 @@ fn styled_segments_built_from_style_runs() {
         TextContent::Plain(p) => panic!("expected styled, got plain {p:?}"),
     }
 }
+
+fn text_with_run_override(override_style: FigValue) -> TextContent {
+    let node = obj(vec![(
+        "textData",
+        obj(vec![
+            ("characters", FigValue::Str("ab".into())),
+            (
+                "characterStyleIDs",
+                FigValue::Array(vec![FigValue::Int(0), FigValue::Int(1)]),
+            ),
+            (
+                "styleOverrideTable",
+                FigValue::Array(vec![obj(vec![]), override_style]),
+            ),
+        ]),
+    )]);
+    map_figma_text_props(&node).content
+}
+
+#[test]
+fn decoration_only_run_overrides_preserve_styled_content() {
+    for decoration in ["UNDERLINE", "STRIKETHROUGH"] {
+        let content = text_with_run_override(obj(vec![(
+            "textDecoration",
+            FigValue::Str(decoration.into()),
+        )]));
+        let TextContent::Styled(segments) = content else {
+            panic!("{decoration} run must remain styled");
+        };
+        assert_eq!(segments.len(), 2);
+        assert_eq!(segments[0].text, "a");
+        assert_eq!(segments[0].underline, None);
+        assert_eq!(segments[0].strikethrough, None);
+        assert_eq!(segments[1].text, "b");
+        assert_eq!(
+            segments[1].underline,
+            (decoration == "UNDERLINE").then_some(true)
+        );
+        assert_eq!(
+            segments[1].strikethrough,
+            (decoration == "STRIKETHROUGH").then_some(true)
+        );
+    }
+}
+
+#[test]
+fn italic_only_run_override_preserves_styled_content() {
+    let content = text_with_run_override(obj(vec![(
+        "fontName",
+        obj(vec![("style", FigValue::Str("Italic".into()))]),
+    )]));
+    let TextContent::Styled(segments) = content else {
+        panic!("italic run must remain styled");
+    };
+    assert_eq!(segments[0].font_style, None);
+    assert_eq!(segments[1].font_style, Some(FontStyleKind::Italic));
+    assert_eq!(segments[1].text, "b");
+}
+
+#[test]
+fn sparse_style_ids_select_text_colors_by_declared_id() {
+    let style = |id, green_blue| {
+        obj(vec![
+            ("styleID", FigValue::Int(id)),
+            (
+                "fillPaints",
+                FigValue::Array(vec![obj(vec![
+                    ("type", FigValue::Str("SOLID".into())),
+                    (
+                        "color",
+                        obj(vec![
+                            ("r", FigValue::Float(1.0)),
+                            ("g", FigValue::Float(green_blue)),
+                            ("b", FigValue::Float(green_blue)),
+                            ("a", FigValue::Float(1.0)),
+                        ]),
+                    ),
+                ])]),
+            ),
+        ])
+    };
+    let node = obj(vec![(
+        "textData",
+        obj(vec![
+            ("characters", FigValue::Str("abcde".into())),
+            (
+                "characterStyleIDs",
+                FigValue::Array([0, 9, 10, 1, 11].into_iter().map(FigValue::Int).collect()),
+            ),
+            (
+                "styleOverrideTable",
+                FigValue::Array(vec![style(10, 1.0), style(9, 0.0)]),
+            ),
+        ]),
+    )]);
+    let TextContent::Styled(segments) = map_figma_text_props(&node).content else {
+        panic!("sparse text color overrides must remain styled");
+    };
+    assert_eq!(segments.len(), 5);
+    assert_eq!(segments[0].fill, None);
+    assert_eq!(segments[1].fill.as_deref(), Some("#ff0000"));
+    assert_eq!(segments[2].fill.as_deref(), Some("#ffffff"));
+    assert_eq!(segments[3].fill, None, "IDs are not array offsets");
+    assert_eq!(segments[4].fill, None, "unknown IDs inherit the node style");
+}
