@@ -26,6 +26,8 @@ mod fingerprint_tests;
 mod foreign_session;
 #[cfg(test)]
 mod foreign_tests;
+#[cfg(test)]
+mod geometry_tests;
 mod style;
 mod swap_filter;
 #[cfg(test)]

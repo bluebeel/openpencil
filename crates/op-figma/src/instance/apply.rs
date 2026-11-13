@@ -364,6 +364,8 @@ pub(super) fn apply_to_node(
 
 /// Mark geometry-derived nodes and their ancestors so the outer instance
 /// ratio is not applied a second time to an already-resolved branch.
+/// Only caches on derived instance entries establish resolved geometry;
+/// authored master-node caches still require ordinary instance scaling.
 pub(super) fn mark_derived_branches(
     node: &TreeNode,
     node_derived: &HashMap<String, FigValue>,
@@ -373,7 +375,15 @@ pub(super) fn mark_derived_branches(
     let mut has = key
         .as_ref()
         .and_then(|key| node_derived.get(key.as_str()))
-        .is_some_and(|derived| derived.get("size").is_some() || derived.get("transform").is_some());
+        .is_some_and(|derived| {
+            derived.get("size").is_some()
+                || derived.get("transform").is_some()
+                || ["fillGeometry", "strokeGeometry"].iter().any(|field| {
+                    derived.get_array(field).is_some_and(|paths| {
+                        paths.iter().any(|path| path.get("commandsBlob").is_some())
+                    })
+                })
+        });
     for child in &node.children {
         has |= mark_derived_branches(child, node_derived, out);
     }
