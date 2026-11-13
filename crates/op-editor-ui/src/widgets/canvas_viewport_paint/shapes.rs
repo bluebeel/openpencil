@@ -3,6 +3,7 @@
 //! arc / donut tessellation, `clipContent` child clips and SVG-path
 //! nodes. Pure code motion — behaviour is unchanged.
 
+use super::shadow_geometry::{spread_radius, spread_rect};
 use super::MIN_VISIBLE_EFFECT_DEVICE_PX;
 use crate::layout_scene::{Effect, NodeKind, SceneNode};
 use crate::widgets::canvas_viewport_fill_layers::{
@@ -16,8 +17,8 @@ use crate::{Point2D, Rect};
 /// behind its fill. The shadow corner radius matches the node
 /// kind — `corner_radius` for Frame / Rect, min-half for an
 /// ellipse silhouette. Offset + blur scale by `zoom` so the
-/// shadow tracks the node across viewport zoom. A shadow whose
-/// blur AND offset are both sub-pixel on screen skips entirely.
+/// shadow tracks the node across viewport zoom. Spread changes the silhouette
+/// before blur. Shadows whose blur, offset and spread are all sub-pixel skip.
 pub(super) fn paint_drop_shadows(
     cx: &mut PaintCx<'_>,
     node: &SceneNode,
@@ -39,16 +40,24 @@ pub(super) fn paint_drop_shadows(
         if s.inner {
             continue;
         }
-        let footprint = s.blur.max(s.offset_x.abs()).max(s.offset_y.abs());
+        let footprint = s
+            .blur
+            .max(s.offset_x.abs())
+            .max(s.offset_y.abs())
+            .max(s.spread.abs());
         if footprint * zoom * dpi_scale < MIN_VISIBLE_EFFECT_DEVICE_PX {
             continue;
         }
+        let Some(silhouette) = spread_rect(world_rect, s.spread * zoom) else {
+            continue;
+        };
+        let radius = spread_radius(radius, s.spread * zoom, silhouette);
         let shadow_rect = Rect {
             origin: Point2D::new(
-                world_rect.origin.x + s.offset_x * zoom,
-                world_rect.origin.y + s.offset_y * zoom,
+                silhouette.origin.x + s.offset_x * zoom,
+                silhouette.origin.y + s.offset_y * zoom,
             ),
-            size: world_rect.size,
+            size: silhouette.size,
         };
         cx.backend
             .fill_drop_shadow(shadow_rect, radius, s.blur * zoom, s.color);

@@ -589,6 +589,7 @@ fn state_effects(
                     offset_x: body.offset_x,
                     offset_y: body.offset_y,
                     blur: body.blur,
+                    spread: body.spread,
                     color: with_scene_opacity(color, opacity),
                     inner: body.inner.unwrap_or(false),
                 }))

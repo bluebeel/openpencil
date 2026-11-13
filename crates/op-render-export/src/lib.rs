@@ -458,4 +458,6 @@ pub mod test_support {
 }
 
 #[cfg(test)]
+mod shadow_tests;
+#[cfg(test)]
 mod tests;

@@ -387,6 +387,7 @@ fn effects_split_across_shadow_blur_and_backdrop_channels() {
             offset_x: 0.0,
             offset_y: 4.0,
             blur: 12.0,
+            spread: 0.0,
             color: Color {
                 r: 0.0,
                 g: 0.0,

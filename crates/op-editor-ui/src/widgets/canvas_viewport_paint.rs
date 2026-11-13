@@ -57,6 +57,8 @@ mod hits;
 mod path_points;
 #[path = "canvas_viewport_paint/reveal.rs"]
 mod reveal;
+#[path = "canvas_viewport_paint/shadow_geometry.rs"]
+mod shadow_geometry;
 #[path = "canvas_viewport_paint/shapes.rs"]
 mod shapes;
 

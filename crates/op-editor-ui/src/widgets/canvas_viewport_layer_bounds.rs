@@ -7,6 +7,7 @@
 //! caller's cull rect. Invalid geometry falls back to the cull rect so a bad
 //! imported value cannot turn into an unbounded or NaN allocation hint.
 
+use super::shadow_geometry::spread_rect;
 use super::OverlayTransform;
 use crate::layout_scene::{Effect, NodeKind, SceneNode, SceneStrokeAlign};
 use crate::{Point2D, Rect};
@@ -131,10 +132,15 @@ fn subtree_visual_bounds(
                 if !shadow.offset_x.is_finite()
                     || !shadow.offset_y.is_finite()
                     || !shadow.blur.is_finite()
+                    || !shadow.spread.is_finite()
                 {
                     return Err(());
                 }
-                let mut shadow_bounds = translate_rect(own, shadow.offset_x, shadow.offset_y)?;
+                let Some(silhouette) = spread_rect(own, shadow.spread) else {
+                    continue;
+                };
+                let mut shadow_bounds =
+                    translate_rect(silhouette, shadow.offset_x, shadow.offset_y)?;
                 if shadow.blur > 0.0 {
                     shadow_bounds =
                         outset_rect(shadow_bounds, shadow.blur * FILTER_OUTSET_PER_RADIUS)?;
@@ -502,6 +508,7 @@ mod tests {
                 offset_x: 10.0,
                 offset_y: -5.0,
                 blur: 8.0,
+                spread: 0.0,
                 color: Color::BLACK,
                 inner: false,
             }),
@@ -527,10 +534,41 @@ mod tests {
             offset_x: 20.0,
             offset_y: 0.0,
             blur: 0.0,
+            spread: 0.0,
             color: Color::BLACK,
             inner: false,
         })];
         node
+    }
+
+    #[test]
+    fn signed_spread_is_included_in_effect_bounds_and_collapse_removes_the_shadow() {
+        for (spread, expected) in [
+            (5.0, Rect::xywh(9.0, 4.0, 47.0, 32.0)),
+            (-5.0, Rect::xywh(9.0, 9.0, 37.0, 22.0)),
+            (-10.0, Rect::xywh(9.0, 9.0, 22.0, 22.0)),
+        ] {
+            let mut node = rect("spread", Rect::xywh(10.0, 10.0, 20.0, 20.0));
+            node.effects = vec![Effect::DropShadow(DropShadow {
+                offset_x: 20.0,
+                offset_y: 0.0,
+                blur: 0.0,
+                spread,
+                color: Color::BLACK,
+                inner: false,
+            })];
+            assert_eq!(
+                node_composite_layer_bounds(
+                    &node,
+                    Point2D::ZERO,
+                    1.0,
+                    Rect::xywh(-100.0, -100.0, 1000.0, 1000.0),
+                    None,
+                    &[]
+                ),
+                expected
+            );
+        }
     }
 
     #[test]

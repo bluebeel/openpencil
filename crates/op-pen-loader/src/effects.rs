@@ -13,6 +13,9 @@ pub struct ShadowPayload {
     pub offset_x: f32,
     pub offset_y: f32,
     pub blur: f32,
+    /// Older payloads predate spread and retain their original zero spread.
+    #[serde(default)]
+    pub spread: f32,
     pub color: [f32; 4],
     /// `true` = inset (inner) shadow. `#[serde(default)]` keeps older
     /// payloads (saved before inner shadows were carried) loading as
@@ -31,6 +34,7 @@ pub fn effects_to_payload(effects: &[Effect]) -> Vec<ShadowPayload> {
                 offset_x: s.offset_x,
                 offset_y: s.offset_y,
                 blur: s.blur,
+                spread: s.spread,
                 color: [s.color.r, s.color.g, s.color.b, s.color.a],
                 inner: s.inner,
             }),
@@ -100,6 +104,7 @@ fn shadow_payload_to_effect(s: &ShadowPayload) -> Effect {
         offset_x: s.offset_x,
         offset_y: s.offset_y,
         blur: s.blur,
+        spread: s.spread,
         color: op_editor_core::render_backend::Color {
             r: s.color[0],
             g: s.color[1],
@@ -160,6 +165,7 @@ pub fn shadows_from_canonical(node: &PenNode) -> Vec<ShadowPayload> {
                     offset_x: s.offset_x,
                     offset_y: s.offset_y,
                     blur: s.blur,
+                    spread: s.spread,
                     color,
                     inner: s.inner.unwrap_or(false),
                 })
@@ -206,6 +212,7 @@ mod tests {
                 offset_x: 4.0,
                 offset_y: 6.0,
                 blur: 12.0,
+                spread: -5.0,
                 color: Color {
                     r: 0.0,
                     g: 0.0,
@@ -218,6 +225,7 @@ mod tests {
                 offset_x: -2.0,
                 offset_y: 0.0,
                 blur: 3.0,
+                spread: 4.0,
                 color: Color {
                     r: 1.0,
                     g: 0.0,
@@ -233,6 +241,37 @@ mod tests {
         let back: Vec<ShadowPayload> = serde_json::from_str(&json).expect("deserialize");
         let restored = effects_from_payload(back);
         assert_eq!(restored, original);
+    }
+
+    #[test]
+    fn legacy_payload_without_spread_loads_as_zero() {
+        let payload: Vec<ShadowPayload> =
+            serde_json::from_str(r#"[{"offset_x":0,"offset_y":5,"blur":10,"color":[0,0,0,0.5]}]"#)
+                .expect("older payload");
+        assert_eq!(payload[0].spread, 0.0);
+        let Effect::DropShadow(shadow) = effects_from_payload_ref(&payload)[0] else {
+            panic!("shadow");
+        };
+        assert_eq!(shadow.spread, 0.0);
+        assert!(!shadow.inner);
+    }
+
+    #[test]
+    fn canonical_signed_spread_survives_scene_conversion() {
+        for spread in [-5.0, 0.0, 7.0] {
+            let node: PenNode = serde_json::from_value(serde_json::json!({
+                "type":"rectangle", "id":"card", "width":100, "height":80,
+                "effects":[{"type":"shadow", "offsetX":0, "offsetY":15,
+                    "blur":20, "spread":spread, "color":"#0a0a0a1a"}]
+            }))
+            .expect("canonical shadow");
+            let payload = shadows_from_canonical(&node);
+            assert_eq!(payload[0].spread, spread);
+            let Effect::DropShadow(shadow) = effects_from_payload_ref(&payload)[0] else {
+                panic!("shadow");
+            };
+            assert_eq!(shadow.spread, spread);
+        }
     }
 
     #[test]
@@ -314,6 +353,7 @@ mod tests {
                 offset_x: 1.0,
                 offset_y: 2.0,
                 blur: 3.0,
+                spread: 0.0,
                 color: Color {
                     r: 0.0,
                     g: 0.0,
