@@ -97,27 +97,48 @@ fn draw_path(canvas: &Canvas, path: &Path, paint: &Paint) -> bool {
     {
         return false;
     }
-    let info = ImageInfo::new((width, height), ColorType::RGBAF16, AlphaType::Premul, None);
-    let Some(mut mask) = skia_safe::surfaces::raster(&info, None, None) else {
-        return false;
-    };
     let grid = if super::sampled_clip::is_four_sample_pass() {
         1
     } else {
         2
     };
+    // Rasterize the four camera offsets at 2x before resolving coverage.
+    // Translating a 1x curve sixteen times changes Skia's edge quantization.
+    // The actual mask remains subject to the original area and edge limits.
+    let mut scale = mask_scale(width, height, grid);
+    let make_mask = |scale| {
+        let info = ImageInfo::new(
+            (width * scale, height * scale),
+            ColorType::RGBAF16,
+            AlphaType::Premul,
+            None,
+        );
+        skia_safe::surfaces::raster(&info, None, None)
+    };
+    let mask = make_mask(scale).or_else(|| {
+        if scale == 1 {
+            return None;
+        }
+        scale = 1;
+        make_mask(scale)
+    });
+    let Some(mut mask) = mask else {
+        return false;
+    };
+    let sample_grid = grid / scale;
     let mut coverage = Paint::default();
     coverage.set_color4f(
-        Color4f::new(1.0, 1.0, 1.0, 1.0 / (4 * grid * grid) as f32),
+        Color4f::new(1.0, 1.0, 1.0, 1.0 / (4 * sample_grid * sample_grid) as f32),
         None,
     );
     coverage.set_blend_mode(BlendMode::Plus);
     coverage.set_anti_alias(false);
     let inner = mask.canvas();
     inner.clear(Color::TRANSPARENT);
+    inner.scale((scale as f32, scale as f32));
     inner.translate((-bounds.left, -bounds.top));
-    for y in 0..grid {
-        for x in 0..grid {
+    for y in 0..sample_grid {
+        for x in 0..sample_grid {
             for (sx, sy) in [
                 (0.375, 0.125),
                 (0.875, 0.375),
@@ -126,18 +147,27 @@ fn draw_path(canvas: &Canvas, path: &Path, paint: &Paint) -> bool {
             ] {
                 let saved = inner.save();
                 inner.translate((
-                    0.5 - (x as f32 + sx) / grid as f32,
-                    0.5 - (y as f32 + sy) / grid as f32,
+                    (0.5 - (x as f32 + sx) / sample_grid as f32) / scale as f32,
+                    (0.5 - (y as f32 + sy) / sample_grid as f32) / scale as f32,
                 ));
                 inner.draw_path(&path, &coverage);
                 inner.restore_to_count(saved);
             }
         }
     }
-    let image_to_local = Matrix::concat(&inverse, &Matrix::translate((bounds.left, bounds.top)));
+    let image_to_device = Matrix::concat(
+        &Matrix::translate((bounds.left, bounds.top)),
+        &Matrix::scale((1.0 / scale as f32, 1.0 / scale as f32)),
+    );
+    let image_to_local = Matrix::concat(&inverse, &image_to_device);
+    let sampling = if scale == 2 {
+        SamplingOptions::new(skia_safe::FilterMode::Linear, skia_safe::MipmapMode::None)
+    } else {
+        SamplingOptions::default()
+    };
     let Some(shader) = mask.image_snapshot().to_shader(
         (TileMode::Decal, TileMode::Decal),
-        SamplingOptions::default(),
+        sampling,
         &image_to_local,
     ) else {
         return false;
@@ -150,9 +180,23 @@ fn draw_path(canvas: &Canvas, path: &Path, paint: &Paint) -> bool {
     canvas.clip_rect(bounds, skia_safe::ClipOp::Intersect, false);
     canvas.concat(&matrix);
     canvas.clip_shader(shader, skia_safe::ClipOp::Intersect);
+    // Keep the original color, opacity, clipping and backdrop blend once.
+    // Global per-pass RGBA8 compositing requires correlated scene samples.
     canvas.draw_paint(paint);
     canvas.restore_to_count(saved);
     true
+}
+
+fn mask_scale(width: i32, height: i32, grid: i32) -> i32 {
+    if grid == 2
+        && width <= MAX_EDGE / 2
+        && height <= MAX_EDGE / 2
+        && i64::from(width) * i64::from(height) <= MAX_PIXELS / 4
+    {
+        2
+    } else {
+        1
+    }
 }
 
 #[cfg(all(test, not(target_os = "windows")))]
