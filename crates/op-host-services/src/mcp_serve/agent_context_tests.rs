@@ -3,6 +3,58 @@ use op_editor_core::{EditorCommand, NodeId};
 
 const PROFILE: McpAccessProfile = McpAccessProfile::UNRESTRICTED;
 
+#[test]
+fn protocol_control_messages_bypass_tool_routing_and_agent_contexts() {
+    // No capacity: any accidental checkout/admission fails the regression.
+    let store = AgentContexts::with_limits(0, 0, 0);
+    let mut state = EditorState::new();
+    let path = Path::new("/control-messages-must-not-open-this/document.op");
+    for profile in [PROFILE, McpAccessProfile::LEAN] {
+        for method in [
+            "initialize",
+            "tools/list",
+            "notifications/initialized",
+            "initialized",
+            "ping",
+        ] {
+            let line = serde_json::json!({"jsonrpc":"2.0","id":37,"method":method,
+                "params":{"agentId":"invalid agent id", "filePath":path.to_str().unwrap()}})
+            .to_string();
+            let admission = store.try_admit(&line, profile).unwrap();
+            assert!(!admission.is_active());
+            assert!(
+                super::super::file_path::process_message_for_file_path_arg_with_contexts(
+                    &store,
+                    Some(path),
+                    &line,
+                    profile,
+                )
+                .unwrap()
+                .is_none()
+            );
+            let response = with_agent_context(&store, path, &mut state, &line, profile, |state| {
+                super::super::process_message_with_applier_profiled(
+                    state,
+                    &line,
+                    profile,
+                    |_, _, _| panic!("control message applied an editor command"),
+                )
+            })
+            .unwrap();
+            if matches!(method, "notifications/initialized" | "initialized") {
+                assert!(response.is_none());
+            } else {
+                let wire: serde_json::Value = serde_json::from_str(&response.unwrap()).unwrap();
+                assert_eq!(wire["id"], 37);
+                assert!(wire.get("error").is_none(), "{wire}");
+                if method == "tools/list" {
+                    assert!(wire["result"]["tools"].is_array());
+                }
+            }
+        }
+    }
+}
+
 fn fixture() -> EditorState {
     EditorState::from_document(
         jian_ops_schema::load_str(

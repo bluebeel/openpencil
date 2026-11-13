@@ -131,6 +131,9 @@ pub(crate) fn process_message_for_file_path_arg_with_contexts(
     line: &str,
     profile: super::tool_profile::McpAccessProfile,
 ) -> Result<Option<String>, McpServeError> {
+    if super::sniff::is_control_message(line) {
+        return Ok(None);
+    }
     let Some(call) = op_mcp::parse_tool_call(line.trim()) else {
         return Ok(None);
     };

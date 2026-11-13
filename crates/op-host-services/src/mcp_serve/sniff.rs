@@ -25,6 +25,15 @@ pub(super) fn sniff_method(line: &str) -> Option<String> {
     walk_top_level_for_string_value(bytes, &mut i, "method")
 }
 
+/// Handshake/discovery belong to the protocol dispatcher, not tool policy,
+/// document retargeting, or agent UI admission.
+pub(super) fn is_control_message(line: &str) -> bool {
+    matches!(
+        sniff_method(line).as_deref(),
+        Some("initialize" | "tools/list" | "notifications/initialized" | "initialized" | "ping")
+    )
+}
+
 /// Return the JSON token (verbatim — with quotes if string) that
 /// follows `"id":` at the top level. Preserves the original
 /// representation so the response carries the same id type the

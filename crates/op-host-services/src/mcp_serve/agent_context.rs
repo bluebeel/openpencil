@@ -108,6 +108,12 @@ impl AgentContexts {
         line: &str,
         profile: McpAccessProfile,
     ) -> Result<AgentAdmission<'_>, AgentContextError> {
+        if super::sniff::is_control_message(line) {
+            return Ok(AgentAdmission {
+                store: self,
+                agent: None,
+            });
+        }
         let Some(call) = op_mcp::parse_tool_call(line.trim()) else {
             return Ok(AgentAdmission {
                 store: self,
@@ -325,6 +331,9 @@ pub(crate) fn with_agent_context(
     profile: McpAccessProfile,
     action: impl FnOnce(&mut EditorState) -> Result<Option<String>, McpServeError>,
 ) -> Result<Option<String>, McpServeError> {
+    if super::sniff::is_control_message(line) {
+        return action(state);
+    }
     let Some(call) = op_mcp::parse_tool_call(line.trim()) else {
         return action(state);
     };
