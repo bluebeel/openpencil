@@ -3,6 +3,10 @@ use crate::text_cache::compact_transient_text_caches;
 use crate::tree::guid_to_string;
 use std::collections::HashMap;
 
+#[cfg(test)]
+#[path = "style_references_tests.rs"]
+mod tests;
+
 /// Copy style-node values inline onto the nodes that reference them,
 /// so downstream converters never chase a style ref. Mutates the
 /// node-change list in place.
@@ -92,6 +96,104 @@ fn effective_line_height_px(text: &FigValue) -> Option<f64> {
     }
 }
 
+fn same_font_name(left: &FigValue, right: &FigValue) -> bool {
+    ["family", "style"].into_iter().all(|field| {
+        matches!((left.get_str(field), right.get_str(field)),
+            (Some(left), Some(right)) if left.eq_ignore_ascii_case(right))
+    })
+}
+
+fn derived_uses_style_font(node: &FigValue, style: &FigValue) -> bool {
+    let Some(font) = style.get("fontName") else {
+        return false;
+    };
+    let Some(metadata) = node
+        .get("derivedTextData")
+        .and_then(|data| data.get_array("fontMetaData"))
+    else {
+        return false;
+    };
+    !metadata.is_empty()
+        && metadata.iter().all(|entry| {
+            entry
+                .get("key")
+                .is_some_and(|key| same_font_name(key, font))
+        })
+}
+
+fn effective_tracking_px(text: &FigValue, font_size: f64) -> Option<f64> {
+    let tracking = text.get("letterSpacing")?;
+    let value = tracking.get_f64("value")?;
+    match tracking.get_str("units")? {
+        "PIXELS" => Some(value),
+        "PERCENT" => Some(font_size * value / 100.0),
+        _ => None,
+    }
+}
+
+/// Confirm the linked tracking against horizontal, single-character glyph
+/// steps. The value copied below still comes from the authored style. Reject
+/// mixed/ambiguous caches rather than treating a local override as stale.
+fn derived_confirms_style_tracking(node: &FigValue, style: &FigValue) -> bool {
+    if !derived_uses_style_font(node, style) {
+        return false;
+    }
+    let Some(size) = uniform_derived_metric(node, "glyphs", "fontSize") else {
+        return false;
+    };
+    let (Some(current), Some(referenced)) = (
+        effective_tracking_px(node, size),
+        effective_tracking_px(style, size),
+    ) else {
+        return false;
+    };
+    if nearly_equal(current, referenced) {
+        return false;
+    }
+    let Some(glyphs) = node
+        .get("derivedTextData")
+        .and_then(|data| data.get_array("glyphs"))
+    else {
+        return false;
+    };
+    let mut confirmed = 0;
+    for pair in glyphs.windows(2) {
+        let (left, right) = (&pair[0], &pair[1]);
+        let Some((observed, font_size)) = glyph_tracking_step(left, right) else {
+            continue;
+        };
+        // Cached glyph positions have subpixel quantization; use a bounded
+        // em-relative tolerance and require the direct value to disagree.
+        let tolerance = (font_size / 1024.0).max(0.05);
+        if (observed - referenced).abs() > tolerance || (observed - current).abs() <= tolerance {
+            return false;
+        }
+        confirmed += 1;
+    }
+    confirmed >= 2
+}
+
+fn glyph_tracking_step(left: &FigValue, right: &FigValue) -> Option<(f64, f64)> {
+    if right.get_f64("firstCharacter")? != left.get_f64("firstCharacter")? + 1.0
+        || !nearly_equal(left.get_f64("rotation").unwrap_or(0.0), 0.0)
+        || !nearly_equal(right.get_f64("rotation").unwrap_or(0.0), 0.0)
+    {
+        return None;
+    }
+    let (left_position, right_position) = (left.get("position")?, right.get("position")?);
+    if !nearly_equal(left_position.get_f64("y")?, right_position.get_f64("y")?) {
+        return None;
+    }
+    let size = left.get_f64("fontSize")?;
+    if size <= 0.0 || !nearly_equal(size, right.get_f64("fontSize")?) {
+        return None;
+    }
+    let tracking = right_position.get_f64("x")?
+        - left_position.get_f64("x")?
+        - left.get_f64("advance")? * size;
+    (tracking.is_finite() && size.is_finite()).then_some((tracking, size))
+}
+
 /// Direct text nodes can carry stale top-level metrics even though
 /// their rendered `derivedTextData` reflects the linked text style.
 /// Only replace a present metric when the derived data is uniform and
@@ -143,10 +245,12 @@ fn resolve_on_node(
     // the linked style only when derived glyph/baseline data confirms
     // it; instance overrides always keep explicit authored fields.
     if let Some(ts) = lookup_style(nc, "styleIdForText", style_map).cloned() {
-        let replace_font_size = text_priority == TextStylePriority::DerivedMetrics
-            && derived_confirms_text_style(nc, &ts, "fontSize");
-        let replace_line_height = text_priority == TextStylePriority::DerivedMetrics
-            && derived_confirms_text_style(nc, &ts, "lineHeight");
+        let use_derived = text_priority == TextStylePriority::DerivedMetrics
+            && nc.get_bool("isOverrideOverTextStyle") != Some(true);
+        let replace_font_size = use_derived && derived_confirms_text_style(nc, &ts, "fontSize");
+        let replace_line_height = use_derived && derived_confirms_text_style(nc, &ts, "lineHeight");
+        let replace_font_name = use_derived && derived_uses_style_font(nc, &ts);
+        let replace_tracking = use_derived && derived_confirms_style_tracking(nc, &ts);
         for key in [
             "fontName",
             "fontSize",
@@ -158,8 +262,10 @@ fn resolve_on_node(
             "textCase",
         ] {
             let replace_metric = match key {
+                "fontName" => replace_font_name,
                 "fontSize" => replace_font_size,
                 "lineHeight" => replace_line_height,
+                "letterSpacing" => replace_tracking,
                 _ => false,
             };
             if replace_metric || nc.get(key).is_none() {
