@@ -54,3 +54,42 @@ fn geometry_derived_endpoint_stays_round_while_unresolved_siblings_scale() {
         );
     }
 }
+
+#[test]
+fn auto_layout_resize_preserves_borders_without_changing_uniform_scale_or_overrides() {
+    let cases = [
+        ("width resize", "HORIZONTAL", 50.0, 40.0, None, 2.0),
+        ("height resize", "VERTICAL", 100.0, 20.0, None, 2.0),
+        ("uniform shrink", "HORIZONTAL", 50.0, 20.0, None, 1.0),
+        ("explicit stroke", "HORIZONTAL", 50.0, 20.0, Some(3.0), 3.0),
+        ("non-layout artwork", "NONE", 50.0, 40.0, None, 1.0),
+    ];
+    for (name, stack_mode, width, height, stroke_override, expected) in cases {
+        let mut frame = leaf(name, 1, 10);
+        frame.figma.set("type", FigValue::Str("FRAME".into()));
+        frame
+            .figma
+            .set("stackMode", FigValue::Str(stack_mode.into()));
+        frame.figma.set("size", size(100.0, 40.0));
+        frame.figma.set("strokeWeight", FigValue::Float(2.0));
+        let mut symbol = symbol_root(vec![frame]);
+        symbol.figma.set("size", size(100.0, 40.0));
+        let derived = vec![ov_with(
+            vec![guid(1, 10)],
+            vec![("size", size(width, height))],
+        )];
+        let overrides = stroke_override.map(|weight| {
+            vec![ov_with(
+                vec![guid(1, 10)],
+                vec![("strokeWeight", FigValue::Float(weight))],
+            )]
+        });
+        let converted =
+            apply_instance_overrides(&symbol, overrides.as_deref(), Some(&derived), None);
+        assert_eq!(
+            converted[0].figma.get_f64("strokeWeight"),
+            Some(expected),
+            "{name}"
+        );
+    }
+}

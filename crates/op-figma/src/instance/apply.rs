@@ -264,8 +264,15 @@ pub(super) fn apply_to_node(
         ) {
             if let Some(sw) = figma.get_f64("strokeWeight") {
                 if nsize.x != 0.0 && nsize.y != 0.0 {
-                    let scale = (dsize.x / nsize.x).min(dsize.y / nsize.y);
-                    if scale < 0.99 {
+                    let sx = dsize.x / nsize.x;
+                    let sy = dsize.y / nsize.y;
+                    // Changing an auto-layout box's aspect ratio resizes its
+                    // available space, not the border's painted thickness.
+                    let layout_resize =
+                        matches!(figma.get_str("stackMode"), Some("HORIZONTAL" | "VERTICAL"))
+                            && (sx - sy).abs() > 1e-6;
+                    let scale = sx.min(sy);
+                    if scale < 0.99 && !layout_resize {
                         figma.set("strokeWeight", FigValue::Float(round2(sw * scale) as f32));
                     }
                 }
