@@ -61,6 +61,7 @@ fn assignment_value<'a>(assignment: &'a FigValue, field: &str) -> Option<&'a Fig
 #[derive(Clone)]
 struct PropertyRoute {
     owner: FigValue,
+    owner_key: Option<String>,
     field: &'static str,
 }
 
@@ -88,6 +89,7 @@ fn component_property_routes(nodes: &[FigValue]) -> HashMap<String, Vec<Property
         let Some(owner_guid) = node.get("guid").cloned() else {
             continue;
         };
+        let owner_key = guid_to_string(&owner_guid);
         for key in ["componentPropRefs", "componentPropertyReferences"] {
             let Some(references) = node.get(key) else {
                 continue;
@@ -104,12 +106,13 @@ fn component_property_routes(nodes: &[FigValue]) -> HashMap<String, Vec<Property
                 };
                 if let Some(def_id) = reference.get("defID").and_then(guid_to_string) {
                     let targets = routes.entry(def_id).or_default();
-                    if !targets.iter().any(|route| {
-                        route.field == field
-                            && guid_to_string(&route.owner) == guid_to_string(&owner_guid)
-                    }) {
+                    if !targets
+                        .iter()
+                        .any(|route| route.field == field && route.owner_key == owner_key)
+                    {
                         targets.push(PropertyRoute {
                             owner: owner_guid.clone(),
+                            owner_key: owner_key.clone(),
                             field,
                         });
                     }
@@ -167,10 +170,14 @@ fn visit_assignments<'a>(
     holder: &'a FigValue,
     routes: &'a HashMap<String, Vec<PropertyRoute>>,
     scopes: &TextScopes,
-    mut visit: impl FnMut(&'a FigValue, &'static str, &'a FigValue),
+    mut visit: impl FnMut(&'a FigValue, Option<&'a str>, &'static str, &'a FigValue),
 ) {
+    let assignments = assignment_entries(holder);
+    if assignments.is_empty() {
+        return;
+    }
     let master = scopes.target(holder);
-    for assignment in assignment_entries(holder) {
+    for assignment in assignments {
         let targets = assignment
             .get("defID")
             .and_then(guid_to_string)
@@ -178,16 +185,27 @@ fn visit_assignments<'a>(
         for route in targets.into_iter().flatten() {
             let outside = master.as_ref().is_some_and(|master| {
                 if route.field == "textData" {
-                    !scopes.contains(master, &route.owner)
+                    route
+                        .owner_key
+                        .as_deref()
+                        .is_none_or(|owner| !scopes.contains(master, owner))
                 } else {
-                    scopes.excludes_known_owner(master, &route.owner)
+                    route
+                        .owner_key
+                        .as_deref()
+                        .is_some_and(|owner| scopes.excludes_known_owner(master, owner))
                 }
             });
             if outside {
                 continue;
             }
             if let Some(target) = assignment_value(assignment, route.field) {
-                visit(&route.owner, route.field, target);
+                visit(
+                    &route.owner,
+                    route.owner_key.as_deref(),
+                    route.field,
+                    target,
+                );
             }
         }
     }
@@ -206,13 +224,8 @@ fn normalize_node(
     let node_guid = node.get("guid").and_then(guid_to_string);
     let mut direct_updates: Vec<(&'static str, FigValue)> = Vec::new();
     let mut additions = Vec::new();
-    visit_assignments(node, routes, scopes, |owner, field, target| {
-        if node_guid.as_deref()
-            == owner
-                .get("sessionID")
-                .and_then(|_| guid_to_string(owner))
-                .as_deref()
-        {
+    visit_assignments(node, routes, scopes, |owner, owner_key, field, target| {
+        if node_guid.as_deref() == owner_key {
             if matches!(field, "visible" | "textData") {
                 if let Some((_, value)) = direct_updates.iter_mut().find(|(key, _)| *key == field) {
                     *value = target.clone();
@@ -233,7 +246,7 @@ fn normalize_node(
     });
     for entry in authored {
         let prefix = guid_path(entry).unwrap_or(&[]);
-        visit_assignments(entry, routes, scopes, |owner, field, target| {
+        visit_assignments(entry, routes, scopes, |owner, _owner_key, field, target| {
             let key = PathKey::new(prefix.iter().chain(std::iter::once(owner)));
             if paths.accepts(key.as_ref(), field) {
                 let mut path = prefix.to_vec();

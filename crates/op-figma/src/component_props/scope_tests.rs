@@ -164,3 +164,26 @@ fn component_scope_unknown_owner_ancestry_preserves_existing_routes() {
         "partial source ancestry is not proof of exclusion"
     );
 }
+
+#[test]
+fn component_scope_missing_ancestor_above_other_master_does_not_prove_exclusion() {
+    let mut other = master(2);
+    other.set("parentIndex", obj(vec![("guid", guid(999))]));
+    let mut nodes = vec![
+        master(1),
+        other,
+        owner(22, Some(2), "VISIBLE"),
+        instance(1, "VISIBLE"),
+    ];
+    resolve_component_property_swaps(&mut nodes);
+    let overrides = nodes[3]
+        .get("symbolData")
+        .unwrap()
+        .get_array("symbolOverrides")
+        .unwrap();
+    assert_eq!(
+        overrides.len(),
+        1,
+        "a missing ancestor may contain the placement master"
+    );
+}

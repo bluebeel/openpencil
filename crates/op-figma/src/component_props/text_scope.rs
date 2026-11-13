@@ -7,7 +7,12 @@ use std::collections::{HashMap, HashSet};
 pub(super) struct TextScopes {
     masters: HashSet<String>,
     targets: HashMap<String, String>,
-    owners: HashMap<String, Vec<String>>,
+    owners: HashMap<String, OwnerScope>,
+}
+
+struct OwnerScope {
+    ancestors: Vec<String>,
+    complete: bool,
 }
 
 impl TextScopes {
@@ -43,23 +48,36 @@ impl TextScopes {
             }
             let mut ancestors = Vec::new();
             let mut current = Some(id.clone());
+            let mut complete = false;
             for _ in 0..1024 {
                 let Some(key) = current.take() else {
+                    break;
+                };
+                let Some(ancestor) = by_id.get(&key) else {
                     break;
                 };
                 if masters.contains(&key) {
                     ancestors.push(key.clone());
                 }
-                current = by_id
-                    .get(&key)
-                    .and_then(|node| node.get("parentIndex"))
-                    .and_then(|parent| parent.get("guid"))
-                    .and_then(guid_to_string);
+                let Some(parent) = ancestor.get("parentIndex") else {
+                    complete = true;
+                    break;
+                };
+                current = parent.get("guid").and_then(guid_to_string);
+                if current.is_none() {
+                    break;
+                }
                 if current.as_ref() == Some(id) {
                     break;
                 }
             }
-            owners.insert(id.clone(), ancestors);
+            owners.insert(
+                id.clone(),
+                OwnerScope {
+                    ancestors,
+                    complete,
+                },
+            );
         }
         Self {
             masters,
@@ -86,23 +104,19 @@ impl TextScopes {
         self.targets.get(&id).cloned()
     }
 
-    pub(super) fn contains(&self, master: &str, owner: &FigValue) -> bool {
-        owner
-            .get("sessionID")
-            .and_then(|_| guid_to_string(owner))
-            .and_then(|id| self.owners.get(&id))
-            .is_some_and(|ancestors| ancestors.iter().any(|ancestor| ancestor == master))
+    pub(super) fn contains(&self, master: &str, owner: &str) -> bool {
+        self.owners
+            .get(owner)
+            .is_some_and(|scope| scope.ancestors.iter().any(|ancestor| ancestor == master))
     }
 
     /// Unknown/partial ancestry cannot prove that a visibility/swap route is
     /// outside the placement. A different known master ancestry can.
-    pub(super) fn excludes_known_owner(&self, master: &str, owner: &FigValue) -> bool {
-        owner
-            .get("sessionID")
-            .and_then(|_| guid_to_string(owner))
-            .and_then(|id| self.owners.get(&id))
-            .is_some_and(|ancestors| {
-                !ancestors.is_empty() && !ancestors.iter().any(|ancestor| ancestor == master)
-            })
+    pub(super) fn excludes_known_owner(&self, master: &str, owner: &str) -> bool {
+        self.owners.get(owner).is_some_and(|scope| {
+            scope.complete
+                && !scope.ancestors.is_empty()
+                && !scope.ancestors.iter().any(|ancestor| ancestor == master)
+        })
     }
 }
