@@ -306,6 +306,13 @@ impl NativeBackend {
         if let Some(matrix) = image_adjustment_matrix(adjustments) {
             paint.set_color_filter(skia_safe::color_filters::matrix_row_major(&matrix, None));
         }
+        // Minification must integrate source detail. Bilinear-only filtering
+        // still aliases large photos into small avatars; unfiltered rectangle
+        // draws also alias ordinary Fit/Fill/Stretch image placements.
+        let sampling = skia_safe::SamplingOptions::new(
+            skia_safe::FilterMode::Linear,
+            skia_safe::MipmapMode::Linear,
+        );
 
         // Figma commonly serializes UI-cropped paints as STRETCH plus an
         // affine transform (the Tesla 191×236 card does this). Apply the
@@ -321,10 +328,6 @@ impl NativeBackend {
         }) {
             let local_matrix = skia_safe::Matrix::new_all(
                 local[0], local[1], local[2], local[3], local[4], local[5], 0.0, 0.0, 1.0,
-            );
-            let sampling = skia_safe::SamplingOptions::new(
-                skia_safe::FilterMode::Linear,
-                skia_safe::MipmapMode::None,
             );
             if let Some(shader) = image.to_shader(
                 (skia_safe::TileMode::Decal, skia_safe::TileMode::Decal),
@@ -346,10 +349,22 @@ impl NativeBackend {
         match mode {
             ImageDrawMode::Fit => {
                 let dst = contain_rect(rect, image.width() as f32, image.height() as f32);
-                canvas.draw_image_rect(&image, None, to_sk_rect(dst), &paint);
+                canvas.draw_image_rect_with_sampling_options(
+                    &image,
+                    None,
+                    to_sk_rect(dst),
+                    sampling,
+                    &paint,
+                );
             }
             ImageDrawMode::Stretch => {
-                canvas.draw_image_rect(&image, None, to_sk_rect(rect), &paint);
+                canvas.draw_image_rect_with_sampling_options(
+                    &image,
+                    None,
+                    to_sk_rect(rect),
+                    sampling,
+                    &paint,
+                );
             }
             ImageDrawMode::Tile => {
                 draw_tiled_image(canvas, rect, &image, &paint, original_size, tile_scale);
@@ -358,7 +373,13 @@ impl NativeBackend {
                 let dst = cover_rect(rect, image.width() as f32, image.height() as f32);
                 let save = canvas.save();
                 canvas.clip_rect(to_sk_rect(rect), None, Some(true));
-                canvas.draw_image_rect(&image, None, to_sk_rect(dst), &paint);
+                canvas.draw_image_rect_with_sampling_options(
+                    &image,
+                    None,
+                    to_sk_rect(dst),
+                    sampling,
+                    &paint,
+                );
                 canvas.restore_to_count(save);
             }
         }

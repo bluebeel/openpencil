@@ -748,6 +748,10 @@ mod tests;
 mod image_thumb_tests;
 
 #[cfg(test)]
+#[path = "skia/image_sampling_tests.rs"]
+mod image_sampling_tests;
+
+#[cfg(test)]
 #[path = "skia/font_fallback_tests.rs"]
 mod font_fallback_tests;
 
