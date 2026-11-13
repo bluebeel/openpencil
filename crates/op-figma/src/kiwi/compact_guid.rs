@@ -91,6 +91,9 @@ impl PartialEq for FigValue {
         if let (Some(left), Some(right)) = (self.guid_parts(), other.guid_parts()) {
             return left == right;
         }
+        if let (Some(left), Some(right)) = (self.affine_parts(), other.affine_parts()) {
+            return left == right;
+        }
         match (self, other) {
             (Self::Null, Self::Null) => true,
             (Self::Bool(a), Self::Bool(b)) => a == b,

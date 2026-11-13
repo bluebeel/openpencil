@@ -106,6 +106,12 @@ fn fig_value_equal(left: &FigValue, right: &FigValue) -> bool {
     if let (Some(left), Some(right)) = (left.guid_parts(), right.guid_parts()) {
         return left == right;
     }
+    if let (Some(left), Some(right)) = (left.affine_parts(), right.affine_parts()) {
+        return left
+            .iter()
+            .zip(right)
+            .all(|(left, right)| left.to_bits() == right.to_bits());
+    }
     match (left, right) {
         (FigValue::Null, FigValue::Null) => true,
         (FigValue::Bool(a), FigValue::Bool(b)) => a == b,
@@ -137,6 +143,13 @@ fn hash_fig_values<H: Hasher>(values: &[FigValue], state: &mut H) {
 }
 
 fn hash_fig_value<H: Hasher>(value: &FigValue, state: &mut H) {
+    if let Some(values) = value.affine_parts() {
+        "Affine".hash(state);
+        for value in values {
+            value.to_bits().hash(state);
+        }
+        return;
+    }
     if let Some(guid) = value.guid_parts() {
         "GUID".hash(state);
         guid.hash(state);
@@ -151,6 +164,11 @@ fn hash_fig_value<H: Hasher>(value: &FigValue, state: &mut H) {
         FigValue::Int64(value) => value.hash(state),
         FigValue::Uint64(value) => value.hash(state),
         FigValue::Guid(session, local) => (session, local).hash(state),
+        FigValue::Affine(values) => {
+            for value in values {
+                value.to_bits().hash(state);
+            }
+        }
         FigValue::Float(value) => value.to_bits().hash(state),
         FigValue::Str(value) => value.hash(state),
         FigValue::Bytes(value) => value.hash(state),
@@ -347,6 +365,35 @@ pub(crate) fn apply_instance_overrides_memoized(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compact_affine_cache_equality_hash_keep_float_bits_and_ignore_field_order() {
+        use std::collections::hash_map::DefaultHasher;
+        let names = ["m00", "m01", "m02", "m10", "m11", "m12"];
+        let values = [1.0, -0.0, f32::from_bits(0x7fc01234), 0.0, 1.0, 2.0];
+        let compact = FigValue::Affine(values);
+        let fields = names
+            .into_iter()
+            .zip(values)
+            .map(|(name, value)| (name, FigValue::Float(value)))
+            .collect::<Vec<_>>();
+        let mut reversed = fields.clone();
+        reversed.reverse();
+        for ordinary in [obj(fields), obj(reversed)] {
+            assert!(fig_value_equal(&compact, &ordinary));
+            let mut left = DefaultHasher::new();
+            let mut right = DefaultHasher::new();
+            hash_fig_value(&compact, &mut left);
+            hash_fig_value(&ordinary, &mut right);
+            assert_eq!(left.finish(), right.finish());
+        }
+        let mut positive = values;
+        positive[1] = 0.0;
+        assert!(!fig_value_equal(&compact, &FigValue::Affine(positive)));
+        let mut other_nan = values;
+        other_nan[2] = f32::from_bits(0x7fc05678);
+        assert!(!fig_value_equal(&compact, &FigValue::Affine(other_nan)));
+    }
 
     #[test]
     fn compact_and_generic_guid_cache_keys_have_identical_equality_and_hashes() {

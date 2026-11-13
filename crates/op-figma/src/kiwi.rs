@@ -12,6 +12,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+#[path = "kiwi/compact_affine.rs"]
+mod compact_affine;
 #[path = "kiwi/compact_guid.rs"]
 mod compact_guid;
 #[path = "kiwi/import_projection.rs"]
@@ -321,6 +323,8 @@ pub enum FigValue {
     Uint64(u64),
     /// Import-only exact GUID struct; numeric access avoids a tiny heap object.
     Guid(u32, u32),
+    /// Import-only exact 2×3 float transform, retaining all six authored values.
+    Affine([f32; 6]),
     Float(f32),
     Str(String),
     Bytes(Vec<u8>),
@@ -352,7 +356,7 @@ impl FigValue {
     /// Mutable field lookup on an object value. Explicit `Null`
     /// remains absent, matching [`get`](Self::get).
     pub fn get_mut(&mut self, key: &str) -> Option<&mut FigValue> {
-        self.materialize_guid();
+        self.materialize_compact();
         match self {
             FigValue::Object(pairs) => pairs
                 .iter_mut()
@@ -405,12 +409,15 @@ impl FigValue {
     }
 
     pub fn is_object(&self) -> bool {
-        matches!(self, FigValue::Object(_) | FigValue::Guid(_, _))
+        matches!(
+            self,
+            FigValue::Object(_) | FigValue::Guid(_, _) | FigValue::Affine(_)
+        )
     }
 
     /// Numeric field read (`obj.key` coerced to f64).
     pub fn get_f64(&self, key: &str) -> Option<f64> {
-        self.guid_number(key)
+        self.compact_number(key)
             .or_else(|| self.get(key).and_then(|v| v.as_f64()))
     }
 
@@ -440,7 +447,10 @@ impl FigValue {
     /// Insert or overwrite a field on an object value (no-op for
     /// non-objects).
     pub fn set(&mut self, key: &str, value: FigValue) {
-        self.materialize_guid();
+        if self.set_affine_number(key, &value) {
+            return;
+        }
+        self.materialize_compact();
         if let FigValue::Object(pairs) = self {
             if let Some(slot) = pairs.iter_mut().find(|(k, _)| k.as_ref() == key) {
                 slot.1 = value;
@@ -484,6 +494,7 @@ struct Decoder<'a, 'b> {
     /// `Arc`s avoids allocating a fresh `String` for every occurrence.
     object_keys: Vec<Vec<Arc<str>>>,
     compact_guids: Vec<Option<bool>>,
+    compact_affines: Vec<Option<[u8; 6]>>,
 }
 
 impl<'a, 'b> Decoder<'a, 'b> {
@@ -549,6 +560,7 @@ impl<'a, 'b> Decoder<'a, 'b> {
             field_by_value,
             object_keys,
             compact_guids: compact_guid::definitions(schema),
+            compact_affines: compact_affine::definitions(schema),
         })
     }
 
@@ -656,8 +668,8 @@ impl<'a, 'b> Decoder<'a, 'b> {
         depth: u32,
         scope: DecodeScope,
     ) -> Result<FigValue, KiwiError> {
-        if let Some(guid) = self.decode_compact_guid(def_index, depth, scope)? {
-            return Ok(guid);
+        if let Some(record) = self.decode_compact_record(def_index, depth, scope)? {
+            return Ok(record);
         }
         let field_count = self.schema.definitions[def_index].fields.len();
         let mut pairs = Vec::with_capacity(scope.retained_fields(&self.object_keys[def_index]));
