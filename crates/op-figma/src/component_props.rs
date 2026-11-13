@@ -1,6 +1,6 @@
 //! Normalize Figma component-property assignments into legacy symbol overrides.
 //!
-//! Modern `.fig` files store instance swaps and boolean visibility assignments
+//! Modern `.fig` files store instance swaps, visibility and text assignments
 //! keyed by a component-property definition id. The component master separately
 //! marks the layers and fields that each definition controls. The
 //! rest of the importer already understands explicit symbol overrides, so this
@@ -28,6 +28,20 @@ fn assignment_target(assignment: &FigValue) -> Option<FigValue> {
 fn assignment_value(assignment: &FigValue, field: &str) -> Option<FigValue> {
     if field == "overriddenSymbolID" {
         return assignment_target(assignment);
+    }
+    if field == "textData" {
+        return assignment
+            .get("value")
+            .and_then(|value| value.get("textValue"))
+            .filter(|value| value.get_str("characters").is_some())
+            .or_else(|| {
+                assignment
+                    .get("varValue")?
+                    .get("value")?
+                    .get("textDataValue")
+                    .filter(|value| value.get_str("characters").is_some())
+            })
+            .cloned();
     }
     assignment
         .get("value")
@@ -82,6 +96,7 @@ fn component_property_routes(nodes: &[FigValue]) -> HashMap<String, Vec<Property
                 let field = match field {
                     Some("OVERRIDDEN_SYMBOL_ID" | "INSTANCE_SWAP") => "overriddenSymbolID",
                     Some("VISIBLE" | "VISIBILITY") => "visible",
+                    Some("TEXT_DATA" | "TEXT") => "textData",
                     _ => return,
                 };
                 if let Some(def_id) = reference.get("defID").and_then(guid_to_string) {
@@ -200,7 +215,7 @@ fn normalize_node(node: &mut FigValue, routes: &HashMap<String, Vec<PropertyRout
                 .and_then(|_| guid_to_string(&owner))
                 .as_deref()
         {
-            if field == "visible" {
+            if matches!(field, "visible" | "textData") {
                 if let Some((_, value)) = direct_updates.iter_mut().find(|(key, _)| *key == field) {
                     *value = target;
                 } else {
@@ -276,6 +291,10 @@ pub(crate) fn resolve_component_property_swaps(nodes: &mut [FigValue]) {
 #[cfg(test)]
 #[path = "component_props/visibility_tests.rs"]
 mod visibility_tests;
+
+#[cfg(test)]
+#[path = "component_props/text_tests.rs"]
+mod text_tests;
 
 #[cfg(test)]
 mod tests {
