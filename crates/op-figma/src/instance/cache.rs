@@ -120,6 +120,8 @@ fn fig_value_equal(left: &FigValue, right: &FigValue) -> bool {
                     .zip(b)
                     .all(|((ak, av), (bk, bv))| ak == bk && fig_value_equal(av, bv))
         }
+        (FigValue::TextEvidence(a), FigValue::TextEvidence(b)) => a == b,
+        (FigValue::TextLayout(a), FigValue::TextLayout(b)) => a == b,
         _ => false,
     }
 }
@@ -143,6 +145,8 @@ fn hash_fig_value<H: Hasher>(value: &FigValue, state: &mut H) {
         FigValue::Float(value) => value.to_bits().hash(state),
         FigValue::Str(value) => value.hash(state),
         FigValue::Bytes(value) => value.hash(state),
+        FigValue::TextEvidence(value) => value.hash(state),
+        FigValue::TextLayout(value) => value.hash(state),
         FigValue::Array(values) => hash_fig_values(values, state),
         FigValue::Object(pairs) => {
             pairs.len().hash(state);
@@ -159,6 +163,8 @@ fn fig_value_bytes(value: &FigValue) -> usize {
         + match value {
             FigValue::Str(value) => value.len(),
             FigValue::Bytes(value) => value.len(),
+            FigValue::TextEvidence(value) => value.retained_bytes(),
+            FigValue::TextLayout(value) => value.retained_bytes(),
             FigValue::Array(values) => values.iter().map(fig_value_bytes).sum(),
             FigValue::Object(pairs) => pairs
                 .iter()

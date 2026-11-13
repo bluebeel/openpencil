@@ -26,6 +26,7 @@ mod node_build;
 mod node_mapper;
 mod page_mapper;
 mod prepared;
+mod progress;
 mod text_cache;
 mod text_mapper;
 mod tree;
@@ -49,7 +50,8 @@ pub use node_mapper::{
     figma_all_pages_to_pen_document, figma_node_changes_to_pen_nodes, figma_to_pen_document,
     get_figma_pages, FigmaClipboardResult, FigmaImportResult, FigmaPageInfo,
 };
-pub use prepared::{prepare_fig_binary, PreparedFig};
+pub use prepared::{prepare_fig_binary, prepare_fig_binary_with_observer, PreparedFig};
+pub use progress::FigImportPhase;
 
 use common::FigLayoutMode as LayoutMode;
 pub use image_resolver::ImageTransform;

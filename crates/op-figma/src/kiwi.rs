@@ -12,6 +12,12 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+#[path = "kiwi/import_projection.rs"]
+mod import_projection;
+#[path = "kiwi/text_evidence.rs"]
+mod text_evidence;
+use import_projection::DecodeScope;
+
 /// Native Kiwi types, indexed by `!encoded_type` (bitwise-NOT) for the
 /// negative type codes in a binary schema.
 const NATIVE_TYPES: [&str; 8] = [
@@ -34,6 +40,8 @@ pub enum KiwiError {
     NoRootMessage,
     /// Nested decoding exceeded [`MAX_DEPTH`].
     TooDeep,
+    /// Import data contains bytes after its root message terminator.
+    TrailingBytes(usize),
 }
 
 impl std::fmt::Display for KiwiError {
@@ -44,6 +52,9 @@ impl std::fmt::Display for KiwiError {
             KiwiError::UnknownField(s) => write!(f, "kiwi: unknown message field: {s}"),
             KiwiError::NoRootMessage => write!(f, "kiwi: schema has no message definition"),
             KiwiError::TooDeep => write!(f, "kiwi: nesting too deep"),
+            KiwiError::TrailingBytes(count) => {
+                write!(f, "kiwi: {count} unread bytes after message")
+            }
         }
     }
 }
@@ -167,6 +178,20 @@ impl<'a> ByteBuffer<'a> {
             .ok_or(KiwiError::OutOfBounds)?;
         self.index += len;
         Ok(slice.to_vec())
+    }
+
+    fn skip_string(&mut self) -> Result<(), KiwiError> {
+        while self.read_byte()? != 0 {}
+        Ok(())
+    }
+
+    fn skip_byte_array(&mut self) -> Result<(), KiwiError> {
+        let len = self.read_var_uint()? as usize;
+        if len > self.remaining() {
+            return Err(KiwiError::OutOfBounds);
+        }
+        self.index += len;
+        Ok(())
     }
 }
 
@@ -299,6 +324,11 @@ pub enum FigValue {
     /// Insertion-ordered key/value pairs (Kiwi struct/message). Keys decoded
     /// from the schema share one allocation across every object instance.
     Object(Vec<(Arc<str>, FigValue)>),
+    /// Import-only, constant-space proof for linked text styles. Removed after
+    /// style resolution; generic decoding never produces this variant.
+    TextEvidence(Box<crate::text_cache::evidence::TextEvidence>),
+    /// Compact authored line geometry retained only for Preserve-mode lists.
+    TextLayout(Box<crate::text_cache::layout::SavedTextLayout>),
 }
 
 impl FigValue {
@@ -514,9 +544,23 @@ impl<'a, 'b> Decoder<'a, 'b> {
     }
 
     /// Decode one value of an already-resolved type.
-    fn decode_type(&mut self, resolved: ResolvedType, depth: u32) -> Result<FigValue, KiwiError> {
+    fn decode_type(
+        &mut self,
+        resolved: ResolvedType,
+        depth: u32,
+        scope: DecodeScope,
+    ) -> Result<FigValue, KiwiError> {
         if depth > MAX_DEPTH {
             return Err(KiwiError::TooDeep);
+        }
+        if matches!(scope, DecodeScope::DirectTextCache) {
+            return self.decode_text_evidence(resolved, depth);
+        }
+        if matches!(scope, DecodeScope::Presence)
+            && matches!(resolved, ResolvedType::Definition(index) if self.schema.definitions[index].kind != DefKind::Enum)
+        {
+            self.skip_field(resolved, false, depth.saturating_sub(1))?;
+            return Ok(FigValue::Object(Vec::new()));
         }
         match resolved {
             ResolvedType::Native(NativeType::Bool) => Ok(FigValue::Bool(self.bb.read_byte()? != 0)),
@@ -537,8 +581,8 @@ impl<'a, 'b> Decoder<'a, 'b> {
             }
             ResolvedType::Definition(def_index) => match self.schema.definitions[def_index].kind {
                 DefKind::Enum => self.decode_enum(def_index),
-                DefKind::Struct => self.decode_struct(def_index, depth),
-                DefKind::Message => self.decode_message_def(def_index, depth),
+                DefKind::Struct => self.decode_struct(def_index, depth, scope),
+                DefKind::Message => self.decode_message_def(def_index, depth, scope),
             },
         }
     }
@@ -550,6 +594,7 @@ impl<'a, 'b> Decoder<'a, 'b> {
         resolved: ResolvedType,
         is_array: bool,
         depth: u32,
+        scope: DecodeScope,
     ) -> Result<FigValue, KiwiError> {
         if is_array {
             if resolved == ResolvedType::Native(NativeType::Byte) {
@@ -565,11 +610,11 @@ impl<'a, 'b> Decoder<'a, 'b> {
             }
             let mut items = Vec::with_capacity((n as usize).min(self.bb.remaining()));
             for _ in 0..n {
-                items.push(self.decode_type(resolved, depth + 1)?);
+                items.push(self.decode_type(resolved, depth + 1, scope)?);
             }
             Ok(FigValue::Array(items))
         } else {
-            self.decode_type(resolved, depth + 1)
+            self.decode_type(resolved, depth + 1, scope)
         }
     }
 
@@ -589,9 +634,14 @@ impl<'a, 'b> Decoder<'a, 'b> {
     }
 
     /// Struct: every field in declared order.
-    fn decode_struct(&mut self, def_index: usize, depth: u32) -> Result<FigValue, KiwiError> {
+    fn decode_struct(
+        &mut self,
+        def_index: usize,
+        depth: u32,
+        scope: DecodeScope,
+    ) -> Result<FigValue, KiwiError> {
         let field_count = self.schema.definitions[def_index].fields.len();
-        let mut pairs = Vec::with_capacity(field_count);
+        let mut pairs = Vec::with_capacity(scope.retained_fields(&self.object_keys[def_index]));
         for field_index in 0..field_count {
             let (name, resolved, is_array) = {
                 let field = &self.schema.definitions[def_index].fields[field_index];
@@ -603,17 +653,30 @@ impl<'a, 'b> Decoder<'a, 'b> {
                     field.is_array,
                 )
             };
-            let value = self.decode_field(resolved, is_array, depth)?;
-            pairs.push((name, value));
+            if let Some(child_scope) = scope.field(&name) {
+                let value = self.decode_field(resolved, is_array, depth, child_scope)?;
+                pairs.push((name, value));
+            } else {
+                self.skip_field(resolved, is_array, depth)?;
+            }
         }
         Ok(FigValue::Object(pairs))
     }
 
     /// Message: id-prefixed fields, terminated by id `0`.
-    fn decode_message_def(&mut self, def_index: usize, depth: u32) -> Result<FigValue, KiwiError> {
+    fn decode_message_def(
+        &mut self,
+        def_index: usize,
+        depth: u32,
+        scope: DecodeScope,
+    ) -> Result<FigValue, KiwiError> {
         let field_count = self.schema.definitions[def_index].fields.len();
         let mut pairs: Vec<(Arc<str>, FigValue)> = Vec::new();
         let mut pair_slots: Vec<Option<usize>> = vec![None; field_count];
+        if scope.exact_message_capacity() {
+            let count = self.import_message_capacity(def_index, depth, scope, &mut pair_slots)?;
+            pairs.reserve_exact(count);
+        }
         loop {
             let field_id = self.bb.read_var_uint()?;
             if field_id == 0 {
@@ -634,12 +697,19 @@ impl<'a, 'b> Decoder<'a, 'b> {
                     .ok_or_else(|| KiwiError::BadType(field.type_name.clone()))?;
                 (resolved, field.is_array)
             };
-            let value = self.decode_field(resolved, is_array, depth)?;
+            let field_name = Arc::clone(&self.object_keys[def_index][field_index]);
+            let Some(child_scope) = scope.field(&field_name) else {
+                self.skip_field(resolved, is_array, depth)?;
+                continue;
+            };
+            let value = self.decode_field(resolved, is_array, depth, child_scope)?;
             // A repeated id overwrites — matches the JS `result.x = …`.
             if let Some(slot) = pair_slots[field_index] {
                 pairs[slot].1 = value;
             } else {
-                let field_name = Arc::clone(&self.object_keys[def_index][field_index]);
+                if pairs.is_empty() && scope.compact_object() {
+                    pairs.reserve_exact(scope.retained_fields(&self.object_keys[def_index]));
+                }
                 pair_slots[field_index] = Some(pairs.len());
                 pairs.push((field_name, value));
             }
@@ -649,6 +719,7 @@ impl<'a, 'b> Decoder<'a, 'b> {
 
 /// Decode the data chunk against `schema`, rooted at the `Message`
 /// definition (falling back to the first message definition).
+#[allow(dead_code)] // Full-fidelity decoder retained for diagnostics and compatibility checks.
 pub fn decode_message(schema: &Schema, data: &[u8]) -> Result<FigValue, KiwiError> {
     let root_index = schema
         .definitions
@@ -662,9 +733,35 @@ pub fn decode_message(schema: &Schema, data: &[u8]) -> Result<FigValue, KiwiErro
         })
         .ok_or(KiwiError::NoRootMessage)?;
     let mut decoder = Decoder::new(schema, data)?;
-    decoder.decode_message_def(root_index, 0)
+    decoder.decode_message_def(root_index, 0, DecodeScope::Full)
+}
+
+/// Decode only import-relevant caches while validating the entire wire stream.
+/// Generic [`decode_message`] continues to retain every schema field.
+pub(crate) fn decode_import_message(schema: &Schema, data: &[u8]) -> Result<FigValue, KiwiError> {
+    let root_index = schema
+        .definitions
+        .iter()
+        .position(|d| d.name == "Message" && d.kind == DefKind::Message)
+        .or_else(|| {
+            schema
+                .definitions
+                .iter()
+                .position(|d| d.kind == DefKind::Message)
+        })
+        .ok_or(KiwiError::NoRootMessage)?;
+    let mut decoder = Decoder::new(schema, data)?;
+    let message = decoder.decode_message_def(root_index, 0, DecodeScope::Root)?;
+    if decoder.bb.remaining() != 0 {
+        return Err(KiwiError::TrailingBytes(decoder.bb.remaining()));
+    }
+    Ok(message)
 }
 
 #[cfg(test)]
 #[path = "kiwi/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "kiwi/import_projection_tests.rs"]
+mod import_projection_tests;

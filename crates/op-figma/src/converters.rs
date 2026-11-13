@@ -21,9 +21,8 @@ use crate::mappers::{
 };
 use crate::mask::{any_visible, figma_path_mask};
 use crate::node_build::{
-    ellipse_node, frame_node, group_node, line_node, path_node, rectangle_node, ref_node, text_node,
+    ellipse_node, frame_node, group_node, line_node, path_node, rectangle_node, ref_node,
 };
-use crate::text_mapper::map_figma_text_props;
 use crate::tree::{guid_to_string, TreeNode};
 use crate::vector_decoder::{compute_svg_path_bounds, decode_figma_vector_path, DecodedVectorPath};
 use crate::vector_fallback::decode_single_child_boolean;
@@ -31,6 +30,9 @@ use jian_ops_schema::node::base::NumberOrExpression;
 use jian_ops_schema::node::container::ContainerProps;
 use jian_ops_schema::node::PenNode;
 use jian_ops_schema::sizing::SizingBehavior;
+
+mod text;
+use text::convert_text;
 
 /// Spread mapped [`LayoutProps`] onto a `ContainerProps`.
 fn apply_layout(l: LayoutProps, c: &mut ContainerProps) {
@@ -52,13 +54,6 @@ fn apply_layout(l: LayoutProps, c: &mut ContainerProps) {
     if l.clip_content.is_some() {
         c.clip_content = l.clip_content;
     }
-}
-
-fn is_string_sizing(s: &SizingBehavior) -> bool {
-    matches!(
-        s,
-        SizingBehavior::Keyword(_) | SizingBehavior::Expression(_)
-    )
 }
 
 /// Convert a parent's children, skipping invisible / transparent nodes.
@@ -493,37 +488,6 @@ fn convert_line(tree: &TreeNode, ctx: &mut ConversionContext<'_>) -> PenNode {
         w,
         h,
         map_figma_stroke(figma),
-        map_figma_effects(figma.get_array("effects")),
-    )
-}
-
-fn convert_text(
-    tree: &TreeNode,
-    parent_stack_mode: Option<&str>,
-    ctx: &mut ConversionContext<'_>,
-) -> PenNode {
-    let id = ctx.generate_id();
-    let figma = &tree.figma;
-    let mut props = map_figma_text_props(figma);
-    let width = resolve_width(figma, parent_stack_mode, ctx);
-    let height = resolve_height(figma, parent_stack_mode, ctx);
-
-    // Reconcile textGrowth with the resolved width.
-    use jian_ops_schema::node::text::TextGrowth;
-    if props.text_growth.is_none() {
-        if is_string_sizing(&width) || figma.get_str("textAutoResize").is_none() {
-            props.text_growth = Some(TextGrowth::FixedWidth);
-        }
-    } else if props.text_growth == Some(TextGrowth::Auto) && is_string_sizing(&width) {
-        props.text_growth = Some(TextGrowth::FixedWidth);
-    }
-
-    text_node(
-        common_props(figma, id),
-        width,
-        height,
-        props,
-        map_figma_fills(figma.get_array("fillPaints")),
         map_figma_effects(figma.get_array("effects")),
     )
 }

@@ -5,7 +5,8 @@
 //! the `parseFigFile` pipeline that ties the container + Kiwi layers.
 
 use crate::container::{fig_to_binary_parts, ContainerError};
-use crate::kiwi::{decode_binary_schema, decode_message, FigValue, KiwiError};
+use crate::kiwi::{decode_binary_schema, decode_import_message, FigValue, KiwiError};
+use crate::progress::FigImportPhase;
 use std::collections::HashMap;
 
 /// Figma node identity — `sessionID:localID`.
@@ -207,12 +208,24 @@ fn extract_decoded_root(raw: FigValue) -> Option<(Vec<FigValue>, Vec<BlobOrStrin
 /// `parseFigFile`. Splits the container, decodes the Kiwi schema +
 /// data, and extracts node changes + blobs + embedded images.
 pub fn parse_fig_file(bytes: &[u8]) -> Result<FigmaDecodedFile, FigFileError> {
+    parse_fig_file_with_observer(bytes, &mut |_| {})
+}
+
+pub(crate) fn parse_fig_file_with_observer(
+    bytes: &[u8],
+    observer: &mut dyn FnMut(FigImportPhase),
+) -> Result<FigmaDecodedFile, FigFileError> {
+    observer(FigImportPhase::Container);
     let container = fig_to_binary_parts(bytes).map_err(FigFileError::Container)?;
     if container.parts.len() < 2 {
         return Err(FigFileError::TooFewParts(container.parts.len()));
     }
+    observer(FigImportPhase::Schema);
     let schema = decode_binary_schema(&container.parts[0]).map_err(FigFileError::Kiwi)?;
-    let raw = decode_message(&schema, &container.parts[1]).map_err(FigFileError::Kiwi)?;
+    observer(FigImportPhase::Decode);
+    let raw = decode_import_message(&schema, &container.parts[1]).map_err(FigFileError::Kiwi)?;
+    observer(FigImportPhase::Extract);
+    drop(container.parts);
     let (node_changes, blobs) = extract_decoded_root(raw).ok_or(FigFileError::NoNodeChanges)?;
     Ok(FigmaDecodedFile {
         node_changes,

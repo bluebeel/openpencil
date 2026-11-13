@@ -194,3 +194,25 @@ fn linked_text_style_percent_tracking_uses_locally_overridden_font_size() {
         "percentage tracking follows the effective size"
     );
 }
+
+#[test]
+fn typed_evidence_and_full_cache_resolve_identical_authored_styles() {
+    for (family, tracking, explicit) in [
+        ("Linked Font", -1.0, false),
+        ("Local Font", 0.0, false),
+        ("Linked Font", 0.0, false),
+        ("Linked Font", -1.0, true),
+    ] {
+        let mut full = vec![linked_style(), node(family, tracking)];
+        full[1].set("isOverrideOverTextStyle", FigValue::Bool(explicit));
+        let mut summarized = full.clone();
+        let evidence = TextEvidence::from_cache(full[1].get("derivedTextData").unwrap());
+        summarized[1].set(
+            "derivedTextData",
+            FigValue::TextEvidence(Box::new(evidence.into_owned())),
+        );
+        resolve_style_references(&mut full);
+        resolve_style_references(&mut summarized);
+        assert_eq!(summarized, full);
+    }
+}

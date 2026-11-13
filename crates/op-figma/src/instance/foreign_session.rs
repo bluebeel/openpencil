@@ -247,3 +247,50 @@ pub(super) fn resolve_uniform_family(
     }
     Some(out)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::instance::tests::{guid, leaf, obj, ov_with, symbol_root};
+
+    #[test]
+    fn compact_consumption_map_presence_keeps_foreign_family_safety_guard() {
+        let symbol = symbol_root(vec![leaf("dot", 1, 10), leaf("dot", 1, 11)]);
+        let group = ForeignGroup {
+            session: 30,
+            pks: (1..=2)
+                .map(|id| ForeignPk {
+                    pk: format!("30:{id}"),
+                    demands_text: false,
+                    demands_instance: false,
+                })
+                .collect(),
+        };
+        for map in [
+            Some(obj(vec![(
+                "entries",
+                FigValue::Array(vec![FigValue::Bool(true)]),
+            )])),
+            Some(obj(vec![])),
+            None,
+        ] {
+            let entries: Vec<_> = (1..=2)
+                .map(|id| {
+                    let mut properties = vec![("visible", FigValue::Bool(false))];
+                    if let Some(map) = &map {
+                        properties.push(("parameterConsumptionMap", map.clone()));
+                    }
+                    ov_with(vec![guid(30, id)], properties)
+                })
+                .collect();
+            let overrides =
+                HashMap::from([("30:1".into(), &entries[0]), ("30:2".into(), &entries[1])]);
+            let resolved = resolve_uniform_family(&group, &symbol, &overrides);
+            assert_eq!(
+                resolved.is_some(),
+                map.is_none(),
+                "present maps must still prevent an unsafe cosmetic-family guess"
+            );
+        }
+    }
+}

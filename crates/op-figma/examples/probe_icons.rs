@@ -18,6 +18,10 @@ mod corner_geometry;
 mod figma_types;
 #[path = "../src/kiwi.rs"]
 mod kiwi;
+#[path = "../src/progress.rs"]
+mod progress;
+#[path = "../src/text_cache.rs"]
+mod text_cache;
 #[path = "../src/tree.rs"]
 mod tree;
 #[path = "../src/vector_decoder.rs"]

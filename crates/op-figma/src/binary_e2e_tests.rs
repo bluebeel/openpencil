@@ -4,9 +4,54 @@
 //! [`parse_fig_binary`] pipeline.
 
 use crate::{parse_fig_binary, prepare_fig_binary, FigLayoutMode, FigParseError};
+use crate::{prepare_fig_binary_with_observer, FigImportPhase};
 use jian_ops_schema::node::PenNode;
 use jian_ops_schema::sizing::SizingBehavior;
 use std::io::Write;
+
+#[test]
+fn unused_consumption_map_markers_preserve_converted_document_and_warnings() {
+    use crate::figma_types::FigmaDecodedFile;
+    use crate::kiwi::{decode_binary_schema, decode_message, FigValue};
+    let schema = decode_binary_schema(&build_schema()).unwrap();
+    let mut root = decode_message(&schema, &build_data()).unwrap();
+    let mut full = root.get_array_mut("nodeChanges").unwrap().clone();
+    let full_map = FigValue::Object(vec![(
+        "entries".into(),
+        FigValue::Array(vec![FigValue::Object(vec![(
+            "unused".into(),
+            FigValue::Str("binding bookkeeping".into()),
+        )])]),
+    )]);
+    for node in &mut full {
+        node.set("parameterConsumptionMap", full_map.clone());
+        node.set("variableConsumptionMap", full_map.clone());
+    }
+    let mut projected = full.clone();
+    for node in &mut projected {
+        node.set("parameterConsumptionMap", FigValue::Object(Vec::new()));
+        node.set("variableConsumptionMap", FigValue::Object(Vec::new()));
+    }
+    let convert = |node_changes| {
+        crate::node_mapper::figma_to_pen_document(
+            FigmaDecodedFile {
+                node_changes,
+                blobs: vec![],
+                image_files: Default::default(),
+            },
+            "Map markers",
+            0,
+            FigLayoutMode::Preserve,
+        )
+    };
+    let full = convert(full);
+    let projected = convert(projected);
+    assert_eq!(
+        serde_json::to_value(projected.document).unwrap(),
+        serde_json::to_value(full.document).unwrap()
+    );
+    assert_eq!(projected.warnings, full.warnings);
+}
 
 /// Minimal Kiwi wire writer (mirrors the in-crate decoder).
 #[derive(Default)]
@@ -251,6 +296,44 @@ fn parses_a_full_binary_fig_into_a_document() {
         }
         other => panic!("expected a Rectangle, got {other:?}"),
     }
+}
+
+#[test]
+fn observer_reports_phases_without_changing_preparation_or_page_conversion() {
+    let fig = build_fig(&build_schema(), &build_data());
+    let ordinary = prepare_fig_binary(&fig, "Test", FigLayoutMode::Preserve).unwrap();
+    let mut phases = Vec::new();
+    let observed =
+        prepare_fig_binary_with_observer(&fig, "Test", FigLayoutMode::Preserve, &mut |phase| {
+            phases.push(phase)
+        })
+        .unwrap();
+    assert_eq!(observed.pages(), ordinary.pages());
+    let observed = observed
+        .into_page_with_observer(0, &mut |phase| phases.push(phase))
+        .unwrap();
+    let ordinary = ordinary.into_page(0).unwrap();
+    assert_eq!(
+        serde_json::to_value(observed.document).unwrap(),
+        serde_json::to_value(ordinary.document).unwrap()
+    );
+    assert_eq!(observed.warnings, ordinary.warnings);
+    assert_eq!(
+        phases,
+        [
+            FigImportPhase::Container,
+            FigImportPhase::Schema,
+            FigImportPhase::Decode,
+            FigImportPhase::Extract,
+            FigImportPhase::ResolveStyles,
+            FigImportPhase::BuildTree,
+            FigImportPhase::Prepared,
+            FigImportPhase::ConvertPage,
+            FigImportPhase::ReleaseSource,
+            FigImportPhase::ResolveImages,
+            FigImportPhase::Complete,
+        ]
+    );
 }
 
 #[test]

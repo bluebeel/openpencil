@@ -1,5 +1,6 @@
 use crate::kiwi::FigValue;
 use crate::text_cache::compact_transient_text_caches;
+use crate::text_cache::evidence::{nearly_equal, TextEvidence};
 use crate::tree::guid_to_string;
 use std::collections::HashMap;
 
@@ -74,17 +75,8 @@ enum TextStylePriority {
     ExplicitFields,
 }
 
-fn nearly_equal(a: f64, b: f64) -> bool {
-    (a - b).abs() <= 0.001
-}
-
 fn uniform_derived_metric(node: &FigValue, entries: &str, field: &str) -> Option<f64> {
-    let values = node.get("derivedTextData")?.get_array(entries)?;
-    let first = values.first()?.get_f64(field)?;
-    values
-        .iter()
-        .all(|value| value.get_f64(field).is_some_and(|v| nearly_equal(v, first)))
-        .then_some(first)
+    TextEvidence::from_cache(node.get("derivedTextData")?).metric(entries, field)
 }
 
 fn effective_line_height_px(text: &FigValue) -> Option<f64> {
@@ -98,29 +90,11 @@ fn effective_line_height_px(text: &FigValue) -> Option<f64> {
     }
 }
 
-fn same_font_name(left: &FigValue, right: &FigValue) -> bool {
-    ["family", "style"].into_iter().all(|field| {
-        matches!((left.get_str(field), right.get_str(field)),
-            (Some(left), Some(right)) if left.eq_ignore_ascii_case(right))
-    })
-}
-
 fn derived_uses_style_font(node: &FigValue, style: &FigValue) -> bool {
-    let Some(font) = style.get("fontName") else {
+    let (Some(font), Some(cache)) = (style.get("fontName"), node.get("derivedTextData")) else {
         return false;
     };
-    let Some(metadata) = node
-        .get("derivedTextData")
-        .and_then(|data| data.get_array("fontMetaData"))
-    else {
-        return false;
-    };
-    !metadata.is_empty()
-        && metadata.iter().all(|entry| {
-            entry
-                .get("key")
-                .is_some_and(|key| same_font_name(key, font))
-        })
+    TextEvidence::from_cache(cache).uses_font(font)
 }
 
 fn effective_tracking_px(text: &FigValue, font_size: f64) -> Option<f64> {
@@ -152,48 +126,11 @@ fn derived_confirms_style_tracking(node: &FigValue, style: &FigValue) -> bool {
     if nearly_equal(current, referenced) {
         return false;
     }
-    let Some(glyphs) = node
-        .get("derivedTextData")
-        .and_then(|data| data.get_array("glyphs"))
-    else {
-        return false;
-    };
-    let mut confirmed = 0;
-    for pair in glyphs.windows(2) {
-        let (left, right) = (&pair[0], &pair[1]);
-        let Some((observed, font_size)) = glyph_tracking_step(left, right) else {
-            continue;
-        };
-        // Cached glyph positions have subpixel quantization; use a bounded
-        // em-relative tolerance and require the direct value to disagree.
-        let tolerance = (font_size / 1024.0).max(0.05);
-        if (observed - referenced).abs() > tolerance || (observed - current).abs() <= tolerance {
-            return false;
-        }
-        confirmed += 1;
-    }
-    confirmed >= 2
-}
-
-fn glyph_tracking_step(left: &FigValue, right: &FigValue) -> Option<(f64, f64)> {
-    if right.get_f64("firstCharacter")? != left.get_f64("firstCharacter")? + 1.0
-        || !nearly_equal(left.get_f64("rotation").unwrap_or(0.0), 0.0)
-        || !nearly_equal(right.get_f64("rotation").unwrap_or(0.0), 0.0)
-    {
-        return None;
-    }
-    let (left_position, right_position) = (left.get("position")?, right.get("position")?);
-    if !nearly_equal(left_position.get_f64("y")?, right_position.get_f64("y")?) {
-        return None;
-    }
-    let size = left.get_f64("fontSize")?;
-    if size <= 0.0 || !nearly_equal(size, right.get_f64("fontSize")?) {
-        return None;
-    }
-    let tracking = right_position.get_f64("x")?
-        - left_position.get_f64("x")?
-        - left.get_f64("advance")? * size;
-    (tracking.is_finite() && size.is_finite()).then_some((tracking, size))
+    TextEvidence::from_cache(
+        node.get("derivedTextData")
+            .expect("derived metric requires cache"),
+    )
+    .confirms_tracking(current, referenced)
 }
 
 /// Direct text nodes can carry stale top-level metrics even though
