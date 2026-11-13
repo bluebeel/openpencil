@@ -39,6 +39,30 @@ fn read_name(lease: &DocumentLease<'_>) -> String {
 }
 
 #[test]
+fn invalid_external_replacement_releases_the_stale_editor_before_load_failure() {
+    let files = Files::new();
+    let path = files.write("old");
+    let hub = ResidentDocuments::default();
+    let lease = hub.acquire(&path).unwrap();
+    assert_eq!(read_name(&lease), "old");
+    let invalid = files.0.join("invalid.op");
+    std::fs::write(&invalid, b"{invalid external content").unwrap();
+    std::fs::rename(invalid, &path).unwrap();
+    assert!(lease
+        .with_editor(false, |_, _| ActionResult {
+            value: (),
+            persisted: false,
+            invalidate: false,
+        })
+        .is_err());
+    let resident = lease.slot.resident.lock().unwrap();
+    assert!(resident.editor.is_none());
+    assert!(resident.stamp.is_none());
+    assert_eq!(lease.slot.charge.load(Ordering::Relaxed), RESERVATION);
+    assert_eq!(std::fs::read(&path).unwrap(), b"{invalid external content");
+}
+
+#[test]
 fn external_atomic_replacement_invalidates_resident_state_and_conflicting_edits() {
     let files = Files::new();
     let path = files.write("before");

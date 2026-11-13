@@ -16,7 +16,7 @@ use std::{
 
 use op_editor_core::EditorState;
 
-use super::resident_charge::resident_charge;
+use super::resident_charge::{resident_charge, resident_charge_cached, ChargeCache};
 
 const RESERVATION: usize = 64 * 1024;
 const MAX_SOURCE_BYTES: u64 = 16 * 1024 * 1024;
@@ -113,6 +113,7 @@ impl FileStamp {
 struct Resident {
     editor: Option<EditorState>,
     stamp: Option<FileStamp>,
+    charge_cache: ChargeCache,
 }
 
 struct Slot {
@@ -235,6 +236,7 @@ impl DocumentLease<'_> {
         if result.persisted || result.invalidate {
             resident.editor = None;
             resident.stamp = None;
+            resident.charge_cache = ChargeCache::default();
             self.slot.charge.store(RESERVATION, Ordering::Relaxed);
         }
         Ok(result.value)
@@ -259,6 +261,12 @@ impl DocumentLease<'_> {
         }
         let stamp = FileStamp::read(self.path())?;
         if resident.editor.is_none() || resident.stamp.as_ref() != Some(&stamp) {
+            // An externally replaced state is no longer authoritative. Drop
+            // it before decoding its replacement, including on load failure.
+            resident.editor = None;
+            resident.stamp = None;
+            resident.charge_cache = ChargeCache::default();
+            self.slot.charge.store(RESERVATION, Ordering::Relaxed);
             // Unknown loaded states never accumulate concurrently. The source
             // cap bounds input bytes; the ledger decides whether to retain it.
             let _loading = self
@@ -306,7 +314,13 @@ impl DocumentLease<'_> {
             if !changed {
                 return Ok(result.value);
             }
-            let charge = resident_charge(resident.editor.as_ref().unwrap(), self.hub.max_bytes);
+            let Resident {
+                editor,
+                charge_cache,
+                ..
+            } = &mut *resident;
+            let charge =
+                resident_charge_cached(editor.as_ref().unwrap(), self.hub.max_bytes, charge_cache);
             if let Ok(charge) = charge {
                 if self.hub.adopt_charge(&self.slot, charge)? {
                     resident.stamp = current.ok();
@@ -318,6 +332,7 @@ impl DocumentLease<'_> {
         // Durable writes remain durable; the next request reloads the file.
         resident.editor = None;
         resident.stamp = None;
+        resident.charge_cache = ChargeCache::default();
         self.slot.charge.store(RESERVATION, Ordering::Relaxed);
         Ok(result.value)
     }
