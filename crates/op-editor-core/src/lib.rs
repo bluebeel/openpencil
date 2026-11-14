@@ -65,6 +65,7 @@ pub mod command_layout_prop;
 pub mod command_node;
 pub mod command_node_attrs;
 pub mod command_promote;
+mod command_undo;
 pub mod command_refine;
 mod command_root_replace;
 pub mod command_style_replace;
@@ -418,7 +419,7 @@ pub use fills::{
 pub use geometry::{aggregate_bounds, own_bounds, union_aggregate_bounds, DocRect};
 pub use git_button_state::GitButton;
 pub use history::{EditorSnapshot, History, HISTORY_CAP};
-pub use history_snapshot::{SharedComponents, SharedDoc};
+pub use history_snapshot::{SharedComponent, SharedComponents, SharedDoc, SharedNode};
 pub use hoist_app_state::{hoist_app_state, UNPLANNED_APP_STATE_IDX};
 pub use hosted_model_catalog::{
     HostedCatalogError, HostedCatalogField, HostedModelCapabilities, HostedModelCatalog,

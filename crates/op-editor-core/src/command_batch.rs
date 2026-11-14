@@ -170,8 +170,7 @@ impl EditorState {
         // to evict old entries at the cap, which truncate could not recover.
         // An empty scratch history also isolates sub-command snapshot repairs.
         let saved_history = std::mem::take(&mut self.history);
-        debug_assert!(!self.undo_capture_suspended);
-        self.undo_capture_suspended = true;
+        let was_suspended = std::mem::replace(&mut self.undo_capture_suspended, true);
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             for cmd in commands {
                 let outcome = self.apply_with_allocator(cmd, allocator);
@@ -181,7 +180,7 @@ impl EditorState {
             }
             Ok(true)
         }));
-        self.undo_capture_suspended = false;
+        self.undo_capture_suspended = was_suspended;
         self.history = saved_history;
         match outcome {
             Ok(Ok(true)) => {

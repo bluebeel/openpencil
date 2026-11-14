@@ -337,7 +337,7 @@ fn route_display_state(
     target_id: &str,
     route_direct_props: bool,
     before: &Map<String, Value>,
-    display_after: &PenNode,
+    display_after: &impl serde::Serialize,
 ) -> (PenNode, bool) {
     let after = match serde_json::to_value(display_after) {
         Ok(Value::Object(map)) => map,
@@ -432,7 +432,7 @@ fn repair_scope_snapshot(
             .doc
             .snapshot_find_node(snapshot.active_page_index, snapshot_node_id)
             .expect("snapshot node checked above");
-        if matches!(display_at_snapshot, PenNode::Ref(_)) {
+        if matches!(display_at_snapshot.metadata(), PenNode::Ref(_)) {
             return;
         }
         route_display_state(
@@ -763,6 +763,7 @@ mod tests {
         let in_snap = snap
             .doc
             .snapshot_find_node(0, &NodeId::new("inst1"))
+            .map(crate::SharedNode::metadata)
             .expect("authored Ref id restored in snapshot");
         assert!(matches!(in_snap, PenNode::Ref(_)));
         assert!(

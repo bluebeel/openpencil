@@ -412,12 +412,12 @@ fn repair_swap_is_copy_on_write_and_does_not_contaminate_a_shared_sibling_snapsh
     // snap_b now holds the Ref; snap_a is untouched (still the rect).
     let b_inst = &snap_b.root_children()[1];
     assert!(
-        matches!(b_inst.as_ref(), PenNode::Ref(_)),
+        matches!(b_inst.metadata(), PenNode::Ref(_)),
         "snap_b repaired"
     );
     let a_inst = &snap_a.root_children()[1];
     assert!(
-        matches!(a_inst.as_ref(), PenNode::Rectangle(_)),
+        matches!(a_inst.metadata(), PenNode::Rectangle(_)),
         "sibling snapshot NOT contaminated by the COW repair"
     );
     assert!(

@@ -46,9 +46,13 @@ pub fn find_node_mut<'a>(children: &'a mut [PenNode], id: &NodeId) -> Option<&'a
         if child.id_str() == id.as_str() {
             return Some(child);
         }
-        if let Some(grand) = child.children_mut() {
-            if let Some(hit) = find_node_mut(grand, id) {
-                return Some(hit);
+        // Looking through a node must not author a previously absent child
+        // vector. Insertion deliberately uses children_mut separately.
+        if child.children().is_some() {
+            if let Some(grand) = child.children_mut() {
+                if let Some(hit) = find_node_mut(grand, id) {
+                    return Some(hit);
+                }
             }
         }
     }

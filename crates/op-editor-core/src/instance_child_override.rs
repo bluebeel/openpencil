@@ -310,7 +310,10 @@ mod tests {
         assert_eq!(state.history.past.len(), crate::HISTORY_CAP);
         let newest = state.history.past.back().expect("newest history snapshot");
         assert!(matches!(
-            newest.doc.snapshot_find_node(0, &NodeId::new("inst")),
+            newest
+                .doc
+                .snapshot_find_node(0, &NodeId::new("inst"))
+                .map(crate::SharedNode::metadata),
             Some(PenNode::Ref(_))
         ));
         assert!(newest.doc.snapshot_find_node(0, &child).is_none());

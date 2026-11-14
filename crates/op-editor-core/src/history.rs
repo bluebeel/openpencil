@@ -2,17 +2,12 @@
 //!
 //! Models `openpencil-shell-core::document`'s `History` +
 //! `DocumentSnapshot` pair, retargeted onto the canonical document
-//! model: a snapshot is a deep copy of the editable subset —
-//! `PenDocument` (which now carries the node tree, pages, variables
-//! and themes) plus the selection and active-page index.
+//! model: snapshots recursively share unchanged document nodes and component
+//! metadata, alongside the selection and active-page index.
 //!
 //! In shell-core the snapshot had a separate `var_table` field because
-//! variables lived outside the node model; here they are part of
-//! `PenDocument`, so cloning the document captures them automatically
-//! (spec §5.2 — single canonical document model, no second table).
-//!
-//! Mutators push onto `past` BEFORE a transactional edit; this task is
-//! types-only (Task 4.5 ports the mutator `impl`s).
+//! variables lived outside the node model; here `PenDocument` carries them
+//! with the canonical document metadata.
 
 use crate::history_snapshot::{SharedComponents, SharedDoc};
 use crate::node_id::NodeId;
@@ -37,7 +32,7 @@ pub const HISTORY_CAP: usize = 100;
 /// Snapshot of the editor state covered by undo / redo.
 ///
 /// Holds a **structurally-shared** view of the canonical document
-/// ([`SharedDoc`] — top-level nodes shared by `Arc` across adjacent
+/// ([`SharedDoc`] — unchanged descendants shared by `Arc` across adjacent
 /// snapshots) and the component prototypes ([`SharedComponents`]) plus
 /// the transient registries whose behavior depends on document edits.
 /// A variable-table edit can therefore be undone the same way a node
@@ -47,8 +42,7 @@ pub const HISTORY_CAP: usize = 100;
 /// `PenDocument` on every restore.
 #[derive(Debug, Clone, PartialEq)]
 pub struct EditorSnapshot {
-    /// The canonical document at snapshot time, shared at top-level-node
-    /// granularity.
+    /// The canonical document at snapshot time, shared recursively.
     pub doc: SharedDoc,
     /// Selection at snapshot time.
     pub selection: SelectionState,
@@ -113,17 +107,41 @@ impl EditorState {
     /// entries are collapsed and revision-only writes gain a recovery snapshot.
     /// The closure must not call undo/redo or reset the
     /// document. A no-op preserves both history stacks, including existing redo.
+    /// If the closure unwinds, history bookkeeping is restored and any changed
+    /// prefix remains undoable as one step before the panic resumes.
     pub fn with_history_group<T>(&mut self, operation: impl FnOnce(&mut Self) -> T) -> T {
-        let before = self.snapshot_for_history();
-        let history = self.history.clone();
-        let result = operation(self);
+        self.with_history_group_anchored(None, operation)
+    }
+
+    pub(crate) fn with_history_group_anchored<T>(
+        &mut self,
+        anchor: Option<&EditorSnapshot>,
+        operation: impl FnOnce(&mut Self) -> T,
+    ) -> T {
+        // A containing operation already owns the checkpoint. This also keeps
+        // nested helper groups from repeatedly capturing the same document.
+        if self.undo_capture_suspended {
+            return operation(self);
+        }
+        let before = match anchor {
+            Some(anchor) => self.snapshot_for_history_with_anchor(Some(anchor)),
+            None => self.snapshot_for_history(),
+        };
+        let history = std::mem::take(&mut self.history);
+        // Rollback captures inside a command still need its actual current
+        // state. Give them a sharing anchor without exposing the real stacks.
+        self.history.past.push_back(before.clone());
+        self.undo_capture_suspended = true;
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| operation(self)));
+        self.undo_capture_suspended = false;
+        self.history = history;
         if self.revision != before.revision {
-            // Restore the old stacks before pushing the group so reaching the
-            // cap inside a large operation cannot evict unrelated past entries.
-            self.history = history;
             self.history_push_past(before);
         }
-        result
+        match result {
+            Ok(result) => result,
+            Err(panic) => std::panic::resume_unwind(panic),
+        }
     }
 
     /// Snapshot the editor's undoable state without pushing it.
@@ -144,7 +162,7 @@ impl EditorState {
     }
 
     /// [`snapshot_for_history`](Self::snapshot_for_history) with an explicit
-    /// adjacent snapshot whose unchanged top-level subtrees may be shared.
+    /// adjacent snapshot whose unchanged descendants may be shared.
     pub fn snapshot_for_history_with_anchor(
         &self,
         anchor: Option<&EditorSnapshot>,

@@ -36,6 +36,12 @@ pub struct LocalEditCapture {
     rollback: RollbackState,
 }
 
+impl LocalEditCapture {
+    pub(crate) fn undo_anchor(&self) -> &EditorSnapshot {
+        &self.rollback.snapshot
+    }
+}
+
 /// Result of ending a local edit.
 #[derive(Debug)]
 pub enum LocalEditOutcome {
@@ -126,6 +132,16 @@ impl EditorState {
         }
     }
 
+    /// Discard an open edit after a failed external commit, without cloning
+    /// complete before/after documents. The shared checkpoint restores content,
+    /// history and document-dependent UI state; the revision allocator stays
+    /// monotonic. View-only clipboard state remains outside document history.
+    pub fn abort_local_edit(&mut self, capture: LocalEditCapture) -> Result<(), LocalEditError> {
+        self.ensure_local_edit_generation(capture.generation)?;
+        self.restore_local_edit_rollback(capture.rollback);
+        Ok(())
+    }
+
     /// Finish one local edit and return its exact document delta.
     ///
     /// A no-op removes any legacy history/revision bookkeeping accidentally
@@ -178,6 +194,11 @@ impl EditorState {
             return Err(LocalEditError::DocumentChangedAfterEdit);
         }
 
+        self.restore_local_edit_rollback(rollback);
+        Ok(())
+    }
+
+    fn restore_local_edit_rollback(&mut self, rollback: RollbackState) {
         let RollbackState {
             snapshot,
             history,
@@ -190,7 +211,6 @@ impl EditorState {
         self.codegen.reset_for_document_replacement();
         self.instance_write_virtual_anchor = None;
         jian_ops_schema::image_thumbs::activate_for_document(&self.doc);
-        Ok(())
     }
 
     fn ensure_local_edit_generation(&self, expected: u64) -> Result<(), LocalEditError> {

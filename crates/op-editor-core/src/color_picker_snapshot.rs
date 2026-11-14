@@ -136,6 +136,17 @@ fn resolve_snapshot_value<'a>(
 pub(crate) fn snapshot_find_node<'a>(
     snap: &'a crate::history::EditorSnapshot,
     id: &crate::node_id::NodeId,
-) -> Option<&'a jian_ops_schema::node::PenNode> {
+) -> Option<&'a crate::SharedNode> {
     snap.doc.snapshot_find_node(snap.active_page_index, id)
+}
+
+pub(crate) fn snapshot_node_differs(
+    before: Option<&crate::SharedNode>,
+    after: Option<&jian_ops_schema::node::PenNode>,
+) -> bool {
+    match (before, after) {
+        (None, None) => false,
+        (Some(before), Some(after)) => !before.equals_node(after),
+        _ => true,
+    }
 }
