@@ -603,78 +603,15 @@ fn dispatch_inner<S: Read + Write>(
             return Ok(false);
         }
     };
-    // JSON-RPC `/mcp` dispatch against the in-memory document. A mutating apply
-    // bumps the sync version, broadcast to SSE subscribers so the browser shell
-    // sees JSON-RPC-driven changes too.
-    let response = {
-        let mut guard = state.lock().unwrap_or_else(|p| p.into_inner());
-        let before = guard.version;
-        let mut applied_any = false;
-        // The gateway. Snapshotted before dispatch because the applier only
-        // borrows the editor, and `Copy` + the held state lock make the
-        // snapshot exact for the whole message. Desktop refuses MCP document
-        // mutations during a live session (`mcp_live.rs`); the daemon has to
-        // give the same answer or an MCP client would fork the shared document
-        // out from under the peers.
-        let policy = guard.collab_policy();
-        let mut refused: Option<op_editor_core::CollabGateReason> = None;
-        // Mechanical passthrough only — this daemon (`--serve-web`/`op
-        // start`) is a SEPARATE request loop from `mcp_live.rs`'s
-        // `McpLiveServer` (desktop `--live-mcp`), not the same struct;
-        // wiring canvas-generation indicators here (so a `batch_design`
-        // call against a headless `op start` daemon also relays the
-        // radar-scan to the browser shell) is tracked as follow-up
-        // scope, not part of this pass.
-        let response = crate::mcp_serve::agent_context::with_agent_context(
-            &agent_contexts,
-            &document_key,
-            &mut guard.editor,
-            &req.body,
-            mcp_profile,
-            |editor| {
-                crate::mcp_serve::process_message_with_applier_profiled(
-                    editor,
-                    &req.body,
-                    mcp_profile,
-                    |_tool_name, editor, cmd| {
-                        if let Err(reason) =
-                            policy.check_command(cmd, op_editor_core::CollabEditSource::Mcp)
-                        {
-                            refused = Some(reason);
-                            return false;
-                        }
-                        let revision_before = editor.document_revision();
-                        let ok =
-                            crate::mcp_serve::apply_command_with_undo(editor, cmd.clone(), true);
-                        applied_any |= ok
-                            && (!_agent_admission.is_active()
-                                || editor.document_revision() != revision_before);
-                        ok
-                    },
-                )
-            },
-        )?
-        .unwrap_or_default();
-        if let Some(reason) = refused {
-            // Same surfacing as the desktop live-MCP path: the tool acks
-            // "not applied" and the panel explains why, so a refusal is never
-            // a silent no-op.
-            guard.editor.editor_ui.collab.set_notice(
-                reason.notice_kind(),
-                crate::design_agent_tools::reveal_now_millis(),
-            );
-            guard.collab.bump_seq();
-        }
-        if applied_any {
-            guard.version += 1;
-        }
-        // Atomic bump+broadcast under the state lock (see the REST path) so SSE
-        // version events stay monotonic across concurrent mutations.
-        if guard.version != before || refused.is_some() {
-            hub.broadcast(guard.sse_tick());
-        }
-        response
-    };
+    let response = super::managed_commit::dispatch(
+        ctx,
+        &req.body,
+        mcp_profile,
+        current_path.as_deref(),
+        &document_key,
+        _agent_admission.is_active(),
+        mcp_write,
+    )?;
     // Released only once the commit is visible in the shared state.
     drop(mcp_write_pass);
     let status = if response.is_empty() {

@@ -23,7 +23,7 @@ pub(crate) fn apply_command_with_undo_report(
     apply_command_impl(state, command, repair, None)
 }
 
-pub(super) fn apply_command_with_undo_captured(
+pub(crate) fn apply_command_with_undo_captured(
     state: &mut EditorState,
     command: EditorCommand,
     repair: bool,

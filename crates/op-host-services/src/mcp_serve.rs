@@ -200,7 +200,9 @@ fn process_message(
 
 mod command_apply;
 mod stdio_dispatch;
-pub(crate) use command_apply::{apply_command_with_undo, apply_command_with_undo_report};
+pub(crate) use command_apply::{
+    apply_command_with_undo, apply_command_with_undo_captured, apply_command_with_undo_report,
+};
 use stdio_dispatch::process_message_with_auto_finalize;
 
 fn mcp_response_succeeded(response: &str) -> bool {

@@ -751,6 +751,7 @@ mod connection_ai_routes;
 mod doc_routes;
 mod export_routes;
 mod hub_verifier;
+mod managed_commit;
 pub mod online_policy;
 mod online_run_loop;
 mod origin_guard;
