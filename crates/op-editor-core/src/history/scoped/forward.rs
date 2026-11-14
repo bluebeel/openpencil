@@ -60,7 +60,8 @@ impl ScopedEditorSnapshot {
         state: &EditorState,
         limit: usize,
     ) -> Option<Vec<u8>> {
-        if self.header.is_some()
+        if !self.auxiliary_patches.is_empty()
+            || self.header.is_some()
             || !self.page_headers.is_empty()
             || self.patches.len() > MAX_OPERATIONS
         {

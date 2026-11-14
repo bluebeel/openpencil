@@ -4,6 +4,10 @@ use crate::history_snapshot::SharedNode;
 use jian_ops_schema::{node::PenNode, page::PenPage};
 use std::{collections::BTreeMap, mem};
 mod actor_claim;
+mod auxiliary;
+pub(crate) use auxiliary::{
+    forecast as auxiliary_command_forecast, supports as auxiliary_command_supported,
+};
 mod actor_rebase;
 mod boolean;
 mod deletion;
@@ -52,6 +56,7 @@ pub struct ScopedEditorSnapshot {
     page_count: Option<usize>,
     scopes: Vec<Scope>,
     patches: Vec<Patch>,
+    auxiliary_patches: Vec<auxiliary::Patch>,
     page_headers: Vec<PageHeader>,
     header: Option<HeaderPatch>,
     selection: SelectionState,
@@ -91,6 +96,7 @@ pub(crate) struct PendingScopedSnapshot {
     clones: Option<clones::PendingClones>,
     boolean: Option<boolean::PendingBoolean>,
     deletion: Option<deletion::PendingDeletion>,
+    auxiliary: Option<auxiliary::Pending>,
 }
 #[derive(Debug)]
 enum CapturedForest {
@@ -104,11 +110,19 @@ impl PendingScopedSnapshot {
     }
     pub(crate) fn captures_header(&self) -> bool {
         self.header.is_some()
+            || self
+                .auxiliary
+                .as_ref()
+                .is_some_and(|patch| patch.is_header())
     }
     pub(crate) fn matches_header(&self, doc: &jian_ops_schema::PenDocument) -> bool {
         self.header
             .as_ref()
             .is_none_or(|header| header.matches(doc))
+            && self
+                .auxiliary
+                .as_ref()
+                .is_none_or(|patch| patch.matches_header(doc))
     }
     #[cfg(test)]
     pub(crate) fn target_checkpoint_counts(&self) -> (usize, usize) {
@@ -138,6 +152,7 @@ impl PendingScopedSnapshot {
             clones: Some(clones),
             boolean: None,
             deletion: None,
+            auxiliary: None,
         })
     }
     pub(crate) fn capture_boolean(
@@ -155,6 +170,7 @@ impl PendingScopedSnapshot {
             clones: None,
             boolean: Some(boolean),
             deletion: None,
+            auxiliary: None,
         })
     }
     pub(crate) fn capture_deletion(
@@ -172,7 +188,43 @@ impl PendingScopedSnapshot {
             clones: None,
             boolean: None,
             deletion: Some(deletion),
+            auxiliary: None,
         })
+    }
+    pub(crate) fn capture_auxiliary(
+        state: &EditorState,
+        command: &crate::EditorCommand,
+    ) -> Option<Self> {
+        let (auxiliary, scopes, capture_components) = auxiliary::Pending::capture(state, command)?;
+        Some(Self {
+            metadata: ScopedEditorSnapshot::auxiliary_with_components(
+                state,
+                scopes,
+                capture_components,
+            ),
+            forests: Vec::new(),
+            targets: Vec::new(),
+            targeted: true,
+            header: None,
+            clones: None,
+            boolean: None,
+            deletion: None,
+            auxiliary: Some(auxiliary),
+        })
+    }
+    pub(crate) fn auxiliary_request_matches(
+        &self,
+        state: &EditorState,
+        command: &crate::EditorCommand,
+    ) -> Option<bool> {
+        self.auxiliary
+            .as_ref()
+            .map(|patch| patch.request_matches(command) && patch.matches(state))
+    }
+    pub(crate) fn captures_variable_key(&self) -> bool {
+        self.auxiliary
+            .as_ref()
+            .is_some_and(|patch| patch.is_header())
     }
     pub(crate) fn matches_topology_request(
         &self,
@@ -202,9 +254,13 @@ impl PendingScopedSnapshot {
         }
     }
     pub(crate) fn matches_targets(&self, state: &EditorState) -> bool {
-        self.deletion
+        self.auxiliary
             .as_ref()
-            .is_none_or(|deletion| deletion.matches(state))
+            .is_none_or(|patch| patch.matches(state))
+            && self
+                .deletion
+                .as_ref()
+                .is_none_or(|deletion| deletion.matches(state))
             && self
                 .boolean
                 .as_ref()
@@ -261,6 +317,7 @@ impl PendingScopedSnapshot {
             clones: None,
             boolean: None,
             deletion: None,
+            auxiliary: None,
             header: capture_header.then(|| PendingHeader::capture(&state.doc)),
         })
     }
@@ -287,6 +344,9 @@ impl PendingScopedSnapshot {
         }
         if let Some(deletion) = self.deletion.take() {
             deletion.restore(state)?;
+        }
+        if let Some(auxiliary) = self.auxiliary.take() {
+            auxiliary.restore(state)?;
         }
         if let Some(header) = self.header.take() {
             header.restore(&mut state.doc);
@@ -347,6 +407,7 @@ impl PendingScopedSnapshot {
             clones: None,
             boolean: None,
             deletion: None,
+            auxiliary: None,
             header: capture_header.then(|| PendingHeader::capture(&state.doc)),
         }
     }
@@ -408,6 +469,11 @@ impl PendingScopedSnapshot {
                 self.metadata.patches.push(Patch::Clones(patch));
             }
         }
+        if let Some(auxiliary) = self.auxiliary.take() {
+            if let Some(patch) = auxiliary.compact(state)? {
+                self.metadata.auxiliary_patches.push(patch);
+            }
+        }
         self.metadata.header = self.header.map(|header| header.compact(&state.doc));
         let components_unchanged = !self.metadata.captures_components || self.targeted || {
             let current =
@@ -418,6 +484,11 @@ impl PendingScopedSnapshot {
             ) && current.backing_identity() == self.metadata.components.backing_identity()
         };
         self.metadata.actor_safe = components_unchanged
+            && self
+                .metadata
+                .auxiliary_patches
+                .iter()
+                .all(auxiliary::Patch::actor_safe)
             && self.metadata.header.is_none()
             && self.metadata.page_headers.is_empty()
             && self.metadata.app_state_owner == state.app_state_owner
@@ -493,6 +564,7 @@ impl ScopedEditorSnapshot {
             page_count: state.doc.pages.as_ref().map(Vec::len),
             scopes,
             patches: Vec::new(),
+            auxiliary_patches: Vec::new(),
             page_headers: Vec::new(),
             header: None,
             selection: state.selection.clone(),
@@ -511,13 +583,20 @@ impl ScopedEditorSnapshot {
         }
     }
     pub(crate) fn has_canonical_changes(&self) -> bool {
-        !self.patches.is_empty() || !self.page_headers.is_empty() || self.header.is_some()
+        !self.patches.is_empty()
+            || !self.auxiliary_patches.is_empty()
+            || !self.page_headers.is_empty()
+            || self.header.is_some()
     }
     pub(crate) fn scopes(&self) -> Vec<Scope> {
         self.scopes.clone()
     }
     pub(crate) fn captures_header(&self) -> bool {
         self.header.is_some()
+            || self
+                .auxiliary_patches
+                .iter()
+                .any(auxiliary::Patch::is_header)
     }
     /// Retained catalog checkpoint; empty when this entry deliberately leaves
     /// catalog state untouched. Default snapshots and arbitrary-maintenance
@@ -548,6 +627,12 @@ impl ScopedEditorSnapshot {
             + 2 * mem::size_of::<usize>()
             + self.scopes.capacity() * mem::size_of::<Scope>()
             + self.patches.capacity() * mem::size_of::<Patch>()
+            + self.auxiliary_patches.capacity() * mem::size_of::<auxiliary::Patch>()
+            + self
+                .auxiliary_patches
+                .iter()
+                .map(auxiliary::Patch::storage_bytes)
+                .sum::<usize>()
             + self.page_headers.capacity() * mem::size_of::<PageHeader>()
             + self.patches.iter().map(Patch::storage_bytes).sum::<usize>()
             + self
@@ -625,6 +710,7 @@ impl ScopedEditorSnapshot {
         {
             return Err(ScopedHistoryError::DocumentHeaderChanged);
         }
+        let auxiliary = auxiliary::Prepared::capture(state, &self.auxiliary_patches, false)?;
         let reverse =
             Self::auxiliary_with_components(state, self.scopes.clone(), self.captures_components);
         let mut reordered = patch::Reorders::default();
@@ -647,6 +733,7 @@ impl ScopedEditorSnapshot {
         if let Some(header) = &mut self.header {
             header.exchange(&mut state.doc);
         }
+        auxiliary.exchange(state, &mut self.auxiliary_patches);
         state.selection = mem::replace(&mut self.selection, reverse.selection);
         state.ui.active_page_index =
             mem::replace(&mut self.active_page_index, reverse.active_page_index);

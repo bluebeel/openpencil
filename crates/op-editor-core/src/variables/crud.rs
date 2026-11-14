@@ -184,10 +184,10 @@ impl EditorState {
                 .get_or_insert_with(BTreeMap::new)
                 .extend(themes);
         }
-        let declared = self.doc.themes.clone().unwrap_or_default();
+        let declared = self.doc.themes.as_ref();
         self.ui.variables.active_theme.retain(|axis, value| {
             declared
-                .get(axis)
+                .and_then(|themes| themes.get(axis))
                 .is_some_and(|values| values.iter().any(|v| v == value))
         });
         true
@@ -207,6 +207,15 @@ impl EditorState {
         };
         if !values.iter().any(|v| v == value) {
             return false;
+        }
+        if self
+            .ui
+            .variables
+            .active_theme
+            .get(axis)
+            .is_some_and(|current| current == value)
+        {
+            return true;
         }
         self.ui
             .variables

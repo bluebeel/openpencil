@@ -329,8 +329,20 @@ pub(super) fn rebuild_registry_with_authority(
     register_tool!("copy_selected", copy_selected_snapshot());
     register_tool!("cut_selected", cut_selected_snapshot());
     register_tool!("paste_clipboard", paste_clipboard_snapshot());
-    register_tool!("set_variable_color", set_variable_color_snapshot(doc));
-    register_tool!("set_active_axis_value", set_active_axis_value_snapshot(doc));
+    register_tool!(
+        "set_variable_color",
+        match arguments {
+            Some(args) => op_mcp::scalar_vars::set_variable_color_snapshot_for_call(doc, args),
+            None => set_variable_color_snapshot(doc),
+        }
+    );
+    register_tool!(
+        "set_active_axis_value",
+        match arguments {
+            Some(args) => op_mcp::scalar_vars::set_active_axis_value_snapshot_for_call(doc, args),
+            None => set_active_axis_value_snapshot(doc),
+        }
+    );
     register_tool!("insert_node", insert_node_snapshot());
     register_tool!("import_svg", import_svg_snapshot());
     register_tool!("import_html", import_html_snapshot());
@@ -390,15 +402,51 @@ pub(super) fn rebuild_registry_with_authority(
     register_tool!("finalize_design", finalize_design_snapshot(doc));
     register_tool!("enrich_images", enrich_images_snapshot(doc));
     register_tool!("run_design_agent", run_design_agent_snapshot(doc));
-    register_tool!("set_variable_number", set_variable_number_snapshot(doc));
-    register_tool!("set_variable_string", set_variable_string_snapshot(doc));
-    register_tool!("set_variable_boolean", set_variable_boolean_snapshot(doc));
+    register_tool!(
+        "set_variable_number",
+        match arguments {
+            Some(args) => op_mcp::scalar_vars::set_variable_number_snapshot_for_call(doc, args),
+            None => set_variable_number_snapshot(doc),
+        }
+    );
+    register_tool!(
+        "set_variable_string",
+        match arguments {
+            Some(args) => op_mcp::scalar_vars::set_variable_string_snapshot_for_call(doc, args),
+            None => set_variable_string_snapshot(doc),
+        }
+    );
+    register_tool!(
+        "set_variable_boolean",
+        match arguments {
+            Some(args) => op_mcp::scalar_vars::set_variable_boolean_snapshot_for_call(doc, args),
+            None => set_variable_boolean_snapshot(doc),
+        }
+    );
     register_tool!("set_variables", set_variables_snapshot());
     register_tool!("set_themes", set_themes_snapshot());
     register_tool!("apply_design_system", apply_design_system_snapshot());
-    register_tool!("create_variable", create_variable_snapshot(doc));
-    register_tool!("delete_variable", delete_variable_snapshot(doc));
-    register_tool!("rename_variable", rename_variable_snapshot(doc));
+    register_tool!(
+        "create_variable",
+        match arguments {
+            Some(args) => op_mcp::scalar_vars::create_variable_snapshot_for_call(doc, args),
+            None => create_variable_snapshot(doc),
+        }
+    );
+    register_tool!(
+        "delete_variable",
+        match arguments {
+            Some(args) => op_mcp::scalar_vars::delete_variable_snapshot_for_call(doc, args),
+            None => delete_variable_snapshot(doc),
+        }
+    );
+    register_tool!(
+        "rename_variable",
+        match arguments {
+            Some(args) => op_mcp::scalar_vars::rename_variable_snapshot_for_call(doc, args),
+            None => rename_variable_snapshot(doc),
+        }
+    );
     register_tool!("instantiate_component", instantiate_component_snapshot());
     register_tool!("create_component", create_component_snapshot());
     register_tool!("delete_component", delete_component_snapshot());

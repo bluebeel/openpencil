@@ -118,7 +118,13 @@ fn candidate(line: &str, profile: McpAccessProfile) -> bool {
     }
     matches!(
         call.tool.as_str(),
-        "update_node"
+        "set_variable_color"
+            | "set_variable_number"
+            | "set_variable_string"
+            | "set_variable_boolean"
+            | "create_variable"
+            | "rename_page"
+            | "update_node"
             | "set_node_rotation"
             | "set_node_text"
             | "set_node_corner_radius"
@@ -155,7 +161,11 @@ fn candidate(line: &str, profile: McpAccessProfile) -> bool {
 
 fn audited(command: &C) -> bool {
     match command {
-        C::UpdateNode { .. }
+        C::SetVariableColor { .. }
+        | C::SetVariableScalar { .. }
+        | C::CreateVariable { .. }
+        | C::RenamePage { .. }
+        | C::UpdateNode { .. }
         | C::SetNodeRotation { .. }
         | C::SetNodeText { .. }
         | C::SetNodeCornerRadius { .. }

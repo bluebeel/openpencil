@@ -17,6 +17,33 @@ pub(super) fn apply(
     let mut attempted = false;
     let mut admitted = false;
     if let Some(applied) =
+        editor.try_apply_captured_auxiliary(command.clone(), capture, |state, bytes, components| {
+            attempted = true;
+            match budget.reserve_auxiliary(state, command, input, bytes, components) {
+                Ok(()) => {
+                    admitted = true;
+                    metrics.observe_forecast(budget.forecast());
+                    true
+                }
+                Err(reason) => {
+                    metrics.observe_forecast(budget.forecast());
+                    metrics.refuse(reason);
+                    false
+                }
+            }
+        })
+    {
+        return Outcome::Applied(applied);
+    }
+    if attempted {
+        if admitted {
+            metrics
+                .strict_capture_fallback
+                .fetch_add(1, Ordering::Relaxed);
+        }
+        return Outcome::Isolated;
+    }
+    if let Some(applied) =
         editor.try_apply_captured_metadata(command.clone(), capture, |state, target| {
             attempted = true;
             let reserved = budget.reserve_metadata_target(state, command, input, target);

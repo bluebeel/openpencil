@@ -5,6 +5,8 @@ use crate::{
     ScopedHistoryError,
 };
 use std::{mem, sync::Arc};
+#[path = "command_auxiliary_apply.rs"]
+mod auxiliary;
 #[path = "command_scope.rs"]
 mod command_scope;
 #[path = "command_metadata_apply.rs"]
@@ -243,6 +245,9 @@ impl EditorState {
         clone_clipboard: bool,
         preserve_components: bool,
     ) -> Option<CommandEditCapture> {
+        if preserve_components && crate::history::auxiliary_command_supported(command) {
+            return self.prepare_auxiliary_command_edit(command);
+        }
         let plan = match command_scope::classify(self, command) {
             command_scope::Classification::Scoped(plan) => plan,
             command_scope::Classification::Refused => {
@@ -408,27 +413,37 @@ impl EditorState {
                     return false;
                 }
                 if fresh.is_none() {
-                    let command_scope::Classification::Scoped(plan) =
-                        command_scope::classify(self, &command)
-                    else {
-                        return false;
-                    };
-                    if plan.forests != captured.pending.as_ref().unwrap().scopes()
-                        || plan.header != captured.pending.as_ref().unwrap().captures_header()
-                        || !captured.pending.as_ref().unwrap().matches_header(&self.doc)
-                    {
-                        return false;
-                    }
                     let pending = captured.pending.as_ref().unwrap();
-                    if pending.is_targeted() {
-                        let request_matches = pending
-                            .matches_topology_request(self, &command)
-                            .unwrap_or_else(|| {
-                                target_plan::plan(self, &command)
-                                    .is_some_and(|specs| pending.matches_target_specs(&specs))
-                            });
-                        if !request_matches || !pending.matches_targets(self) {
+                    if let Some(valid) = pending.auxiliary_request_matches(self, &command) {
+                        if !valid
+                            || (pending.captures_variable_key()
+                                && captured.active_theme != self.ui.variables.active_theme)
+                        {
                             return false;
+                        }
+                    } else {
+                        let command_scope::Classification::Scoped(plan) =
+                            command_scope::classify(self, &command)
+                        else {
+                            return false;
+                        };
+                        if plan.forests != captured.pending.as_ref().unwrap().scopes()
+                            || plan.header != captured.pending.as_ref().unwrap().captures_header()
+                            || !captured.pending.as_ref().unwrap().matches_header(&self.doc)
+                        {
+                            return false;
+                        }
+                        let pending = captured.pending.as_ref().unwrap();
+                        if pending.is_targeted() {
+                            let request_matches = pending
+                                .matches_topology_request(self, &command)
+                                .unwrap_or_else(|| {
+                                    target_plan::plan(self, &command)
+                                        .is_some_and(|specs| pending.matches_target_specs(&specs))
+                                });
+                            if !request_matches || !pending.matches_targets(self) {
+                                return false;
+                            }
                         }
                     }
                 }

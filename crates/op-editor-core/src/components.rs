@@ -182,13 +182,24 @@ impl ComponentLibrary {
         if name.trim().is_empty() {
             return false;
         }
-        self.invalidate_sorted_options();
-        if let Some(c) = self.components.iter_mut().find(|c| &c.id == id) {
-            c.name = name;
-            true
-        } else {
-            false
+        let Some(index) = self
+            .components
+            .iter()
+            .position(|component| &component.id == id)
+        else {
+            return false;
+        };
+        if self.components[index].name == name {
+            return true;
         }
+        self.invalidate_sorted_options();
+        self.components[index].name = name;
+        true
+    }
+    /// Exact label exchange after all history targets were validated.
+    pub(crate) fn exchange_name_at(&mut self, index: usize, name: &mut String) {
+        self.invalidate_sorted_options();
+        std::mem::swap(&mut self.components[index].name, name);
     }
 
     /// Remove a component by id. Returns true when a component was

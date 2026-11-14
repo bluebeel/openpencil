@@ -56,6 +56,54 @@ impl<V: PartialEq + Serialize> MapPatch<V> {
             entries,
         })
     }
+    pub(super) fn single_key(
+        old_present: bool,
+        old_len: usize,
+        key: String,
+        old: Option<V>,
+        current: &Option<BTreeMap<String, V>>,
+    ) -> Option<Self> {
+        let value = current.as_ref().and_then(|map| map.get(&key));
+        if old_present == current.is_some() && exact(&old.as_ref(), &value) {
+            return None;
+        }
+        let old_key_present = old.is_some();
+        let expected_present = value.is_some();
+        let expected_len = old_len
+            .saturating_add(usize::from(expected_present && !old_key_present))
+            .saturating_sub(usize::from(old_key_present && !expected_present));
+        Some(Self {
+            old_present,
+            expected_present: current.is_some(),
+            expected_len,
+            entries: vec![Entry {
+                key,
+                old,
+                expected_present,
+            }],
+        })
+    }
+    pub(super) fn actor_safe(&self) -> bool {
+        self.old_present && self.expected_present
+    }
+    pub(super) fn actor_conflicts(&self, other: &Self) -> bool {
+        !self.actor_safe()
+            || !other.actor_safe()
+            || self
+                .entries
+                .iter()
+                .any(|a| other.entries.iter().any(|b| a.key == b.key))
+    }
+    pub(super) fn validate_actor(&self, current: &Option<BTreeMap<String, V>>) -> bool {
+        self.actor_safe()
+            && current.is_some()
+            && self.entries.iter().all(|entry| {
+                current
+                    .as_ref()
+                    .is_some_and(|map| map.contains_key(&entry.key))
+                    == entry.expected_present
+            })
+    }
     pub(super) fn validate(&self, current: &Option<BTreeMap<String, V>>) -> bool {
         self.expected_present == current.is_some()
             && self.expected_len == current.as_ref().map_or(0, BTreeMap::len)

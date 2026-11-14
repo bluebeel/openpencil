@@ -1,0 +1,296 @@
+//! Exact key/name inverses for audited no-repair host commands. Generic
+//! document-header and arbitrary callback captures remain complete.
+use super::{
+    header_map::{exact, MapPatch},
+    Scope, ScopedHistoryError,
+};
+use crate::{EditorCommand as C, EditorState, NodeId};
+use jian_ops_schema::variable::VariableDefinition;
+use std::mem;
+#[path = "auxiliary_plan.rs"]
+mod plan;
+#[derive(Debug)]
+pub(super) enum Target {
+    Variable {
+        key: String,
+        old: Option<VariableDefinition>,
+        present: bool,
+        total: usize,
+        create: bool,
+    },
+    Page {
+        index: usize,
+        id: String,
+        old: String,
+    },
+    Component {
+        index: usize,
+        id: NodeId,
+        old: String,
+    },
+}
+#[derive(Debug)]
+pub(super) struct Pending {
+    value: Target,
+}
+#[derive(Debug, Clone, PartialEq)]
+pub(super) enum Patch {
+    Variable(MapPatch<VariableDefinition>),
+    Page {
+        index: usize,
+        id: String,
+        old: String,
+        expected: String,
+    },
+    Component {
+        id: NodeId,
+        old: String,
+        expected: String,
+    },
+}
+pub(crate) fn supports(command: &C) -> bool {
+    plan::supports(command)
+}
+pub(crate) fn forecast(state: &EditorState, command: &C) -> Option<(usize, bool)> {
+    plan::build(state, command).map(|plan| (plan.bytes, plan.capture_components))
+}
+impl Pending {
+    pub(super) fn capture(state: &EditorState, command: &C) -> Option<(Self, Vec<Scope>, bool)> {
+        let plan = plan::build(state, command)?;
+        Some((
+            Self {
+                value: plan.value.owned(),
+            },
+            plan.scopes,
+            plan.capture_components,
+        ))
+    }
+    pub(super) fn is_header(&self) -> bool {
+        matches!(self.value, Target::Variable { .. })
+    }
+    pub(super) fn matches_header(&self, doc: &jian_ops_schema::PenDocument) -> bool {
+        match &self.value {
+            Target::Variable {
+                key,
+                old,
+                present,
+                total,
+                ..
+            } => {
+                *present == doc.variables.is_some()
+                    && *total == doc.variables.as_ref().map_or(0, |map| map.len())
+                    && exact(
+                        &old.as_ref(),
+                        &doc.variables.as_ref().and_then(|map| map.get(key)),
+                    )
+            }
+            _ => true,
+        }
+    }
+    pub(super) fn request_matches(&self, command: &C) -> bool {
+        match (&self.value, command) {
+            (
+                Target::Variable {
+                    key, create: false, ..
+                },
+                C::SetVariableColor { name, .. } | C::SetVariableScalar { name, .. },
+            ) => key == name,
+            (
+                Target::Variable {
+                    key, create: true, ..
+                },
+                C::CreateVariable { name, .. },
+            ) => key == name.trim(),
+            (Target::Page { index, .. }, C::RenamePage { index: at, .. }) => *index == *at as usize,
+            (Target::Component { id, .. }, C::RenameComponent { component_id, .. }) => {
+                id == component_id
+            }
+            _ => false,
+        }
+    }
+    pub(super) fn matches(&self, state: &EditorState) -> bool {
+        self.matches_header(&state.doc)
+            && match &self.value {
+                Target::Variable { .. } => true,
+                Target::Page { index, id, old } => state
+                    .doc
+                    .pages
+                    .as_ref()
+                    .and_then(|pages| pages.get(*index))
+                    .is_some_and(|page| page.id == *id && page.name == *old),
+                Target::Component { index, id, old } => state
+                    .components
+                    .components
+                    .get(*index)
+                    .is_some_and(|component| component.id == *id && component.name == *old),
+            }
+    }
+    pub(super) fn compact(self, state: &EditorState) -> Result<Option<Patch>, ScopedHistoryError> {
+        Ok(match self.value {
+            Target::Variable {
+                key,
+                old,
+                present,
+                total,
+                ..
+            } => {
+                let map = MapPatch::single_key(present, total, key, old, &state.doc.variables);
+                if map
+                    .as_ref()
+                    .is_some_and(|map| !map.validate(&state.doc.variables))
+                {
+                    return Err(ScopedHistoryError::DocumentHeaderChanged);
+                }
+                map.map(Patch::Variable)
+            }
+            Target::Page { index, id, old } => {
+                let page = state
+                    .doc
+                    .pages
+                    .as_ref()
+                    .and_then(|pages| pages.get(index))
+                    .filter(|page| page.id == id)
+                    .ok_or(ScopedHistoryError::NodePathChanged)?;
+                (page.name != old).then(|| Patch::Page {
+                    index,
+                    id,
+                    old,
+                    expected: page.name.clone(),
+                })
+            }
+            Target::Component { index, id, old } => {
+                let component = state
+                    .components
+                    .components
+                    .get(index)
+                    .filter(|component| component.id == id)
+                    .ok_or(ScopedHistoryError::NodePathChanged)?;
+                (component.name != old).then(|| Patch::Component {
+                    id,
+                    old,
+                    expected: component.name.clone(),
+                })
+            }
+        })
+    }
+    pub(super) fn restore(self, state: &mut EditorState) -> Result<(), ScopedHistoryError> {
+        if let Some(mut patch) = self.compact(state)? {
+            let prepared = Prepared::capture(state, std::slice::from_ref(&patch), false)?;
+            prepared.exchange(state, std::slice::from_mut(&mut patch));
+        }
+        Ok(())
+    }
+}
+impl Patch {
+    pub(super) fn is_header(&self) -> bool {
+        matches!(self, Self::Variable(_))
+    }
+    pub(super) fn actor_safe(&self) -> bool {
+        match self {
+            Self::Variable(map) => map.actor_safe(),
+            Self::Page { .. } | Self::Component { .. } => true,
+        }
+    }
+    pub(super) fn actor_conflicts(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Variable(a), Self::Variable(b)) => a.actor_conflicts(b),
+            (
+                Self::Page {
+                    index: a, id: x, ..
+                },
+                Self::Page {
+                    index: b, id: y, ..
+                },
+            ) => a == b && x == y,
+            (Self::Component { id: a, .. }, Self::Component { id: b, .. }) => a == b,
+            _ => false,
+        }
+    }
+    pub(super) fn storage_bytes(&self) -> usize {
+        mem::size_of::<Self>()
+            + match self {
+                Self::Variable(map) => map.storage_bytes(),
+                Self::Page {
+                    id, old, expected, ..
+                } => id.capacity() + old.capacity() + expected.capacity(),
+                Self::Component { id, old, expected } => {
+                    id.as_str().len() + old.capacity() + expected.capacity()
+                }
+            }
+    }
+}
+pub(super) struct Prepared {
+    indices: Vec<Option<usize>>,
+}
+impl Prepared {
+    pub(super) fn capture(
+        state: &EditorState,
+        patches: &[Patch],
+        actor: bool,
+    ) -> Result<Self, ScopedHistoryError> {
+        let mut indices = Vec::with_capacity(patches.len());
+        for patch in patches {
+            indices.push(match patch {
+                Patch::Variable(map) => {
+                    if !(if actor {
+                        map.validate_actor(&state.doc.variables)
+                    } else {
+                        map.validate(&state.doc.variables)
+                    }) {
+                        return Err(ScopedHistoryError::DocumentHeaderChanged);
+                    }
+                    None
+                }
+                Patch::Page {
+                    index,
+                    id,
+                    expected,
+                    ..
+                } => {
+                    if !state
+                        .doc
+                        .pages
+                        .as_ref()
+                        .and_then(|pages| pages.get(*index))
+                        .is_some_and(|page| page.id == *id && page.name == *expected)
+                    {
+                        return Err(ScopedHistoryError::NodePathChanged);
+                    }
+                    Some(*index)
+                }
+                Patch::Component { id, expected, .. } => {
+                    let mut found = state
+                        .components
+                        .components
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, component)| component.id == *id);
+                    let (index, component) =
+                        found.next().ok_or(ScopedHistoryError::NodePathChanged)?;
+                    if found.next().is_some() || component.name != *expected {
+                        return Err(ScopedHistoryError::NodePathChanged);
+                    }
+                    Some(index)
+                }
+            });
+        }
+        Ok(Self { indices })
+    }
+    pub(super) fn exchange(self, state: &mut EditorState, patches: &mut [Patch]) {
+        for (patch, index) in patches.iter_mut().zip(self.indices) {
+            match patch {
+                Patch::Variable(map) => map.exchange(&mut state.doc.variables),
+                Patch::Page { old, expected, .. } => {
+                    let name = &mut state.doc.pages.as_mut().unwrap()[index.unwrap()].name;
+                    mem::swap(name, old);
+                    *expected = name.clone();
+                }
+                Patch::Component { old, expected, .. } => {
+                    let at = index.unwrap();
+                    state.components.exchange_name_at(at, old);
+                    *expected = state.components.components[at].name.clone();
+                }
+            }
+        }
+    }
+}

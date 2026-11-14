@@ -236,7 +236,7 @@ impl Budget {
         command: &C,
         input: usize,
     ) -> Result<(), Refusal> {
-        self.reserve_inner(state, command, input, None)
+        self.reserve_inner(state, command, input, None, None)
     }
     pub(crate) fn reserve_metadata_target(
         &mut self,
@@ -245,7 +245,23 @@ impl Budget {
         input: usize,
         node: &PenNode,
     ) -> Result<(), Refusal> {
-        self.reserve_inner(state, command, input, Some(node))
+        self.reserve_inner(state, command, input, Some(node), None)
+    }
+    pub(crate) fn reserve_auxiliary(
+        &mut self,
+        state: &EditorState,
+        command: &C,
+        input: usize,
+        bytes: usize,
+        captures_components: bool,
+    ) -> Result<(), Refusal> {
+        self.reserve_inner(
+            state,
+            command,
+            input,
+            None,
+            Some((bytes, captures_components)),
+        )
     }
     fn reserve_inner(
         &mut self,
@@ -253,6 +269,7 @@ impl Budget {
         command: &C,
         input: usize,
         known_target: Option<&PenNode>,
+        known_auxiliary: Option<(usize, bool)>,
     ) -> Result<(), Refusal> {
         self.last = Forecast {
             component_count: state.components.len(),
@@ -261,7 +278,9 @@ impl Budget {
         if state.editor_ui.workspace.active {
             return Err(Refusal::Workspace);
         }
-        let target = if matches!(
+        let target = if let Some((bytes, _)) = known_auxiliary {
+            bytes
+        } else if matches!(
             command,
             C::InsertNode { .. }
                 | C::DeleteNode { .. }
@@ -296,8 +315,10 @@ impl Budget {
         self.last.target = target;
         // This exact borrowed target came from Core's lexical metadata path.
         // Definition/external/prototype and structural captures stay complete.
-        let preserves_components =
-            known_target.is_some_and(|node| state.metadata_target_preserves_components(node));
+        let preserves_components = known_auxiliary.map_or_else(
+            || known_target.is_some_and(|node| state.metadata_target_preserves_components(node)),
+            |(_, captures)| !captures,
+        );
         let components = if preserves_components {
             0
         } else {

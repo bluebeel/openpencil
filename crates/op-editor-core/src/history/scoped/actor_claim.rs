@@ -98,6 +98,10 @@ impl ScopedEditorSnapshot {
         !self.actor_safe
             || !other.actor_safe
             || self
+                .auxiliary_patches
+                .iter()
+                .any(|a| other.auxiliary_patches.iter().any(|b| a.actor_conflicts(b)))
+            || self
                 .patches
                 .iter()
                 .any(|a| other.patches.iter().any(|b| a.actor_overlaps(b)))
@@ -125,6 +129,7 @@ impl ScopedEditorSnapshot {
         if !self.actor_safe {
             return Err(ScopedHistoryError::NodePathChanged);
         }
+        let auxiliary = super::auxiliary::Prepared::capture(state, &self.auxiliary_patches, true)?;
         super::actor_rebase::paths(&state.doc, &mut self.patches)?;
         if !rollback {
             super::actor_rebase::restored_node_collisions(&state.doc, &self.patches)?;
@@ -153,6 +158,7 @@ impl ScopedEditorSnapshot {
                 patch.rebase(&reordered);
             }
         }
+        auxiliary.exchange(state, &mut self.auxiliary_patches);
         std::mem::swap(&mut self.selection, &mut state.selection);
         std::mem::swap(&mut self.active_page_index, &mut state.ui.active_page_index);
         self.revision = state.revision;
