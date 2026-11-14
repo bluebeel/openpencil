@@ -129,8 +129,15 @@ pub(super) fn parse_svg_tree(body: &str) -> Vec<SvgTree> {
             };
             continue;
         }
+        let source_tag = inner
+            .trim_start()
+            .split(|c: char| c.is_ascii_whitespace() || c == '/')
+            .next()
+            .unwrap_or("")
+            .to_string();
         if self_closing {
             out.push(SvgTree {
+                source_tag,
                 tag: tag_lower,
                 attrs,
                 children: Vec::new(),
@@ -142,6 +149,7 @@ pub(super) fn parse_svg_tree(body: &str) -> Vec<SvgTree> {
         let body_end = find_matching_close(body, body_start, &tag_lower).unwrap_or(body.len());
         let inner_body = &body[body_start..body_end];
         out.push(SvgTree {
+            source_tag,
             tag: tag_lower,
             attrs,
             children: parse_svg_tree(inner_body),

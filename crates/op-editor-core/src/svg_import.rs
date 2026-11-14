@@ -32,6 +32,7 @@
 mod colors;
 mod geometry;
 mod gradient_defs;
+mod gradient_metadata;
 mod lexer;
 mod mask_defs;
 mod nodes;
@@ -44,6 +45,7 @@ mod xml;
 
 use geometry::*;
 use gradient_defs::*;
+use gradient_metadata::*;
 use lexer::*;
 use mask_defs::*;
 use nodes::*;
@@ -64,6 +66,10 @@ use jian_ops_schema::node::path::{PathFillRule, PenPathHandle};
 use jian_ops_schema::node::{PathNode, PenNode, PenNodeBase, PenPathAnchor};
 use jian_ops_schema::sizing::SizingBehavior;
 use jian_ops_schema::style::{PenFill, PenStroke, SolidFillBody, StrokeThickness};
+
+pub(crate) fn gradient_color_rgba(raw: &str) -> Option<[f64; 4]> {
+    colors::rgba(raw)
+}
 
 /// One parsed SVG element — tag name + raw attribute pairs.
 struct SvgElement {
@@ -132,6 +138,8 @@ impl Default for StyleCtx {
 /// Tree element with parsed attrs + child elements (the recursive
 /// `<g>` case the old flat `parse_svg_elements` could not handle).
 struct SvgTree {
+    /// Preserve XML tag spelling for exact generated-definition verification.
+    source_tag: String,
     tag: String,
     attrs: Vec<(String, String)>,
     children: Vec<SvgTree>,
@@ -155,11 +163,9 @@ impl SvgTree {
 /// Tags ignored verbatim — definitions, gradients, clipping, scripts.
 /// Mirrors the TS `SKIP_TAGS` constant.
 const SKIP_TAGS: &[&str] = &[
-    "style",
     "title",
     "desc",
     "metadata",
-    "filter",
     "marker",
     "pattern",
     "script",
@@ -241,7 +247,11 @@ impl EditorState {
         if tree.is_empty() {
             return Ok(0);
         }
-        let resources = SvgResources::new(&tree, &root_attrs);
+        let has_css_pi = svg
+            .as_bytes()
+            .windows(b"<?xml-stylesheet".len())
+            .any(|bytes| bytes.eq_ignore_ascii_case(b"<?xml-stylesheet"));
+        let resources = SvgResources::new(&tree, &root_attrs).with_stylesheet_hint(has_css_pi);
         let viewport = match source_viewport(&root_attrs, [0.0, 0.0, 100.0, 100.0]) {
             Ok(viewport) => viewport,
             Err(error) => {

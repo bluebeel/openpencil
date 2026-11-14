@@ -8,7 +8,15 @@ use kurbo::Affine;
 pub(super) fn is_definition(tag: &str) -> bool {
     matches!(
         tag,
-        "defs" | "lineargradient" | "radialgradient" | "stop" | "clippath" | "mask" | "symbol"
+        "defs"
+            | "style"
+            | "filter"
+            | "lineargradient"
+            | "radialgradient"
+            | "stop"
+            | "clippath"
+            | "mask"
+            | "symbol"
     )
 }
 

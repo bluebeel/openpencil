@@ -171,6 +171,7 @@ pub mod share_routes;
 pub mod state;
 pub mod statusbar_state;
 mod structural_moves;
+pub mod svg_gradient_composition;
 pub mod svg_import;
 pub mod svg_path_bounds;
 mod svg_path_data;

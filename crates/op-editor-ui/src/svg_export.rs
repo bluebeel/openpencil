@@ -62,6 +62,10 @@ pub enum SvgExportError {
     UnsupportedGradientInterpolation {
         node_id: String,
     },
+    InvalidGradient {
+        node_id: String,
+        source: op_editor_core::svg_gradient_composition::GradientSvgError,
+    },
 }
 
 impl std::fmt::Display for SvgExportError {
@@ -74,6 +78,7 @@ impl std::fmt::Display for SvgExportError {
             }
             SvgExportError::NodePaintsNothing(id) => write!(f, "node {id} paints nothing"),
             SvgExportError::UnsupportedGradientInterpolation{node_id}=>write!(f,"node {node_id} has a premultiplied alpha gradient that SVG cannot represent exactly"),
+            SvgExportError::InvalidGradient{node_id,source}=>write!(f,"node {node_id}: {source}"),
             SvgExportError::InvalidScale => write!(f, "SVG scale must be finite and positive"),
         }
     }

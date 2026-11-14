@@ -41,7 +41,9 @@ pub(crate) fn shader(paint: GradientPaint) -> Option<ShaderPayload> {
     let mut last = 0.0_f64;
     let mut fallback = [0.0; 4];
     for (i, stop) in paint.stops.iter().enumerate() {
-        let color = crate::style_payload::parse_color(&stop.color).unwrap_or([0.0, 0.0, 0.0, 1.0]);
+        let color = op_editor_core::svg_gradient_composition::color_rgba(&stop.color)
+            .map(|color| color.map(|channel| channel as f32))
+            .unwrap_or([0.0, 0.0, 0.0, 1.0]);
         if i == 0 {
             fallback = color;
         }

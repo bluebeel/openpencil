@@ -62,6 +62,26 @@ fn gradient(
     opacity: f64,
     space: PaintSpace,
 ) -> Result<Option<PenFill>, SvgResourceError> {
+    if let Some(entry) = resources.entries.get(id) {
+        if resource_attr(
+            entry.node,
+            crate::svg_gradient_composition::METADATA_ATTRIBUTE,
+        )
+        .is_some()
+        {
+            match restore_gradient(resources, entry, opacity, space) {
+                Ok(paint) => return Ok(paint),
+                Err(error) => {
+                    if entry.node.tag == "pattern" {
+                        return Err(error);
+                    }
+                    // A modified ordinary SVG gradient can still be imported
+                    // from its real visual definition; stale metadata is ignored.
+                    tracing::warn!(%error,"typed gradient metadata ignored");
+                }
+            }
+        }
+    }
     let mut chain = Vec::new();
     let mut seen = HashSet::new();
     let mut next = Some(id);

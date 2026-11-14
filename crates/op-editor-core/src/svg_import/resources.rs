@@ -2,15 +2,29 @@
 //! ordinary siblings; only local fragment references can instantiate them.
 
 use super::*;
-use std::{cell::RefCell, collections::HashMap};
+use std::{
+    cell::RefCell,
+    collections::{HashMap, HashSet},
+};
 
 #[derive(Debug)]
 pub(super) enum SvgResourceError {
-    Missing { id: String },
-    Cycle { id: String },
+    Missing {
+        id: String,
+    },
+    Cycle {
+        id: String,
+    },
     DepthLimit,
-    Invalid { attribute: &'static str },
-    Unsupported { feature: String },
+    Invalid {
+        attribute: &'static str,
+    },
+    Unsupported {
+        feature: String,
+    },
+    GradientMetadata {
+        source: crate::svg_gradient_composition::GradientSvgError,
+    },
 }
 impl std::fmt::Display for SvgResourceError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -19,11 +33,19 @@ impl std::fmt::Display for SvgResourceError {
             Self::Cycle { id } => write!(f, "cyclic SVG definition #{id}"),
             Self::DepthLimit => f.write_str("SVG reference depth exceeds 64"),
             Self::Invalid { attribute } => write!(f, "invalid SVG resource {attribute}"),
+            Self::GradientMetadata { source } => std::fmt::Display::fmt(source, f),
             Self::Unsupported { feature } => write!(f, "unsupported SVG resource {feature}"),
         }
     }
 }
-impl std::error::Error for SvgResourceError {}
+impl std::error::Error for SvgResourceError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::GradientMetadata { source } => Some(source),
+            _ => None,
+        }
+    }
+}
 
 #[derive(Clone)]
 pub(super) struct DefinitionStyle {
@@ -75,7 +97,9 @@ pub(super) struct Definition<'a> {
 }
 pub(super) struct SvgResources<'a> {
     pub entries: HashMap<&'a str, Definition<'a>>,
+    pub duplicate_ids: HashSet<&'a str>,
     active: RefCell<Vec<&'a str>>,
+    pub has_stylesheets: bool,
 }
 impl<'a> SvgResources<'a> {
     pub fn new(nodes: &'a [SvgTree], root_attrs: &[(String, String)]) -> Self {
@@ -84,31 +108,43 @@ impl<'a> SvgResources<'a> {
             style: &DefinitionStyle,
             context: &StyleCtx,
             out: &mut HashMap<&'a str, Definition<'a>>,
+            duplicates: &mut HashSet<&'a str>,
         ) {
             for node in nodes {
                 let style = style.merged(&node.attrs);
                 let context = merge_style_ctx(context, &node.attrs);
                 if let Some(id) = node.attr("id") {
+                    if out.contains_key(id) {
+                        duplicates.insert(id);
+                    }
                     out.entry(id).or_insert_with(|| Definition {
                         node,
                         style: style.clone(),
                         context: context.clone(),
                     });
                 }
-                walk(&node.children, &style, &context, out);
+                walk(&node.children, &style, &context, out, duplicates);
             }
         }
         let mut entries = HashMap::new();
+        let mut duplicate_ids = HashSet::new();
         walk(
             nodes,
             &DefinitionStyle::default().merged(root_attrs),
             &merge_style_ctx(&StyleCtx::default(), root_attrs),
             &mut entries,
+            &mut duplicate_ids,
         );
         Self {
             entries,
+            duplicate_ids,
             active: RefCell::new(Vec::new()),
+            has_stylesheets: has_stylesheet(nodes),
         }
+    }
+    pub fn with_stylesheet_hint(mut self, hint: bool) -> Self {
+        self.has_stylesheets |= hint;
+        self
     }
     pub fn enter(&self, id: &str) -> Result<ResourceScope<'_, 'a>, SvgResourceError> {
         let (key, _) = self
@@ -154,4 +190,17 @@ pub(super) fn resource_href(node: &SvgTree) -> Option<&str> {
     resource_attr(node, "href")
         .or_else(|| resource_attr(node, "xlink:href"))
         .and_then(local_reference)
+}
+
+fn has_stylesheet(nodes: &[SvgTree]) -> bool {
+    nodes.iter().any(|node| {
+        let tag = node.tag.rsplit(':').next().unwrap_or(&node.tag);
+        tag == "style"
+            || (tag == "link"
+                && resource_attr(node, "rel").is_some_and(|rel| {
+                    rel.split_ascii_whitespace()
+                        .any(|word| word.eq_ignore_ascii_case("stylesheet"))
+                }))
+            || has_stylesheet(&node.children)
+    })
 }
