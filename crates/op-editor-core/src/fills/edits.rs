@@ -106,7 +106,7 @@ pub fn set_fill_opacity_at(node: &mut PenNode, index: usize, opacity: f32) -> bo
     let Some(fills) = node_fills_mut(node) else {
         return false;
     };
-    let opacity = opacity.clamp(0.0, 1.0);
+    let opacity = f64::from(opacity).clamp(0.0, 1.0);
     match fills.get_mut(index) {
         Some(PenFill::Solid(b)) => {
             b.opacity = Some(opacity);

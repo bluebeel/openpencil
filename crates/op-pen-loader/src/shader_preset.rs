@@ -30,18 +30,20 @@ pub(crate) fn expand(body: &ShaderFillBody) -> Option<ExpandedShaderPreset> {
 
 fn expand_turbulence(body: &ShaderFillBody) -> ExpandedShaderPreset {
     let base_frequency = match uniform(body, "baseFrequency") {
-        Some(ShaderUniformValue::Float(value)) => vec![*value, *value],
+        Some(ShaderUniformValue::Float(value)) => vec![*value as f32, *value as f32],
         // Preserve the authored vector arity. The existing runtime uniform
         // binder remains the single authority that accepts or rejects it.
-        Some(ShaderUniformValue::Vec(values)) if !values.is_empty() => values.clone(),
+        Some(ShaderUniformValue::Vec(values)) if !values.is_empty() => {
+            values.iter().map(|value| *value as f32).collect()
+        }
         _ => vec![DEFAULT_BASE_FREQUENCY, DEFAULT_BASE_FREQUENCY],
     };
     let seed = match uniform(body, "seed") {
-        Some(ShaderUniformValue::Float(value)) => *value,
+        Some(ShaderUniformValue::Float(value)) => *value as f32,
         _ => DEFAULT_SEED,
     };
     let num_octaves = match uniform(body, "numOctaves") {
-        Some(ShaderUniformValue::Float(value)) => resolve_num_octaves(*value).effective(),
+        Some(ShaderUniformValue::Float(value)) => resolve_num_octaves(*value as f32).effective(),
         _ => DEFAULT_NUM_OCTAVES,
     };
 
@@ -167,7 +169,7 @@ mod tests {
 
     #[test]
     fn non_integer_and_non_finite_octaves_use_the_default() {
-        for value in [2.5, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+        for value in [2.5, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
             let mut uniforms = BTreeMap::new();
             uniforms.insert("numOctaves".to_string(), ShaderUniformValue::Float(value));
             let expanded = expand(&body_with_uniforms(uniforms)).expect("recognized preset");

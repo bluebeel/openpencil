@@ -262,11 +262,15 @@ pub fn has_stroke(node: &PenNode) -> bool {
 /// present sides (a missing side is `0.0`).
 pub fn stroke_thickness_max(thickness: &StrokeThickness) -> f32 {
     match thickness {
-        StrokeThickness::Uniform(v) => *v,
-        StrokeThickness::PerSide(sides) => sides.iter().copied().fold(0.0_f32, f32::max),
+        StrokeThickness::Uniform(v) => *v as f32,
+        StrokeThickness::PerSide(sides) => sides
+            .iter()
+            .map(|side| *side as f32)
+            .fold(0.0_f32, f32::max),
         StrokeThickness::Sided(s) => [s.top, s.right, s.bottom, s.left]
             .into_iter()
             .flatten()
+            .map(|side| side as f32)
             .fold(0.0_f32, f32::max),
     }
 }

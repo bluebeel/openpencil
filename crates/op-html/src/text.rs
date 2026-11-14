@@ -42,7 +42,7 @@ struct SegStyle {
     strike: Option<bool>,
     fill: Option<String>,
     href: Option<String>,
-    font_size: Option<f32>,
+    font_size: Option<f64>,
     font_family: Option<String>,
 }
 

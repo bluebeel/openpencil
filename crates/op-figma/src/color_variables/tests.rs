@@ -166,7 +166,7 @@ fn bound_solid_alpha_reaches_the_fill_mapper_once_including_zero_and_one() {
             panic!("expected the original solid paint");
         };
         assert_eq!(fill.color, "#000000");
-        assert_eq!(fill.opacity, Some(alpha));
+        assert_eq!(fill.opacity, Some(f64::from(alpha)));
         assert_eq!(node.get_f64("opacity"), Some(0.5));
         if alpha == 0.08 {
             // The imported black 8% panel on white must be 235, rather than

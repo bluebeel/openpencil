@@ -57,7 +57,9 @@ pub fn blur_from_canonical(node: &PenNode) -> Option<f32> {
         .iter()
         .rev()
         .find_map(|e| match e {
-            PenEffect::Blur(b) if b.visible != Some(false) && b.radius > 0.0 => Some(b.radius),
+            PenEffect::Blur(b) if b.visible != Some(false) && b.radius > 0.0 => {
+                Some(b.radius as f32)
+            }
             _ => None,
         })
 }
@@ -69,7 +71,7 @@ pub fn background_blur_from_canonical(node: &PenNode) -> Option<f32> {
         .rev()
         .find_map(|e| match e {
             PenEffect::BackgroundBlur(b) if b.visible != Some(false) && b.radius > 0.0 => {
-                Some(b.radius)
+                Some(b.radius as f32)
             }
             _ => None,
         })
@@ -167,10 +169,10 @@ pub fn shadows_from_canonical(node: &PenNode) -> Vec<ShadowPayload> {
             PenEffect::Shadow(s) if s.visible != Some(false) => {
                 parse_css_color(&s.color).map(|color| ShadowPayload {
                     blur_kernel: s.blur_kernel.unwrap_or_default(),
-                    offset_x: s.offset_x,
-                    offset_y: s.offset_y,
-                    blur: s.blur,
-                    spread: s.spread,
+                    offset_x: s.offset_x as f32,
+                    offset_y: s.offset_y as f32,
+                    blur: s.blur as f32,
+                    spread: s.spread as f32,
                     color,
                     inner: s.inner.unwrap_or(false),
                 })

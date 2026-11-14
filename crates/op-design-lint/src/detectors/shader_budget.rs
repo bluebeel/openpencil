@@ -225,7 +225,7 @@ fn turbulence_issues(node_id: &str, shader: &ShaderFillBody) -> Vec<Issue> {
 
     if let Some(value) = uniforms.get("numOctaves") {
         match value {
-            ShaderUniformValue::Float(value) => match resolve_num_octaves(*value) {
+            ShaderUniformValue::Float(value) => match resolve_num_octaves(*value as f32) {
                 OctaveResolution::Exact(_) => {}
                 OctaveResolution::Clamped(effective) => issues.push(issue(
                     format!(

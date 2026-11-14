@@ -234,7 +234,7 @@ fn first_usable_fill_kind(fills: Option<&Vec<PenFill>>) -> FillKind {
                 if body.color.is_empty() {
                     continue;
                 }
-                return FillKind::Solid(body.color.clone(), body.opacity.unwrap_or(1.0));
+                return FillKind::Solid(body.color.clone(), body.opacity.unwrap_or(1.0) as f32);
             }
             PenFill::Image(body) => {
                 if body.opacity == Some(0.0) {

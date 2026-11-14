@@ -638,7 +638,7 @@ fn image_fill_rotation_retains_degrees_and_full_turns_without_nonfinite_values()
         let Some(PenFill::Image(image)) = map_single_fill(&paint) else {
             panic!()
         };
-        assert_eq!(image.rotation, Some(rotation as f32));
+        assert_eq!(image.rotation, Some(rotation as f64));
     }
     for rotation in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
         let paint = obj(vec![
@@ -671,10 +671,13 @@ fn triangular_shadow_profile_is_limited_to_known_uniform_rounded_geometry() {
             ("type", FigValue::Str(kind.into())),
             (
                 "effects",
-                FigValue::Array(vec![obj(vec![
-                    ("type", FigValue::Str("DROP_SHADOW".into())),
-                    ("radius", FigValue::Float(8.0)),
-                ])].into()),
+                FigValue::Array(
+                    vec![obj(vec![
+                        ("type", FigValue::Str("DROP_SHADOW".into())),
+                        ("radius", FigValue::Float(8.0)),
+                    ])]
+                    .into(),
+                ),
             ),
         ]);
         let effects = map_figma_node_effects(&node).unwrap();
@@ -689,10 +692,9 @@ fn triangular_shadow_profile_is_limited_to_known_uniform_rounded_geometry() {
             (key, FigValue::Float(0.5)),
             (
                 "effects",
-                FigValue::Array(vec![obj(vec![(
-                    "type",
-                    FigValue::Str("DROP_SHADOW".into()),
-                )])].into()),
+                FigValue::Array(
+                    vec![obj(vec![("type", FigValue::Str("DROP_SHADOW".into()))])].into(),
+                ),
             ),
         ]);
         let effects = map_figma_node_effects(&node).unwrap();

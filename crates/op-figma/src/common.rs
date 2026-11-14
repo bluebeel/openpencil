@@ -246,6 +246,7 @@ pub fn common_props(figma: &FigValue, id: String) -> PenNodeBase {
     let (flip_x, flip_y) = extract_flip(figma);
     PenNodeBase {
         id,
+        authored_geometry_nulls: 0,
         name: figma
             .get_str("name")
             .filter(|s| !s.is_empty())

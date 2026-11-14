@@ -434,8 +434,8 @@ fn first_stroke_color(stroke: &PenStroke) -> Option<&str> {
 fn stroke_thickness_value(thickness: &StrokeThickness) -> f32 {
     // TS: `typeof s.thickness === 'number' ? s.thickness : Array.isArray ? s.thickness[0] : 0`
     match thickness {
-        StrokeThickness::Uniform(v) => *v,
-        StrokeThickness::PerSide(arr) => arr[0],
+        StrokeThickness::Uniform(v) => *v as f32,
+        StrokeThickness::PerSide(arr) => arr[0] as f32,
         StrokeThickness::Sided(_) => 0.0,
     }
 }

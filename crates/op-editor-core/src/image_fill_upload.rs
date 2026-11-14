@@ -51,8 +51,12 @@ impl EditorState {
             return false;
         }
         let original_size = original_size.and_then(|[width, height]| {
-            (width.is_finite() && height.is_finite() && width > 0.0 && height > 0.0)
-                .then_some(ImageOriginalSize { width, height })
+            (width.is_finite() && height.is_finite() && width > 0.0 && height > 0.0).then_some(
+                ImageOriginalSize {
+                    width: f64::from(width),
+                    height: f64::from(height),
+                },
+            )
         });
         let updated = {
             let Some(node) = find_node_mut(self.active_children_mut(), &sel) else {
@@ -65,7 +69,7 @@ impl EditorState {
                 let Some(fills) = node_fills_mut(node) else {
                     return false;
                 };
-                let body = PenFill::Image(ImageFillBody {
+                let body = PenFill::Image(Box::new(ImageFillBody {
                     url: src.into(),
                     thumbnail_url: None,
                     nearest_sampling: None,
@@ -84,7 +88,7 @@ impl EditorState {
                     tint: None,
                     highlights: None,
                     shadows: None,
-                });
+                }));
                 if fills.is_empty() {
                     fills.push(body);
                 } else {

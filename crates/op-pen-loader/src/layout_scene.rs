@@ -562,22 +562,21 @@ fn fill_layers_to_scene(
                             .map(stable_image_source_id)
                             .unwrap_or(0),
                         nearest_sampling: body.nearest_sampling.unwrap_or(false),
-                        rotation_degrees: body.rotation,
+                        rotation_degrees: body.rotation.map(|value| value as f32),
                         fit: image_fit_to_scene(Some(&fit)),
-                        transform: body
-                            .transform
-                            .as_ref()
-                            .map(|m| [m.m00, m.m01, m.m02, m.m10, m.m11, m.m12]),
+                        transform: body.transform.as_ref().map(|m| {
+                            [m.m00, m.m01, m.m02, m.m10, m.m11, m.m12].map(|value| value as f32)
+                        }),
                         original_size: image_original_size_to_scene(
                             body.original_size
                                 .as_ref()
-                                .map(|size| [size.width, size.height]),
+                                .map(|size| [size.width as f32, size.height as f32]),
                         ),
-                        tile_scale: image_tile_scale_to_scene(body.tile_scale),
+                        tile_scale: image_tile_scale_to_scene(body.tile_scale.map(|s| s as f32)),
                         adjustments: image_adjustments_to_scene(
                             crate::style_payload::image_fill_adjustments(body),
                         ),
-                        opacity: body.opacity.unwrap_or(1.0).clamp(0.0, 1.0),
+                        opacity: (body.opacity.unwrap_or(1.0) as f32).clamp(0.0, 1.0),
                         blend_mode,
                     })
                 }
@@ -609,7 +608,7 @@ fn fill_opacity(fill: &jian_ops_schema::style::PenFill) -> f32 {
         PenFill::Shader(body) => body.opacity,
         PenFill::Image(body) => body.opacity,
     };
-    opacity.unwrap_or(1.0).clamp(0.0, 1.0)
+    (opacity.unwrap_or(1.0) as f32).clamp(0.0, 1.0)
 }
 
 fn fill_blend_mode_to_scene(fill: &jian_ops_schema::style::PenFill) -> ImageBlendMode {

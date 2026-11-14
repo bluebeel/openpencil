@@ -20,9 +20,9 @@ fn stroke_side_for_focus(focus: PropertyFocus) -> Option<crate::StrokeSide> {
 fn stroke_values_for_mode_update(
     mode: crate::PaddingEditMode,
     focus: PropertyFocus,
-    value: f32,
-    mut values: [f32; 4],
-) -> [f32; 4] {
+    value: f64,
+    mut values: [f64; 4],
+) -> [f64; 4] {
     match mode {
         crate::PaddingEditMode::Single => [value; 4],
         crate::PaddingEditMode::Axis => match focus {
@@ -146,19 +146,25 @@ impl EditorState {
                 }
                 let values = self
                     .selected_node()
-                    .and_then(crate::fills::node_stroke_side_widths)
+                    .and_then(crate::fills::node_stroke_side_widths_exact)
                     .unwrap_or([0.0; 4]);
                 let mode = self.editor_ui.stroke_edit_mode.unwrap_or_else(|| {
-                    crate::PaddingEditMode::from_values(values[0], values[1], values[2], values[3])
+                    crate::PaddingEditMode::from_values(
+                        values[0] as f32,
+                        values[1] as f32,
+                        values[2] as f32,
+                        values[3] as f32,
+                    )
                 });
-                let values = stroke_values_for_mode_update(mode, focus, value.max(0.0), values);
+                let values =
+                    stroke_values_for_mode_update(mode, focus, f64::from(value.max(0.0)), values);
                 for (side, width) in [
                     (crate::StrokeSide::Top, values[0]),
                     (crate::StrokeSide::Right, values[1]),
                     (crate::StrokeSide::Bottom, values[2]),
                     (crate::StrokeSide::Left, values[3]),
                 ] {
-                    if !self.cmd_set_node_stroke_side_width(&sel, side, width) {
+                    if !self.cmd_set_node_stroke_side_width_exact(&sel, side, width) {
                         return false;
                     }
                 }
@@ -578,7 +584,7 @@ impl EditorState {
         }
         let v = self
             .selected_node()
-            .and_then(crate::fills::node_stroke_side_widths)
+            .and_then(crate::fills::node_stroke_side_widths_exact)
             .unwrap_or([0.0; 4]);
         let reshaped = match mode {
             crate::PaddingEditMode::Single => [v[0]; 4],
@@ -591,7 +597,7 @@ impl EditorState {
             (crate::StrokeSide::Bottom, reshaped[2]),
             (crate::StrokeSide::Left, reshaped[3]),
         ] {
-            if !self.cmd_set_node_stroke_side_width(&sel, side, width) {
+            if !self.cmd_set_node_stroke_side_width_exact(&sel, side, width) {
                 return false;
             }
         }

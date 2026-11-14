@@ -180,7 +180,7 @@ impl EditorState {
                 Some(stroke) => set_stroke_width_preserving_sides(stroke, width),
                 none @ None => {
                     *none = Some(PenStroke {
-                        thickness: StrokeThickness::Uniform(width),
+                        thickness: StrokeThickness::Uniform(f64::from(width)),
                         align: None,
                         join: None,
                         cap: None,
@@ -202,6 +202,15 @@ impl EditorState {
         node_id: &NodeId,
         side: StrokeSide,
         width: f32,
+    ) -> bool {
+        self.cmd_set_node_stroke_side_width_exact(node_id, side, f64::from(width))
+    }
+
+    pub(crate) fn cmd_set_node_stroke_side_width_exact(
+        &mut self,
+        node_id: &NodeId,
+        side: StrokeSide,
+        width: f64,
     ) -> bool {
         if !node_id.is_real() || !width.is_finite() || width < 0.0 {
             return false;
@@ -476,6 +485,7 @@ impl EditorState {
         let Some(effect) = effects.get_mut(index as usize) else {
             return false;
         };
+        let value = f64::from(value);
         match (effect, field) {
             (PenEffect::Shadow(s), EffectField::OffsetX) => s.offset_x = value,
             (PenEffect::Shadow(s), EffectField::OffsetY) => s.offset_y = value,

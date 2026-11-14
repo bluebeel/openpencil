@@ -157,16 +157,16 @@ pub(super) fn strip_interpolation_method(value: &str) -> (&str, bool) {
     }
 }
 
-pub(super) fn parse_gradient_angle(value: &str) -> Option<f32> {
+pub(super) fn parse_gradient_angle(value: &str) -> Option<f64> {
     let value = value.trim().to_ascii_lowercase();
     for (suffix, scale) in [
         ("deg", 1.0),
         ("turn", 360.0),
-        ("rad", 180.0 / std::f32::consts::PI),
+        ("rad", 180.0 / std::f64::consts::PI),
         ("grad", 0.9),
     ] {
         if let Some(number) = value.strip_suffix(suffix) {
-            return number.trim().parse::<f32>().ok().map(|value| value * scale);
+            return number.trim().parse::<f64>().ok().map(|value| value * scale);
         }
     }
     match value.as_str() {
@@ -182,7 +182,7 @@ pub(super) fn parse_gradient_angle(value: &str) -> Option<f32> {
     }
 }
 
-pub(super) fn parse_radial_position(value: &str) -> Option<(f32, f32)> {
+pub(super) fn parse_radial_position(value: &str) -> Option<(f64, f64)> {
     let tokens: Vec<_> = value.split_whitespace().collect();
     if tokens.is_empty() || tokens.len() > 2 {
         return None;
@@ -190,7 +190,7 @@ pub(super) fn parse_radial_position(value: &str) -> Option<(f32, f32)> {
     let percent = |token: &str| {
         token
             .strip_suffix('%')
-            .and_then(|number| number.parse::<f32>().ok())
+            .and_then(|number| number.parse::<f64>().ok())
             .map(|number| number / 100.0)
     };
     let (mut x, mut y, mut ambiguous) = (None, None, Vec::new());

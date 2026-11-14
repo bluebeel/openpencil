@@ -482,15 +482,13 @@ fn existing_children_mut(node: &mut PenNode) -> Option<&mut Vec<PenNode>> {
 
 fn stroke_thickness_value(thickness: &StrokeThickness) -> StylePropValue {
     match thickness {
-        StrokeThickness::Uniform(v) => StylePropValue::Number(*v as f64),
-        StrokeThickness::PerSide(v) => {
-            StylePropValue::NumberArray(v.iter().map(|n| *n as f64).collect())
-        }
+        StrokeThickness::Uniform(v) => StylePropValue::Number(*v),
+        StrokeThickness::PerSide(v) => StylePropValue::NumberArray(v.iter().map(|n| *n).collect()),
         StrokeThickness::Sided(v) => StylePropValue::NumberArray(vec![
-            v.top.unwrap_or(0.0) as f64,
-            v.right.unwrap_or(0.0) as f64,
-            v.bottom.unwrap_or(0.0) as f64,
-            v.left.unwrap_or(0.0) as f64,
+            v.top.unwrap_or(0.0),
+            v.right.unwrap_or(0.0),
+            v.bottom.unwrap_or(0.0),
+            v.left.unwrap_or(0.0),
         ]),
     }
 }
@@ -559,17 +557,12 @@ fn number_or_expression_from_value(
 
 fn thickness_from_value(value: &StylePropValue) -> Result<StrokeThickness, StyleReplaceError> {
     match value {
-        StylePropValue::Number(v) if v.is_finite() => Ok(StrokeThickness::Uniform(*v as f32)),
+        StylePropValue::Number(v) if v.is_finite() => Ok(StrokeThickness::Uniform(*v)),
         StylePropValue::NumberArray(v) if v.len() == 4 && v.iter().all(|n| n.is_finite()) => {
-            Ok(StrokeThickness::PerSide([
-                v[0] as f32,
-                v[1] as f32,
-                v[2] as f32,
-                v[3] as f32,
-            ]))
+            Ok(StrokeThickness::PerSide([v[0], v[1], v[2], v[3]]))
         }
         StylePropValue::NumberArray(v) if v.len() == 1 && v[0].is_finite() => {
-            Ok(StrokeThickness::Uniform(v[0] as f32))
+            Ok(StrokeThickness::Uniform(v[0]))
         }
         _ => Err(StyleReplaceError::InvalidStrokeThickness),
     }

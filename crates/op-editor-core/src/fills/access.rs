@@ -260,21 +260,23 @@ pub fn first_solid_stroke_hex(node: &PenNode) -> Option<&str> {
 pub fn node_stroke_width(node: &PenNode) -> Option<f64> {
     use jian_ops_schema::style::StrokeThickness;
     match &node_stroke(node)?.thickness {
-        StrokeThickness::Uniform(w) => Some(*w as f64),
-        StrokeThickness::PerSide(sides) => {
-            Some(sides.iter().copied().fold(0.0_f32, f32::max) as f64)
-        }
+        StrokeThickness::Uniform(w) => Some(*w),
+        StrokeThickness::PerSide(sides) => Some(sides.iter().copied().fold(0.0_f64, f64::max)),
         StrokeThickness::Sided(s) => Some(
             [s.top, s.right, s.bottom, s.left]
                 .into_iter()
                 .flatten()
-                .fold(0.0_f32, f32::max) as f64,
+                .fold(0.0_f64, f64::max),
         ),
     }
 }
 
 /// Per-side stroke widths in `[top, right, bottom, left]` order.
 pub fn node_stroke_side_widths(node: &PenNode) -> Option<[f32; 4]> {
+    node_stroke_side_widths_exact(node).map(|values| values.map(|value| value as f32))
+}
+/// Canonical edit arithmetic must not pass untouched sides through UI f32.
+pub(crate) fn node_stroke_side_widths_exact(node: &PenNode) -> Option<[f64; 4]> {
     use jian_ops_schema::style::StrokeThickness;
     match &node_stroke(node)?.thickness {
         StrokeThickness::Uniform(w) => Some([*w; 4]),
@@ -314,7 +316,7 @@ pub fn first_solid_fill_opacity(node: &PenNode) -> f32 {
             PenFill::Shader(b) => b.opacity.unwrap_or(1.0),
             PenFill::Image(b) => b.opacity.unwrap_or(1.0),
         })
-        .unwrap_or(1.0)
+        .unwrap_or(1.0) as f32
 }
 
 /// Opacity of the node's **stroke** paint — the stroke's first fill
@@ -335,5 +337,5 @@ pub fn first_solid_stroke_opacity(node: &PenNode) -> f32 {
             PenFill::Shader(b) => b.opacity.unwrap_or(1.0),
             PenFill::Image(b) => b.opacity.unwrap_or(1.0),
         })
-        .unwrap_or(1.0)
+        .unwrap_or(1.0) as f32
 }

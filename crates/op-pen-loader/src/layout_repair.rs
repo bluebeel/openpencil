@@ -382,7 +382,7 @@ fn right_only_stroke_width(props: &ContainerProps) -> Option<f32> {
         ],
     };
     let [top, right, bottom, left] = sides;
-    (right > 0.0 && top <= 0.0 && bottom <= 0.0 && left <= 0.0).then_some(right)
+    (right > 0.0 && top <= 0.0 && bottom <= 0.0 && left <= 0.0).then_some(right as f32)
 }
 
 fn shift_subtree(node: &PenNode, rects: &mut BTreeMap<String, [f32; 4]>, dx: f32, dy: f32) {

@@ -522,7 +522,7 @@ fn state_fill_color(
             }
             PenFill::Image(_) => return None,
         };
-        Some(with_scene_opacity(color, opacity.unwrap_or(1.0)))
+        Some(with_scene_opacity(color, opacity.unwrap_or(1.0) as f32))
     })
 }
 
@@ -532,16 +532,17 @@ fn state_stroke(
     opacity: f32,
 ) -> Option<SceneStroke> {
     let (width, sides) = match &stroke.thickness {
-        StrokeThickness::Uniform(width) => (*width, None),
-        StrokeThickness::PerSide(sides) => {
-            (sides.iter().copied().fold(0.0, f32::max), Some(*sides))
-        }
+        StrokeThickness::Uniform(width) => (*width as f32, None),
+        StrokeThickness::PerSide(sides) => (
+            sides.iter().map(|side| *side as f32).fold(0.0, f32::max),
+            Some(sides.map(|side| side as f32)),
+        ),
         StrokeThickness::Sided(sides) => {
             let sides = [
-                sides.top.unwrap_or(0.0),
-                sides.right.unwrap_or(0.0),
-                sides.bottom.unwrap_or(0.0),
-                sides.left.unwrap_or(0.0),
+                sides.top.unwrap_or(0.0) as f32,
+                sides.right.unwrap_or(0.0) as f32,
+                sides.bottom.unwrap_or(0.0) as f32,
+                sides.left.unwrap_or(0.0) as f32,
             ];
             (sides.iter().copied().fold(0.0, f32::max), Some(sides))
         }
@@ -575,22 +576,22 @@ fn state_effects(
         .filter_map(|effect| match effect {
             PenEffect::Blur(body) if body.visible != Some(false) && body.radius > 0.0 => {
                 Some(Effect::Blur(BlurEffect {
-                    radius: body.radius,
+                    radius: body.radius as f32,
                 }))
             }
             PenEffect::BackgroundBlur(body) if body.visible != Some(false) && body.radius > 0.0 => {
                 Some(Effect::BackgroundBlur {
-                    radius: body.radius,
+                    radius: body.radius as f32,
                 })
             }
             PenEffect::Shadow(body) if body.visible != Some(false) => {
                 let color = parse_state_color(&body.color, state_variables)?;
                 Some(Effect::DropShadow(DropShadow {
                     blur_kernel: body.blur_kernel.unwrap_or_default(),
-                    offset_x: body.offset_x,
-                    offset_y: body.offset_y,
-                    blur: body.blur,
-                    spread: body.spread,
+                    offset_x: body.offset_x as f32,
+                    offset_y: body.offset_y as f32,
+                    blur: body.blur as f32,
+                    spread: body.spread as f32,
                     color: with_scene_opacity(color, opacity),
                     inner: body.inner.unwrap_or(false),
                 }))

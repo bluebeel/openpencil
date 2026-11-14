@@ -46,7 +46,7 @@ fn set(doc: &mut PenDocument, field: usize, v: f64) {
             if let Some(jian_ops_schema::style::PenFill::Solid(s)) =
                 r.container.fill.as_mut().and_then(|v| v.first_mut())
             {
-                s.opacity = Some(v as f32)
+                s.opacity = Some(v)
             }
         }
         _ => unreachable!(),
@@ -155,4 +155,19 @@ fn rich_or_unknown_common_profiles_keep_the_reference_path() {
         super::exact::geometry_matches(&plain.children[0], &plain.children[0]),
         Some(true)
     );
+}
+
+#[test]
+fn style_values_inside_one_f32_bucket_remain_distinct_history_edits() {
+    let mut before = read(
+        r##"{"version":"1.0.0","children":[{"type":"rectangle","id":"r","fill":[{"type":"solid","color":"#123456"}]}]}"##,
+    );
+    let mut after = before.clone();
+    let first = 0.05_f64;
+    let second = 0.05000000074505806_f64;
+    assert_eq!((first as f32).to_bits(), (second as f32).to_bits());
+    assert_ne!(first.to_bits(), second.to_bits());
+    set(&mut before, 11, first);
+    set(&mut after, 11, second);
+    assert!(!check(&before, &after));
 }

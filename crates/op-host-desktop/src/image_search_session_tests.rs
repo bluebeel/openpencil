@@ -180,7 +180,7 @@ fn solid_fill() -> PenFill {
 }
 
 fn image_fill(url: &str) -> PenFill {
-    PenFill::Image(ImageFillBody {
+    PenFill::Image(Box::new(ImageFillBody {
         url: url.into(),
         thumbnail_url: None,
         nearest_sampling: None,
@@ -199,7 +199,7 @@ fn image_fill(url: &str) -> PenFill {
         tint: None,
         highlights: None,
         shadows: None,
-    })
+    }))
 }
 // `#[path]` is required: this file is itself loaded through a `#[path]`
 // attribute, so it does not own an implicit `image_search_session_tests/`

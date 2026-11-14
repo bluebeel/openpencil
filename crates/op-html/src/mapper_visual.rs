@@ -60,7 +60,7 @@ pub(super) fn map_fill(
                 }
                 let geometry = background::image_layer(style, index, node, definite, context);
                 position_dropped |= geometry.position_dropped;
-                fills.push(PenFill::Image(ImageFillBody {
+                fills.push(PenFill::Image(Box::new(ImageFillBody {
                     url: ImageSrc::from(url),
                     thumbnail_url: None,
                     nearest_sampling: None,
@@ -79,7 +79,7 @@ pub(super) fn map_fill(
                     tint: None,
                     highlights: None,
                     shadows: None,
-                }));
+                })));
             } else {
                 if image.to_ascii_lowercase().contains("conic-gradient(") {
                     context.warn_once(ImportWarning::ConicGradientIgnored);
@@ -117,7 +117,7 @@ pub(super) fn map_stroke(style: &ComputedStyle, context: &mut MapCtx<'_>) -> Opt
             .or_else(|| style.get("border-style"))
             .unwrap_or("none")
     });
-    let widths = super::box_model::border_widths(style, context).map(|width| width as f32);
+    let widths = super::box_model::border_widths(style, context).map(|width| width as f64);
     if widths.iter().all(|width| *width <= 0.0) {
         return None;
     }
@@ -158,10 +158,10 @@ pub(super) fn map_stroke(style: &ComputedStyle, context: &mut MapCtx<'_>) -> Opt
         context.warn_once(ImportWarning::BorderStylesApproximated);
     }
     let dash_pattern = match style_name.to_ascii_lowercase().as_str() {
-        "dotted" => Some(vec![1.0, widths.iter().copied().fold(1.0, f32::max) * 2.0]),
+        "dotted" => Some(vec![1.0, widths.iter().copied().fold(1.0, f64::max) * 2.0]),
         "dashed" => Some(vec![
-            widths.iter().copied().fold(1.0, f32::max) * 3.0,
-            widths.iter().copied().fold(1.0, f32::max) * 2.0,
+            widths.iter().copied().fold(1.0, f64::max) * 3.0,
+            widths.iter().copied().fold(1.0, f64::max) * 2.0,
         ]),
         "double" | "groove" | "ridge" | "inset" | "outset" => {
             context.warn_once(ImportWarning::BorderStyleComplex);
@@ -417,7 +417,7 @@ fn map_gradient(value: &str, style: &ComputedStyle, context: &mut MapCtx<'_>) ->
 #[derive(Clone)]
 struct ParsedStop {
     color: String,
-    offset: f32,
+    offset: f64,
     explicit: bool,
 }
 
@@ -451,7 +451,7 @@ fn parse_color_stops(value: &str, style: &ComputedStyle) -> Option<Vec<ParsedSto
     )
 }
 
-fn parse_stop_position(value: &str) -> Option<f32> {
+fn parse_stop_position(value: &str) -> Option<f64> {
     let value = value.trim();
     if value == "0" {
         return Some(0.0);
@@ -459,7 +459,7 @@ fn parse_stop_position(value: &str) -> Option<f32> {
     value
         .strip_suffix('%')?
         .trim()
-        .parse::<f32>()
+        .parse::<f64>()
         .ok()
         .map(|percent| percent / 100.0)
 }
@@ -484,9 +484,9 @@ fn distribute_stops(stops: &mut [ParsedStop]) {
             .unwrap_or(last);
         let start = stops[anchor].offset;
         let end = stops[next].offset.max(start);
-        let span = (next - anchor) as f32;
+        let span = (next - anchor) as f64;
         for (offset, stop) in stops[anchor + 1..next].iter_mut().enumerate() {
-            stop.offset = start + (end - start) * (offset as f32 + 1.0) / span;
+            stop.offset = start + (end - start) * (offset as f64 + 1.0) / span;
         }
         stops[next].offset = end;
         anchor = next;
@@ -514,7 +514,7 @@ fn map_shadow(
         } else if let Some(parsed) = resolve_color(token, style) {
             color = parsed;
         } else if let Some(length) = length_px(token, style, context) {
-            lengths.push(length as f32);
+            lengths.push(length as f64);
         } else {
             return None;
         }
@@ -549,7 +549,7 @@ fn map_filter(
         if let Some(body) = exact_function_body(function, "blur") {
             if let Some(radius) = length_px(body, style, context) {
                 let blur = BlurBody {
-                    radius: radius.max(0.0) as f32,
+                    radius: radius.max(0.0) as f64,
                     visible: None,
                 };
                 effects.push(if backdrop {
@@ -737,7 +737,7 @@ fn layers_match(value: &str, choices: &[&str]) -> bool {
 fn parse_radial_prelude(
     value: &str,
     context: &mut MapCtx<'_>,
-) -> (Option<f32>, Option<f32>, Option<f32>) {
+) -> (Option<f64>, Option<f64>, Option<f64>) {
     let (value, interpolation) = strip_interpolation_method(value);
     if interpolation {
         context.warn_once(ImportWarning::GradientInterpolationIgnored);
@@ -763,7 +763,7 @@ fn parse_radial_prelude(
             _ => {
                 if let Some(percent) = token
                     .strip_suffix('%')
-                    .and_then(|number| number.parse::<f32>().ok())
+                    .and_then(|number| number.parse::<f64>().ok())
                 {
                     radius = Some((percent / 100.0).max(0.0));
                 } else {

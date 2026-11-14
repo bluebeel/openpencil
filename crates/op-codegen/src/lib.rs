@@ -287,7 +287,7 @@ fn first_solid_color(fills: &[PenFill]) -> Option<String> {
 /// Stroke description of a node: `(color, width)`. Present only when
 /// the variant carries a `PenStroke` with a solid fill and a uniform
 /// thickness. Per-side thickness collapses to its first value.
-pub(crate) fn node_stroke_css(node: &PenNode) -> Option<(String, f32)> {
+pub(crate) fn node_stroke_css(node: &PenNode) -> Option<(String, f64)> {
     use jian_ops_schema::style::StrokeThickness;
     let stroke = match node {
         PenNode::Frame(n) => n.container.stroke.as_ref(),

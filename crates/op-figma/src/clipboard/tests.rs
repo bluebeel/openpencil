@@ -175,7 +175,7 @@ fn fix_unresolved_images_swaps_blob_image_fill_on_rect() {
     let mut nodes = vec![PenNode::Rectangle(RectangleNode {
         base: base(),
         container: ContainerProps {
-            fill: Some(vec![PenFill::Image(ImageFillBody {
+            fill: Some(vec![PenFill::Image(Box::new(ImageFillBody {
                 url: "__hash:abc".into(),
                 thumbnail_url: None,
                 nearest_sampling: None,
@@ -194,7 +194,7 @@ fn fix_unresolved_images_swaps_blob_image_fill_on_rect() {
                 tint: None,
                 highlights: None,
                 shadows: None,
-            })]),
+            }))]),
             ..ContainerProps::default()
         },
         children: None,
@@ -476,7 +476,7 @@ fn ellipse_with_blob_fill_keeps_other_fill_replaced() {
         inner_radius: None,
         start_angle: None,
         sweep_angle: None,
-        fill: Some(vec![PenFill::Image(ImageFillBody {
+        fill: Some(vec![PenFill::Image(Box::new(ImageFillBody {
             url: "__blob:7".into(),
             thumbnail_url: None,
             nearest_sampling: None,
@@ -495,7 +495,7 @@ fn ellipse_with_blob_fill_keeps_other_fill_replaced() {
             tint: None,
             highlights: None,
             shadows: None,
-        })]),
+        }))]),
         stroke: None,
         effects: None,
         state: None,

@@ -150,7 +150,7 @@ pub(crate) fn assign_first_fill(p: &mut NodePayload, fills: Option<&[PenFill]>) 
         if let Some(PenFill::Image(body)) = fills.and_then(|fills| fills.first()) {
             p.image_thumbnail_src = body.thumbnail_url.clone();
             p.image_nearest_sampling = body.nearest_sampling;
-            p.image_rotation_degrees = body.rotation;
+            p.image_rotation_degrees = body.rotation.map(|value| value as f32);
         }
     }
 }
@@ -169,16 +169,17 @@ fn first_image_fill(fills: Option<&[PenFill]>) -> Option<ImageFillPayload> {
             image_fill_mode_to_payload(body.mode.as_ref()),
             body.transform
                 .as_ref()
-                .map(|m| [m.m00, m.m01, m.m02, m.m10, m.m11, m.m12]),
+                .map(|m| [m.m00, m.m01, m.m02, m.m10, m.m11, m.m12].map(|value| value as f32)),
             body.original_size.as_ref().and_then(|size| {
                 (size.width.is_finite()
                     && size.height.is_finite()
                     && size.width > 0.0
                     && size.height > 0.0)
-                    .then_some([size.width, size.height])
+                    .then_some([size.width as f32, size.height as f32])
             }),
             body.tile_scale
-                .filter(|scale| scale.is_finite() && *scale > 0.0),
+                .filter(|scale| scale.is_finite() && *scale > 0.0)
+                .map(|value| value as f32),
             image_fill_adjustments(body),
         ))
     }
@@ -209,13 +210,13 @@ pub(crate) fn image_fill_adjustments(
     body: &jian_ops_schema::style::ImageFillBody,
 ) -> Option<ImageAdjustmentPayload> {
     adjustments_payload(
-        body.exposure,
-        body.contrast,
-        body.saturation,
-        body.temperature,
-        body.tint,
-        body.highlights,
-        body.shadows,
+        body.exposure.map(|value| value as f32),
+        body.contrast.map(|value| value as f32),
+        body.saturation.map(|value| value as f32),
+        body.temperature.map(|value| value as f32),
+        body.tint.map(|value| value as f32),
+        body.highlights.map(|value| value as f32),
+        body.shadows.map(|value| value as f32),
     )
 }
 
@@ -270,18 +271,18 @@ pub(crate) fn gradient_payload(fill: &PenFill) -> Option<GradientPayload> {
         PenFill::LinearGradient(body) => {
             let stops = gradient_stops(&body.stops)?;
             Some(GradientPayload::Linear {
-                angle_deg: body.angle.unwrap_or(0.0),
-                opacity: body.opacity.unwrap_or(1.0).clamp(0.0, 1.0),
+                angle_deg: (body.angle.unwrap_or(0.0) as f32),
+                opacity: (body.opacity.unwrap_or(1.0) as f32).clamp(0.0, 1.0),
                 stops,
             })
         }
         PenFill::RadialGradient(body) => {
             let stops = gradient_stops(&body.stops)?;
             Some(GradientPayload::Radial {
-                cx: body.cx.unwrap_or(0.5).clamp(0.0, 1.0),
-                cy: body.cy.unwrap_or(0.5).clamp(0.0, 1.0),
-                radius: body.radius.unwrap_or(0.5).clamp(0.0, 1.0),
-                opacity: body.opacity.unwrap_or(1.0).clamp(0.0, 1.0),
+                cx: (body.cx.unwrap_or(0.5) as f32).clamp(0.0, 1.0),
+                cy: (body.cy.unwrap_or(0.5) as f32).clamp(0.0, 1.0),
+                radius: (body.radius.unwrap_or(0.5) as f32).clamp(0.0, 1.0),
+                opacity: (body.opacity.unwrap_or(1.0) as f32).clamp(0.0, 1.0),
                 stops,
             })
         }
@@ -291,7 +292,7 @@ pub(crate) fn gradient_payload(fill: &PenFill) -> Option<GradientPayload> {
                 rows: body.rows.max(2),
                 cols: body.cols.max(2),
                 colors,
-                opacity: body.opacity.unwrap_or(1.0).clamp(0.0, 1.0),
+                opacity: (body.opacity.unwrap_or(1.0) as f32).clamp(0.0, 1.0),
             })
         }
         _ => None,
@@ -332,14 +333,14 @@ pub(crate) fn shader_payload(fill: &PenFill) -> Option<ShaderPayload> {
                 ShaderUniformValue::Float(f) if expanded.is_none() => {
                     uniforms.push(ShaderUniformPayload {
                         name: name.clone(),
-                        values: vec![*f],
+                        values: vec![*f as f32],
                     });
                 }
                 ShaderUniformValue::Vec(v) => {
                     if expanded.is_none() && !v.is_empty() {
                         uniforms.push(ShaderUniformPayload {
                             name: name.clone(),
-                            values: v.clone(),
+                            values: v.iter().map(|value| *value as f32).collect(),
                         });
                     }
                 }
@@ -366,7 +367,7 @@ pub(crate) fn shader_payload(fill: &PenFill) -> Option<ShaderPayload> {
     Some(ShaderPayload {
         sksl,
         uniforms,
-        opacity: body.opacity.unwrap_or(1.0).clamp(0.0, 1.0),
+        opacity: (body.opacity.unwrap_or(1.0) as f32).clamp(0.0, 1.0),
         // Mid-gray when no colour uniform exists.
         fallback: fallback.unwrap_or([0.5, 0.5, 0.5, 1.0]),
     })
@@ -405,7 +406,7 @@ fn gradient_stops(
         stops
             .iter()
             .map(|s| GradientStopPayload {
-                offset: s.offset.clamp(0.0, 1.0),
+                offset: (s.offset as f32).clamp(0.0, 1.0),
                 color: parse_color(&s.color).unwrap_or([0.0, 0.0, 0.0, 1.0]),
             })
             .collect(),
@@ -485,16 +486,20 @@ fn first_fill_type(fills: Option<&[PenFill]>) -> String {
 pub(crate) fn stroke_to_payload(s: Option<&PenStroke>) -> Option<StrokePayload> {
     let s = s?;
     let (width, sides) = match &s.thickness {
-        StrokeThickness::Uniform(n) => (*n, None),
-        StrokeThickness::PerSide(sides) => {
-            (sides.iter().copied().fold(0.0_f32, f32::max), Some(*sides))
-        }
+        StrokeThickness::Uniform(n) => (*n as f32, None),
+        StrokeThickness::PerSide(sides) => (
+            sides
+                .iter()
+                .map(|side| *side as f32)
+                .fold(0.0_f32, f32::max),
+            Some(sides.map(|side| side as f32)),
+        ),
         StrokeThickness::Sided(sided) => {
             let sides = [
-                sided.top.unwrap_or(0.0),
-                sided.right.unwrap_or(0.0),
-                sided.bottom.unwrap_or(0.0),
-                sided.left.unwrap_or(0.0),
+                sided.top.unwrap_or(0.0) as f32,
+                sided.right.unwrap_or(0.0) as f32,
+                sided.bottom.unwrap_or(0.0) as f32,
+                sided.left.unwrap_or(0.0) as f32,
             ];
             (sides.iter().copied().fold(0.0_f32, f32::max), Some(sides))
         }
@@ -524,8 +529,8 @@ pub(crate) fn stroke_to_payload(s: Option<&PenStroke>) -> Option<StrokePayload> 
     })
 }
 
-pub(crate) fn apply_alpha(rgba: [f32; 4], opacity: Option<f32>) -> [f32; 4] {
-    let a = opacity.unwrap_or(1.0).clamp(0.0, 1.0);
+pub(crate) fn apply_alpha(rgba: [f32; 4], opacity: Option<f64>) -> [f32; 4] {
+    let a = (opacity.unwrap_or(1.0) as f32).clamp(0.0, 1.0);
     [rgba[0], rgba[1], rgba[2], rgba[3] * a]
 }
 

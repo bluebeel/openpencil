@@ -71,7 +71,7 @@ pub(super) fn resolve_svg_stroke(
         return None;
     }
     let hex = parse_svg_color(raw).unwrap_or_else(|| "#000000".to_string());
-    let width = (ctx.stroke_width * scale).max(0.0) as f32;
+    let width = (ctx.stroke_width * scale).max(0.0);
     if width <= 0.0 {
         return None;
     }

@@ -21,7 +21,7 @@ pub(super) fn segment_style(
         strike: decoration(style, "line-through").then_some(true),
         fill: crate::mapper::text_paint_color(style, fill_override),
         href,
-        font_size: Some(style.font_size as f32),
+        font_size: Some(style.font_size),
         font_family: style.get("font-family").map(str::to_string),
     }
 }

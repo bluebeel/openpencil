@@ -212,9 +212,7 @@ fn styled_content(
         segments.push(StyledTextSegment {
             text: text.to_string(),
             font_family: style("font-family").map(str::to_string),
-            font_size: style("font-size")
-                .and_then(parse_px)
-                .map(|value| value as f32),
+            font_size: style("font-size").and_then(parse_px),
             font_weight: style("font-weight").and_then(|value| value.parse::<u32>().ok()),
             font_style: match style("font-style") {
                 Some("italic" | "oblique") => Some(SegmentFontStyle::Italic),

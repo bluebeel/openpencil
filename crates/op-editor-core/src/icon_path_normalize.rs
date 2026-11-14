@@ -287,8 +287,8 @@ fn scale_stroke(stroke: Option<&mut PenStroke>, scale: f64) {
     }
 }
 
-fn scaled_thickness(value: f32, scale: f64) -> f32 {
-    ((f64::from(value) * scale).max(1.0) * 10.0).round() as f32 / 10.0
+fn scaled_thickness(value: f64, scale: f64) -> f64 {
+    ((value * scale).max(1.0) * 10.0).round() / 10.0
 }
 
 #[derive(Debug, Clone, Copy)]

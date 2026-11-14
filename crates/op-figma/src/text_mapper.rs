@@ -237,7 +237,7 @@ fn build_segment(
     }
     if let Some(size) = ov.get_f64("fontSize") {
         if size != 0.0 {
-            seg.font_size = Some(size as f32);
+            seg.font_size = Some(size);
         }
     }
     let style_lower = font_name

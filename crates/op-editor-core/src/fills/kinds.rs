@@ -58,7 +58,7 @@ pub(super) fn default_fill_of_type(kind: FillType, hex: &str) -> PenFill {
             blend_mode: None,
         }),
         FillType::Shader => PenFill::Shader(default_shader_body(hex)),
-        FillType::Image => PenFill::Image(ImageFillBody {
+        FillType::Image => PenFill::Image(Box::new(ImageFillBody {
             url: "".into(),
             thumbnail_url: None,
             nearest_sampling: None,
@@ -77,7 +77,7 @@ pub(super) fn default_fill_of_type(kind: FillType, hex: &str) -> PenFill {
             tint: None,
             highlights: None,
             shadows: None,
-        }),
+        })),
     }
 }
 

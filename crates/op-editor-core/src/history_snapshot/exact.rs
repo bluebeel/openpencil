@@ -44,6 +44,10 @@ fn bools(a: &Option<bool>, b: &Option<bool>) -> bool {
     a == b
 }
 #[inline(always)]
+fn flags(a: &u8, b: &u8) -> bool {
+    a == b
+}
+#[inline(always)]
 fn number(a: f64, b: f64) -> bool {
     a == b && a.to_bits() == b.to_bits()
 }
@@ -51,12 +55,8 @@ fn number(a: f64, b: f64) -> bool {
 fn floats(a: &Option<f64>, b: &Option<f64>) -> bool {
     option(a, b, |a, b| number(*a, *b))
 }
-#[inline(always)]
-fn floats32(a: &Option<f32>, b: &Option<f32>) -> bool {
-    option(a, b, |a, b| a == b && a.to_bits() == b.to_bits())
-}
 macro_rules! fields {($name:ident,$ty:path,{$($field:ident:$same:path),+$(,)?})=>{#[inline(always)] fn $name(a:&$ty,b:&$ty)->bool {let $ty{$($field:_,)+}=a;true$(&&$same(&a.$field,&b.$field))+}}}
-fields!(base,PenNodeBase,{id:string,name:strings,role:strings,explain:strings,x:floats,y:floats,rotation:floats,constraints:optional,opacity:opacity,enabled:optional,visible:bools,locked:bools,pin:bools,flip_x:bools,flip_y:bools,mask_type:optional,blend_mode:optional,theme:optional,transition:optional,animations:optional});
+fields!(base,PenNodeBase,{authored_geometry_nulls:flags,id:string,name:strings,role:strings,explain:strings,x:floats,y:floats,rotation:floats,constraints:optional,opacity:opacity,enabled:optional,visible:bools,locked:bools,pin:bools,flip_x:bools,flip_y:bools,mask_type:optional,blend_mode:optional,theme:optional,transition:optional,animations:optional});
 #[inline(always)]
 fn opacity(a: &Option<NumberOrExpression>, b: &Option<NumberOrExpression>) -> bool {
     option(a, b, |a, b| match a {
@@ -86,7 +86,7 @@ fn size(a: &Option<SizingBehavior>, b: &Option<SizingBehavior>) -> bool {
     })
 }
 fields!(limits,SizeLimits,{min_width:floats,max_width:floats,min_height:floats,max_height:floats});
-fields!(solid,SolidFillBody,{color:string,explain:strings,opacity:floats32,blend_mode:optional});
+fields!(solid,SolidFillBody,{color:string,explain:strings,opacity:floats,blend_mode:optional});
 #[inline(always)]
 fn fill(a: &PenFill, b: &PenFill) -> bool {
     match a {

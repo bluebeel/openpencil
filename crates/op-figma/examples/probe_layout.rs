@@ -272,7 +272,7 @@ fn image_fill(node: &PenNode) -> Option<&jian_ops_schema::style::ImageFillBody> 
         _ => None,
     }?;
     fills.iter().find_map(|fill| match fill {
-        PenFill::Image(image) => Some(image),
+        PenFill::Image(image) => Some(image.as_ref()),
         _ => None,
     })
 }

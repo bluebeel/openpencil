@@ -727,7 +727,7 @@ fn build_icon_path_node(
     if let Some(s) = stroke.as_mut() {
         if icon_scale < 0.99 {
             if let StrokeThickness::Uniform(t) = s.thickness {
-                let scaled = round2(t as f64 * icon_scale) as f32;
+                let scaled = round2(t * icon_scale);
                 s.thickness = StrokeThickness::Uniform(scaled);
             }
         }

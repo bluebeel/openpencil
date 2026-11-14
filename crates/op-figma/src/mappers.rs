@@ -67,7 +67,7 @@ fn gradient_stops(paint: &FigValue) -> Vec<GradientStop> {
             stops
                 .iter()
                 .map(|s| GradientStop {
-                    offset: s.get_f64("position").unwrap_or(0.0) as f32,
+                    offset: s.get_f64("position").unwrap_or(0.0),
                     color: fill_color_hex(s),
                 })
                 .collect()
@@ -76,7 +76,7 @@ fn gradient_stops(paint: &FigValue) -> Vec<GradientStop> {
 }
 
 fn map_single_fill(paint: &FigValue) -> Option<PenFill> {
-    let opacity = paint.get_f64("opacity").map(|o| o as f32);
+    let opacity = paint.get_f64("opacity");
     let blend_mode = map_blend_mode(paint.get_str("blendMode"));
     match paint.get_str("type")? {
         "SOLID" => {
@@ -96,7 +96,7 @@ fn map_single_fill(paint: &FigValue) -> Option<PenFill> {
                 .map(|m| gradient_angle_from_transform(&m))
                 .unwrap_or(0);
             Some(PenFill::LinearGradient(LinearGradientBody {
-                angle: Some(angle as f32),
+                angle: Some(angle as f64),
                 stops: gradient_stops(paint),
                 explain: None,
                 opacity,
@@ -131,14 +131,11 @@ fn map_single_fill(paint: &FigValue) -> Option<PenFill> {
                 (mode, _) => mode,
             };
             let url = image_reference_url(paint.get("image")).unwrap_or_default();
-            Some(PenFill::Image(ImageFillBody {
+            Some(PenFill::Image(Box::new(ImageFillBody {
                 url: url.into(),
                 thumbnail_url: image_reference_url(paint.get("imageThumbnail")).map(Into::into),
                 nearest_sampling: Some(true),
-                rotation: paint
-                    .get_f64("rotation")
-                    .map(|value| value as f32)
-                    .filter(|value| value.is_finite()),
+                rotation: paint.get_f64("rotation").filter(|value| value.is_finite()),
                 mode: Some(mode.clone()),
                 original_size: normalize_original_size(
                     paint.get_f64("originalImageWidth"),
@@ -148,8 +145,7 @@ fn map_single_fill(paint: &FigValue) -> Option<PenFill> {
                 tile_scale: (mode == ImageFillMode::Tile)
                     .then(|| paint.get_f64("scale"))
                     .flatten()
-                    .filter(|scale| scale.is_finite() && *scale > 0.0)
-                    .map(|scale| scale as f32),
+                    .filter(|scale| scale.is_finite() && *scale > 0.0),
                 explain: None,
                 opacity,
                 blend_mode,
@@ -162,7 +158,7 @@ fn map_single_fill(paint: &FigValue) -> Option<PenFill> {
                 tint: image_adjustment(paint, &["tint"]),
                 highlights: image_adjustment(paint, &["highlights"]),
                 shadows: image_adjustment(paint, &["shadows"]),
-            }))
+            })))
         }
         _ => None,
     }
@@ -216,7 +212,7 @@ fn image_reference_url(image: Option<&FigValue>) -> Option<String> {
         })
 }
 
-fn image_adjustment(paint: &FigValue, keys: &[&str]) -> Option<f32> {
+fn image_adjustment(paint: &FigValue, keys: &[&str]) -> Option<f64> {
     let value = ["paintFilter", "filterColorAdjust"]
         .into_iter()
         .filter_map(|field| paint.get(field))
@@ -224,7 +220,7 @@ fn image_adjustment(paint: &FigValue, keys: &[&str]) -> Option<f32> {
     if !value.is_finite() {
         return None;
     }
-    let scaled = (value * 100.0).clamp(-100.0, 100.0) as f32;
+    let scaled = (value * 100.0).clamp(-100.0, 100.0);
     (scaled != 0.0).then_some(scaled)
 }
 
@@ -241,8 +237,8 @@ fn normalize_original_size(w: Option<f64>, h: Option<f64>) -> Option<ImageOrigin
         return None;
     }
     Some(ImageOriginalSize {
-        width: w as f32,
-        height: h as f32,
+        width: w,
+        height: h,
     })
 }
 
@@ -258,12 +254,12 @@ fn normalize_image_transform(m: FigMatrix) -> Option<ImageTransform> {
         return None;
     }
     Some(ImageTransform {
-        m00: m.m00 as f32,
-        m01: m.m01 as f32,
-        m02: m.m02 as f32,
-        m10: m.m10 as f32,
-        m11: m.m11 as f32,
-        m12: m.m12 as f32,
+        m00: m.m00,
+        m01: m.m01,
+        m02: m.m02,
+        m10: m.m10,
+        m11: m.m11,
+        m12: m.m12,
     })
 }
 
@@ -292,24 +288,19 @@ pub fn map_figma_stroke(node: &FigValue) -> Option<PenStroke> {
 
     let thickness = if node.get_bool("borderStrokeWeightsIndependent") == Some(true) {
         StrokeThickness::PerSide([
-            node.get_f64("borderTopWeight").unwrap_or(0.0) as f32,
-            node.get_f64("borderRightWeight").unwrap_or(0.0) as f32,
-            node.get_f64("borderBottomWeight").unwrap_or(0.0) as f32,
-            node.get_f64("borderLeftWeight").unwrap_or(0.0) as f32,
+            node.get_f64("borderTopWeight").unwrap_or(0.0),
+            node.get_f64("borderRightWeight").unwrap_or(0.0),
+            node.get_f64("borderBottomWeight").unwrap_or(0.0),
+            node.get_f64("borderLeftWeight").unwrap_or(0.0),
         ])
     } else {
-        StrokeThickness::Uniform(node.get_f64("strokeWeight").unwrap_or(1.0) as f32)
+        StrokeThickness::Uniform(node.get_f64("strokeWeight").unwrap_or(1.0))
     };
 
     let dash_pattern = node
         .get_array("dashPattern")
         .filter(|d| !d.is_empty())
-        .map(|d| {
-            d.iter()
-                .filter_map(|v| v.as_f64())
-                .map(|v| v as f32)
-                .collect()
-        });
+        .map(|d| d.iter().filter_map(|v| v.as_f64()).collect());
 
     Some(PenStroke {
         thickness,
@@ -410,7 +401,7 @@ pub fn map_figma_effects(effects: Option<&[FigValue]>) -> Option<Vec<PenEffect>>
 
 fn map_single_effect(effect: &FigValue) -> Option<PenEffect> {
     let ty = effect.get_str("type")?;
-    let radius = effect.get_f64("radius").unwrap_or(0.0) as f32;
+    let radius = effect.get_f64("radius").unwrap_or(0.0);
     match ty {
         "DROP_SHADOW" | "INNER_SHADOW" => {
             let offset = effect.get("offset");
@@ -418,10 +409,10 @@ fn map_single_effect(effect: &FigValue) -> Option<PenEffect> {
                 blur_kernel: None,
                 inner: Some(ty == "INNER_SHADOW"),
                 visible: None,
-                offset_x: offset.and_then(|o| o.get_f64("x")).unwrap_or(0.0) as f32,
-                offset_y: offset.and_then(|o| o.get_f64("y")).unwrap_or(0.0) as f32,
+                offset_x: offset.and_then(|o| o.get_f64("x")).unwrap_or(0.0),
+                offset_y: offset.and_then(|o| o.get_f64("y")).unwrap_or(0.0),
                 blur: radius,
-                spread: effect.get_f64("spread").unwrap_or(0.0) as f32,
+                spread: effect.get_f64("spread").unwrap_or(0.0),
                 color: effect
                     .get("color")
                     .and_then(FigColor::from_value)

@@ -198,7 +198,7 @@ pub(super) fn opacity(value: f64) -> Option<String> {
 }
 
 /// Colour opacity modifier suffix: `/50`, `/[0.37]`, or empty at 100%.
-pub(super) fn color_alpha_suffix(alpha: f32) -> String {
+pub(super) fn color_alpha_suffix(alpha: f64) -> String {
     let alpha = f64::from(alpha);
     if !alpha.is_finite() || alpha >= 1.0 - EPSILON {
         return String::new();

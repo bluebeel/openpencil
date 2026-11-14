@@ -36,7 +36,7 @@ pub(crate) fn apply_text_content(p: &mut NodePayload, n: &TextNode) {
                 .iter()
                 .map(|seg| TextRunPayload {
                     text: seg.text.clone(),
-                    font_size: seg.font_size.unwrap_or(0.0).max(0.0),
+                    font_size: (seg.font_size.unwrap_or(0.0) as f32).max(0.0),
                     font_weight: seg
                         .font_weight
                         .map(|w| w.min(u16::MAX as u32) as u16)

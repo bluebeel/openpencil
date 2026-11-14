@@ -265,7 +265,7 @@ pub(super) fn color_class(
     ctx: &mut Ctx,
     prefix: &str,
     color: &str,
-    alpha: Option<f32>,
+    alpha: Option<f64>,
 ) -> Option<String> {
     let suffix = alpha.map(scale::color_alpha_suffix).unwrap_or_default();
     let trimmed = color.trim();
@@ -609,7 +609,7 @@ fn border(ctx: &mut Ctx, node: &PenNode, classes: &mut Classes) {
             _ => None,
         })
     });
-    let sides: [(&str, f32); 4] = match &stroke.thickness {
+    let sides: [(&str, f64); 4] = match &stroke.thickness {
         StrokeThickness::Uniform(w) => [("t", *w), ("r", *w), ("b", *w), ("l", *w)],
         StrokeThickness::PerSide([t, r, b, l]) => [("t", *t), ("r", *r), ("b", *b), ("l", *l)],
         StrokeThickness::Sided(s) => [

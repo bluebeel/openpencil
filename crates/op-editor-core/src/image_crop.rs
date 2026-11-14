@@ -13,7 +13,7 @@ use jian_ops_schema::style::{
     ImageFillBody, ImageFillMode as SchemaImageFillMode, ImageOriginalSize, ImageTransform, PenFill,
 };
 
-const SIZE_EPSILON: f32 = 1e-6;
+const SIZE_EPSILON: f64 = 1e-6;
 
 /// Whether a primary image-fill body has crop semantics.
 ///
@@ -30,7 +30,7 @@ pub fn image_fill_body_is_crop(body: &ImageFillBody) -> bool {
 }
 
 fn image_transform_is_identity(transform: &ImageTransform) -> bool {
-    const EPSILON: f32 = 1e-6;
+    const EPSILON: f64 = 1e-6;
     (transform.m00 - 1.0).abs() <= EPSILON
         && transform.m01.abs() <= EPSILON
         && transform.m02.abs() <= EPSILON
@@ -74,8 +74,8 @@ pub fn primary_image_fill_transform(node: &PenNode) -> Option<[f32; 6]> {
 /// The transform's unit-square range is the visible source UV window. It is
 /// narrower on exactly one axis unless the node and image aspect ratios match.
 pub(crate) fn centered_crop_transform(
-    node_width: f32,
-    node_height: f32,
+    node_width: f64,
+    node_height: f64,
     original_size: Option<&ImageOriginalSize>,
 ) -> Option<ImageTransform> {
     let original = original_size?;
@@ -122,13 +122,17 @@ pub fn translate_primary_image_crop(
     local_dx: f32,
     local_dy: f32,
 ) -> bool {
+    let node_width = f64::from(node_width);
+    let node_height = f64::from(node_height);
+    let local_dx = f64::from(local_dx);
+    let local_dy = f64::from(local_dy);
     if !node_width.is_finite()
         || !node_height.is_finite()
         || node_width <= SIZE_EPSILON
         || node_height <= SIZE_EPSILON
         || !local_dx.is_finite()
         || !local_dy.is_finite()
-        || (local_dx.abs() <= f32::EPSILON && local_dy.abs() <= f32::EPSILON)
+        || (local_dx.abs() <= f64::from(f32::EPSILON) && local_dy.abs() <= f64::from(f32::EPSILON))
     {
         return false;
     }
@@ -166,12 +170,12 @@ pub fn translate_primary_image_crop(
     true
 }
 
-fn linear_corner_extents(transform: &ImageTransform) -> (f32, f32, f32, f32) {
-    let corners = [(0.0_f32, 0.0_f32), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)];
-    let mut min_x = f32::INFINITY;
-    let mut max_x = f32::NEG_INFINITY;
-    let mut min_y = f32::INFINITY;
-    let mut max_y = f32::NEG_INFINITY;
+fn linear_corner_extents(transform: &ImageTransform) -> (f64, f64, f64, f64) {
+    let corners = [(0.0_f64, 0.0_f64), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)];
+    let mut min_x = f64::INFINITY;
+    let mut max_x = f64::NEG_INFINITY;
+    let mut min_y = f64::INFINITY;
+    let mut max_y = f64::NEG_INFINITY;
     for (x, y) in corners {
         let u = transform.m00 * x + transform.m01 * y;
         let v = transform.m10 * x + transform.m11 * y;
@@ -183,7 +187,7 @@ fn linear_corner_extents(transform: &ImageTransform) -> (f32, f32, f32, f32) {
     (min_x, max_x, min_y, max_y)
 }
 
-fn clamp_translation(value: f32, lower: f32, upper: f32) -> f32 {
+fn clamp_translation(value: f64, lower: f64, upper: f64) -> f64 {
     if lower <= upper {
         value.clamp(lower, upper)
     } else {
@@ -195,12 +199,12 @@ fn clamp_translation(value: f32, lower: f32, upper: f32) -> f32 {
 
 fn transform_array(transform: &ImageTransform) -> [f32; 6] {
     [
-        transform.m00,
-        transform.m01,
-        transform.m02,
-        transform.m10,
-        transform.m11,
-        transform.m12,
+        transform.m00 as f32,
+        transform.m01 as f32,
+        transform.m02 as f32,
+        transform.m10 as f32,
+        transform.m11 as f32,
+        transform.m12 as f32,
     ]
 }
 
@@ -262,8 +266,8 @@ mod tests {
         };
         body.mode = Some(SchemaImageFillMode::Crop);
         body.original_size = Some(ImageOriginalSize {
-            width: image_width,
-            height: image_height,
+            width: f64::from(image_width),
+            height: f64::from(image_height),
         });
         node
     }
