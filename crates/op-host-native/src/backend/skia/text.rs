@@ -16,6 +16,9 @@ use super::NativeBackend;
 // Font parsing uses the render thread on Windows; these raster proofs run on
 // the same macOS/Linux targets as the variable-font outline regressions.
 #[cfg(all(test, not(target_os = "windows")))]
+#[path = "nominal_advance_tests.rs"]
+mod nominal_advance_tests;
+#[cfg(all(test, not(target_os = "windows")))]
 #[path = "text_raster_tests.rs"]
 mod text_raster_tests;
 
@@ -34,6 +37,20 @@ pub(super) fn uses_advance_grid(
 ) -> bool {
     (kerning.is_some() || features.is_some_and(|features| !features.is_empty()))
         && jian_skia::advance_grid::supports_text(text)
+}
+
+fn nominal_advances(
+    font: &skia_safe::Font,
+    glyphs: &[skia_safe::GlyphId],
+    synthetic_bold: bool,
+) -> Vec<f32> {
+    if !synthetic_bold {
+        return jian_skia::advance_grid::nominal_advances(font, glyphs);
+    }
+    // Synthetic stroke compensation keeps its established fallback metrics.
+    let mut widths = vec![0.0; glyphs.len()];
+    font.get_widths(glyphs, &mut widths);
+    widths
 }
 
 impl NativeBackend {
@@ -221,8 +238,7 @@ impl NativeBackend {
                     font.set_hinting(skia_safe::FontHinting::None);
                     font.set_subpixel(true);
                     let glyphs = font.str_to_glyphs_vec(&segment.text);
-                    let mut widths = vec![0.0; glyphs.len()];
-                    font.get_widths(&glyphs, &mut widths);
+                    let widths = nominal_advances(&font, &glyphs, segment.synthetic_bold);
                     let factor = if segment.synthetic_bold {
                         jian_skia::SYNTHETIC_BOLD_WIDTH_FACTOR
                     } else {
@@ -409,8 +425,7 @@ impl NativeBackend {
                     }
                     if advance_grid {
                         let glyphs = font.str_to_glyphs_vec(&segment.text);
-                        let mut widths = vec![0.0; glyphs.len()];
-                        font.get_widths(&glyphs, &mut widths);
+                        let widths = nominal_advances(&font, &glyphs, segment.synthetic_bold);
                         let factor = if segment.synthetic_bold {
                             jian_skia::SYNTHETIC_BOLD_WIDTH_FACTOR
                         } else {

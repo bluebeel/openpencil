@@ -85,8 +85,7 @@ fn nominal_grid_width(backend: &mut NativeBackend, text: &str, size: f32) -> f32
     font.set_hinting(skia_safe::FontHinting::None);
     font.set_subpixel(true);
     let glyphs = font.str_to_glyphs_vec(text);
-    let mut widths = vec![0.0; glyphs.len()];
-    font.get_widths(&glyphs, &mut widths);
+    let widths = jian_skia::advance_grid::nominal_advances(&font, &glyphs);
     widths
         .into_iter()
         .map(|width| (width * 1024.0 / size).round() * size / 1024.0)
