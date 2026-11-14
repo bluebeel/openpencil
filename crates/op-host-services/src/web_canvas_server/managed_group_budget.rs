@@ -247,6 +247,8 @@ impl Budget {
             C::InsertNode { .. }
                 | C::DeleteNode { .. }
                 | C::CopyNode { .. }
+                | C::DuplicateSelected { .. }
+                | C::PasteClipboard { .. }
                 | C::MoveNode { .. }
                 | C::ReorderSelected { .. }
                 | C::GroupSelected

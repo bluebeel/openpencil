@@ -23,6 +23,9 @@ pub(crate) fn parse_indexed_owned(
     std::io::Read::read_to_end(&mut chunk.reader(), &mut bytes)
         .map_err(|_| FigFileError::Kiwi(KiwiError::OutOfBounds))?;
     let schema = decode_binary_schema(&bytes).map_err(FigFileError::Kiwi)?;
+    // Schema owns its strings/tables; its inflated wire buffer is no longer
+    // needed while the much larger node stream is indexed.
+    drop(bytes);
     observer(FigImportPhase::Decode);
     let chunk = crate::container::stream::chunk(&container.parts[1]);
     let indexed = crate::kiwi::stream::decode_indexed(

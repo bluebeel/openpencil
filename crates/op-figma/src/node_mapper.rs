@@ -17,7 +17,9 @@ use jian_ops_schema::page::PenPage;
 use std::collections::HashMap;
 
 mod dependencies;
+mod owned_all_pages;
 mod owned_page;
+pub(crate) use owned_all_pages::convert_tree_all_pages_owned;
 pub(crate) mod source_selection;
 pub(crate) use owned_page::convert_tree_page_owned;
 mod style_references;
@@ -104,7 +106,7 @@ pub fn figma_all_pages_to_pen_document(
         return empty_import_result(file_name, "No document root found", decoded.blobs);
     };
 
-    convert_tree_all_pages(&tree, decoded.blobs, file_name, layout_mode)
+    convert_tree_all_pages_owned(tree, decoded.blobs, file_name, layout_mode)
 }
 
 pub(crate) fn convert_tree_all_pages(

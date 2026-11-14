@@ -307,10 +307,16 @@ pub fn render_deck_pdf_boards_bytes(
     // accidentally turn into a page shuffle.
     let wanted: std::collections::HashSet<&str> = boards.iter().map(String::as_str).collect();
     let deck = op_editor_core::preview_slideshow::active_page_boards(state);
+    let resolved = crate::node_lookup::resolve_page_nodes(
+        page,
+        deck.iter()
+            .filter(|id| wanted.contains(id.as_str()))
+            .map(String::as_str),
+    );
     let slides: Vec<&SceneNode> = deck
         .iter()
         .filter(|id| wanted.contains(id.as_str()))
-        .filter_map(|id| page.find(id))
+        .filter_map(|id| resolved.get(id.as_str()).copied())
         // Hidden boards are skipped for the same reason the slideshow
         // never presents them. A degenerate board is dropped too: skia
         // cannot open a zero-extent page.

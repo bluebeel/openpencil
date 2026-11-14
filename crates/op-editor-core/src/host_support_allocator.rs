@@ -19,7 +19,7 @@ struct BooleanPathStyle {
 impl EditorState {
     /// Spawn a node for a creatable tool using the caller's id policy.
     #[allow(clippy::too_many_arguments)]
-    pub fn create_node_for_tool_with_allocator(
+    pub(crate) fn create_node_for_tool_with_allocator_unobserved(
         &mut self,
         tool: Tool,
         allocator: &mut dyn IdAllocator,
@@ -85,7 +85,7 @@ impl EditorState {
     }
 
     /// Insert a default-sized image centered on the current viewport.
-    pub fn insert_image_node_at_viewport_with_allocator(
+    pub(crate) fn insert_image_node_at_viewport_with_allocator_unobserved(
         &mut self,
         name: &str,
         src: &str,
@@ -97,7 +97,7 @@ impl EditorState {
     }
 
     /// Insert an aspect-preserving image centered on the current viewport.
-    pub fn insert_image_node_at_viewport_sized_with_allocator(
+    pub(crate) fn insert_image_node_at_viewport_sized_with_allocator_unobserved(
         &mut self,
         name: &str,
         src: &str,
@@ -114,7 +114,7 @@ impl EditorState {
     }
 
     /// Insert an aspect-preserving image centered at a document point.
-    pub fn insert_image_node_at_doc_point_sized_with_allocator(
+    pub(crate) fn insert_image_node_at_doc_point_sized_with_allocator_unobserved(
         &mut self,
         name: &str,
         src: &str,
@@ -200,7 +200,7 @@ impl EditorState {
     }
 
     /// Insert an icon-font node using the caller's id policy.
-    pub fn insert_icon_font_node_at_with_allocator(
+    pub(crate) fn insert_icon_font_node_at_with_allocator_unobserved(
         &mut self,
         icon_name: &str,
         family: &str,
@@ -245,7 +245,7 @@ impl EditorState {
     }
 
     /// Insert an SVG-path icon, falling back to an icon-font node.
-    pub fn insert_icon_node_at_with_allocator(
+    pub(crate) fn insert_icon_node_at_with_allocator_unobserved(
         &mut self,
         icon_name: &str,
         family: &str,
@@ -302,7 +302,7 @@ impl EditorState {
     }
 
     /// Replace boolean-op sources with one path using the caller's id policy.
-    pub fn replace_paths_with_polyline_with_allocator(
+    pub(crate) fn replace_paths_with_polyline_with_allocator_unobserved(
         &mut self,
         source_ids: &[NodeId],
         contours: &[Vec<(f64, f64)>],
@@ -344,7 +344,7 @@ impl EditorState {
     /// Commit a host-computed boolean path without flattening its curves.
     /// `d` uses local coordinates; bounds describe its document-space extent.
     /// History and selection stay with the caller, as for the polyline API.
-    pub fn replace_paths_with_svg_with_allocator(
+    pub(crate) fn replace_paths_with_svg_with_allocator_unobserved(
         &mut self,
         source_ids: &[NodeId],
         d: String,

@@ -82,6 +82,27 @@ impl McpTool for ExportNodes {
             .and_then(|s| s.trim().parse::<f32>().ok())
             .unwrap_or(1.0);
 
+        // Only a transport-owned scope can defer work. Standard public and
+        // stdio callers keep inline behavior; explicit unsupported streaming
+        // is refused rather than silently buffering the complete batch.
+        match args.get("delivery").map(String::as_str).unwrap_or("inline") {
+            "stream" => {
+                return super::export_stream::prepare(
+                    self.scene.clone(),
+                    node_ids,
+                    format_str,
+                    scale,
+                    args.get("pdfMode").map_or("separate", String::as_str),
+                )
+            }
+            "inline" => {}
+            _ => {
+                return ToolOutcome::Err(
+                    ToolErrorCode::InvalidArgument,
+                    "delivery must be inline or stream".into(),
+                )
+            }
+        }
         // --- render ---
         match format_str {
             "pdf" => render_pdf(

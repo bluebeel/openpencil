@@ -32,7 +32,7 @@ impl Region<'_> {
     }
 }
 impl Patch {
-    fn regions(&self) -> [Option<Region<'_>>; 2] {
+    pub(super) fn regions(&self) -> [Option<Region<'_>>; 2] {
         let region = match self {
             Self::Node(p) => Region {
                 scope: &p.scope,
@@ -59,23 +59,48 @@ impl Patch {
                 kind: Kind::Children,
             },
             Self::Topology(p) => return p.actor_regions(),
+            Self::Clones(_) => return [None, None],
         };
         [Some(region), None]
     }
 }
-impl ScopedEditorSnapshot {
-    pub(crate) fn actor_conflicts(&self, other: &Self) -> bool {
-        if !self.actor_safe || !other.actor_safe {
-            return true;
+impl Patch {
+    pub(super) fn actor_overlaps(&self, other: &Self) -> bool {
+        let mut own = self.splices().peekable();
+        if own.peek().is_some() {
+            return own.any(|splice| splice.conflicts_patch(other));
         }
-        self.patches.iter().any(|a| {
-            other.patches.iter().any(|b| {
-                a.regions()
+        let mut foreign = other.splices().peekable();
+        if foreign.peek().is_some() {
+            return foreign.any(|splice| splice.conflicts_patch(self));
+        }
+        match (self, other) {
+            (Self::Node(a), Self::Node(b)) => {
+                if a.scope != b.scope {
+                    return false;
+                }
+                a.overlaps_affected(b)
+            }
+            (Self::Topology(topology), Self::Node(node))
+            | (Self::Node(node), Self::Topology(topology)) => topology.conflicts_node(node),
+            _ => self.regions().into_iter().flatten().any(|a| {
+                other
+                    .regions()
                     .into_iter()
                     .flatten()
-                    .any(|a| b.regions().into_iter().flatten().any(|b| a.intersects(b)))
-            })
-        })
+                    .any(|b| a.intersects(b))
+            }),
+        }
+    }
+}
+impl ScopedEditorSnapshot {
+    pub(crate) fn actor_conflicts(&self, other: &Self) -> bool {
+        !self.actor_safe
+            || !other.actor_safe
+            || self
+                .patches
+                .iter()
+                .any(|a| other.patches.iter().any(|b| a.actor_overlaps(b)))
     }
     /// Selective exchanges touch canonical patches and the current actor's UI.
     /// Shared component/reference caches and other actors' state stay current.
@@ -83,19 +108,50 @@ impl ScopedEditorSnapshot {
         &mut self,
         state: &mut EditorState,
     ) -> Result<(), ScopedHistoryError> {
+        self.exchange_actor_inner(state, false)
+    }
+    pub(crate) fn exchange_actor_rollback(
+        &mut self,
+        state: &mut EditorState,
+    ) -> Result<(), ScopedHistoryError> {
+        self.exchange_actor_inner(state, true)
+    }
+    fn exchange_actor_inner(
+        &mut self,
+        state: &mut EditorState,
+        rollback: bool,
+    ) -> Result<(), ScopedHistoryError> {
         self.validate_shape(state)?;
         if !self.actor_safe {
             return Err(ScopedHistoryError::NodePathChanged);
+        }
+        super::actor_rebase::paths(&state.doc, &mut self.patches)?;
+        if !rollback {
+            super::actor_rebase::restored_node_collisions(&state.doc, &self.patches)?;
+        }
+        let catalog = super::splice_exchange::Catalog::new(&state.history, &self.patches);
+        let splices = super::splice_exchange::Prepared::capture(
+            &state.doc,
+            &self.patches,
+            &catalog,
+            !rollback,
+        )?;
+        if let Some(prepared) = &splices {
+            prepared.rebase(&mut self.patches);
         }
         for patch in &self.patches {
             patch.validate(&state.doc)?;
         }
         let mut reordered = super::patch::Reorders::default();
-        for patch in &mut self.patches {
-            patch.exchange(&mut state.doc, &mut reordered);
-        }
-        for patch in &mut self.patches {
-            patch.rebase(&reordered);
+        if let Some(splices) = splices {
+            splices.exchange(&mut state.doc, &mut self.patches);
+        } else {
+            for patch in &mut self.patches {
+                patch.exchange(&mut state.doc, &mut reordered);
+            }
+            for patch in &mut self.patches {
+                patch.rebase(&reordered);
+            }
         }
         std::mem::swap(&mut self.selection, &mut state.selection);
         std::mem::swap(&mut self.active_page_index, &mut state.ui.active_page_index);

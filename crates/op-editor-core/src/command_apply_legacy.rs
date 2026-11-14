@@ -55,7 +55,7 @@ impl EditorState {
         checkpoint: Option<&crate::EditorSnapshot>,
     ) -> bool {
         let mut allocator = if allocation_policy::requires_id_seed(&command) {
-            let Ok(allocator) = DocumentIdAllocator::sequential_for_document(&self.doc) else {
+            let Ok(allocator) = self.standalone_id_allocator() else {
                 return false;
             };
             allocator
@@ -66,6 +66,7 @@ impl EditorState {
             command,
             EditorCommand::InsertNode { .. }
                 | EditorCommand::BatchInsert { .. }
+                | EditorCommand::GroupSelected
                 | EditorCommand::DuplicateSelected { .. }
                 | EditorCommand::PasteClipboard { .. }
         ) {

@@ -11,6 +11,9 @@ use crate::pen_node_ext::PenNodeExt;
 use crate::walkers::find_node;
 use jian_ops_schema::node::PenNode;
 
+#[path = "geometry_selection.rs"]
+mod selected;
+
 /// An axis-aligned document-space rectangle. f64 to line up with the
 /// canonical schema's coordinate type.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -91,6 +94,11 @@ pub fn union_of(rects: impl Iterator<Item = DocRect>) -> DocRect {
 /// Union of `aggregate_bounds` across the ids that resolve in the
 /// forest. `None` when no id resolves to a node with real area.
 pub fn union_aggregate_bounds(children: &[PenNode], ids: &[NodeId]) -> Option<DocRect> {
+    // Tiny selections keep the early-exit lookup; large selections share one
+    // postorder geometry pass rather than searching the forest per ID.
+    if ids.len() > 4 {
+        return selected::union(children, ids);
+    }
     let rect = union_of(
         ids.iter()
             .filter_map(|id| find_node(children, id))

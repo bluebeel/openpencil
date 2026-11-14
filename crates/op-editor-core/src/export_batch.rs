@@ -37,7 +37,7 @@ const MAX_NAME_CHARS: usize = 80;
 /// in document child order. Hidden frames are skipped: the exporter
 /// resolves them to an empty paint, so including them would only
 /// manufacture failures.
-fn exportable_frames(state: &EditorState) -> Vec<(NodeId, String)> {
+fn exportable_frames(state: &EditorState) -> impl Iterator<Item = (&str, &str)> {
     state
         .active_children()
         .iter()
@@ -45,40 +45,43 @@ fn exportable_frames(state: &EditorState) -> Vec<(NodeId, String)> {
         .filter(|node| node.base().visible != Some(false))
         .filter_map(|node| {
             let base = node.base();
-            let id = NodeId::new_opt(base.id.clone())?;
-            let name = base.name.clone().unwrap_or_default();
-            Some((id, name))
+            (!base.id.is_empty())
+                .then_some((base.id.as_str(), base.name.as_deref().unwrap_or_default()))
         })
-        .collect()
 }
 
-/// How many top-level frames the current selection covers. Non-frame
-/// and nested selections do not count — the File-menu row uses this to
-/// decide between its "all frames" and "N frames" labels.
+/// Count selected visible top-level frames without cloning their IDs/names
+/// or searching the entire selection once for every frame.
 pub fn selected_frame_count(state: &EditorState) -> usize {
+    if state.selection.is_empty() {
+        return 0;
+    }
+    let selected: HashSet<&str> = state.selection.set.iter().map(NodeId::as_str).collect();
     exportable_frames(state)
-        .iter()
-        .filter(|(id, _)| state.selection.contains(id))
+        .filter(|(id, _)| selected.contains(id))
         .count()
 }
 
-/// The frames a batch export would write, in document order, already
-/// named. `extension` is the output extension without the dot.
+/// Export selected frames when at least two qualify, otherwise all frames.
+/// Borrow source labels until the final file plan owns its requested IDs.
 pub fn plan_frame_exports(state: &EditorState, extension: &str) -> Vec<FrameExportTarget> {
-    let all = exportable_frames(state);
-    let selected: Vec<(NodeId, String)> = all
+    let selected: HashSet<&str> = state.selection.set.iter().map(NodeId::as_str).collect();
+    let mut frames: Vec<_> = exportable_frames(state).collect();
+    if frames
         .iter()
-        .filter(|(id, _)| state.selection.contains(id))
-        .cloned()
-        .collect();
-    let scope = if selected.len() >= 2 { selected } else { all };
-    name_targets(&scope, extension)
+        .filter(|(id, _)| selected.contains(id))
+        .count()
+        >= 2
+    {
+        frames.retain(|(id, _)| selected.contains(id));
+    }
+    name_targets(&frames, extension)
 }
 
 /// Assign `<NN>-<name>.<ext>` file names to an ordered frame list.
 /// The two-digit index runs over the exported list itself, so a
 /// multi-select export still numbers from 01.
-fn name_targets(frames: &[(NodeId, String)], extension: &str) -> Vec<FrameExportTarget> {
+fn name_targets(frames: &[(&str, &str)], extension: &str) -> Vec<FrameExportTarget> {
     let mut taken: HashSet<String> = HashSet::new();
     frames
         .iter()
@@ -87,14 +90,14 @@ fn name_targets(frames: &[(NodeId, String)], extension: &str) -> Vec<FrameExport
             let index = i + 1;
             let mut stem = strip_matching_ordinal(&sanitize_frame_name(name), index);
             if stem.is_empty() {
-                stem = sanitize_frame_name(id.as_str());
+                stem = sanitize_frame_name(id);
             }
             if stem.is_empty() {
                 stem = "frame".to_string();
             }
             let file_name = unique_file_name(&format!("{index:02}-{stem}"), extension, &mut taken);
             FrameExportTarget {
-                node_id: id.clone(),
+                node_id: NodeId::new(*id),
                 file_name,
             }
         })

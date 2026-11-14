@@ -6,7 +6,7 @@
 //! platform glue (`mark_dirty`, scene caches, layer-panel scrolling,
 //! hover-probe caches, drag-state structs) in their thin wrappers.
 
-use crate::id_allocator::{IdAllocError, IdAllocator, SequentialIdAllocator};
+use crate::id_allocator::{IdAllocError, IdAllocator};
 use crate::selection_resolve::{resolve_canvas_depth_targets, CanvasDepthTargets};
 use crate::state::EditorState;
 use crate::NodeId;
@@ -166,7 +166,7 @@ pub fn activate_node_drag(
     total_dx: f64,
     total_dy: f64,
 ) -> NodeDragActivation {
-    let Ok(mut allocator) = SequentialIdAllocator::for_document(&state.doc, *next_node_id) else {
+    let Ok(mut allocator) = state.sequential_id_allocator(*next_node_id) else {
         state.editor_ui.last_canvas_click = None;
         return NodeDragActivation {
             option_drag_source_ids: Vec::new(),

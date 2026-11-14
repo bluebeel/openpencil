@@ -57,6 +57,19 @@ impl std::fmt::Display for CommandEditError {
 }
 impl std::error::Error for CommandEditError {}
 impl CommandEditCapture {
+    /// Exact bounded forward canonical metadata from a completed trusted edit.
+    /// Call immediately after apply/maintenance, before another command changes
+    /// this document. None requires a resync barrier, never command replay.
+    pub fn forward_metadata_json(&self, state: &EditorState, limit: usize) -> Option<Vec<u8>> {
+        match &self.kind {
+            CaptureKind::Scoped(captured) => captured
+                .completed
+                .as_ref()?
+                .forward_metadata_json(state, limit),
+            CaptureKind::Full(_) | CaptureKind::Refused { .. } | CaptureKind::History(_) => None,
+        }
+    }
+
     pub fn is_scoped(&self) -> bool {
         matches!(self.kind, CaptureKind::Scoped(_) | CaptureKind::History(_))
     }
@@ -137,6 +150,27 @@ impl EditorState {
             }
             command_scope::Classification::Full => return None,
         };
+        if matches!(
+            command,
+            EditorCommand::DuplicateSelected { .. } | EditorCommand::PasteClipboard { .. }
+        ) {
+            if self.instance_write_virtual_anchor.is_some() {
+                return None;
+            }
+            let pending = PendingScopedSnapshot::capture_clones(self, plan.forests, command)?;
+            return Some(CommandEditCapture {
+                batch_actor: None,
+                kind: CaptureKind::Scoped(ScopedCapture {
+                    targeted: true,
+                    generation: self.document_generation,
+                    revision: self.revision,
+                    pending: Some(pending),
+                    completed: None,
+                    history: self.history.clone(),
+                    active_theme: self.ui.variables.active_theme.clone(),
+                }),
+            });
+        }
         if matches!(command, EditorCommand::Undo | EditorCommand::Redo) {
             return Some(CommandEditCapture {
                 batch_actor: None,
@@ -144,11 +178,7 @@ impl EditorState {
                     actor_selective: self
                         .history
                         .next_entry(matches!(command, EditorCommand::Redo))
-                        .is_some_and(|entry| {
-                            entry.selective()
-                                && (self.history.actor().is_some()
-                                    || entry.history_tag().actor.is_some())
-                        }),
+                        .is_some_and(|entry| self.history.selective_exchange(entry)),
                     generation: self.document_generation,
                     revision: self.revision,
                     undo: matches!(command, EditorCommand::Undo),
@@ -241,9 +271,7 @@ impl EditorState {
                             if crate::command_apply_legacy::allocation_policy::requires_id_seed(
                                 &batch,
                             ) {
-                                let Ok(allocator) =
-                                    crate::DocumentIdAllocator::sequential_for_document(&self.doc)
-                                else {
+                                let Ok(allocator) = self.standalone_id_allocator() else {
                                     return false;
                                 };
                                 allocator
@@ -253,10 +281,16 @@ impl EditorState {
                         let EditorCommand::Batch { commands } = batch else {
                             unreachable!()
                         };
-                        self.cmd_batch_with_scoped_checkpoint(
-                            commands,
+                        self.observe_runtime_allocations(
                             &mut allocator,
-                            &mut pending,
+                            |state, allocator| {
+                                state.cmd_batch_with_scoped_checkpoint(
+                                    commands,
+                                    allocator,
+                                    &mut pending,
+                                )
+                            },
+                            |changed| *changed,
                         )
                         .unwrap_or(false)
                     } else {
@@ -340,7 +374,7 @@ impl EditorState {
                     let mut snapshot = Arc::unwrap_or_clone(snapshot);
                     if captured.actor_selective {
                         snapshot
-                            .exchange_actor(self)
+                            .exchange_actor_rollback(self)
                             .map_err(CommandEditError::Scoped)?;
                         self.revision = captured.revision;
                         self.sync_dirty_flag();

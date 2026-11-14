@@ -12,7 +12,7 @@ pub(crate) struct Location {
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct Parent {
     pub path: Box<[usize]>,
-    id: Option<String>,
+    pub(super) id: Option<String>,
     kind: Option<mem::Discriminant<PenNode>>,
 }
 pub(super) fn identity(node: Option<&PenNode>) -> Result<Option<String>, ScopedHistoryError> {
@@ -63,6 +63,21 @@ impl Parent {
             parent.children().map_or(&[], Vec::as_slice),
             parent.children().is_some(),
         ))
+    }
+    pub(super) fn want(&self, scope: &patch::Scope, wanted: &mut super::identity::Wanted) {
+        if let Some(id) = &self.id {
+            wanted.entry(scope.clone()).or_default().insert(id.clone());
+        }
+    }
+    pub(super) fn rebase_identity(
+        &mut self,
+        scope: &patch::Scope,
+        index: &super::identity::Index,
+    ) -> Result<(), ScopedHistoryError> {
+        if let Some(id) = &self.id {
+            self.path = index.path(scope, id)?;
+        }
+        Ok(())
     }
     pub(super) fn bytes(&self) -> usize {
         self.path.len() * mem::size_of::<usize>() + self.id.as_ref().map_or(0, String::capacity)

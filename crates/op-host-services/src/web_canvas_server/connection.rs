@@ -116,6 +116,7 @@ fn dispatch_inner<S: Read + Write>(
     conversion_body: Option<String>,
 ) -> Result<bool> {
     let _raster_response = crate::mcp_serve::raster_response::RasterResponseScope::new();
+    let _export_stream = crate::mcp_serve::export_stream::Scope::new(&req.body);
     let state = ctx.state;
     let hub = ctx.hub;
     let managed_lifecycle_token = &ctx.authority.managed_lifecycle_token;
@@ -305,6 +306,12 @@ fn dispatch_inner<S: Read + Write>(
         )?;
         return Ok(false);
     }
+    // Authenticated same-authority since reads borrow encoded committed data;
+    // they never replay commands or retain a per-subscriber document snapshot.
+    if req.method == "GET" && req.path == "/api/mcp/changes" {
+        super::changefeed::http::serve(stream, req, ctx, cors_origin)?;
+        return Ok(false);
+    }
     // SSE live-update stream: the browser shell subscribes and re-syncs whenever
     // the document version advances. Subscribe BEFORE reading the current
     // version so no broadcast is missed (a duplicate is harmless — versions are
@@ -312,6 +319,9 @@ fn dispatch_inner<S: Read + Write>(
     if req.method == "GET" && req.path == "/api/mcp/events" {
         let slot = hub.subscribe();
         let current = state.lock().unwrap_or_else(|p| p.into_inner()).sse_tick();
+        if super::async_sse::capture(&slot, current, cors_origin) {
+            return Ok(false);
+        }
         return serve_sse(stream, &slot, current, cors_origin).map(|()| false);
     }
     // The AI / image routes, which parse under the lock and then run long
@@ -712,16 +722,7 @@ pub(super) fn serve_sse<S: Write>(
     current: SseTick,
     cors_origin: Option<&str>,
 ) -> Result<()> {
-    let cors_line = cors_origin
-        .map(|origin| format!("Access-Control-Allow-Origin: {origin}\r\n"))
-        .unwrap_or_default();
-    let headers = format!(
-        "HTTP/1.1 200 OK\r\n\
-         Content-Type: text/event-stream\r\n\
-         Cache-Control: no-cache\r\n\
-         Connection: keep-alive\r\n\
-         {cors_line}\r\n"
-    );
+    let headers = super::sse_wire::headers(cors_origin);
     stream
         .write_all(headers.as_bytes())
         .map_err(|e| WebCanvasError::Transport(format!("sse headers: {e}")))?;
@@ -752,10 +753,7 @@ pub(super) fn serve_sse<S: Write>(
 /// `version` stays the first field and keeps its exact spelling, so a client
 /// written against the original payload keeps parsing this one.
 pub(super) fn write_sse_event<S: Write>(stream: &mut S, tick: SseTick) -> Result<()> {
-    let event = format!(
-        "data: {{\"version\":{},\"collabSeq\":{}}}\n\n",
-        tick.version, tick.collab_seq
-    );
+    let event = super::sse_wire::event(tick);
     stream
         .write_all(event.as_bytes())
         .map_err(|e| WebCanvasError::Transport(format!("sse write: {e}")))?;

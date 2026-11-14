@@ -243,17 +243,19 @@ fn visit_document_ids(doc: &PenDocument, mut visit: impl FnMut(&str)) {
 }
 
 /// First standalone counter above every canonical `n{counter}` id.
-pub fn next_sequential_counter(doc: &PenDocument) -> Result<u64, IdAllocError> {
-    let mut max = None;
+pub(crate) fn numeric_high_water(doc: &PenDocument) -> u64 {
+    let mut maximum = 0;
     visit_document_ids(doc, |id| {
-        if let Some(counter) = crate::walkers::parse_n_id(id) {
-            max = Some(max.map_or(counter, |current: u64| current.max(counter)));
+        if let Some(number) = crate::walkers::parse_n_id(id) {
+            maximum = maximum.max(number);
         }
     });
-    match max {
-        Some(max) => max.checked_add(1).ok_or(IdAllocError::CounterExhausted),
-        None => Ok(1),
-    }
+    maximum
+}
+pub fn next_sequential_counter(doc: &PenDocument) -> Result<u64, IdAllocError> {
+    numeric_high_water(doc)
+        .checked_add(1)
+        .ok_or(IdAllocError::CounterExhausted)
 }
 
 /// First counter above every canonical id in `namespace`.

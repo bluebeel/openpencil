@@ -60,6 +60,21 @@ pub(super) fn build(node_changes: Vec<FigValue>) -> Option<TreeNode> {
     }
     drop(counts);
     drop(lookup);
+    // The compact adjacency already owns every child index. Sort each slice
+    // once in place instead of retaining an additional sorted Vec at every
+    // recursive parent while its descendants are being materialized.
+    for (index, node) in nodes.iter().enumerate() {
+        let pages = node.as_ref().unwrap().get_str("type") == Some("DOCUMENT");
+        children[offsets[index]..offsets[index + 1]].sort_by(|a, b| {
+            let pa = nodes[*a].as_ref().map(position_of).unwrap_or("");
+            let pb = nodes[*b].as_ref().map(position_of).unwrap_or("");
+            if pages {
+                pa.cmp(pb)
+            } else {
+                pb.cmp(pa)
+            }
+        });
+    }
     Some(materialize_index(root, &mut nodes, &offsets, &children, 0))
 }
 fn materialize_index(
@@ -70,21 +85,11 @@ fn materialize_index(
     depth: u32,
 ) -> TreeNode {
     let figma = nodes[index].take().unwrap_or(FigValue::Null);
-    let pages = figma.get_str("type") == Some("DOCUMENT");
     let mut children = Vec::new();
     if depth < MAX_TREE_DEPTH {
-        let mut sorted = edges[offsets[index]..offsets[index + 1]].to_vec();
-        sorted.sort_by(|a, b| {
-            let pa = nodes[*a].as_ref().map(position_of).unwrap_or("");
-            let pb = nodes[*b].as_ref().map(position_of).unwrap_or("");
-            if pages {
-                pa.cmp(pb)
-            } else {
-                pb.cmp(pa)
-            }
-        });
+        let sorted = &edges[offsets[index]..offsets[index + 1]];
         children.reserve_exact(sorted.len());
-        for child in sorted {
+        for &child in sorted {
             children.push(materialize_index(child, nodes, offsets, edges, depth + 1))
         }
     }

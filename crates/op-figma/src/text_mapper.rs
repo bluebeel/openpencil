@@ -330,6 +330,23 @@ fn title_case(s: &str) -> String {
 /// wins; order matters (`extrabold` before `bold`, `extralight`
 /// before `light`).
 fn parse_font_weight(style: &str) -> Option<u32> {
+    // OpenType subfamily names use both joined and separated weight tokens
+    // ("Semi Bold", "Extra-Light"). A separator cannot turn a 600 weight into
+    // plain Bold700 or a 200 weight into Light300. Borrow ordinary names.
+    let normalized = if style
+        .bytes()
+        .any(|b| b.is_ascii_whitespace() || b == b'-' || b == b'_')
+    {
+        std::borrow::Cow::Owned(
+            style
+                .chars()
+                .filter(|c| !c.is_ascii_whitespace() && *c != '-' && *c != '_')
+                .collect::<String>(),
+        )
+    } else {
+        std::borrow::Cow::Borrowed(style)
+    };
+    let style = normalized.as_ref();
     if style.contains("thin") || style.contains("hairline") {
         Some(100)
     } else if style.contains("extralight") || style.contains("ultralight") {

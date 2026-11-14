@@ -44,6 +44,7 @@ struct Triangle {
     points: [Point; 3],
     values: [[f32; 3]; 3],
     interior: bool,
+    contour_bounds: Rect,
 }
 
 fn append(
@@ -60,6 +61,7 @@ fn append(
         points,
         values,
         interior,
+        contour_bounds: Rect::default(),
     });
     Some(())
 }
@@ -77,10 +79,35 @@ fn triangles(path: &Path) -> Option<Vec<Triangle>> {
     }
     let mut result = Vec::new();
     let (mut first, mut previous) = (None, None);
+    let mut contour_start = 0;
+    let mut contour_bounds = None;
+    let finish = |result: &mut Vec<Triangle>, start: usize, bounds: Option<Rect>| {
+        if let Some(bounds) = bounds {
+            for triangle in &mut result[start..] {
+                triangle.contour_bounds = bounds;
+            }
+        }
+    };
     for record in path.iter() {
         let p = record.points();
         if p.iter().any(|p| !p.x.is_finite() || !p.y.is_finite()) {
             return None;
+        }
+        if record.verb() == PathVerb::Move {
+            finish(&mut result, contour_start, contour_bounds);
+            contour_start = result.len();
+            contour_bounds = None;
+        }
+        for point in p {
+            contour_bounds = Some(match contour_bounds {
+                Some(bounds) => Rect::new(
+                    bounds.left.min(point.x),
+                    bounds.top.min(point.y),
+                    bounds.right.max(point.x),
+                    bounds.bottom.max(point.y),
+                ),
+                None => Rect::new(point.x, point.y, point.x, point.y),
+            });
         }
         match record.verb() {
             PathVerb::Move => {
@@ -149,6 +176,7 @@ fn triangles(path: &Path) -> Option<Vec<Triangle>> {
             PathVerb::Cubic | PathVerb::Conic => return None,
         }
     }
+    finish(&mut result, contour_start, contour_bounds);
     Some(result)
 }
 
@@ -357,16 +385,35 @@ fn raster(triangle: Triangle, camera: &Camera<'_>, target: &mut Target<'_>) -> O
     let sign = if area > 0 { 1 } else { -1 };
     let left = (p.iter().map(|p| p[0]).min()? as f64 / 16.0).ceil() as i32;
     let right = (p.iter().map(|p| p[0]).max()? as f64 / 16.0).floor() as i32 + 1;
-    // Keep the primitive's vertical extent before fixed-point edge setup.
-    // Snapping an extremal vertex across a sample row must not extend that
-    // primitive's scanline range. Edge ownership and interpolation still use
-    // the same fixed4 coordinates below.
-    let top = (-projected
-        .iter()
-        .map(|p| p[1])
-        .fold(f32::NEG_INFINITY, f32::max))
-    .ceil() as i32;
-    let bottom = (-projected.iter().map(|p| p[1]).fold(f32::INFINITY, f32::min)).ceil() as i32;
+    // Fixed4 setup is one coherent rasterization of every fan/hull edge.
+    // Raw clipping per triangle can remove only one of two canceling stencil
+    // contributions at a shared extremum, leaving a phantom horizontal band.
+    // Keep the unsnapped extent at the contour stage instead: every signed
+    // triangle in that contour receives the SAME conservative cover interval.
+    // Independent contours retain independent covers, including holes and
+    // disjoint glyphs. The control-point box encloses the whole curve.
+    let cover = triangle.contour_bounds;
+    let cover = [
+        Point::new(cover.left, cover.top),
+        Point::new(cover.right, cover.top),
+        Point::new(cover.right, cover.bottom),
+        Point::new(cover.left, cover.bottom),
+    ]
+    .map(|p| map(matrix, p))
+    .map(|p| {
+        if point {
+            p.y - 0.5
+        } else {
+            grid as f32 * p.y - jitter.1
+        }
+    });
+    if cover.iter().any(|v| !v.is_finite()) {
+        return None;
+    }
+    let top = (-p.iter().map(|p| p[1]).max()? as f64 / 16.0).ceil() as i32;
+    let bottom = (-p.iter().map(|p| p[1]).min()? as f64 / 16.0).floor() as i32 + 1;
+    let top = top.max(cover.into_iter().fold(f32::INFINITY, f32::min).ceil() as i32);
+    let bottom = bottom.min(cover.into_iter().fold(f32::NEG_INFINITY, f32::max).ceil() as i32);
     let origin_x = bounds.left as i32 * grid;
     let origin_y = bounds.top as i32 * grid;
     let left = left.max(origin_x);

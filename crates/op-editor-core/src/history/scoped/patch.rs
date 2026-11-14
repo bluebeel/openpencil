@@ -14,6 +14,7 @@ pub(super) struct NodePatch {
     pub path: Box<[usize]>,
     pub expected_id: String,
     pub metadata_only: bool,
+    pub affected_ids: Option<Arc<Vec<String>>>,
     pub old: Arc<SharedNode>,
 }
 #[derive(Debug, Clone, PartialEq)]
@@ -30,6 +31,7 @@ pub(super) enum Patch {
     Forest(ForestPatch),
     Order(OrderPatch),
     Splice(super::splice::SplicePatch),
+    Clones(super::clones::ClonePatch),
     Topology(super::topology::TopologyPatch),
 }
 #[derive(Debug, Clone, PartialEq)]
@@ -316,12 +318,15 @@ fn compact_node(
     if mem::discriminant(&old) != mem::discriminant(current)
         || old.children().is_some() != current.children().is_some()
     {
+        let old = SharedNode::capture(&old, None);
+        let affected_ids = Some(super::identity::changed_subtree_ids(&old, current));
         out.push(Patch::Node(NodePatch {
             scope: scope.clone(),
             path: path.clone().into_boxed_slice(),
             expected_id: current.id_str().to_owned(),
             metadata_only: false,
-            old: SharedNode::capture(&old, None),
+            affected_ids,
+            old,
         }));
         return;
     }
@@ -336,6 +341,7 @@ fn compact_node(
             path: path.clone().into_boxed_slice(),
             expected_id: current.id_str().to_owned(),
             metadata_only: true,
+            affected_ids: None,
             old: SharedNode::capture(&old, None),
         }));
     }
@@ -350,15 +356,74 @@ fn compact_node(
         );
     }
 }
+impl NodePatch {
+    pub(super) fn contains_affected(&self, id: &str) -> bool {
+        self.expected_id == id
+            || self.old.id_str() == id
+            || self
+                .affected_ids
+                .as_ref()
+                .is_some_and(|ids| ids.binary_search_by(|known| known.as_str().cmp(id)).is_ok())
+    }
+    pub(super) fn overlaps_affected(&self, other: &Self) -> bool {
+        self.contains_affected(&other.expected_id)
+            || self.contains_affected(other.old.id_str())
+            || other.contains_affected(&self.expected_id)
+            || other.contains_affected(self.old.id_str())
+            || self
+                .affected_ids
+                .as_ref()
+                .is_some_and(|ids| ids.iter().any(|id| other.contains_affected(id)))
+    }
+}
 impl Patch {
-    pub(super) fn retained_roots(&self) -> &[Arc<SharedNode>] {
+    pub(super) fn splices(&self) -> impl Iterator<Item = &super::splice::SplicePatch> {
+        let (single, multiple): (
+            Option<&super::splice::SplicePatch>,
+            Option<&[super::splice::SplicePatch]>,
+        ) = match self {
+            Self::Splice(splice) => (Some(splice), None),
+            Self::Clones(clones) => (None, Some(&clones.groups)),
+            _ => (None, None),
+        };
+        single.into_iter().chain(multiple.into_iter().flatten())
+    }
+    pub(super) fn splices_mut(&mut self) -> impl Iterator<Item = &mut super::splice::SplicePatch> {
+        let (single, multiple): (
+            Option<&mut super::splice::SplicePatch>,
+            Option<&mut [super::splice::SplicePatch]>,
+        ) = match self {
+            Self::Splice(splice) => (Some(splice), None),
+            Self::Clones(clones) => (None, Some(&mut clones.groups)),
+            _ => (None, None),
+        };
+        single.into_iter().chain(multiple.into_iter().flatten())
+    }
+    pub(super) fn splice_at(&self, index: usize) -> &super::splice::SplicePatch {
         match self {
+            Self::Splice(splice) if index == 0 => splice,
+            Self::Clones(clones) => &clones.groups[index],
+            _ => unreachable!("prepared splice coordinate"),
+        }
+    }
+    pub(super) fn splice_at_mut(&mut self, index: usize) -> &mut super::splice::SplicePatch {
+        match self {
+            Self::Splice(splice) if index == 0 => splice,
+            Self::Clones(clones) => &mut clones.groups[index],
+            _ => unreachable!("prepared splice coordinate"),
+        }
+    }
+    pub(super) fn retained_roots(&self) -> impl Iterator<Item = &Arc<SharedNode>> {
+        let ordinary: &[Arc<SharedNode>] = match self {
             Self::Node(p) => std::slice::from_ref(&p.old),
             Self::Forest(p) => &p.old,
             Self::Order(p) => &p.old,
-            Self::Splice(p) => &p.old,
             Self::Topology(p) => p.roots(),
-        }
+            Self::Splice(_) | Self::Clones(_) => &[],
+        };
+        ordinary
+            .iter()
+            .chain(self.splices().flat_map(|splice| splice.old.iter()))
     }
     pub(super) fn storage_bytes(&self) -> usize {
         let scope_bytes = |s: &Scope| match s {
@@ -367,11 +432,17 @@ impl Patch {
         };
         match self {
             Self::Splice(p) => p.storage_bytes(),
+            Self::Clones(p) => p.bytes(),
             Self::Topology(p) => p.bytes(),
             Self::Node(p) => {
                 scope_bytes(&p.scope)
                     + p.path.len() * mem::size_of::<usize>()
                     + p.expected_id.capacity()
+                    + p.affected_ids.as_ref().map_or(0, |ids| {
+                        std::mem::size_of::<Vec<String>>()
+                            + ids.capacity() * std::mem::size_of::<String>()
+                            + ids.iter().map(String::capacity).sum::<usize>()
+                    })
             }
             Self::Forest(p) => {
                 scope_bytes(&p.scope)
@@ -403,11 +474,21 @@ impl Patch {
             Self::Forest(p) => reordered.rebase(&p.scope, &mut p.parent),
             Self::Order(p) => reordered.rebase(&p.scope, &mut p.parent),
             Self::Splice(p) => reordered.rebase(&p.scope, &mut p.parent),
+            Self::Clones(p) => {
+                for splice in &mut p.groups {
+                    reordered.rebase(&splice.scope, &mut splice.parent);
+                }
+            }
         }
     }
     pub(super) fn validate(&self, doc: &PenDocument) -> Result<(), ScopedHistoryError> {
         match self {
             Self::Splice(p) => p.validate(doc)?,
+            Self::Clones(p) => {
+                for splice in &p.groups {
+                    splice.validate(doc)?;
+                }
+            }
             Self::Topology(p) => p.validate(doc)?,
             Self::Node(p) => {
                 let found = node(roots(doc, &p.scope)?, &p.path)
@@ -450,7 +531,9 @@ impl Patch {
     /// Called only after all patches have validated, while the authority is locked.
     pub(super) fn exchange(&mut self, doc: &mut PenDocument, reordered: &mut Reorders) {
         match self {
-            Self::Splice(p) => p.exchange(doc),
+            Self::Splice(_) | Self::Clones(_) => {
+                unreachable!("scoped insertion exchange is prepared before mutation")
+            }
             Self::Topology(p) => p.exchange(doc),
             Self::Node(p) => {
                 let found = node_mut(roots_mut(doc, &p.scope).unwrap(), &p.path).unwrap();
@@ -511,5 +594,42 @@ impl Patch {
                 p.old = reverse;
             }
         }
+    }
+}
+
+// Forward serialization reads the exact opposite-side order already retained
+// for rollback; it never mutates/exchanges this history entry.
+impl OrderPatch {
+    pub(super) fn forward_children<'a>(
+        &self,
+        doc: &'a PenDocument,
+        budget: &mut super::forward_structure::Budget,
+    ) -> Option<super::forward_structure::Children<'a>> {
+        let before = super::forward_structure::ids(self.old_order.iter().map(String::as_str))?;
+        super::forward_structure::Children::capture(
+            doc,
+            &self.scope,
+            &self.parent,
+            before,
+            true,
+            budget,
+        )
+    }
+}
+impl ForestPatch {
+    pub(super) fn forward_children<'a>(
+        &self,
+        doc: &'a PenDocument,
+        budget: &mut super::forward_structure::Budget,
+    ) -> Option<super::forward_structure::Children<'a>> {
+        let before = super::forward_structure::ids(self.old.iter().map(|node| node.id_str()))?;
+        super::forward_structure::Children::capture(
+            doc,
+            &self.scope,
+            &self.parent,
+            before,
+            true,
+            budget,
+        )
     }
 }

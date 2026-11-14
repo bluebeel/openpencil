@@ -25,6 +25,7 @@ use super::SseTick;
 pub(crate) struct SseSlot {
     latest: Mutex<Option<SseTick>>,
     ready: Condvar,
+    async_ready: tokio::sync::Notify,
 }
 
 impl SseSlot {
@@ -32,6 +33,7 @@ impl SseSlot {
         Self {
             latest: Mutex::new(None),
             ready: Condvar::new(),
+            async_ready: tokio::sync::Notify::new(),
         }
     }
 
@@ -39,6 +41,7 @@ impl SseSlot {
     fn publish(&self, tick: SseTick) {
         *self.latest.lock().unwrap_or_else(|p| p.into_inner()) = Some(tick);
         self.ready.notify_one();
+        self.async_ready.notify_one();
     }
 
     /// Take the pending tick, waiting up to `timeout` for one.
@@ -55,16 +58,26 @@ impl SseSlot {
         guard.take()
     }
 
-    /// Take the pending tick without waiting. Tests only.
+    /// Wait without blocking a request worker. Notify retains one permit when
+    /// publication precedes registration, matching the single latest-value slot.
+    pub(crate) async fn notified_async(&self) {
+        self.async_ready.notified().await;
+    }
+
+    /// Consume outside a cancelable wait, after notification or heartbeat wins.
+    pub(crate) fn take_pending(&self) -> Option<SseTick> {
+        self.latest.lock().unwrap_or_else(|p| p.into_inner()).take()
+    }
+
     #[cfg(test)]
     pub(crate) fn pending(&self) -> Option<SseTick> {
-        self.latest.lock().unwrap_or_else(|p| p.into_inner()).take()
+        self.take_pending()
     }
 }
 
 /// Broadcast hub for SSE subscribers. Each `GET /api/mcp/events` connection
 /// registers a slot; a document mutation publishes the new tick into every
-/// one of them, and each SSE connection thread writes it to its socket.
+/// one of them, and each SSE socket task writes it to its socket.
 ///
 /// Subscribers are held weakly, so a connection that ended is pruned on the
 /// next broadcast without needing the subscriber to signal anything.
@@ -74,8 +87,8 @@ pub struct SseHub {
 }
 
 impl SseHub {
-    /// Register a subscriber; the SSE connection thread blocks on the returned
-    /// slot for ticks. Dropping it unregisters.
+    /// Register a subscriber. Socket tasks await ticks without a request worker;
+    /// generic synchronous callers can block on the same slot. Dropping it unregisters.
     pub(crate) fn subscribe(&self) -> Arc<SseSlot> {
         let slot = Arc::new(SseSlot::new());
         let mut subscribers = self.subscribers.lock().unwrap_or_else(|p| p.into_inner());

@@ -9,7 +9,7 @@ use crate::figma_types::{
 };
 use crate::image_resolver::{resolve_image_blobs_owned_with, ImageTransform};
 use crate::node_mapper::{
-    convert_tree_all_pages, empty_import_result, resolve_style_references_with_mode,
+    convert_tree_all_pages_owned, empty_import_result, resolve_style_references_with_mode,
     FigmaImportResult, FigmaPageInfo,
 };
 use crate::progress::FigImportPhase;
@@ -235,11 +235,7 @@ impl PreparedFig {
             None => tree,
         };
         let result = match tree {
-            Some(tree) => {
-                let result = convert_tree_all_pages(&tree, blobs, &file_name, layout_mode);
-                drop(tree);
-                result
-            }
+            Some(tree) => convert_tree_all_pages_owned(tree, blobs, &file_name, layout_mode),
             None => empty_import_result(&file_name, "No document root found", blobs),
         };
         Ok(resolve_images(result, image_files, image_transform))

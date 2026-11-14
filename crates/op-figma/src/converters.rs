@@ -506,8 +506,8 @@ fn has_non_degenerate_vector_geometry(figma: &FigValue, ctx: &ConversionContext<
                 if ctx
                     .blobs
                     .get(index as usize)
-                    .and_then(|blob| blob.as_bytes())
-                    .is_some_and(|bytes| bytes.len() >= 9)
+                    .and_then(|blob| blob.byte_len())
+                    .is_some_and(|length| length >= 9)
                 {
                     return true;
                 }
@@ -519,8 +519,8 @@ fn has_non_degenerate_vector_geometry(figma: &FigValue, ctx: &ConversionContext<
         .get("vectorData")
         .and_then(|data| data.get_f64("vectorNetworkBlob"))
         .and_then(|index| ctx.blobs.get(index as usize))
-        .and_then(|blob| blob.as_bytes())
-        .is_some_and(|bytes| bytes.len() >= 9)
+        .and_then(|blob| blob.byte_len())
+        .is_some_and(|length| length >= 9)
 }
 
 fn convert_vector(

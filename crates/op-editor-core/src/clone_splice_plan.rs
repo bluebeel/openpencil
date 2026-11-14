@@ -3,29 +3,31 @@ use super::lookup;
 use crate::{NodeId, PenNodeExt};
 use jian_ops_schema::node::PenNode;
 use std::collections::{BTreeMap, HashMap, HashSet};
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub(super) enum Source {
     Original(Box<[usize]>),
     Owned { root: usize, path: Box<[usize]> },
 }
-#[derive(Clone, Copy)]
-struct Chain {
-    first: usize,
+#[derive(Debug, Clone, Copy)]
+pub(super) struct Chain {
+    pub(super) first: usize,
     last: usize,
-    len: usize,
+    pub(super) len: usize,
 }
-struct Pending {
-    node: Option<PenNode>,
+#[derive(Debug)]
+pub(super) struct Pending {
+    pub(super) node: Option<PenNode>,
     list: usize,
     gap: usize,
     prev: Option<usize>,
-    next: Option<usize>,
+    pub(super) next: Option<usize>,
 }
-struct List {
-    path: Box<[usize]>,
+#[derive(Debug)]
+pub(super) struct List {
+    pub(super) path: Box<[usize]>,
     original_len: usize,
     count: usize,
-    gaps: BTreeMap<usize, Chain>,
+    pub(super) gaps: BTreeMap<usize, Chain>,
     fenwick: Vec<usize>,
 }
 impl List {
@@ -61,12 +63,13 @@ impl List {
         (low, position - low - self.before(low))
     }
 }
+#[derive(Debug)]
 pub(super) struct Plan {
     wanted: HashSet<String>,
     owned: HashMap<String, Source>,
     paths: BTreeMap<Box<[usize]>, usize>,
-    lists: Vec<List>,
-    pending: Vec<Pending>,
+    pub(super) lists: Vec<List>,
+    pub(super) pending: Vec<Pending>,
 }
 impl Plan {
     pub(super) fn new(wanted: HashSet<String>) -> Self {

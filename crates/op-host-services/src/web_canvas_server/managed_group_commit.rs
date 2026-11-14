@@ -144,6 +144,8 @@ fn candidate(line: &str, profile: McpAccessProfile) -> bool {
             | "insert_node"
             | "delete_node"
             | "copy_node"
+            | "duplicate_selected"
+            | "paste_clipboard"
             | "move_node"
             | "reorder_selected"
             | "group_selected"
@@ -172,6 +174,8 @@ fn audited(command: &C) -> bool {
         | C::InsertNode { .. }
         | C::DeleteNode { .. }
         | C::CopyNode { .. }
+        | C::DuplicateSelected { .. }
+        | C::PasteClipboard { .. }
         | C::MoveNode { .. }
         | C::ReorderSelected { .. }
         | C::GroupSelected
@@ -350,6 +354,7 @@ struct Transaction<'s, 'a, 'q> {
     pending: Vec<Pending>,
     replies: Vec<Option<Reply>>,
     ticks: Vec<super::SseTick>,
+    changes: Vec<(u64, super::changefeed::Staged)>,
     budget: budget::Budget,
     before_version: u64,
     last_changed: Option<usize>,
@@ -381,6 +386,8 @@ impl Transaction<'_, '_, '_> {
                 "insert_node"
                     | "delete_node"
                     | "copy_node"
+                    | "duplicate_selected"
+                    | "paste_clipboard"
                     | "move_node"
                     | "reorder_selected"
                     | "group_selected"
@@ -411,6 +418,7 @@ impl Transaction<'_, '_, '_> {
         let mut capture = None;
         let mut applied = false;
         let mut changed = false;
+        let mut committed_changes = super::changefeed::Staged::default();
         let mut isolated = false;
         let mut refused = None;
         let mut failure = None;
@@ -508,6 +516,9 @@ impl Transaction<'_, '_, '_> {
                 if applied && !changed {
                     budget.retain_unanchored_components();
                 }
+                if applied && changed {
+                    committed_changes.capture(capture.as_ref().expect("applied capture"), editor);
+                }
                 operation.complete();
                 result
             },
@@ -541,6 +552,7 @@ impl Transaction<'_, '_, '_> {
         }
         if changed {
             self.state.version += 1;
+            self.changes.push((self.state.version, committed_changes));
             self.last_changed = Some(index);
             self.ticks.push(self.state.sse_tick());
         }
@@ -686,6 +698,13 @@ impl Transaction<'_, '_, '_> {
                     .collect();
             }
         }
+        // No forward record is visible during staging or failed-save rollback.
+        // This point is reached only after the shared durable rename succeeds.
+        let mut from = self.before_version;
+        for (to, changes) in std::mem::take(&mut self.changes) {
+            self.state.publish_committed_changes(from, to, changes);
+            from = to;
+        }
         self.finished = true;
         self.pending.clear();
         for tick in &self.ticks {
@@ -724,6 +743,7 @@ fn run_group(ctx: &ConnCtx<'_>, owner: &Groups, requests: &[Request]) -> Vec<Rep
         pending: Vec::with_capacity(requests.len()),
         replies: (0..requests.len()).map(|_| None).collect(),
         ticks: Vec::with_capacity(requests.len()),
+        changes: Vec::with_capacity(requests.len()),
         budget: budget::Budget::default(),
         before_version,
         last_changed: None,

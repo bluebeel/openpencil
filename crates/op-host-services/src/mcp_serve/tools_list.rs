@@ -7,12 +7,10 @@
 
 use op_editor_core::EditorState;
 
-use super::lean_profile::lean_tool_schemas;
-#[cfg(feature = "mcp-debug-tools")]
-use super::schemas::DEBUG_TOOL_SCHEMAS;
-use super::schemas::TOOL_SCHEMAS;
 use super::tool_catalog::McpToolCatalog;
 use super::tool_profile;
+#[path = "tools_list_cache.rs"]
+mod cache;
 
 pub(super) fn tools_list_response(
     id_raw: &str,
@@ -54,58 +52,67 @@ fn tools_list_response_inner(
     debug_enabled: bool,
     profile: tool_profile::McpAccessProfile,
 ) -> String {
-    // Discovery follows enforcement: a tool this profile would refuse is not
-    // advertised, so a client never plans around one it cannot call.
-    let listed =
-        |schema: &str| tool_profile::schema_name(schema).is_none_or(|name| profile.lists(&name));
-    // The lean catalog advertises its own derived schemas — never the kit
-    // insert tools or debug tools, which it does not serve.
-    if profile.catalog == McpToolCatalog::Lean {
-        let entries: Vec<String> = lean_tool_schemas()
-            .iter()
-            .map(String::as_str)
-            .filter(|schema| listed(schema))
-            .map(schema_with_agent_context)
-            .collect();
-        return catalog_response(id_raw, &entries, state.is_none());
+    let parts = cache::for_profile(profile, debug_enabled);
+    let mut dynamic = Vec::new();
+    if profile.catalog != McpToolCatalog::Lean {
+        if let Some(state) = state {
+            dynamic.extend(
+                op_mcp::element_tools::element_tool_schemas(state)
+                    .into_iter()
+                    .filter(|schema| {
+                        tool_profile::schema_name(schema).is_none_or(|name| profile.lists(&name))
+                    })
+                    .map(|schema| schema_with_agent_context(&schema)),
+            );
+        }
     }
-    let mut entries: Vec<String> = TOOL_SCHEMAS
-        .iter()
-        .filter(|schema| listed(schema))
-        .map(|s| schema_with_agent_context(s))
-        .collect();
-    if let Some(state) = state {
-        entries.extend(
-            op_mcp::element_tools::element_tool_schemas(state)
-                .into_iter()
-                .filter(|schema| listed(schema))
-                .map(|schema| schema_with_agent_context(&schema)),
-        );
-    }
-    #[cfg(not(feature = "mcp-debug-tools"))]
-    let _ = debug_enabled;
-    #[cfg(feature = "mcp-debug-tools")]
-    if debug_enabled {
-        entries.extend(
-            DEBUG_TOOL_SCHEMAS
-                .iter()
-                .filter(|schema| listed(schema))
-                .map(|s| schema_with_agent_context(s)),
-        );
-    }
-    catalog_response(id_raw, &entries, state.is_none())
+    // Only kit definitions depend on this document. Static schema parsing,
+    // agent-context expansion and capability filtering are shared by clients.
+    catalog_response(
+        id_raw,
+        &parts.before_kits,
+        &dynamic,
+        &parts.after_kits,
+        state.is_none(),
+    )
 }
 
-fn catalog_response(id_raw: &str, entries: &[String], fenced: bool) -> String {
-    let recovery_meta = if fenced {
-        r#","_meta":{"documentRecoveryRequired":true,"dynamicToolsOmitted":true}"#
-    } else {
-        ""
-    };
-    format!(
-        r#"{{"jsonrpc":"2.0","id":{id_raw},"result":{{"tools":[{}]{recovery_meta}}}}}"#,
-        entries.join(",")
-    )
+fn catalog_response(
+    id_raw: &str,
+    before: &str,
+    dynamic: &[String],
+    after: &str,
+    fenced: bool,
+) -> String {
+    use std::fmt::Write;
+    let capacity = before.len()
+        + after.len()
+        + dynamic.iter().map(String::len).sum::<usize>()
+        + dynamic.len()
+        + 128;
+    let mut response = String::with_capacity(capacity);
+    let _ = write!(
+        response,
+        r#"{{"jsonrpc":"2.0","id":{id_raw},"result":{{"tools":["#
+    );
+    let mut separator = "";
+    for section in std::iter::once(before)
+        .chain(dynamic.iter().map(String::as_str))
+        .chain(std::iter::once(after))
+    {
+        if !section.is_empty() {
+            response.push_str(separator);
+            response.push_str(section);
+            separator = ",";
+        }
+    }
+    response.push(']');
+    if fenced {
+        response
+            .push_str(r#","_meta":{"documentRecoveryRequired":true,"dynamicToolsOmitted":true}"#);
+    }
+    response.push_str("}}");
+    response
 }
 
 // Discovery advertises the host extension without changing individual tools or
@@ -117,7 +124,7 @@ fn schema_with_agent_context(schema: &str) -> String {
     value["inputSchema"]["properties"]["agentId"] = serde_json::json!({
         "type": "string", "minLength": 1, "maxLength": 96,
         "pattern": "^[A-Za-z0-9._:-]+$",
-        "description": "Optional host UI context identifier. Isolates selection, viewport, active page and clipboard; document and undo history remain shared. Not an authentication credential."
+        "description": "Optional actor context identifier. Isolates selection, viewport, active page, clipboard and undo/redo ownership within one shared document/history store. Not an authentication credential."
     });
     value.to_string()
 }

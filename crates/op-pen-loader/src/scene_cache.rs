@@ -14,36 +14,14 @@
 //! `(document_generation, document_revision)` pair, so a UI-only refresh is
 //! `O(variables)` rather than cloning and comparing the entire node tree.
 
+use crate::scene_inputs::SceneInputs;
 use jian_scene::layout_scene::LayoutScene;
-use op_editor_core::scene_vars::VariableTable;
 
 /// The inputs of the last layout-scene build, retained so an unchanged refresh
 /// can skip the (taffy + reshape) rebuild.
 #[derive(Default)]
 pub struct SceneBuildCache {
-    last: Option<BuiltInputs>,
-}
-
-/// Every value `editor_state_to_active_page_layout_scene` reads off the
-/// `EditorState`:
-/// the document, the authored-geometry latch (preview toggles it, changing the
-/// layout mode), the active page index, normal table posture, and the resolved variable table — which
-/// folds the active theme plus the transient fill / stroke ref caches, i.e. all
-/// the non-doc resolution inputs. Everything else on the state (selection /
-/// chat / hover / viewport) is dropped by the builder.
-struct BuiltInputs {
-    document_generation: u64,
-    document_revision: u64,
-    preserve_authored_geometry: bool,
-    normal_table_view: bool,
-    normal_presentation: bool,
-    active_page_index: usize,
-    var_table: VariableTable,
-    /// Font-registry generation the scene was laid out against. A runtime
-    /// font import/removal advances it without touching the document, so it
-    /// must gate the rebuild — otherwise an already-open document keeps its
-    /// stale (fallback-font) layout after an import.
-    font_generation: u64,
+    last: Option<SceneInputs>,
 }
 
 impl SceneBuildCache {
@@ -58,42 +36,17 @@ impl SceneBuildCache {
     /// or `None` when the inputs are identical (the caller keeps its current
     /// scene).
     pub fn maybe_rebuild(&mut self, state: &op_editor_core::EditorState) -> Option<LayoutScene> {
-        let document_generation = state.document_generation();
-        let document_revision = state.document_revision();
-        let preserve_authored_geometry = state.editor_ui.preserve_authored_geometry;
-        let active_page_index = state.ui.active_page_index;
-        let normal_table_view = state.editor_ui.workspace.visible;
-        let normal_presentation = crate::editor_scene::normal_presentation(state);
-        // Resolves the active theme + transient fill/stroke ref caches + the
-        // doc-defined variables — every non-doc input the builder consumes.
-        // Proportional to variable count, not node count, so cheap to rebuild
-        // per refresh purely for the comparison.
-        let var_table = crate::editor_state_var_table(state);
-        let font_generation = crate::current_font_generation();
-        if let Some(last) = &self.last {
-            if last.document_generation == document_generation
-                && last.document_revision == document_revision
-                && last.active_page_index == active_page_index
-                && last.preserve_authored_geometry == preserve_authored_geometry
-                && last.normal_table_view == normal_table_view
-                && last.normal_presentation == normal_presentation
-                && last.font_generation == font_generation
-                && last.var_table == var_table
-            {
-                return None;
-            }
+        let Some(inputs) = SceneInputs::capture(state) else {
+            self.last = None;
+            return Some(crate::editor_state_to_active_page_layout_scene(state));
+        };
+        if self.last.as_ref().is_some_and(|last| last.matches(&inputs)) {
+            return None;
         }
         let scene = crate::editor_state_to_active_page_layout_scene(state);
-        self.last = Some(BuiltInputs {
-            document_generation,
-            document_revision,
-            preserve_authored_geometry,
-            normal_table_view,
-            normal_presentation,
-            active_page_index,
-            var_table,
-            font_generation,
-        });
+        // A font import may race construction without changing the document.
+        // Never let that result satisfy a later request under the old key.
+        self.last = inputs.fonts_stable().then_some(inputs);
         Some(scene)
     }
 

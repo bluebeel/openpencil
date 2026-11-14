@@ -261,6 +261,22 @@ impl RasterAdmission {
         scale: f32,
         mut consume: impl FnMut(usize, Result<Vec<u8>, ExportError>),
     ) -> Result<(), ExportError> {
+        self.render_active_nodes_until(scene, node_ids, format, scale, |index, result| {
+            consume(index, result);
+            true
+        })
+    }
+
+    /// A false callback result disconnects the ACK before another target is
+    /// rendered. Transport writers use this for broken pipes/backpressure.
+    pub fn render_active_nodes_until(
+        &self,
+        scene: Arc<LayoutScene>,
+        node_ids: Vec<String>,
+        format: RasterFormat,
+        scale: f32,
+        mut consume: impl FnMut(usize, Result<Vec<u8>, ExportError>) -> bool,
+    ) -> Result<(), ExportError> {
         if node_ids.is_empty() {
             return Ok(());
         }
@@ -290,7 +306,9 @@ impl RasterAdmission {
             if index != expected {
                 return Err(ExportError::RenderWorkerUnavailable);
             }
-            consume_batch_item(|| consume(index, result));
+            if !consume_batch_item(|| consume(index, result)) {
+                return Ok(());
+            }
             advance
                 .send(())
                 .map_err(|_| ExportError::RenderWorkerUnavailable)?;

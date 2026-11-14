@@ -11,7 +11,7 @@ use crate::component_backing::{
     find_node_and_location, find_node_in_document, resolve_document_location, shallow_root,
     DocumentComponentBacking, DocumentNodeLocation,
 };
-use crate::id_allocator::{IdAllocError, IdAllocator, SequentialIdAllocator};
+use crate::id_allocator::{IdAllocError, IdAllocator};
 use crate::node_id::NodeId;
 use crate::pen_node_ext::PenNodeExt;
 use crate::state::EditorState;
@@ -365,14 +365,14 @@ impl EditorState {
     /// ids. The inserted clone is standalone, so any reusable marker
     /// on the prototype root is cleared.
     pub fn instantiate_component(&mut self, component_id: &NodeId) -> Option<NodeId> {
-        let mut allocator = SequentialIdAllocator::for_document(&self.doc, 1).ok()?;
+        let mut allocator = self.sequential_id_allocator(1).ok()?;
         self.instantiate_component_with_allocator(component_id, &mut allocator)
             .ok()
             .flatten()
     }
 
     /// Allocator-aware form of [`Self::instantiate_component`].
-    pub fn instantiate_component_with_allocator(
+    pub(crate) fn instantiate_component_with_allocator_unobserved(
         &mut self,
         component_id: &NodeId,
         allocator: &mut dyn IdAllocator,
@@ -437,14 +437,14 @@ impl EditorState {
     /// instance props overlaid, fresh ids — replacing the Ref in
     /// place. Returns the surviving node's id.
     pub fn detach_component(&mut self, node_id: &NodeId) -> Option<NodeId> {
-        let mut allocator = SequentialIdAllocator::for_document(&self.doc, 1).ok()?;
+        let mut allocator = self.sequential_id_allocator(1).ok()?;
         self.detach_component_with_allocator(node_id, &mut allocator)
             .ok()
             .flatten()
     }
 
     /// Allocator-aware form of [`Self::detach_component`].
-    pub fn detach_component_with_allocator(
+    pub(crate) fn detach_component_with_allocator_unobserved(
         &mut self,
         node_id: &NodeId,
         allocator: &mut dyn IdAllocator,

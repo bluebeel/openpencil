@@ -95,6 +95,13 @@ impl History {
         };
         (count(&self.past), count(&self.future))
     }
+    pub(crate) fn operation_conflicted(&self, operation: u64) -> bool {
+        self.conflicts.contains(&operation)
+    }
+    pub(crate) fn selective_exchange(&self, entry: &HistoryEntry) -> bool {
+        entry.selective()
+            && (self.actor.is_some() || self.mixed_actors || entry.history_tag().actor.is_some())
+    }
     pub(crate) fn next_index(&self, redo: bool) -> Option<usize> {
         let entries = if redo { &self.future } else { &self.past };
         match self.actor {
@@ -198,8 +205,7 @@ impl EditorState {
         .remove(index)
         .unwrap();
         let operation = entry.history_tag().operation;
-        let selective = entry.selective()
-            && (self.history.actor.is_some() || entry.history_tag().actor.is_some());
+        let selective = self.history.selective_exchange(&entry);
         let succeeded = match entry {
             HistoryEntry::Full(previous) => {
                 let mut current = self.snapshot_for_history_with_anchor(Some(&previous));

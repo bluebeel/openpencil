@@ -9,7 +9,7 @@
 
 use crate::command_node::{build_leaf_node, remap_subtree_ids_with_allocator};
 use crate::fills::set_primary_fill_hex;
-use crate::id_allocator::{IdAllocError, IdAllocator, SequentialIdAllocator};
+use crate::id_allocator::{IdAllocError, IdAllocator};
 use crate::node_id::NodeId;
 use crate::pen_node_ext::PenNodeExt;
 use crate::state::EditorState;
@@ -99,7 +99,7 @@ impl EditorState {
     /// root children into one explicit page within this single mutation.
     /// `None` and blank strings both mean the old omitted/default state.
     pub fn set_active_page_background_color(&mut self, color: Option<String>) -> bool {
-        let Ok(mut allocator) = SequentialIdAllocator::for_document(&self.doc, 1) else {
+        let Ok(mut allocator) = self.sequential_id_allocator(1) else {
             return false;
         };
         self.set_active_page_background_color_with_allocator(color, &mut allocator)
@@ -107,7 +107,7 @@ impl EditorState {
     }
 
     /// Allocator-aware form of [`Self::set_active_page_background_color`].
-    pub fn set_active_page_background_color_with_allocator(
+    pub(crate) fn set_active_page_background_color_with_allocator_unobserved(
         &mut self,
         color: Option<String>,
         allocator: &mut dyn IdAllocator,
@@ -157,14 +157,14 @@ impl EditorState {
         name: Option<String>,
         children: Option<Vec<PenNode>>,
     ) -> Option<usize> {
-        let mut allocator = SequentialIdAllocator::for_document(&self.doc, 1).ok()?;
+        let mut allocator = self.sequential_id_allocator(1).ok()?;
         self.add_page_with_allocator(name, children, &mut allocator)
             .ok()
             .flatten()
     }
 
     /// Allocator-aware page insertion used by collaboration sessions.
-    pub fn add_page_with_allocator(
+    pub(crate) fn add_page_with_allocator_unobserved(
         &mut self,
         name: Option<String>,
         children: Option<Vec<PenNode>>,
@@ -233,7 +233,7 @@ impl EditorState {
     /// page is appended after it, so the caller's active page keeps
     /// pointing at the design.
     pub fn append_components_page_masters(&mut self, masters: Vec<PenNode>) -> usize {
-        let Ok(mut allocator) = SequentialIdAllocator::for_document(&self.doc, 1) else {
+        let Ok(mut allocator) = self.sequential_id_allocator(1) else {
             return 0;
         };
         self.append_components_page_masters_with_allocator(masters, &mut allocator)
@@ -241,7 +241,7 @@ impl EditorState {
     }
 
     /// Allocator-aware form of [`Self::append_components_page_masters`].
-    pub fn append_components_page_masters_with_allocator(
+    pub(crate) fn append_components_page_masters_with_allocator_unobserved(
         &mut self,
         masters: Vec<PenNode>,
         allocator: &mut dyn IdAllocator,
@@ -329,14 +329,14 @@ impl EditorState {
     /// Duplicate the page at `idx`, optionally overriding the clone's
     /// display name. Empty / whitespace-only custom names are rejected.
     pub fn duplicate_page_with_name(&mut self, idx: usize, name: Option<String>) -> Option<usize> {
-        let mut allocator = SequentialIdAllocator::for_document(&self.doc, 1).ok()?;
+        let mut allocator = self.sequential_id_allocator(1).ok()?;
         self.duplicate_page_with_allocator(idx, name, &mut allocator)
             .ok()
             .flatten()
     }
 
     /// Allocator-aware page duplication used by collaboration sessions.
-    pub fn duplicate_page_with_allocator(
+    pub(crate) fn duplicate_page_with_allocator_unobserved(
         &mut self,
         idx: usize,
         name: Option<String>,

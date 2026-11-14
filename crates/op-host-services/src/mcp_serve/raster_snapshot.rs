@@ -143,33 +143,52 @@ impl RasterSnapshot {
         scale: f32,
         mut consume: impl FnMut(&str, Result<Vec<u8>, ExportError>),
     ) {
+        self.render_active_nodes_until(node_ids, format, scale, |id, result| {
+            consume(id, result);
+            true
+        });
+    }
+
+    pub fn render_active_nodes_until(
+        &self,
+        node_ids: &[String],
+        format: RasterFormat,
+        scale: f32,
+        mut consume: impl FnMut(&str, Result<Vec<u8>, ExportError>) -> bool,
+    ) {
         if let Err(error) = self.ready() {
             for id in node_ids {
-                consume(id, Err(error.clone()));
+                if !consume(id, Err(error.clone())) {
+                    break;
+                }
             }
             return;
         }
         let Some(page) = self.active_page() else {
             for id in node_ids {
-                consume(id, Err(ExportError::NoActivePage));
+                if !consume(id, Err(ExportError::NoActivePage)) {
+                    break;
+                }
             }
             return;
         };
         if let Some(Ok(admission)) = &self.admission {
             let mut consumed = 0;
-            let result = admission.render_active_nodes(
+            let result = admission.render_active_nodes_until(
                 Arc::clone(&self.scene),
                 node_ids.to_vec(),
                 format,
                 scale,
                 |index, result| {
-                    consume(&node_ids[index], result);
                     consumed = index + 1;
+                    consume(&node_ids[index], result)
                 },
             );
             if let Err(error) = result {
                 for id in &node_ids[consumed..] {
-                    consume(id, Err(error.clone()));
+                    if !consume(id, Err(error.clone())) {
+                        break;
+                    }
                 }
             }
         } else {
@@ -184,7 +203,9 @@ impl RasterSnapshot {
                     .and_then(|selected| {
                         crate::export::render_selected_node_raster_bytes(&selected, format, scale)
                     });
-                consume(id, result);
+                if !consume(id, result) {
+                    break;
+                }
             }
         }
     }

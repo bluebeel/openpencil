@@ -1,10 +1,11 @@
 """Additional real-document workflows. No workload runs on import."""
+import base64
 import hashlib
 import json
 import re
 import struct
 
-FAMILIES = {'reparent', 'reorder', 'group-ungroup', 'group-ungroup-nested', 'align', 'variables', 'themes'}
+FAMILIES = {'agentic-batch', 'reparent', 'reorder', 'group-ungroup', 'group-ungroup-nested', 'align', 'variables', 'themes'}
 
 
 class FamilyWorkflows:
@@ -160,3 +161,75 @@ class FamilyWorkflows:
         assert json.loads(current['themes']) == {**themes, axis: ['Light', 'Dark']}
         await self.call('undo', {}, agent, True)
         assert await self.call('get_variables', {}, agent) == before
+
+
+    async def family_agentic_batch(self,target,agent):
+        await self.page(target,agent)
+        frame=await self.owned_frame('agentic-batch',target,agent,'parent')
+        def ref(pointer):return {'$ref':pointer}
+        def op(name,arguments=None,bind=None):
+            value={'name':name,'arguments':arguments or {}}
+            if bind:value['bind']=bind
+            return value
+        a=ref('a#/newIds/0'); b=ref('b#/newIds/0')
+        read={'nodeIds':[a,b],'pageId':target['pageId'],'depth':0}
+        x=1.2345678901234567; y=-5.67890123456789
+        steps=[
+            op('insert_node',{'kind':'rect','name':self.owned_name('agentic-batch',agent,'a'),'parent':frame,'x':'5','y':'8','width':'20','height':'12','fill_hex':'#ff0000'},'a'),
+            op('insert_node',{'kind':'rect','name':self.owned_name('agentic-batch',agent,'b'),'parent':frame,'x':'70','y':'30','width':'22','height':'14','fill_hex':'#00ff00'},'b'),
+            op('read_nodes',read,'pair'),
+            op('set_node_name',{'node_id':a,'name':ref('pair#/result/nodes/1/name')}),
+            op('set_node_rotation',{'node_id':a,'degrees':'12.5'}),
+            op('set_node_corner_radius',{'node_id':a,'radius':'3.25'}),
+            op('update_node',{'node_id':a,'data':{'x':x,'y':y,'width':21.375,'height':12.875}}),
+            op('read_nodes',read,'after'),op('read_nodes',read),
+            op('set_selection',{'node_id':a}),op('copy_selected'),
+            op('paste_clipboard',{'offset_px':'7'},'paste'),
+            op('duplicate_selected',{'offset_px':'9'},'duplicate'),
+            op('get_document_info'),op('get_document_info'),
+        ]
+        batch=await self.call('batch_tools',{'operations':steps},agent,True)
+        rows=batch['results']; assert batch['atomic'] and batch['operationCount']==len(steps) and batch['documentChanged'],batch
+        assert rows[7]['result']==rows[8]['result'] and rows[13]['result']==rows[14]['result']
+        original=rows[7]['result']['nodes'][0]
+        assert struct.pack('>d',original['x'])==struct.pack('>d',x) and struct.pack('>d',original['y'])==struct.pack('>d',y)
+        ids=[rows[index]['newIds'][0] for index in [0,1,11,12]]
+        assert len(set(ids))==4
+        names=[node['name'] for node in rows[2]['result']['nodes']]
+        assert original['name']==names[1]
+        history=await self.call('get_history_depth',{},agent)
+        self.report['phases'][self.current].setdefault('historyBeforeBatchUndo',[]).append(history)
+        reads=await self.call('batch_tools',{'operations':[op('count_nodes'),op('count_nodes'),op('get_history_depth'),op('get_history_depth')]},agent)
+        assert reads['commandCount']==0 and not reads['documentChanged']
+        assert reads['results'][0]['result']==reads['results'][1]['result']
+        assert await self.call('get_history_depth',{},agent)==history
+        await self.call('undo',{},agent,True)
+        assert await self.owned_children(frame,target,agent)==[]
+        await self.call('redo',{},agent,True)
+        assert len(await self.owned_children(frame,target,agent))==4
+        selected=[ids[0],ids[2],ids[3]]
+        await self.call('set_selection_set',{'node_ids':','.join(selected)},agent)
+        await self.call('align_selected',{'action':'distribute_h'},agent,True)
+        await self.call('undo',{},agent,True)
+        queries=[{'kind':'snap','x':100000,'y':100000,'width':20,'height':10,
+            'dx':0.125,'dy':0.25,'zoom':1,'threshold':0,'parentId':frame,'resizeHandle':handle}
+            for handle in ['left','right','top','bottom','top_left','top_right','bottom_left','bottom_right']]
+        snaps=await self.call('query_canvas',{'queries_json':json.dumps(queries)},agent)
+        assert len(snaps['results'])==8 and all(row['bounds']['width']>0 and row['bounds']['height']>0 for row in snaps['results'])
+        await self.call('update_node',{'node_id':frame,'data':{'rotation':17.5,'clipContent':True,'cornerRadius':6,'opacity':0.8}},agent,True)
+        exports=[]
+        for kind,mode in [('png',None),('svg',None),('pdf','separate'),('pdf','combined')]:
+            arguments={'nodeIds':ids[:2],'format':kind,'scale':'1'}
+            if mode:arguments['pdfMode']=mode
+            exported=await self.call('export_nodes',arguments,agent)
+            assert len(exported['files'])==(1 if mode=='combined' else 2),exported
+            for item in exported['files']:
+                assert 'error' not in item,item
+                data=base64.b64decode(item['bytes_base64'],validate=True)
+                if kind=='png':assert data.startswith(b'\x89PNG\r\n\x1a\n')
+                elif kind=='svg':assert b'<svg' in data and b'clipPath' in data
+                else:assert data.startswith(b'%PDF-') and b'%%EOF' in data[-100:]
+            exports.append({'format':kind,'pdfMode':mode,'files':len(exported['files'])})
+        await self.cleanup_owned([],[frame],target,agent)
+        self.report['phases'][self.current]['integratedControls']={'batchSteps':len(steps),'richReadReferences':True,'exactF64Geometry':True,'readOnlyNoHistory':True,'batchUndoRedo':True,'resizeHandles':8,'exports':exports,
+            'scope':'Functional encoding/context controls; exact pixels, complete feature parity and all-agent latency are measured separately.'}

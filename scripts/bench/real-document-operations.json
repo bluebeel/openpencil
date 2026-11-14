@@ -402,6 +402,30 @@
         "delete_node"
       ],
       "scope": "Same-parent nested sibling grouping/ungrouping of owned copies of actual imported nodes; arbitrary existing Group transform/effect flattening is not inferred."
+    },
+    {
+      "family": "agentic-batch",
+      "execution": "implemented",
+      "role": "geometry",
+      "render": true,
+      "writes": 16,
+      "tools": [
+        "set_active_page",
+        "insert_node",
+        "batch_get",
+        "batch_tools",
+        "read_nodes",
+        "get_history_depth",
+        "undo",
+        "redo",
+        "set_selection_set",
+        "align_selected",
+        "query_canvas",
+        "update_node",
+        "export_nodes",
+        "delete_node"
+      ],
+      "scope": "Integrated atomic writes/rich read references, exact f64 geometry, read-only no-history, copy/paste/duplicate, batch undo/redo, indexed distribution, eight resize handles and clipped/rotated PNG/SVG/separate+combined PDF output. Bounded by render_budget; actual imported source is preserved and completely verified. Encoding/context controls do not prove full pixel parity."
     }
   ],
   "budgetModes": {

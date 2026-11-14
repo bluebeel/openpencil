@@ -1,6 +1,6 @@
 //! UIKit instantiation through a document-wide id allocator.
 
-use crate::id_allocator::{IdAllocError, IdAllocator, SequentialIdAllocator};
+use crate::id_allocator::{IdAllocError, IdAllocator};
 use crate::pen_node_ext::PenNodeExt;
 use crate::uikit::apply_kit_overrides;
 use crate::{walkers, EditorState, NodeId};
@@ -35,7 +35,7 @@ impl EditorState {
         doc_y: f64,
         overrides_json: Option<&str>,
     ) -> Option<NodeId> {
-        let mut allocator = SequentialIdAllocator::for_document(&self.doc, 1).ok()?;
+        let mut allocator = self.sequential_id_allocator(1).ok()?;
         self.instantiate_kit_component_under_parent_with_allocator(
             kit_id,
             component_id,
@@ -51,7 +51,7 @@ impl EditorState {
 
     /// Parent-aware UIKit instantiation using the caller's id policy.
     #[allow(clippy::too_many_arguments)]
-    pub fn instantiate_kit_component_under_parent_with_allocator(
+    pub(crate) fn instantiate_kit_component_under_parent_with_allocator_unobserved(
         &mut self,
         kit_id: &str,
         component_id: &str,

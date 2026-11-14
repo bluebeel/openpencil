@@ -9,6 +9,15 @@ mod payload;
 #[path = "clone_splice_plan.rs"]
 mod plan;
 use plan::Plan;
+#[path = "clone_splice_trace.rs"]
+mod trace;
+pub(crate) use trace::Trace;
+#[path = "clone_splice_forecast.rs"]
+mod forecast;
+pub(crate) fn forecast(state: &EditorState, command: &crate::EditorCommand) -> Option<usize> {
+    forecast::bound(state, command)
+}
+#[derive(Debug)]
 pub(crate) struct Prepared {
     plan: Plan,
     ids: Vec<NodeId>,
@@ -191,4 +200,43 @@ pub(crate) fn paste(
         }
     }
     Ok(Some(Prepared { plan, ids }))
+}
+
+/// A prepared standalone host command exclusively owns the exact current
+/// document high-water. Every output node id comes from this one allocator.
+#[derive(Debug)]
+struct CaptureAllocator(crate::DocumentIdAllocator);
+impl crate::IdAllocator for CaptureAllocator {
+    fn document_collision_ids(
+        &self,
+        _: &jian_ops_schema::PenDocument,
+    ) -> std::collections::HashSet<NodeId> {
+        std::collections::HashSet::new()
+    }
+    fn allocate(
+        &mut self,
+        taken: &mut std::collections::HashSet<NodeId>,
+    ) -> Result<NodeId, IdAllocError> {
+        self.0.allocate(taken)
+    }
+}
+pub(crate) fn prepare_captured(
+    state: &EditorState,
+    command: &crate::EditorCommand,
+) -> Option<Prepared> {
+    forecast(state, command)?;
+    let mut allocator = CaptureAllocator(state.standalone_id_allocator().ok()?);
+    match command {
+        crate::EditorCommand::DuplicateSelected { offset_px } => {
+            duplicate(state, &mut allocator, *offset_px as f64)
+                .ok()
+                .flatten()
+        }
+        crate::EditorCommand::PasteClipboard { offset_px } => {
+            paste(state, &mut allocator, *offset_px as f64)
+                .ok()
+                .flatten()
+        }
+        _ => None,
+    }
 }

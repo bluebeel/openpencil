@@ -70,6 +70,7 @@ impl IdAllocator for ScopedIdAllocator<'_> {
 
     fn authored_ids_inserted(&mut self, largest: Option<u64>) {
         self.floor.inserted(largest);
+        self.inner.authored_ids_inserted(largest);
     }
 
     fn allocate(&mut self, taken: &mut HashSet<NodeId>) -> Result<NodeId, IdAllocError> {
@@ -106,13 +107,14 @@ impl CommandSimulation {
     /// rule. A conservative cached floor is usable only when the program has
     /// already reserved every numeric candidate below that bound.
     pub fn next_program_id_seed(&mut self, minted_high_water: u64) -> Option<u64> {
+        let minted_high_water = minted_high_water.max(self.state.runtime_next_id_seed().ok()?);
         if let Some(seed) = self.sequential_seed {
             return Some(seed.max(minted_high_water));
         }
         if self.floor.0.is_some_and(|floor| floor <= minted_high_water) {
             return Some(minted_high_water);
         }
-        self.floor.0 = crate::id_allocator::next_sequential_counter(&self.state.doc).ok();
+        self.floor.0 = self.state.standalone_next_id_seed().ok();
         self.floor.0.map(|floor| floor.max(minted_high_water))
     }
 
@@ -125,10 +127,12 @@ impl CommandSimulation {
         let allocates = crate::command_apply_legacy::allocation_policy::requires_id_seed(&command);
         let mut allocator = if allocates {
             let seed = match self.sequential_seed {
-                Some(seed) => seed,
+                Some(seed) => match self.state.runtime_next_id_seed() {
+                    Ok(runtime) => seed.max(runtime),
+                    Err(_) => return false,
+                },
                 None => {
-                    let Ok(seed) = crate::id_allocator::next_sequential_counter(&self.state.doc)
-                    else {
+                    let Ok(seed) = self.state.standalone_next_id_seed() else {
                         return false;
                     };
                     seed

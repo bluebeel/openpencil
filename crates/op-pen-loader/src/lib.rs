@@ -61,7 +61,13 @@ mod measure_cache;
 mod path_bounds;
 #[cfg(test)]
 mod property_edit_scene_tests;
+mod query_scene_cache;
 mod scene_cache;
+mod scene_inputs;
+pub use query_scene_cache::{
+    active_query_scene_cached, query_scene_cache_stats, query_snap_index_cached,
+    QuerySceneCacheStats,
+};
 mod shader_preset;
 #[cfg(test)]
 mod snapshot_scene_tests;

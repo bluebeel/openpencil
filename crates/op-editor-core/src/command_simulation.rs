@@ -9,6 +9,7 @@ impl EditorState {
     pub fn clone_for_command_simulation(&self) -> Self {
         let mut simulation = self.clone();
         simulation.history = History::new();
+        simulation.runtime_allocator_depth = 0;
         simulation.undo_capture_suspended = true;
         simulation
     }

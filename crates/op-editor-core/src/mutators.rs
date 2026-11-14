@@ -13,7 +13,7 @@
 //! mutators stay page-model-agnostic.
 
 use crate::geometry::{union_aggregate_bounds, DocRect};
-use crate::id_allocator::{IdAllocError, IdAllocator, SequentialIdAllocator};
+use crate::id_allocator::{IdAllocError, IdAllocator};
 use crate::node_id::NodeId;
 use crate::pen_node_ext::PenNodeExt;
 use crate::selection::SelectionState;
@@ -479,7 +479,7 @@ impl EditorState {
     /// clone as the next sibling offset by `offset_doc_px`. Returns
     /// the new anchor id (last clone) on success.
     pub fn duplicate_selected(&mut self, next_id: &mut u64, offset_doc_px: f64) -> Option<NodeId> {
-        let mut allocator = SequentialIdAllocator::for_document(&self.doc, *next_id).ok()?;
+        let mut allocator = self.sequential_id_allocator(*next_id).ok()?;
         let result = self
             .duplicate_selected_with_allocator(&mut allocator, offset_doc_px)
             .ok()
@@ -491,7 +491,7 @@ impl EditorState {
     }
 
     /// Allocator-aware form of [`Self::duplicate_selected`].
-    pub fn duplicate_selected_with_allocator(
+    pub(crate) fn duplicate_selected_with_allocator_unobserved(
         &mut self,
         allocator: &mut dyn IdAllocator,
         offset_doc_px: f64,

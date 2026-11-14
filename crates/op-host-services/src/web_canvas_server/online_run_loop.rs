@@ -210,8 +210,12 @@ pub fn run_online_web_canvas(options: ServeWebOptions) -> Result<()> {
     // loop already observes, so the existing exit path (which flushes) runs.
     install_shutdown_signals(&shutdown, local_addr)?;
     spawn_sweeper(&registry, &shutdown)?;
-    let mut workers =
-        connection_pool::ConnectionPool::new(limits.max_conns, "op-serve-web-online-conn");
+    let sse_streams = Arc::new(async_sse::Streams::new());
+    let mut workers = connection_pool::ConnectionPool::with_capacity(
+        limits.max_conns.min(MAX_CONNECTION_WORKERS),
+        limits.max_conns,
+        "op-serve-web-online-conn",
+    );
 
     for stream in listener.incoming() {
         if shutdown.load(Ordering::Acquire) {
@@ -240,18 +244,31 @@ pub fn run_online_web_canvas(options: ServeWebOptions) -> Result<()> {
         let write_barrier = Arc::clone(&write_barrier);
         let shutdown_flag = Arc::clone(&shutdown);
         let connection = ConnGuard(conns);
+        let sse_streams = Arc::clone(&sse_streams);
         let dispatched = workers.submit(
             conn_count.load(Ordering::Acquire),
             Box::new(move || {
-                let _conn_guard = connection;
                 let _ = s.set_read_timeout(Some(IO_TIMEOUT));
                 let _ = s.set_write_timeout(Some(IO_TIMEOUT));
-                match serve_one_online(
-                    &mut s,
-                    registry.as_ref(),
-                    verifier.as_ref(),
-                    write_barrier.as_ref(),
-                ) {
+                // A queued socket has not entered document execution yet.
+                // Shutdown refuses it explicitly instead of applying it after
+                // the final writer barrier or dropping an ambiguous response.
+                if shutdown_flag.load(Ordering::Acquire) {
+                    let _ = crate::mcp_serve::write_mcp_http_response(
+                        &mut s,
+                        "503 Service Unavailable",
+                        r#"{"ok":false,"error":"server shutting down"}"#,
+                    );
+                    return;
+                }
+                match async_sse::serve_socket(s, connection, &sse_streams, |socket| {
+                    serve_one_online(
+                        socket,
+                        registry.as_ref(),
+                        verifier.as_ref(),
+                        write_barrier.as_ref(),
+                    )
+                }) {
                     Ok(true) => {
                         shutdown_flag.store(true, Ordering::Release);
                         let _ = std::net::TcpStream::connect(("127.0.0.1", bound));
@@ -267,6 +284,9 @@ pub fn run_online_web_canvas(options: ServeWebOptions) -> Result<()> {
     }
     // The sweeper observes the same flag and retires on its next wake.
     shutdown.store(true, Ordering::Release);
+    // Wake even idle or write-blocked SSE tasks before draining tenant leases
+    // and connection slots. Queued handoffs also observe this closed state.
+    sse_streams.close();
     // Let in-flight requests finish before writing. A push that is mid-install
     // when the flush runs would otherwise be written in its pre-push state and
     // the client's work lost — it acked 200 and then vanished. Bounded, because
@@ -651,9 +671,9 @@ pub(super) fn serve_one_online<S: Read + Write>(
         )?;
         return Ok(false);
     }
-    // The lease outlives the dispatch (including a minutes-long SSE stream),
-    // so the tenant these borrows point at cannot be evicted underneath them.
-    dispatch_owned(
+    // Synchronous callers hold the lease throughout dispatch. Production SSE
+    // moves this exact lease into its socket task after authorized dispatch.
+    let outcome = dispatch_owned(
         stream,
         req,
         &ConnCtx {
@@ -667,7 +687,11 @@ pub(super) fn serve_one_online<S: Read + Write>(
             rest_identity: Some(identity.clone()),
             write_barrier: Some(write_barrier),
         },
-    )
+    );
+    if outcome.is_ok() {
+        async_sse::retain_tenant(lease);
+    }
+    outcome
 }
 
 /// The part of the route table that is served before anyone is identified.

@@ -35,6 +35,19 @@ pub use node::SharedNode;
 pub(crate) fn metadata_sensitivity<T: Serialize + ?Sized>(value: &T) -> Box<[u8]> {
     sensitivity::bytes(value)
 }
+/// Serialize every canonical node metadata field without traversing descendants.
+/// An authored `children` field is represented by an empty placeholder only;
+/// forward consumers must retain its exact existing value and presence.
+pub(crate) struct BorrowedNodeMetadata<'a>(pub(crate) &'a PenNode);
+impl Serialize for BorrowedNodeMetadata<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.0.serialize(node_wire::ReplaceChildren::new(
+            serializer,
+            self.0.children().map(|_| &[][..]),
+        ))
+    }
+}
+
 pub(crate) fn metadata_matches(a: &PenNode, b: &PenNode) -> bool {
     a == b && sensitivity::bytes(a) == sensitivity::bytes(b)
 }

@@ -220,7 +220,10 @@ fn plan(
             }
             *active
         }
-        C::ClearSelection
+        C::CopySelected
+        | C::SetActiveTool { .. }
+        | C::SetViewport { .. }
+        | C::ClearSelection
         | C::SetSelection { .. }
         | C::SetSelectionSet { .. }
         | C::ToggleNodeSelection { .. } => *active,

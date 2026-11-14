@@ -9,6 +9,9 @@ pub(crate) fn write_mcp_http_response_with_origin<S: std::io::Write>(
     body: &str,
     cors_origin: Option<&str>,
 ) -> Result<(), McpServeError> {
+    if let Some(result) = super::export_stream::try_write(stream, status, body, cors_origin) {
+        return result;
+    }
     let cors_line = cors_origin
         .map(|origin| format!("Access-Control-Allow-Origin: {origin}\r\n"))
         .unwrap_or_default();

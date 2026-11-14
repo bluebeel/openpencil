@@ -10,6 +10,14 @@ pub(crate) struct PreparedCommandEdit {
     repairs: Option<RepairPlan>,
 }
 impl PreparedCommandEdit {
+    pub(crate) fn forward_metadata_json(
+        &self,
+        state: &EditorState,
+        limit: usize,
+    ) -> Option<Vec<u8>> {
+        self.capture.forward_metadata_json(state, limit)
+    }
+
     pub(crate) fn abort(self, state: &mut EditorState) -> Result<(), CommandEditError> {
         state.abort_command_edit(self.capture)
     }

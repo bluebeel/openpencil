@@ -144,6 +144,15 @@ impl BlobOrString {
         }
     }
 
+    /// Exact encoded byte length without hydrating packed geometry.
+    pub(crate) fn byte_len(&self) -> Option<usize> {
+        match self {
+            Self::Bytes(bytes) => Some(bytes.len()),
+            Self::Str(_) => None,
+            Self::Packed(bytes) => Some(bytes.byte_len()),
+        }
+    }
+
     pub fn as_bytes(&self) -> Option<&[u8]> {
         match self {
             BlobOrString::Bytes(b) => Some(b),

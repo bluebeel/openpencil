@@ -16,6 +16,8 @@ use super::tool_profile::{self, McpAccessProfile, ToolAccess, ToolSurface};
 mod ids;
 #[path = "atomic_tools_input.rs"]
 mod input;
+#[path = "atomic_tools_sparse.rs"]
+mod sparse;
 
 const MAX_RESULT_BYTES: usize = 4 * 1024 * 1024;
 const MAX_COMMANDS: usize = 1024;
@@ -139,6 +141,13 @@ fn prepare_inner(
         return Err(BatchError::argument(
             "this authority accepts only read-only batches",
         ));
+    }
+    // Pure stateless setters can validate complete target headers without
+    // constructing a partial document or cloning/seeding the whole source.
+    if !reads_only {
+        if let Some(outcome) = sparse::prepare(state, &steps, arguments, profile)? {
+            return Ok(outcome);
+        }
     }
     // The caller already holds one immutable document authority. Read batches
     // borrow it directly; cloning a huge document and seeding an ID allocator

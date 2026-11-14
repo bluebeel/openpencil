@@ -53,7 +53,7 @@ impl EditorState {
     /// Collaboration hosts pass their session-owned namespaced allocator.
     /// Validation failures remain `Ok(false)`; allocator exhaustion is typed
     /// so the host can roll back the surrounding local edit transaction.
-    pub(crate) fn apply_with_allocator_checkpoint(
+    pub(crate) fn apply_with_allocator_checkpoint_inner(
         &mut self,
         cmd: EditorCommand,
         allocator: &mut dyn IdAllocator,
@@ -545,23 +545,7 @@ impl EditorState {
                 true
             }
             EditorCommand::SetSelectionSet { node_ids } => {
-                // Resolve every id against the active page; unknown /
-                // off-page ids are dropped silently.
-                let resolved: Vec<NodeId> = node_ids
-                    .into_iter()
-                    .filter(|id| id.is_real() && find_node(self.active_children(), id).is_some())
-                    .collect();
-                if resolved.is_empty() {
-                    self.clear_selection();
-                } else {
-                    let anchor = resolved.last().cloned().unwrap();
-                    if self.selection.anchor != anchor || self.selection.set != resolved {
-                        self.editor_ui.image_panel.close_popovers();
-                    }
-                    self.selection.anchor = anchor;
-                    self.selection.set = resolved;
-                }
-                true
+                crate::mutators::selection_nodes::set(self, node_ids)
             }
             EditorCommand::ToggleNodeSelection { node_id } => {
                 if !node_id.is_real() || find_node(self.active_children(), &node_id).is_none() {

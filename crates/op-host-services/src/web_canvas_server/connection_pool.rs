@@ -41,8 +41,15 @@ pub(crate) struct ConnectionPool {
 
 impl ConnectionPool {
     pub fn new(max_workers: usize, name: &'static str) -> Self {
+        Self::with_capacity(max_workers, max_workers, name)
+    }
+
+    /// Separate socket queue capacity from executing worker count. Queued jobs
+    /// own only the accepted socket and small shared authority handles; request
+    /// bodies are read when a worker starts, with normal endpoint size bounds.
+    pub fn with_capacity(max_workers: usize, pending_capacity: usize, name: &'static str) -> Self {
         let max_workers = max_workers.max(1);
-        let (sender, receiver) = mpsc::sync_channel(max_workers);
+        let (sender, receiver) = mpsc::sync_channel(pending_capacity.max(1));
         Self {
             sender,
             receiver: Arc::new(Mutex::new(receiver)),

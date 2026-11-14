@@ -25,7 +25,7 @@ use super::{
     GeneratorRunner, GeneratorSpec, GeneratorStarter, GENERATOR_EXPLAIN_PREFIX,
 };
 use crate::command::EditorCommand;
-use crate::id_allocator::{DocumentIdAllocator, IdAllocator};
+use crate::id_allocator::IdAllocator;
 use crate::node_id::NodeId;
 use crate::pen_node_ext::PenNodeExt;
 use crate::state::EditorState;
@@ -187,7 +187,7 @@ impl EditorState {
     /// remotely computed starter land under the id it was computed for.
     pub(super) fn allocate_generator_id(&self) -> Result<NodeId, GeneratorError> {
         let mut taken = self.collect_node_ids();
-        DocumentIdAllocator::sequential_for_document(&self.doc)
+        self.standalone_id_allocator()
             .and_then(|mut allocator| allocator.allocate(&mut taken))
             .map_err(|_| GeneratorError::ApplyRejected)
     }

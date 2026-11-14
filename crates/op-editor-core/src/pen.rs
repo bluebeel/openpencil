@@ -4,7 +4,7 @@
 //! pushed on commit only when the path has ≥ 2 anchors (a 1-anchor
 //! path is invisible — no real change to undo).
 
-use crate::id_allocator::{IdAllocError, IdAllocator, SequentialIdAllocator};
+use crate::id_allocator::{IdAllocError, IdAllocator};
 use crate::node_id::NodeId;
 use crate::pen_node_ext::{make_path, PenNodeExt};
 use crate::state::EditorState;
@@ -48,7 +48,7 @@ impl EditorState {
     /// Start a fresh Pen-tool path at `first` (document coords).
     /// Returns the new node's id, or `None` on allocator overflow.
     pub fn start_pen_path(&mut self, next_id: &mut u64, first: (f64, f64)) -> Option<NodeId> {
-        let mut allocator = SequentialIdAllocator::for_document(&self.doc, *next_id).ok()?;
+        let mut allocator = self.sequential_id_allocator(*next_id).ok()?;
         let result = self
             .start_pen_path_with_allocator(&mut allocator, first)
             .ok()
@@ -60,7 +60,7 @@ impl EditorState {
     }
 
     /// Allocator-aware form of [`Self::start_pen_path`].
-    pub fn start_pen_path_with_allocator(
+    pub(crate) fn start_pen_path_with_allocator_unobserved(
         &mut self,
         allocator: &mut dyn IdAllocator,
         first: (f64, f64),

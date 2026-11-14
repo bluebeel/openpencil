@@ -4,10 +4,17 @@ use crate::history_snapshot::SharedNode;
 use jian_ops_schema::{node::PenNode, page::PenPage};
 use std::{collections::BTreeMap, mem};
 mod actor_claim;
+mod actor_rebase;
+mod clones;
+mod forward;
 mod header;
 mod header_map;
+mod identity;
 mod patch;
 mod splice;
+mod splice_exchange;
+mod splice_identity;
+mod splice_order;
 mod targets;
 mod topology;
 mod topology_move;
@@ -68,6 +75,7 @@ pub(crate) struct PendingScopedSnapshot {
     targets: Vec<targets::TargetCheckpoint>,
     targeted: bool,
     header: Option<PendingHeader>,
+    clones: Option<clones::PendingClones>,
 }
 #[derive(Debug)]
 enum CapturedForest {
@@ -98,18 +106,44 @@ impl PendingScopedSnapshot {
     }
     /// Some means this is the single audited structural transaction. Its
     /// stored request and direct routes avoid a second full-document lookup.
+    pub(crate) fn capture_clones(
+        state: &EditorState,
+        scopes: Vec<Scope>,
+        command: &crate::EditorCommand,
+    ) -> Option<Self> {
+        let scope = scopes.first()?.clone();
+        let clones = clones::PendingClones::capture(state, scope, command)?;
+        Some(Self {
+            metadata: ScopedEditorSnapshot::auxiliary(state, scopes),
+            forests: Vec::new(),
+            targets: Vec::new(),
+            targeted: true,
+            header: None,
+            clones: Some(clones),
+        })
+    }
     pub(crate) fn matches_topology_request(
         &self,
         state: &EditorState,
         command: &crate::EditorCommand,
     ) -> Option<bool> {
-        targets::matches_topology_request(state, command, &self.targets)
+        self.clones
+            .as_ref()
+            .map(|clones| clones.request_matches(state, command))
+            .or_else(|| targets::matches_topology_request(state, command, &self.targets))
     }
     pub(crate) fn apply_topology(&mut self, state: &mut EditorState) -> Option<bool> {
-        targets::apply_topology(state, &mut self.targets)
+        if let Some(clones) = &mut self.clones {
+            Some(clones.apply_direct(state))
+        } else {
+            targets::apply_topology(state, &mut self.targets)
+        }
     }
     pub(crate) fn matches_targets(&self, state: &EditorState) -> bool {
-        targets::matches(state, &self.targets)
+        self.clones
+            .as_ref()
+            .is_none_or(|clones| clones.matches(state))
+            && targets::matches(state, &self.targets)
     }
     pub(crate) fn capture_targets(
         state: &EditorState,
@@ -122,6 +156,7 @@ impl PendingScopedSnapshot {
             forests: Vec::new(),
             targets: targets::capture(state, specs)?,
             targeted: true,
+            clones: None,
             header: capture_header.then(|| PendingHeader::capture(&state.doc)),
         })
     }
@@ -139,6 +174,9 @@ impl PendingScopedSnapshot {
             }
         }
         targets::restore(state, std::mem::take(&mut self.targets))?;
+        if let Some(clones) = self.clones.take() {
+            clones.restore(state)?;
+        }
         if let Some(header) = self.header.take() {
             header.restore(&mut state.doc);
         }
@@ -169,6 +207,7 @@ impl PendingScopedSnapshot {
             forests,
             targets: Vec::new(),
             targeted: false,
+            clones: None,
             header: capture_header.then(|| PendingHeader::capture(&state.doc)),
         }
     }
@@ -203,8 +242,21 @@ impl PendingScopedSnapshot {
         self.metadata
             .patches
             .extend(targets::compact(state, self.targets)?);
+        if let Some(clones) = self.clones.take() {
+            if let Some(clones) = clones.compact(state)? {
+                self.metadata.patches.push(Patch::Clones(clones));
+            }
+        }
         self.metadata.header = self.header.map(|header| header.compact(&state.doc));
-        self.metadata.actor_safe = self.targeted
+        let components_unchanged = self.targeted || {
+            let current =
+                SharedComponents::capture(&state.components, Some(&self.metadata.components));
+            Arc::ptr_eq(
+                current.components_arc(),
+                self.metadata.components.components_arc(),
+            ) && current.backing_identity() == self.metadata.components.backing_identity()
+        };
+        self.metadata.actor_safe = components_unchanged
             && self.metadata.header.is_none()
             && self.metadata.page_headers.is_empty()
             && self.metadata.app_state_owner == state.app_state_owner
@@ -362,6 +414,12 @@ impl ScopedEditorSnapshot {
     /// becomes the reverse entry; no permanent before/after document pair.
     pub(crate) fn exchange(&mut self, state: &mut EditorState) -> Result<(), ScopedHistoryError> {
         self.validate_shape(state)?;
+        let catalog = splice_exchange::Catalog::new(&state.history, &self.patches);
+        let splices =
+            splice_exchange::Prepared::capture(&state.doc, &self.patches, &catalog, false)?;
+        if let Some(prepared) = &splices {
+            prepared.rebase(&mut self.patches);
+        }
         for patch in &self.patches {
             patch.validate(&state.doc)?;
         }
@@ -374,11 +432,15 @@ impl ScopedEditorSnapshot {
         }
         let reverse = Self::auxiliary(state, self.scopes.clone());
         let mut reordered = patch::Reorders::default();
-        for patch in &mut self.patches {
-            patch.exchange(&mut state.doc, &mut reordered);
-        }
-        for patch in &mut self.patches {
-            patch.rebase(&reordered);
+        if let Some(splices) = splices {
+            splices.exchange(&mut state.doc, &mut self.patches);
+        } else {
+            for patch in &mut self.patches {
+                patch.exchange(&mut state.doc, &mut reordered);
+            }
+            for patch in &mut self.patches {
+                patch.rebase(&reordered);
+            }
         }
         for header in &mut self.page_headers {
             let current = &mut state.doc.pages.as_mut().unwrap()[header.index];

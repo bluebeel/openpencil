@@ -182,6 +182,46 @@ impl WrapPatch {
             + self.left.as_ref().map_or(0, String::capacity)
             + self.right.as_ref().map_or(0, String::capacity)
     }
+    pub(super) fn want_identities(&self, wanted: &mut super::identity::Wanted) {
+        self.parent.want(&self.scope, wanted);
+    }
+    pub(super) fn rebase_identity(
+        &mut self,
+        index: &super::identity::Index,
+    ) -> Result<(), ScopedHistoryError> {
+        self.parent.rebase_identity(&self.scope, index)
+    }
+    pub(super) fn conflicts_splice(&self, splice: &super::splice::SplicePatch) -> bool {
+        self.scope == splice.scope
+            && (self.parent.id == splice.parent_id
+                || splice.contains_changed(self.header.id_str())
+                || self
+                    .parent
+                    .id
+                    .as_deref()
+                    .is_some_and(|id| splice.contains_changed(id))
+                || self.members.iter().any(|id| splice.contains_changed(id)))
+    }
+    pub(super) fn conflicts_node(&self, node: &super::patch::NodePatch) -> bool {
+        if node.scope != self.scope {
+            return false;
+        }
+        if node.expected_id == self.header.id_str() || node.old.id_str() == self.header.id_str() {
+            return true;
+        }
+        if node.metadata_only {
+            return false;
+        }
+        if node.expected_id != node.old.id_str()
+            && self
+                .members
+                .iter()
+                .any(|id| id == &node.expected_id || id == node.old.id_str())
+        {
+            return true;
+        }
+        self.parent.id.iter().any(|id| node.contains_affected(id))
+    }
     pub(super) fn actor_regions(&self) -> [Option<super::actor_claim::Region<'_>>; 2] {
         use super::actor_claim::{Kind, Region};
         [
@@ -329,9 +369,7 @@ impl PendingWrap {
                 present,
                 ..
             } => {
-                let Ok(mut allocator) =
-                    crate::DocumentIdAllocator::sequential_for_document(&state.doc)
-                else {
+                let Ok(mut allocator) = state.standalone_id_allocator() else {
                     return false;
                 };
                 // This exclusive command emits exactly one numeric id above
@@ -364,6 +402,9 @@ impl PendingWrap {
         };
         patch.exchange(&mut state.doc);
         if patch.wrapped {
+            if let Some(highest) = crate::walkers::parse_n_id(patch.header.id_str()) {
+                state.record_runtime_id_high_water(highest);
+            }
             let id = crate::NodeId::new(patch.header.id_str());
             state.selection = crate::SelectionState {
                 anchor: id.clone(),
@@ -440,5 +481,43 @@ impl PendingWrap {
         };
         result.validate(doc)?;
         Ok(Some(result))
+    }
+}
+
+impl WrapPatch {
+    pub(super) fn forward_children<'a>(
+        &self,
+        doc: &'a PenDocument,
+        budget: &mut super::forward_structure::Budget,
+    ) -> Option<super::forward_structure::Children<'a>> {
+        use super::forward_structure::{node_ids, Children};
+        self.validate(doc).ok()?;
+        let (nodes, _) = self.parent.list(doc, &self.scope).ok()?;
+        let mut before = node_ids(nodes)?;
+        if self.wrapped {
+            before.remove(self.index);
+            for (position, id) in self.positions.iter().zip(&self.members) {
+                if *position > before.len() {
+                    return None;
+                }
+                before.insert(*position, id.clone());
+            }
+        } else {
+            let positions = self
+                .positions
+                .iter()
+                .copied()
+                .collect::<std::collections::HashSet<_>>();
+            before = before
+                .into_iter()
+                .enumerate()
+                .filter_map(|(at, id)| (!positions.contains(&at)).then_some(id))
+                .collect();
+            if self.index > before.len() {
+                return None;
+            }
+            before.insert(self.index, self.header.id_str().to_owned());
+        }
+        Children::capture(doc, &self.scope, &self.parent.path, before, true, budget)
     }
 }

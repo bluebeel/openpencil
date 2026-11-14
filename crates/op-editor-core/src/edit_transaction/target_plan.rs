@@ -172,6 +172,12 @@ fn find_path(nodes: &[PenNode], id: &NodeId, path: &mut Vec<usize>) -> Option<Ve
 }
 
 pub(super) fn structural_bound(state: &EditorState, command: &C) -> Option<usize> {
+    if matches!(
+        command,
+        C::DuplicateSelected { .. } | C::PasteClipboard { .. }
+    ) {
+        return crate::mutators::clone_splice::forecast(state, command);
+    }
     if state.instance_write_virtual_anchor.is_some() {
         return None;
     }

@@ -30,8 +30,10 @@ type Result<T> = std::result::Result<T, WebCanvasError>;
 /// images), so a connection that opens and dribbles must not pin a thread.
 const IO_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Max concurrent connections (SSE streams are long-lived, so bound them).
-const MAX_CONNS: usize = 64;
+/// Accepted active and queued sockets. A burst of1000 agent requests keeps
+/// its exact requests queued without allocating one OS worker per connection.
+const MAX_CONNS: usize = 4096;
+const MAX_CONNECTION_WORKERS: usize = 64;
 
 /// SSE keep-alive cadence — also how quickly a disconnected SSE client is
 /// detected (the heartbeat write fails once the socket is gone).
@@ -70,6 +72,8 @@ impl Drop for ConnGuard {
 pub struct WebCanvasState {
     pub(crate) editor: EditorState,
     pub(crate) recovery: crate::document_recovery::DocumentRecovery,
+    /// Bounded shared committed deltas; no subscriber owns a document snapshot.
+    changefeed: changefeed::Feed,
     /// MCP agent UI contexts are isolated per daemon/account, never across tenants.
     pub(crate) agent_contexts: Arc<crate::mcp_serve::agent_context::AgentContexts>,
     /// Immutable deployment policy for browser-supplied credentials. Public
@@ -154,6 +158,7 @@ impl WebCanvasState {
         Self {
             editor,
             recovery: Default::default(),
+            changefeed: Default::default(),
             agent_contexts: Arc::new(crate::mcp_serve::agent_context::AgentContexts::default()),
             credential_persistence,
             current_path,
@@ -492,7 +497,10 @@ pub(crate) use document_push::collab_aware_error_reply_for_test;
 pub(crate) use document_push::{document_push_reply, PendingDocumentPush};
 // Spine-local: the shared coded-error renderer for the document routes.
 use document_push::collab_aware_error_reply;
+mod async_sse;
+mod changefeed;
 mod sse_hub;
+mod sse_wire;
 pub use sse_hub::SseHub;
 pub(crate) use sse_hub::SseSlot;
 mod collab_routes;

@@ -77,6 +77,9 @@ pub struct EditorState {
     /// undo/restore, so an edit made after undoing past the save point
     /// can never reuse the saved revision value (false-clean guard).
     pub(crate) revision_counter: u64,
+    /// Process-local numeric allocation ownership; deliberately not persisted.
+    pub(crate) runtime_node_high_water: u64,
+    pub(crate) runtime_allocator_depth: u32,
     /// Monotonic document identity. Bumped by every `replace_document*`
     /// (open / revert / sync replace), so `(generation, revision)` uniquely
     /// names a state; a save-ack from a previous generation must be dropped.
@@ -148,6 +151,7 @@ impl EditorState {
     /// loaded document always opens with an empty selection, the
     /// Select tool, the identity viewport and page 0 active.
     pub fn from_document(doc: jian_ops_schema::PenDocument) -> Self {
+        let numeric_high_water = crate::id_allocator::numeric_high_water(&doc);
         let components = ComponentLibrary::from_document(&doc);
         jian_ops_schema::image_thumbs::activate_for_document(&doc);
         Self {
@@ -159,6 +163,8 @@ impl EditorState {
             revision: 0,
             saved_revision: 0,
             revision_counter: 0,
+            runtime_node_high_water: numeric_high_water,
+            runtime_allocator_depth: 0,
             document_generation: 0,
             derived_cache_identity: Default::default(),
             history_push_count: 0,
@@ -217,6 +223,7 @@ impl EditorState {
         self.revision = 0;
         self.saved_revision = 0;
         self.revision_counter = 0;
+        self.runtime_node_high_water = crate::id_allocator::numeric_high_water(&self.doc);
         self.document_generation = self.document_generation.saturating_add(1);
         self.history_push_count = 0;
         self.ui = UiDraftState::new();
@@ -245,6 +252,7 @@ impl EditorState {
         let old_doc = std::mem::replace(&mut self.doc, doc);
         jian_ops_schema::image_thumbs::activate_for_document(&self.doc);
         self.selection = SelectionState::empty();
+        self.record_runtime_id_high_water(crate::id_allocator::numeric_high_water(&self.doc));
         self.history_push_past(snap);
         self.document_generation = self.document_generation.saturating_add(1);
         self.ui = UiDraftState::new();

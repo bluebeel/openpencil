@@ -114,3 +114,27 @@ pub(crate) fn delete(state: &mut crate::EditorState) -> Option<bool> {
     }
     Some(removed)
 }
+
+/// Replace the active-page selection after one requested-ID lookup.
+/// Preserve input order/duplicates and the existing popover/empty transitions.
+pub(crate) fn set(state: &mut crate::EditorState, node_ids: Vec<NodeId>) -> bool {
+    let resolved: Vec<NodeId> = {
+        let found = resolve(state.active_children(), &node_ids);
+        node_ids
+            .iter()
+            .filter(|id| id.is_real() && found.contains_key(id.as_str()))
+            .cloned()
+            .collect()
+    };
+    if resolved.is_empty() {
+        state.clear_selection();
+    } else {
+        let anchor = resolved.last().cloned().unwrap();
+        if state.selection.anchor != anchor || state.selection.set != resolved {
+            state.editor_ui.image_panel.close_popovers();
+        }
+        state.selection.anchor = anchor;
+        state.selection.set = resolved;
+    }
+    true
+}

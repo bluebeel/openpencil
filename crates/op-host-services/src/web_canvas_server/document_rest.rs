@@ -42,38 +42,44 @@ fn handle_healthy_request(
             // `variants`: `/api/ai/standard` runs side-by-side directions.
             // `generators`: `/api/generator/run` is served (every mode).
             body: format!(
-                r#"{{"running":true,"port":{},"localIp":"127.0.0.1","server":"openpencil-mcp","mode":"web-canvas","serveMode":"{}","fileBound":{},"siteImport":{},"variants":{},"generators":{}}}"#,
+                r#"{{"running":true,"port":{},"localIp":"127.0.0.1","server":"openpencil-mcp","mode":"web-canvas","serveMode":"{}","fileBound":{},"siteImport":{},"variants":{},"generators":{},"changefeed":{}}}"#,
                 state.port,
                 state.mode.wire_name(),
                 state.current_path.is_some(),
                 state.mode.allows_site_import(),
                 state.mode.allows_design_variants(),
-                crate::generator_run_route::SERVED
+                crate::generator_run_route::SERVED,
+                state.changefeed.stats()
             ),
         },
         ("POST", "/api/mcp/server") => update_mcp_server_settings(body, state),
-        ("GET", "/api/mcp/document") => match serde_json::to_string(&state.editor.doc) {
-            Ok(doc_json) => WebReply {
-                status: "200 OK",
-                body: format!(
-                    r#"{{"document":{doc_json},"version":{},"activePageIndex":{},"preserveAuthoredGeometry":{},"scenario":{}}}"#,
-                    state.version,
-                    state.editor.ui.active_page_index,
-                    state.editor.editor_ui.preserve_authored_geometry,
-                    // The scene tag rides the same wire as the rest of the
-                    // editor meta: a Slides deck must reach the browser as a
-                    // deck or web preview cannot enter its presentation.
-                    match state.editor.editor_ui.scenario {
-                        Some(scene) => format!("\"{}\"", scene.as_str()),
-                        None => "null".to_string(),
-                    }
-                ),
-            },
-            Err(e) => WebReply {
-                status: "500 Internal Server Error",
-                body: crate::mcp_serve::rest_error_body(&e.to_string()),
-            },
-        },
+        ("GET", "/api/mcp/document") => {
+            // Cursor and complete snapshot are observed under the same state
+            // lock; clients bootstrap once, then ask the bounded since API.
+            let change_cursor = state.change_cursor();
+            match serde_json::to_string(&state.editor.doc) {
+                Ok(doc_json) => WebReply {
+                    status: "200 OK",
+                    body: format!(
+                        r#"{{"document":{doc_json},"version":{},"activePageIndex":{},"preserveAuthoredGeometry":{},"scenario":{},"changeCursor":"{change_cursor}"}}"#,
+                        state.version,
+                        state.editor.ui.active_page_index,
+                        state.editor.editor_ui.preserve_authored_geometry,
+                        // The scene tag rides the same wire as the rest of the
+                        // editor meta: a Slides deck must reach the browser as a
+                        // deck or web preview cannot enter its presentation.
+                        match state.editor.editor_ui.scenario {
+                            Some(scene) => format!("\"{}\"", scene.as_str()),
+                            None => "null".to_string(),
+                        }
+                    ),
+                },
+                Err(e) => WebReply {
+                    status: "500 Internal Server Error",
+                    body: crate::mcp_serve::rest_error_body(&e.to_string()),
+                },
+            }
+        }
         ("POST", "/api/mcp/document") => match state.apply_document_push(body, None) {
             Ok(outcome) if outcome.applied => WebReply {
                 status: "200 OK",
@@ -93,18 +99,21 @@ fn handle_healthy_request(
             },
             Err(error) => collab_aware_error_reply(&error),
         },
-        ("GET", "/api/mcp/version") => WebReply {
-            // `collabSeq` rides along so the existing 400 ms version poll also
-            // notices collaboration changes without a second request. Adding a
-            // field is backward compatible: a client that reads only `version`
-            // is unaffected.
-            status: "200 OK",
-            body: format!(
-                r#"{{"version":{},"collabSeq":{}}}"#,
-                state.version,
-                state.collab.seq()
-            ),
-        },
+        ("GET", "/api/mcp/version") => {
+            let change_cursor = state.change_cursor();
+            WebReply {
+                // `collabSeq` rides along so the existing 400 ms version poll also
+                // notices collaboration changes without a second request. Adding a
+                // field is backward compatible: a client that reads only `version`
+                // is unaffected.
+                status: "200 OK",
+                body: format!(
+                    r#"{{"version":{},"collabSeq":{},"changeCursor":"{change_cursor}"}}"#,
+                    state.version,
+                    state.collab.seq()
+                ),
+            }
+        }
         ("GET", "/api/mcp/indicators") => WebReply {
             // Agent-indicator relay: design runs execute inside this
             // daemon, so the process-global registry the canvas paints

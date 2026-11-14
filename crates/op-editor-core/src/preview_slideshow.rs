@@ -143,13 +143,16 @@ impl SlideshowState {
 /// Only frames count. A loose rectangle or a stray text node beside the deck
 /// is annotation, not a slide, and presenting it would be presenting
 /// something the author never authored as a board.
-pub fn active_page_boards(state: &EditorState) -> Vec<String> {
+fn page_board_ids(state: &EditorState) -> impl Iterator<Item = &str> {
     state
         .active_children()
         .iter()
         .filter(|node| matches!(node, jian_ops_schema::node::PenNode::Frame(_)))
-        .map(|node| node.id_str().to_string())
-        .collect()
+        .map(PenNodeExt::id_str)
+}
+
+pub fn active_page_boards(state: &EditorState) -> Vec<String> {
+    page_board_ids(state).map(str::to_owned).collect()
 }
 
 /// The boards of the active page that the current selection covers, in the
@@ -167,13 +170,14 @@ pub fn active_page_boards(state: &EditorState) -> Vec<String> {
 /// means anything that is not a board simply does not appear, with no second
 /// definition of what a board is.
 pub fn selected_page_boards(state: &EditorState) -> Vec<String> {
-    active_page_boards(state)
-        .into_iter()
-        .filter(|id| {
-            state
-                .selection
-                .contains(&crate::node_id::NodeId::new(id.clone()))
-        })
+    if state.selection.is_empty() {
+        return Vec::new();
+    }
+    let selected: std::collections::HashSet<&str> =
+        state.selection.set.iter().map(|id| id.as_str()).collect();
+    page_board_ids(state)
+        .filter(|id| selected.contains(id))
+        .map(str::to_owned)
         .collect()
 }
 

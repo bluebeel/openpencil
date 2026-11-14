@@ -44,15 +44,17 @@ fn apply_command(
     path: Option<&Path>,
     repair: bool,
     fence: &crate::document_recovery::DocumentRecovery,
+    changes: &mut super::changefeed::Staged,
 ) -> Result<bool, CommitError> {
     let Some(path) = path.filter(|_| {
         command.may_change_document() || matches!(command, EditorCommand::Batch { .. })
     }) else {
-        return Ok(mcp_serve::apply_command_with_undo(
-            editor,
-            command.clone(),
-            repair,
-        ));
+        let applied = mcp_serve::apply_command_with_undo(editor, command.clone(), repair);
+        if applied {
+            // Local/Online writes have no confirmed bound-file save boundary.
+            changes.unsupported();
+        }
+        return Ok(applied);
     };
     let operation = fence.watch();
     let revision = editor.document_revision();
@@ -86,6 +88,9 @@ fn apply_command(
             operation.complete();
             return Err(CommitError::Save { source, rollback });
         }
+        // The exact completed capture sees final state before any subsequent
+        // command. Keep the recovery watch open during encoding as well.
+        changes.push(capture.forward_metadata_json(editor, super::changefeed::MAX_RECORD_BYTES));
     }
     operation.complete();
     Ok(true)
@@ -119,6 +124,7 @@ pub(super) fn dispatch(
     }
     let commit_path = managed.then(|| state.current_path.clone()).flatten();
     let before = state.version;
+    let mut committed_changes = super::changefeed::Staged::default();
     let mut applied_any = false;
     let policy = state.collab_policy();
     let mut refused = None;
@@ -152,6 +158,7 @@ pub(super) fn dispatch(
                         commit_path.as_deref(),
                         mcp_serve::write_repairs::generated_tool(tool),
                         &fence,
+                        &mut committed_changes,
                     ) {
                         Ok(applied) => {
                             applied_any |=
@@ -178,6 +185,11 @@ pub(super) fn dispatch(
     }
     if applied_any {
         state.version += 1;
+        if !managed || commit_path.is_none() {
+            committed_changes.unsupported();
+        }
+        let version = state.version;
+        state.publish_committed_changes(before, version, committed_changes);
     }
     if state.version != before || refused.is_some() {
         ctx.hub.broadcast(state.sse_tick());

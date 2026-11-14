@@ -234,7 +234,11 @@ fn poll_version<C: RepaintContext + 'static>(
     let base_owned = base.to_string();
     let fetch_busy = fetch_busy.clone();
     let last_selection_key = last_selection_key.clone();
+    let issued_epoch = crate::identity_epoch::epoch();
     let on_version: Rc<dyn Fn(u16, String)> = Rc::new(move |status: u16, body: String| {
+        if issued_epoch != crate::identity_epoch::epoch() {
+            return;
+        }
         // A refused credential is the signal that this tab no longer speaks
         // for the account whose document it is showing. Treating it as "no
         // version" — which is what an untyped body read does — is what let the
@@ -250,6 +254,15 @@ fn poll_version<C: RepaintContext + 'static>(
         let Some(version) = WebSyncClient::parse_version_probe(&body) else {
             return; // daemon down / non-JSON error body — retry next tick
         };
+        if let Some(cursor) = WebSyncClient::parse_change_cursor(&body) {
+            let pair = current_pair(&*inner.borrow());
+            let mut controller = sync.borrow_mut();
+            if controller.client.change_authority_differs(&cursor) {
+                controller.client.require_change_resync();
+            } else if controller.gate.pull_allowed(pair) {
+                controller.client.adopt_change_cursor(version, &cursor);
+            }
+        }
         let wants_version = sync
             .try_borrow()
             .map(|s| s.client.wants_version(version))
@@ -257,19 +270,15 @@ fn poll_version<C: RepaintContext + 'static>(
         if !wants_version {
             return;
         }
-        // Fetch the full document; the latch is released when the response
-        // lands (or never taken if the request can't start).
-        fetch_busy.set(true);
-        let inner = inner.clone();
-        let sync = sync.clone();
-        let fetch_busy_done = fetch_busy.clone();
-        let last_selection_key = last_selection_key.clone();
-        let on_doc: Rc<dyn Fn(String)> = Rc::new(move |doc_body: String| {
-            apply_document_response(&inner, &doc_body, &sync, &last_selection_key);
-            fetch_busy_done.set(false);
-        });
-        if !live_sync::get(&format!("{base_owned}/api/mcp/document"), on_doc) {
-            fetch_busy.set(false);
+        if !live_sync_feed::try_fetch(&inner, &base_owned, &sync, &fetch_busy, &last_selection_key)
+        {
+            live_sync_feed::fetch_snapshot(
+                &inner,
+                &base_owned,
+                &sync,
+                &fetch_busy,
+                &last_selection_key,
+            );
         }
     });
     let _ = live_sync::get_with_status(&format!("{base}/api/mcp/version"), on_version);
@@ -749,6 +758,9 @@ thread_local! {
     /// cycle or threading sync state through every DOM file-action callback.
     pub(super) static ACTIVE_SYNC: RefCell<Option<Weak<RefCell<SyncController>>>> = const { RefCell::new(None) };
 }
+
+#[path = "live_sync_feed.rs"]
+mod live_sync_feed;
 
 #[path = "live_sync_controller.rs"]
 mod live_sync_controller;

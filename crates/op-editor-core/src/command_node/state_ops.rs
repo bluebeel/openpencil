@@ -15,7 +15,7 @@ use super::tree_ops::{
 };
 use crate::command::BatchInsertItem;
 use crate::fills::set_primary_fill_hex;
-use crate::id_allocator::{IdAllocError, IdAllocator, SequentialIdAllocator};
+use crate::id_allocator::{IdAllocError, IdAllocator};
 use crate::node_id::NodeId;
 use crate::pen_node_ext::PenNodeExt;
 use crate::state::EditorState;
@@ -133,17 +133,7 @@ impl EditorState {
             let Some(current) = walkers::find_node_mut(self.active_children_mut(), node_id) else {
                 return false;
             };
-            if crate::node_json::apply_numeric_geometry_patch(current, &patch) {
-                return true;
-            }
-            return crate::node_json::map_header_json_in_place(current, |value| {
-                if let Some(object) = value.as_object_mut() {
-                    for (key, value) in &patch {
-                        object.insert(key.clone(), value.clone());
-                    }
-                }
-            })
-            .is_ok();
+            return super::borrowed_geometry::patch_header(current, &patch);
         }
         let Some(current) = walkers::find_node(self.active_children(), node_id) else {
             return false;
@@ -479,14 +469,14 @@ impl EditorState {
         nodes: Vec<PenNode>,
         parent_id: &NodeId,
     ) -> Option<Vec<String>> {
-        let mut allocator = SequentialIdAllocator::for_document(&self.doc, 1).ok()?;
+        let mut allocator = self.sequential_id_allocator(1).ok()?;
         self.insert_subtree_returning_root_ids_with_allocator(nodes, parent_id, &mut allocator)
             .ok()
             .flatten()
     }
 
     /// Allocator-aware form of [`Self::insert_subtree_returning_root_ids`].
-    pub fn insert_subtree_returning_root_ids_with_allocator(
+    pub(crate) fn insert_subtree_returning_root_ids_with_allocator_unobserved(
         &mut self,
         nodes: Vec<PenNode>,
         parent_id: &NodeId,
@@ -510,10 +500,14 @@ impl EditorState {
         nodes: Vec<PenNode>,
         parent_id: &NodeId,
     ) -> Option<Vec<String>> {
-        let mut allocator = SequentialIdAllocator::for_document(&self.doc, 1).ok()?;
-        self.insert_subtree_roots(nodes, parent_id, &mut allocator, false)
-            .ok()
-            .flatten()
+        let mut allocator = self.sequential_id_allocator(1).ok()?;
+        self.observe_runtime_allocations(
+            &mut allocator,
+            |state, observed| state.insert_subtree_roots(nodes, parent_id, observed, false),
+            |result| result.is_some(),
+        )
+        .ok()
+        .flatten()
     }
 
     fn insert_subtree_roots(

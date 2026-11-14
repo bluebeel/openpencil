@@ -12,6 +12,17 @@ pub(super) fn rebuild_registry(
     profile: tool_profile::McpAccessProfile,
     arguments: Option<&std::collections::BTreeMap<String, String>>,
 ) -> ToolRegistry {
+    rebuild_registry_with_authority(doc, requested_tool, profile, arguments, false)
+}
+
+/// Only the exclusively locked host dispatcher establishes revision authority.
+pub(super) fn rebuild_registry_with_authority(
+    doc: &EditorState,
+    requested_tool: Option<&str>,
+    profile: tool_profile::McpAccessProfile,
+    arguments: Option<&std::collections::BTreeMap<String, String>>,
+    trusted_authority: bool,
+) -> ToolRegistry {
     // The lean catalog has its own six-tool registry (two of them compose
     // several full-catalog tools); nothing else is constructed for it.
     if profile.catalog == tool_catalog::McpToolCatalog::Lean {
@@ -41,7 +52,14 @@ pub(super) fn rebuild_registry(
     register_tool!("reload_document", op_mcp::ReloadDocument);
     register_tool!("batch_tools", atomic_tools::Unavailable);
     register_tool!("get_document_info", document_info_snapshot(doc));
-    register_tool!("query_canvas", canvas_query::snapshot(doc, arguments));
+    register_tool!(
+        "query_canvas",
+        if trusted_authority && requested_tool.is_some() {
+            canvas_query::snapshot_cached(doc, arguments)
+        } else {
+            canvas_query::snapshot(doc, arguments)
+        }
+    );
     register_tool!(
         "boolean_selected",
         boolean_selected::snapshot(doc, arguments)

@@ -61,6 +61,22 @@ impl SharedNode {
     pub fn child_edge_storage(&self) -> Option<(usize, usize)> {
         self.children.as_ref().map(super::edges::storage)
     }
+    pub(crate) fn capture_owned(mut node: PenNode) -> Arc<Self> {
+        let children = if node.children().is_some() {
+            let children = std::mem::take(node.children_mut().unwrap());
+            Some(Arc::new(
+                children.into_iter().map(Self::capture_owned).collect(),
+            ))
+        } else {
+            None
+        };
+        let sensitivity = super::sensitivity::bytes(&node);
+        Arc::new(Self {
+            metadata: node,
+            sensitivity,
+            children,
+        })
+    }
     pub(crate) fn capture(node: &PenNode, anchor: Option<&Arc<Self>>) -> Arc<Self> {
         Capture::default().node(node, anchor)
     }

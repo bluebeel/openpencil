@@ -137,7 +137,7 @@ pub(crate) fn apply(
     }
 }
 
-fn write(node: &mut PenNode, command: &C, prepared: &Prepared) -> bool {
+pub(crate) fn write(node: &mut PenNode, command: &C, prepared: &Prepared) -> bool {
     if target(command).is_none_or(|id| !id.is_real()) {
         return false;
     }

@@ -143,6 +143,53 @@ impl MovePatch {
         .expect("validated topology move retains exact inverse routes");
         *self = reverse;
     }
+    pub(super) fn want_identities(&self, wanted: &mut super::identity::Wanted) {
+        self.from.want(&self.scope, wanted);
+        self.to.want(&self.scope, wanted);
+    }
+    pub(super) fn rebase_identity(
+        &mut self,
+        index: &super::identity::Index,
+    ) -> Result<(), ScopedHistoryError> {
+        self.from.rebase_identity(&self.scope, index)?;
+        self.to.rebase_identity(&self.scope, index)
+    }
+    pub(super) fn conflicts_splice(&self, splice: &super::splice::SplicePatch) -> bool {
+        self.scope == splice.scope
+            && (splice.contains_changed(&self.node_id)
+                || self
+                    .from
+                    .id
+                    .as_deref()
+                    .is_some_and(|id| splice.contains_changed(id))
+                || self
+                    .to
+                    .id
+                    .as_deref()
+                    .is_some_and(|id| splice.contains_changed(id))
+                || self.from.id == splice.parent_id
+                || self.to.id == splice.parent_id)
+    }
+    pub(super) fn conflicts_node(&self, node: &super::patch::NodePatch) -> bool {
+        if node.scope != self.scope {
+            return false;
+        }
+        if node.metadata_only {
+            return self.from.id.as_deref() == Some(node.expected_id.as_str())
+                && !self.restore_from_present
+                || self.to.id.as_deref() == Some(node.expected_id.as_str()) && !self.to_present;
+        }
+        if node.expected_id != node.old.id_str()
+            && (self.node_id == node.expected_id || self.node_id == node.old.id_str())
+        {
+            return true;
+        }
+        self.from
+            .id
+            .iter()
+            .chain(self.to.id.iter())
+            .any(|id| node.contains_affected(id))
+    }
     pub(super) fn actor_regions(&self) -> [Option<super::actor_claim::Region<'_>>; 2] {
         use super::actor_claim::{Kind, Region};
         [
@@ -248,5 +295,51 @@ impl PendingMove {
             return Err(ScopedHistoryError::NodePathChanged);
         }
         Ok(Some(reverse))
+    }
+}
+
+impl MovePatch {
+    pub(super) fn forward_children<'a>(
+        &self,
+        doc: &'a PenDocument,
+        budget: &mut super::forward_structure::Budget,
+    ) -> Option<Vec<super::forward_structure::Children<'a>>> {
+        use super::forward_structure::{node_ids, Children};
+        self.validate(doc).ok()?;
+        let (source, _) = self.from.list(doc, &self.scope).ok()?;
+        let (target, _) = self.to.list(doc, &self.scope).ok()?;
+        let mut source_before = node_ids(source)?;
+        let moved = source_before.get(self.from_index)?.clone();
+        source_before.remove(self.from_index);
+        if self.from.path == self.to.path {
+            if self.to_index > source_before.len() {
+                return None;
+            }
+            source_before.insert(self.to_index, moved);
+            return Some(vec![Children::capture(
+                doc,
+                &self.scope,
+                &self.from.path,
+                source_before,
+                true,
+                budget,
+            )?]);
+        }
+        let mut target_before = node_ids(target)?;
+        if self.to_index > target_before.len() {
+            return None;
+        }
+        target_before.insert(self.to_index, moved);
+        Some(vec![
+            Children::capture(
+                doc,
+                &self.scope,
+                &self.from.path,
+                source_before,
+                self.restore_from_present,
+                budget,
+            )?,
+            Children::capture(doc, &self.scope, &self.to.path, target_before, true, budget)?,
+        ])
     }
 }

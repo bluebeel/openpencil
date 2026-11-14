@@ -53,7 +53,7 @@ use xml::*;
 
 use crate::command_node::build_leaf_node;
 use crate::fills::set_primary_fill_hex;
-use crate::id_allocator::{IdAllocError, IdAllocator, SequentialIdAllocator};
+use crate::id_allocator::{IdAllocError, IdAllocator};
 use crate::node_id::NodeId;
 use crate::pen_node_ext::PenNodeExt;
 use crate::state::EditorState;
@@ -177,7 +177,7 @@ impl EditorState {
         offset: (f64, f64),
         name: Option<&str>,
     ) -> usize {
-        let Ok(mut allocator) = SequentialIdAllocator::for_document(&self.doc, *next_id) else {
+        let Ok(mut allocator) = self.sequential_id_allocator(*next_id) else {
             return 0;
         };
         let result = self.import_svg_named_with_allocator(&mut allocator, svg, offset, name);
@@ -186,7 +186,7 @@ impl EditorState {
     }
 
     /// Parse and import an SVG using a session-owned document allocator.
-    pub fn import_svg_with_allocator(
+    pub(crate) fn import_svg_with_allocator_unobserved(
         &mut self,
         allocator: &mut dyn IdAllocator,
         svg: &str,
@@ -196,7 +196,7 @@ impl EditorState {
     }
 
     /// Named allocator-aware form of [`Self::import_svg_named`].
-    pub fn import_svg_named_with_allocator(
+    pub(crate) fn import_svg_named_with_allocator_unobserved(
         &mut self,
         allocator: &mut dyn IdAllocator,
         svg: &str,

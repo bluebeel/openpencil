@@ -113,8 +113,12 @@ fn figma_family_with_css_separators_is_quoted_for_the_canonical_stack() {
 #[test]
 fn font_weight_parsed_from_style_name() {
     assert_eq!(parse_font_weight("semibold italic"), Some(600));
-    // "extra light" contains "light" → 300 (no "extralight" token).
-    assert_eq!(parse_font_weight("extra light"), Some(300));
+    // Compound weight tokens retain their meaning with standard separators.
+    assert_eq!(parse_font_weight("extra light"), Some(200));
+    assert_eq!(parse_font_weight("semi bold"), Some(600));
+    assert_eq!(parse_font_weight("demi-bold italic"), Some(600));
+    assert_eq!(parse_font_weight("extra bold"), Some(800));
+    assert_eq!(parse_font_weight("ultra_light"), Some(200));
     assert_eq!(parse_font_weight("extralight"), Some(200));
     assert_eq!(parse_font_weight("extrabold"), Some(800));
     assert_eq!(parse_font_weight("bold"), Some(700));

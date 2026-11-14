@@ -23,9 +23,23 @@ impl IndexedPreparation {
         layout: FigLayoutMode,
         observer: &mut dyn FnMut(FigImportPhase),
     ) -> Option<TreeNode> {
+        let Self {
+            metadata,
+            encoded,
+            topology,
+        } = self;
         let nodes = match page {
-            Some(page) => self.encoded.page(self.metadata, &self.topology, page),
-            None => self.encoded.all(self.metadata),
+            Some(page) => {
+                let nodes = encoded.page(metadata, &topology, page);
+                drop(topology);
+                nodes
+            }
+            None => {
+                // Discovery ancestry is no longer read by full hydration or
+                // style/tree construction. Release its indexes before either.
+                drop(topology);
+                encoded.all(metadata)
+            }
         };
         resolve_tree(nodes, layout, observer)
     }

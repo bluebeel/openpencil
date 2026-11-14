@@ -56,6 +56,9 @@ impl PackedBlob {
             self.unpack(packed)
         })
     }
+    pub(crate) fn byte_len(&self) -> usize {
+        self.length
+    }
     pub fn image(&self) -> bool {
         self.length > 8
             && matches!(

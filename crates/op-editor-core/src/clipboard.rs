@@ -5,7 +5,7 @@
 //! repeated paste works). Cut is atomic — a failed delete leg
 //! restores the prior clipboard so a no-op cut looks like a no-op.
 
-use crate::id_allocator::{IdAllocError, IdAllocator, SequentialIdAllocator};
+use crate::id_allocator::{IdAllocError, IdAllocator};
 use crate::node_id::NodeId;
 use crate::pen_node_ext::PenNodeExt;
 use crate::state::EditorState;
@@ -59,7 +59,7 @@ impl EditorState {
     /// Returns the new ids, or empty on no-op (empty clipboard / id
     /// overflow).
     pub fn paste_clipboard(&mut self, next_id: &mut u64, offset_doc_px: f64) -> Vec<NodeId> {
-        let Ok(mut allocator) = SequentialIdAllocator::for_document(&self.doc, *next_id) else {
+        let Ok(mut allocator) = self.sequential_id_allocator(*next_id) else {
             return Vec::new();
         };
         let result = self
@@ -72,7 +72,7 @@ impl EditorState {
     }
 
     /// Allocator-aware form of [`Self::paste_clipboard`].
-    pub fn paste_clipboard_with_allocator(
+    pub(crate) fn paste_clipboard_with_allocator_unobserved(
         &mut self,
         allocator: &mut dyn IdAllocator,
         offset_doc_px: f64,

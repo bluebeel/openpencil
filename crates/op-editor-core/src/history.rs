@@ -26,7 +26,7 @@ pub(crate) use scoped::{
     contains_header_token, structural_payload_bound, PendingScopedSnapshot, Scope, SpliceSpec,
     TargetSpec, TopologyKind, TopologyLocation, TopologyRequest, TopologySpec,
 };
-pub use scoped::{ScopedEditorSnapshot, ScopedHistoryError};
+pub use scoped::{CommittedMetadataApply, ScopedEditorSnapshot, ScopedHistoryError};
 
 /// Document-dependent comparison state. Camera and other view-only state stay
 /// outside history; picking a direction must be undoable as a usable comparison.

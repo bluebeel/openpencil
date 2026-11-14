@@ -73,9 +73,9 @@ pub fn run_web_canvas(options: ServeWebOptions) -> Result<()> {
              instructions (tools/check-wasm-bundle.sh, or set OPENPENCIL_WEB_BUNDLE_DIR)"
         ),
     }
-    // Shared across connection threads: the document authority (one writer at a
-    // time via the Mutex) + the SSE broadcast hub. Thread-per-connection so a
-    // long-lived SSE stream (or a slow client) never blocks other clients.
+    // Shared document authority (one writer at a time via the Mutex) and SSE
+    // hub. Bounded request workers hand long-lived SSE sockets to the shared
+    // async runtime instead of pinning a worker for each subscriber.
     let state = Arc::new(Mutex::new(WebCanvasState::new_with_path_and_policy(
         editor,
         bound,
@@ -148,7 +148,12 @@ pub fn run_web_canvas(options: ServeWebOptions) -> Result<()> {
     // The collaboration pump. It observes `shutdown` itself, so it retires
     // within one tick of the daemon being asked to stop.
     collab_driver::spawn(&state, &hub, &shutdown);
-    let mut workers = connection_pool::ConnectionPool::new(MAX_CONNS, "op-serve-web-conn");
+    let sse_streams = Arc::new(async_sse::Streams::new());
+    let mut workers = connection_pool::ConnectionPool::with_capacity(
+        MAX_CONNECTION_WORKERS,
+        MAX_CONNS,
+        "op-serve-web-conn",
+    );
     for stream in listener.incoming() {
         if shutdown.load(Ordering::Acquire) {
             break;
@@ -176,13 +181,26 @@ pub fn run_web_canvas(options: ServeWebOptions) -> Result<()> {
         let conns = Arc::clone(&conn_count);
         let shutdown_flag = Arc::clone(&shutdown);
         let connection = ConnGuard(conns);
+        let sse_streams = Arc::clone(&sse_streams);
         let dispatched = workers.submit(
             conn_count.load(Ordering::Acquire),
             Box::new(move || {
-                let _conn_guard = connection;
                 let _ = s.set_read_timeout(Some(IO_TIMEOUT));
                 let _ = s.set_write_timeout(Some(IO_TIMEOUT));
-                match serve_one_with_authority(&mut s, &state, &hub, mode, &authority) {
+                // A queued socket has not entered document execution yet.
+                // Shutdown refuses it explicitly instead of applying it after
+                // the final writer barrier or dropping an ambiguous response.
+                if shutdown_flag.load(Ordering::Acquire) {
+                    let _ = crate::mcp_serve::write_mcp_http_response(
+                        &mut s,
+                        "503 Service Unavailable",
+                        r#"{"ok":false,"error":"server shutting down"}"#,
+                    );
+                    return;
+                }
+                match async_sse::serve_socket(s, connection, &sse_streams, |socket| {
+                    serve_one_with_authority(socket, &state, &hub, mode, &authority)
+                }) {
                     Ok(true) => {
                         shutdown_flag.store(true, Ordering::Release);
                         // Wake the (possibly blocked) accept loop. Loopback
@@ -199,6 +217,7 @@ pub fn run_web_canvas(options: ServeWebOptions) -> Result<()> {
             eprintln!("openpencil-desktop --serve-web: {error}");
         }
     }
+    sse_streams.close();
     eprintln!("openpencil-desktop --serve-web: shutdown requested; exiting");
     Ok(())
 }

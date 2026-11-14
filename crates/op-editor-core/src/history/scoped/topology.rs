@@ -105,6 +105,33 @@ impl TopologyPatch {
             Self::Wrap(patch) => patch.exchange(state),
         }
     }
+    pub(super) fn want_identities(&self, wanted: &mut super::identity::Wanted) {
+        match self {
+            Self::Move(patch) => patch.want_identities(wanted),
+            Self::Wrap(patch) => patch.want_identities(wanted),
+        }
+    }
+    pub(super) fn rebase_identity(
+        &mut self,
+        index: &super::identity::Index,
+    ) -> Result<(), ScopedHistoryError> {
+        match self {
+            Self::Move(patch) => patch.rebase_identity(index),
+            Self::Wrap(patch) => patch.rebase_identity(index),
+        }
+    }
+    pub(super) fn conflicts_splice(&self, splice: &super::splice::SplicePatch) -> bool {
+        match self {
+            Self::Move(patch) => patch.conflicts_splice(splice),
+            Self::Wrap(patch) => patch.conflicts_splice(splice),
+        }
+    }
+    pub(super) fn conflicts_node(&self, node: &super::patch::NodePatch) -> bool {
+        match self {
+            Self::Move(patch) => patch.conflicts_node(node),
+            Self::Wrap(patch) => patch.conflicts_node(node),
+        }
+    }
     pub(super) fn actor_regions(&self) -> [Option<super::actor_claim::Region<'_>>; 2] {
         match self {
             Self::Move(patch) => patch.actor_regions(),

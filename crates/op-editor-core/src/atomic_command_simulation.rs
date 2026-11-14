@@ -12,11 +12,10 @@ pub struct AtomicCommandSimulation {
 
 impl AtomicCommandSimulation {
     pub fn new(source: &EditorState) -> Self {
-        let (allocator, seed_error) =
-            match DocumentIdAllocator::sequential_for_document(&source.doc) {
-                Ok(allocator) => (allocator, None),
-                Err(error) => (DocumentIdAllocator::sequential(1), Some(error)),
-            };
+        let (allocator, seed_error) = match source.standalone_id_allocator() {
+            Ok(allocator) => (allocator, None),
+            Err(error) => (DocumentIdAllocator::sequential(1), Some(error)),
+        };
         let mut state = source.clone_for_command_simulation();
         // Reads observe the pre-transaction history, not the empty scratch
         // history of the DSL simulator. Undo capture stays suspended, so

@@ -4,6 +4,7 @@ use op_editor_ui::snapping::{ResizeHandle, SnapAxis, SnapIndex, SnapRect};
 use std::{
     collections::{BTreeMap, HashMap},
     fmt,
+    sync::Arc,
 };
 
 use op_editor_core::{
@@ -248,17 +249,38 @@ pub(super) fn snapshot(
     state: &EditorState,
     arguments: Option<&BTreeMap<String, String>>,
 ) -> QueryCanvas {
+    snapshot_inner(state, arguments, false)
+}
+
+pub(super) fn snapshot_cached(
+    state: &EditorState,
+    arguments: Option<&BTreeMap<String, String>>,
+) -> QueryCanvas {
+    snapshot_inner(state, arguments, true)
+}
+
+fn snapshot_inner(
+    state: &EditorState,
+    arguments: Option<&BTreeMap<String, String>>,
+    trusted: bool,
+) -> QueryCanvas {
     let result = (|| {
         // Discovery is cheap, and malformed calls never build a scene.
         let queries = queries(arguments.ok_or(QueryError::InvalidField("query"))?)?;
-        let scene = op_pen_loader::editor_state_to_active_page_layout_scene(state);
+        let scene = if trusted {
+            op_pen_loader::active_query_scene_cached(state)
+        } else {
+            Arc::new(op_pen_loader::editor_state_to_active_page_layout_scene(
+                state,
+            ))
+        };
         let page_id = scene
             .active_page()
             .ok_or(QueryError::NoActivePage)?
             .id
             .clone();
         let mut results = Vec::with_capacity(queries.len());
-        let mut snap_indexes: HashMap<Option<String>, SnapIndex> = HashMap::new();
+        let mut snap_indexes: HashMap<Option<String>, Arc<SnapIndex>> = HashMap::new();
         for query in queries {
             results.push(match query {
                 Query::Point { x, y, zoom } => {
@@ -273,7 +295,8 @@ pub(super) fn snapshot(
                 }
                 Query::Snap {x,y,width,height,dx,dy,zoom,threshold,parent,excluded,resize} => {
                     if !snap_indexes.contains_key(&parent) {
-                        let index=SnapIndex::for_scene(&scene,parent.as_deref())
+                        let index=if trusted {op_pen_loader::query_snap_index_cached(&scene,parent.as_deref())}
+                            else {SnapIndex::for_scene(&scene,parent.as_deref()).map(Arc::new)}
                             .ok_or_else(||QueryError::MissingParent(parent.clone().unwrap_or_default()))?;
                         snap_indexes.insert(parent.clone(),index);
                     }

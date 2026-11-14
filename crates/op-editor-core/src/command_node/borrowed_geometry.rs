@@ -54,3 +54,22 @@ pub(crate) fn update_node(
     }
     true
 }
+
+/// The complete existing nonstructural patch writer. Sparse planning restricts
+/// eligible keys before calling this; ordinary callers keep all header fields.
+pub(crate) fn patch_header(
+    node: &mut PenNode,
+    patch: &serde_json::Map<String, serde_json::Value>,
+) -> bool {
+    if crate::node_json::apply_numeric_geometry_patch(node, patch) {
+        return true;
+    }
+    crate::node_json::map_header_json_in_place(node, |value| {
+        if let Some(object) = value.as_object_mut() {
+            for (key, value) in patch {
+                object.insert(key.clone(), value.clone());
+            }
+        }
+    })
+    .is_ok()
+}

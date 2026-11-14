@@ -16,16 +16,21 @@ pub(crate) struct SpliceSpec {
 pub(super) struct SplicePatch {
     pub scope: patch::Scope,
     pub parent: Box<[usize]>,
-    parent_id: Option<String>,
-    parent_kind: Option<mem::Discriminant<PenNode>>,
-    index: usize,
-    expected_total: usize,
-    expected_present: bool,
-    expected_ids: Vec<String>,
-    left: Option<String>,
-    right: Option<String>,
-    old_present: bool,
+    pub(super) parent_id: Option<String>,
+    pub(super) parent_kind: Option<mem::Discriminant<PenNode>>,
+    pub(super) index: usize,
+    pub(super) expected_total: usize,
+    pub(super) expected_present: bool,
+    pub(super) expected_ids: Vec<String>,
+    pub(super) left: Option<String>,
+    pub(super) right: Option<String>,
+    pub(super) old_present: bool,
     pub old: Vec<Arc<SharedNode>>,
+    pub(super) logical_ids: Vec<String>,
+    pub(super) changed_ids: Arc<Vec<String>>,
+    pub(super) origin_absent: bool,
+    pub(super) recent: Vec<super::splice_order::Anchors>,
+    pub(super) sealed: bool,
 }
 #[derive(Debug)]
 pub(super) struct PendingSplice {
@@ -34,39 +39,14 @@ pub(super) struct PendingSplice {
 }
 
 pub(crate) fn payload_bound(node: &PenNode) -> Option<usize> {
-    fn count(node: &PenNode, depth: usize, left: &mut usize) -> bool {
-        if depth > 128 || *left == 0 {
-            return false;
-        }
-        *left -= 1;
-        node.children()
-            .is_none_or(|children| children.iter().all(|child| count(child, depth + 1, left)))
-    }
-    let mut remaining = 4096;
-    if !count(node, 0, &mut remaining) {
-        return None;
-    }
-    struct Counter(usize);
-    impl std::io::Write for Counter {
-        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-            self.0 = self.0.saturating_add(bytes.len());
-            if self.0 > 4 * 1024 * 1024 {
-                return Err(std::io::ErrorKind::OutOfMemory.into());
-            }
-            Ok(bytes.len())
-        }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-    let mut bytes = Counter(0);
-    serde_json::to_writer(&mut bytes, node).ok()?;
-    Some(
-        bytes.0.saturating_mul(32)
-            + (4096 - remaining) * mem::size_of::<SharedNode>() * 4
-            + 128 * 1024,
+    crate::history_snapshot::command_capture_node_bytes(
+        node,
+        false,
+        crate::history_snapshot::COMMAND_CAPTURE_ALLOWANCE,
     )
+    .ok()
 }
+
 fn id(node: Option<&PenNode>) -> Result<Option<String>, ScopedHistoryError> {
     node.map(|node| {
         (node.id_str().len() <= 16 * 1024)
@@ -95,6 +75,9 @@ impl SplicePatch {
         ))
     }
     pub(super) fn validate(&self, doc: &PenDocument) -> Result<(), ScopedHistoryError> {
+        if self.sealed {
+            return self.validate_identity(doc);
+        }
         let (children, present) = self.list(doc)?;
         let end = self
             .index
@@ -119,44 +102,23 @@ impl SplicePatch {
         }
         Ok(())
     }
-    /// Only called after validation under the exclusive document authority.
-    pub(super) fn exchange(&mut self, doc: &mut PenDocument) {
-        let roots = patch::roots_mut(doc, &self.scope).unwrap();
-        let mut slot = None;
-        let children = if self.parent.is_empty() {
-            roots
-        } else {
-            let parent = patch::node_mut(roots, &self.parent).unwrap();
-            let children = patch::children_slot(parent).unwrap();
-            slot = Some(children);
-            slot.as_mut().unwrap().get_or_insert_with(Vec::new)
-        };
-        let end = self.index + self.expected_ids.len();
-        let reverse = children[self.index..end]
-            .iter()
-            .map(|node| SharedNode::capture(node, None))
-            .collect();
-        let restored = self
-            .old
-            .iter()
-            .map(|node| node.materialize())
-            .collect::<Vec<_>>();
-        let restored_ids = restored
-            .iter()
-            .map(|node| node.id_str().to_owned())
-            .collect();
-        children.splice(self.index..end, restored);
-        self.expected_total = children.len();
-        self.expected_ids = restored_ids;
-        self.old = reverse;
-        if !self.old_present {
-            debug_assert!(children.is_empty());
-            *slot.unwrap() = None;
-        }
-        mem::swap(&mut self.old_present, &mut self.expected_present);
-    }
     pub(super) fn storage_bytes(&self) -> usize {
-        self.parent.len() * mem::size_of::<usize>()
+        self.recent.capacity() * mem::size_of::<super::splice_order::Anchors>()
+            + self
+                .recent
+                .iter()
+                .map(|anchor| {
+                    anchor.ids.capacity() * mem::size_of::<String>()
+                        + anchor.ids.iter().map(String::capacity).sum::<usize>()
+                        + anchor.left.as_ref().map_or(0, String::capacity)
+                        + anchor.right.as_ref().map_or(0, String::capacity)
+                })
+                .sum::<usize>()
+            + self.logical_ids.capacity() * mem::size_of::<String>()
+            + self.logical_ids.iter().map(String::capacity).sum::<usize>()
+            + self.changed_ids.capacity() * mem::size_of::<String>()
+            + self.changed_ids.iter().map(String::capacity).sum::<usize>()
+            + self.parent.len() * mem::size_of::<usize>()
             + self.parent_id.as_ref().map_or(0, String::capacity)
             + self.expected_ids.capacity() * mem::size_of::<String>()
             + self
@@ -187,6 +149,17 @@ impl PendingSplice {
             let node = patch::node(roots, &parent).ok_or(ScopedHistoryError::NodePathChanged)?;
             (id(Some(node))?, Some(mem::discriminant(node)))
         };
+        if let Some(id) = &parent_id {
+            let mut wanted = super::identity::Wanted::new();
+            wanted.entry(scope.clone()).or_default().insert(id.clone());
+            if super::identity::Index::new(&state.doc, wanted)?
+                .path(&scope, id)?
+                .as_ref()
+                != parent.as_ref()
+            {
+                return Err(ScopedHistoryError::NodePathChanged);
+            }
+        }
         let mut patch = SplicePatch {
             scope,
             parent,
@@ -200,6 +173,11 @@ impl PendingSplice {
             right: None,
             old_present: true,
             old: Vec::new(),
+            logical_ids: Vec::new(),
+            changed_ids: Arc::new(Vec::new()),
+            origin_absent: false,
+            recent: Vec::new(),
+            sealed: false,
         };
         let (children, present) = patch.list(&state.doc)?;
         let end = spec
@@ -214,6 +192,19 @@ impl PendingSplice {
                 .all(|node| payload_bound(node).is_some())
         {
             return Err(ScopedHistoryError::NodePathChanged);
+        }
+        let mut affected_ids = Vec::new();
+        for node in &children[spec.index..end] {
+            super::identity::collect_ids(node, &mut affected_ids);
+        }
+        let mut affected_wanted = super::identity::Wanted::new();
+        affected_wanted
+            .entry(patch.scope.clone())
+            .or_default()
+            .extend(affected_ids.iter().cloned());
+        let identities = super::identity::Index::new(&state.doc, affected_wanted)?;
+        for id in &affected_ids {
+            identities.path(&patch.scope, id)?;
         }
         let old = children[spec.index..end]
             .iter()
@@ -230,6 +221,12 @@ impl PendingSplice {
         patch.old_present = present;
         patch.expected_ids = expected_ids;
         patch.old = old;
+        patch.logical_ids = patch.expected_ids.clone();
+        let mut changed = affected_ids;
+        changed.sort_unstable();
+        changed.dedup();
+        patch.changed_ids = Arc::new(changed);
+        patch.origin_absent = !present;
         patch.left = left;
         patch.right = right;
         Ok(Self {
@@ -276,14 +273,31 @@ impl PendingSplice {
             .map(|node| id(Some(node)).map(Option::unwrap))
             .collect::<Result<_, _>>()?;
         self.patch.expected_ids = expected_ids;
+        if self.patch.logical_ids.is_empty() {
+            self.patch.logical_ids = self.patch.expected_ids.clone();
+        }
+        let mut changed = self.patch.changed_ids.as_ref().clone();
+        for node in &children[self.patch.index..self.patch.index + inserted] {
+            super::identity::collect_ids(node, &mut changed);
+        }
+        changed.sort_unstable();
+        changed.dedup();
+        self.patch.changed_ids = Arc::new(changed);
         self.patch.expected_total = children.len();
         self.patch.expected_present = present;
+        self.patch.sealed = true;
         self.patch.validate(&state.doc)?;
         Ok(Some(self.patch))
     }
     pub(super) fn restore(self, state: &mut EditorState) -> Result<(), ScopedHistoryError> {
-        if let Some(mut patch) = self.compact(state)? {
-            patch.exchange(&mut state.doc);
+        if let Some(patch) = self.compact(state)? {
+            let mut patches = vec![super::patch::Patch::Splice(patch)];
+            let catalog = super::splice_exchange::Catalog::new(&state.history, &patches);
+            if let Some(prepared) =
+                super::splice_exchange::Prepared::capture(&state.doc, &patches, &catalog, false)?
+            {
+                prepared.exchange(&mut state.doc, &mut patches);
+            }
         }
         Ok(())
     }

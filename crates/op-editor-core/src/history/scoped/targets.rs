@@ -212,6 +212,10 @@ pub(super) fn compact(
                 path: checkpoint.spec.path,
                 expected_id: current.id_str().to_owned(),
                 metadata_only: !checkpoint.spec.subtree,
+                affected_ids: checkpoint
+                    .spec
+                    .subtree
+                    .then(|| super::identity::changed_subtree_ids(&old, current)),
                 old,
             }));
         }

@@ -98,7 +98,7 @@ impl EditorState {
         init_w: f64,
         init_h: f64,
     ) -> Option<NodeId> {
-        let mut allocator = crate::SequentialIdAllocator::for_document(&self.doc, *next_id).ok()?;
+        let mut allocator = self.sequential_id_allocator(*next_id).ok()?;
         let result = self
             .create_node_for_tool_with_allocator(tool, &mut allocator, doc_x, doc_y, init_w, init_h)
             .ok()
@@ -142,7 +142,7 @@ impl EditorState {
     /// Returns the new node id on success; `None` when the id allocator is
     /// exhausted.
     pub fn insert_image_node_at_viewport(&mut self, name: &str, src: &str) -> Option<NodeId> {
-        let mut allocator = crate::DocumentIdAllocator::sequential_for_document(&self.doc).ok()?;
+        let mut allocator = self.standalone_id_allocator().ok()?;
         self.insert_image_node_at_viewport_with_allocator(name, src, &mut allocator)
             .ok()
             .flatten()
@@ -158,7 +158,7 @@ impl EditorState {
         pixel_width: u32,
         pixel_height: u32,
     ) -> Option<NodeId> {
-        let mut allocator = crate::DocumentIdAllocator::sequential_for_document(&self.doc).ok()?;
+        let mut allocator = self.standalone_id_allocator().ok()?;
         self.insert_image_node_at_viewport_sized_with_allocator(
             name,
             src,
@@ -181,7 +181,7 @@ impl EditorState {
         pixel_height: u32,
         centre: (f64, f64),
     ) -> Option<NodeId> {
-        let mut allocator = crate::DocumentIdAllocator::sequential_for_document(&self.doc).ok()?;
+        let mut allocator = self.standalone_id_allocator().ok()?;
         self.insert_image_node_at_doc_point_sized_with_allocator(
             name,
             src,
@@ -205,7 +205,7 @@ impl EditorState {
         center_x: f64,
         center_y: f64,
     ) -> Option<NodeId> {
-        let mut allocator = crate::DocumentIdAllocator::sequential_for_document(&self.doc).ok()?;
+        let mut allocator = self.standalone_id_allocator().ok()?;
         self.insert_icon_font_node_at_with_allocator(
             icon_name,
             family,
@@ -233,7 +233,7 @@ impl EditorState {
         center_x: f64,
         center_y: f64,
     ) -> Option<NodeId> {
-        let mut allocator = crate::DocumentIdAllocator::sequential_for_document(&self.doc).ok()?;
+        let mut allocator = self.standalone_id_allocator().ok()?;
         self.insert_icon_node_at_with_allocator(
             icon_name,
             family,
@@ -317,7 +317,7 @@ impl EditorState {
         contours: &[Vec<(f64, f64)>],
         next_id: &mut u64,
     ) -> Option<NodeId> {
-        let mut allocator = crate::SequentialIdAllocator::for_document(&self.doc, *next_id).ok()?;
+        let mut allocator = self.sequential_id_allocator(*next_id).ok()?;
         let result = self
             .replace_paths_with_polyline_with_allocator(source_ids, contours, &mut allocator)
             .ok()
@@ -336,7 +336,7 @@ impl EditorState {
         bounds: (f64, f64, f64, f64),
         next_id: &mut u64,
     ) -> Option<NodeId> {
-        let mut allocator = crate::SequentialIdAllocator::for_document(&self.doc, *next_id).ok()?;
+        let mut allocator = self.sequential_id_allocator(*next_id).ok()?;
         let result = self
             .replace_paths_with_svg_with_allocator(source_ids, d, bounds, &mut allocator)
             .ok()
