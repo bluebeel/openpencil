@@ -9,6 +9,10 @@ use jian_ops_schema::node::container::{ContainerProps, CornerRadius, Padding};
 use jian_ops_schema::node::{FontWeight, PenNode};
 use jian_ops_schema::style::{PenFill, PenStroke, StrokeThickness};
 
+#[path = "command_style_replace_plan.rs"]
+mod plan;
+pub use plan::preview_matching_properties_in_roots;
+
 /// A rejected style-property replacement request.
 ///
 /// `Display` reproduces the previous ad-hoc `String` messages byte for byte,
@@ -98,12 +102,24 @@ pub fn replace_matching_properties_in_roots(
     replacements: &[StylePropertyReplacement],
 ) -> Result<usize, StyleReplaceError> {
     validate_replacements(replacements)?;
+    if replacements.is_empty() {
+        return Ok(0);
+    }
     let mut count = 0;
+    // Style replacements never change IDs or topology. Resolve many parents
+    // once, retaining original caller order and duplicate/overlapping passes.
+    let routes = (parent_ids.len() > 1).then(|| plan::parent_routes(roots, parent_ids));
     for parent_id in parent_ids {
         if !parent_id.is_real() {
             continue;
         }
-        if let Some(node) = find_node_mut(roots, parent_id) {
+        let node = match &routes {
+            Some(routes) => routes
+                .get(parent_id.as_str())
+                .and_then(|path| plan::node_mut(roots, path)),
+            None => find_node_mut(roots, parent_id),
+        };
+        if let Some(node) = node {
             replace_descendants(node, replacements, &mut count);
         }
     }

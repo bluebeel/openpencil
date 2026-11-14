@@ -1,16 +1,15 @@
 //! Cheap production counters make grouping participation directly observable.
-use super::budget;
+use super::{budget, limits};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-#[derive(Default)]
 pub(in crate::web_canvas_server) struct Metrics {
     pub admitted: AtomicU64,
     pub capacity_fallback: AtomicU64,
     pub cohorts: AtomicU64,
     pub applied: AtomicU64,
     pub committed_changes: AtomicU64,
-    pub claimed_sizes: [AtomicU64; 32],
-    pub saved_sizes: [AtomicU64; 32],
+    pub claimed_sizes: [AtomicU64; limits::COHORT_CALLS],
+    pub saved_sizes: [AtomicU64; limits::COHORT_CALLS],
     pub saves: AtomicU64,
     pub isolated: AtomicU64,
     pub strict_capture_fallback: AtomicU64,
@@ -22,6 +21,30 @@ pub(in crate::web_canvas_server) struct Metrics {
     retained_bytes: AtomicU64,
     projected_bytes: AtomicU64,
     last_size_error: AtomicU64,
+}
+impl Default for Metrics {
+    fn default() -> Self {
+        Self {
+            admitted: AtomicU64::new(0),
+            capacity_fallback: AtomicU64::new(0),
+            cohorts: AtomicU64::new(0),
+            applied: AtomicU64::new(0),
+            committed_changes: AtomicU64::new(0),
+            saves: AtomicU64::new(0),
+            isolated: AtomicU64::new(0),
+            strict_capture_fallback: AtomicU64::new(0),
+            component_count: AtomicU64::new(0),
+            component_bytes: AtomicU64::new(0),
+            target_bytes: AtomicU64::new(0),
+            auxiliary_bytes: AtomicU64::new(0),
+            retained_bytes: AtomicU64::new(0),
+            projected_bytes: AtomicU64::new(0),
+            last_size_error: AtomicU64::new(0),
+            claimed_sizes: std::array::from_fn(|_| AtomicU64::new(0)),
+            saved_sizes: std::array::from_fn(|_| AtomicU64::new(0)),
+            refusals: std::array::from_fn(|_| AtomicU64::new(0)),
+        }
+    }
 }
 impl Metrics {
     pub(super) fn observe_forecast(&self, forecast: budget::Forecast) {
@@ -51,7 +74,7 @@ impl Metrics {
                     .into(),
             );
         }
-        let histogram = |values: &[AtomicU64; 32]| {
+        let histogram = |values: &[AtomicU64]| {
             values
                 .iter()
                 .enumerate()
@@ -84,8 +107,9 @@ impl Metrics {
                 "projectedCohortPeakBytes":self.projected_bytes.load(Ordering::Relaxed)
             },
             "lastSizingError":match self.last_size_error.load(Ordering::Relaxed) {1=>"capacity",2=>"serialization",_=>"none"},
-            "queueCallsLimit":128,"queueAccountedBytesLimit":134217728,
-            "cohortCallsLimit":32,"cohortCaptureForecastLimit":2147483648_u64
+            "queueCallsLimit":limits::QUEUED_CALLS,"queueAccountedBytesLimit":limits::QUEUED_BYTES,
+            "cohortCallsLimit":limits::COHORT_CALLS,"cohortRequestBytesLimit":limits::COHORT_BYTES,
+            "cohortCaptureForecastLimit":op_editor_core::history_snapshot::COMMAND_CAPTURE_ALLOWANCE
         })
     }
 }

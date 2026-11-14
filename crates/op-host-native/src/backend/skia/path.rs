@@ -421,18 +421,7 @@ impl NativeBackend {
             return;
         };
         let (start, end) = super::gradient::linear_gradient_endpoints(rect, angle_deg);
-        let (colors, offsets) = super::gradient::gradient_color_arrays(stops, opacity);
-        let grad_colors = skia_safe::gradient::Colors::new(
-            &colors[..],
-            Some(offsets.as_slice()),
-            skia_safe::TileMode::Clamp,
-            None,
-        );
-        let gradient = skia_safe::gradient::Gradient::new(
-            grad_colors,
-            super::gradient::premul_interpolation(),
-        );
-        let shader = skia_safe::gradient::shaders::linear_gradient((start, end), &gradient, None);
+        let shader = super::gradient::linear_shader(start, end, stops, opacity);
         self.draw_path_with_gradient(canvas, &path, shader, stops, opacity);
     }
 
@@ -514,19 +503,7 @@ impl NativeBackend {
             rect.origin.y + rect.size.y * cy_frac.clamp(0.0, 1.0),
         );
         let outer = ((rect.size.x.max(rect.size.y)) * radius_frac.clamp(0.0, 1.0)).max(0.01);
-        let (colors, offsets) = super::gradient::gradient_color_arrays(stops, opacity);
-        let grad_colors = skia_safe::gradient::Colors::new(
-            &colors[..],
-            Some(offsets.as_slice()),
-            skia_safe::TileMode::Clamp,
-            None,
-        );
-        let gradient = skia_safe::gradient::Gradient::new(
-            grad_colors,
-            super::gradient::premul_interpolation(),
-        );
-        let shader =
-            skia_safe::gradient::shaders::radial_gradient((center, outer), &gradient, None);
+        let shader = super::gradient::radial_shader(center, outer, stops, opacity);
         self.draw_path_with_gradient(canvas, &path, shader, stops, opacity);
     }
 

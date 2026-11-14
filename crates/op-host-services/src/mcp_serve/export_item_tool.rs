@@ -194,8 +194,21 @@ pub(crate) fn export_item_snapshot_for_call(
     state: &EditorState,
     args: Option<&BTreeMap<String, String>>,
 ) -> ExportItem {
+    let item = args
+        .and_then(|args| args.get("itemId"))
+        .map(|id| id.trim())
+        .or_else(|| {
+            state
+                .selection
+                .anchor
+                .is_real()
+                .then(|| state.selection.anchor.as_str())
+        });
+    let policy = item.map_or(op_pen_loader::ExportScenePolicy::FullDocument, |id| {
+        op_pen_loader::ExportScenePolicy::Item(id.to_owned())
+    });
     ExportItem {
-        scene: RasterSnapshot::admitted(|| {
+        scene: RasterSnapshot::capture_http(state, policy, || {
             let item_id = args
                 .and_then(|args| args.get("itemId"))
                 .map(|id| id.trim())

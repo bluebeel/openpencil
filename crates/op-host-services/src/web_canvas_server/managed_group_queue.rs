@@ -27,6 +27,7 @@ struct Job<T, R> {
     state: Mutex<State<T, R>>,
     charge: usize,
     body_bytes: usize,
+    ready: Condvar,
 }
 
 struct Inner<T, R> {
@@ -38,7 +39,7 @@ struct Inner<T, R> {
 
 pub(super) struct Queue<T, R> {
     inner: Mutex<Inner<T, R>>,
-    ready: Condvar,
+    collect: Condvar,
     limits: Limits,
 }
 
@@ -59,7 +60,7 @@ impl<T, R> Queue<T, R> {
                 retained_bytes: 0,
                 leader: false,
             }),
-            ready: Condvar::new(),
+            collect: Condvar::new(),
             limits,
         }
     }
@@ -83,11 +84,16 @@ impl<T, R> Queue<T, R> {
             state: Mutex::new(State::Pending(Some(input))),
             body_bytes,
             charge,
+            ready: Condvar::new(),
         });
         inner.retained_calls += 1;
         inner.retained_bytes += charge;
         inner.pending.push_back(Arc::clone(&job));
-        self.ready.notify_all();
+        if inner.leader {
+            self.collect.notify_one();
+        } else if let Some(head) = inner.pending.front() {
+            head.ready.notify_one();
+        }
         Ok(Ticket {
             queue: self,
             job,
@@ -131,7 +137,12 @@ impl<T, R> Ticket<'_, T, R> {
                 .front()
                 .is_some_and(|job| Arc::ptr_eq(job, &self.job));
             if inner.leader || !first {
-                drop(queue.ready.wait(inner).unwrap_or_else(|p| p.into_inner()));
+                drop(
+                    self.job
+                        .ready
+                        .wait(inner)
+                        .unwrap_or_else(|p| p.into_inner()),
+                );
                 continue;
             }
             inner.leader = true;
@@ -143,7 +154,7 @@ impl<T, R> Ticket<'_, T, R> {
                     break;
                 };
                 let (next, timeout) = queue
-                    .ready
+                    .collect
                     .wait_timeout(inner, remaining)
                     .unwrap_or_else(|p| p.into_inner());
                 inner = next;
@@ -191,7 +202,10 @@ impl<T, R> Ticket<'_, T, R> {
             for (job, reply) in jobs.into_iter().zip(replies) {
                 let mut state = job.state.lock().unwrap_or_else(|p| p.into_inner());
                 match &*state {
-                    State::Claimed => *state = State::Complete(Some(reply)),
+                    State::Claimed => {
+                        *state = State::Complete(Some(reply));
+                        job.ready.notify_one();
+                    }
                     State::Abandoned => {
                         // Already claimed work is never replayed or rolled back
                         // merely because its reply waiter disappeared.
@@ -204,7 +218,9 @@ impl<T, R> Ticket<'_, T, R> {
                 }
             }
             inner.leader = false;
-            queue.ready.notify_all();
+            if let Some(head) = inner.pending.front() {
+                head.ready.notify_one();
+            }
             // Consume this caller's response in the same path as every follower.
         }
     }
@@ -224,7 +240,11 @@ impl<T, R> Drop for Ticket<'_, T, R> {
                 *state = State::Canceled;
                 inner.retained_calls -= 1;
                 inner.retained_bytes -= self.job.charge;
-                queue.ready.notify_all();
+                if inner.leader {
+                    queue.collect.notify_one();
+                } else if let Some(head) = inner.pending.front() {
+                    head.ready.notify_one();
+                }
             }
             State::Complete(_) => {
                 *state = State::Consumed;

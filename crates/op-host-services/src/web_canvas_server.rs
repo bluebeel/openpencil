@@ -33,7 +33,9 @@ const IO_TIMEOUT: Duration = Duration::from_secs(30);
 /// Accepted active and queued sockets. A burst of1000 agent requests keeps
 /// its exact requests queued without allocating one OS worker per connection.
 const MAX_CONNS: usize = 4096;
-const MAX_CONNECTION_WORKERS: usize = 64;
+// Let queued writers populate larger durable cohorts. Workers are lazy and
+// blocking; renderer capacity and tenant connection policies remain separate.
+const MAX_CONNECTION_WORKERS: usize = 512;
 
 /// SSE keep-alive cadence — also how quickly a disconnected SSE client is
 /// detected (the heartbeat write fails once the socket is gone).

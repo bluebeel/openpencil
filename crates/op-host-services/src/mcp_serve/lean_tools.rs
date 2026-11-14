@@ -172,9 +172,11 @@ impl LeanScreenshot {
 
     pub(crate) fn snapshot_admitted(state: &EditorState) -> Self {
         Self {
-            scene: RasterSnapshot::admitted(|| {
-                op_pen_loader::editor_state_to_active_page_layout_scene(state)
-            }),
+            scene: RasterSnapshot::capture_http(
+                state,
+                op_pen_loader::ExportScenePolicy::ActiveCanvas,
+                || op_pen_loader::editor_state_to_active_page_layout_scene(state),
+            ),
         }
     }
 

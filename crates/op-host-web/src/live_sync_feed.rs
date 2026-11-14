@@ -1,5 +1,5 @@
-//! Bounded incremental pulls for ordinary metadata edits. Unsupported structural
-//! records explicitly use the complete snapshot path; no command replay.
+//! Bounded committed metadata/structural state pulls. Unknown or reset responses
+//! explicitly use the complete snapshot path; no command replay.
 
 use super::{current_pair, SharedSync};
 use crate::{live_sync, repaint_ctx::RepaintContext};
@@ -64,9 +64,13 @@ pub(super) fn try_fetch<C: RepaintContext + 'static>(
         }
         if status == 200 {
             if let Ok(batch) = CommittedMetadata::parse(&body, version) {
+                let structural = batch.changes_structure;
                 if !sync.borrow().client.change_authority_differs(&batch.cursor)
                     && apply_metadata(&inner, &sync, batch, issued_pair)
                 {
+                    if structural {
+                        *selection_key.borrow_mut() = None;
+                    }
                     busy_done.set(false);
                     return;
                 }
@@ -97,6 +101,7 @@ fn apply_metadata<C: RepaintContext + 'static>(
     }
     let version = batch.version;
     let cursor = batch.cursor.clone();
+    let structural = batch.changes_structure;
     let applied = match context
         .host_mut()
         .editor_state_mut()
@@ -116,8 +121,6 @@ fn apply_metadata<C: RepaintContext + 'static>(
         }
         return false;
     }
-    // Structure/IDs did not change, so neither a full-document serialization
-    // nor collab's whole-document identity census is necessary for this pull.
     let pair = current_pair(&*context);
     let mut sync = sync.borrow_mut();
     if !sync.client.commit_change_cursor(version, &cursor) {
@@ -137,6 +140,12 @@ fn apply_metadata<C: RepaintContext + 'static>(
         state.editor_ui.preserve_authored_geometry,
     );
     sync.gate.note_synced(pair.0, pair.1);
+    drop(sync);
+    // Refresh identities only after accepted structural paint, never after a
+    // rejected/rolled-back delta. Metadata avoids this full identity census.
+    if structural {
+        crate::collab_sync::note_daemon_document(context.host().editor_state());
+    }
     true
 }
 

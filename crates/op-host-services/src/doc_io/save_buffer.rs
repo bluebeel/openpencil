@@ -53,6 +53,35 @@ pub(super) fn with_buffered_file<T>(
     Ok(value)
 }
 
+/// Managed save leaders can move between hundreds of connection workers.
+/// Share a small pool instead of retaining one MiB per worker's TLS lifetime.
+/// Only clean/flushed buffers without file handles ever enter the pool.
+pub(super) fn with_shared_buffered_file<T>(
+    file: File,
+    action: impl FnOnce(&mut BufWriter<SaveTarget>) -> Result<T, DocIoError>,
+) -> Result<T, DocIoError> {
+    use std::sync::{Mutex, OnceLock};
+    const MAX_IDLE_BUFFERS: usize = 8;
+    static POOL: OnceLock<Mutex<Vec<BufWriter<SaveTarget>>>> = OnceLock::new();
+    let pool = POOL.get_or_init(|| Mutex::new(Vec::new()));
+    let reusable = { pool.lock().unwrap_or_else(|p| p.into_inner()).pop() };
+    let mut writer =
+        reusable.unwrap_or_else(|| BufWriter::with_capacity(BUFFER_BYTES, SaveTarget(None)));
+    debug_assert!(writer.buffer().is_empty());
+    debug_assert!(writer.get_ref().0.is_none());
+    writer.get_mut().0 = Some(file);
+    let value = action(&mut writer)?;
+    writer
+        .flush()
+        .map_err(|error| DocIoError::Io(error.to_string()))?;
+    drop(writer.get_mut().0.take());
+    let mut pool = pool.lock().unwrap_or_else(|p| p.into_inner());
+    if pool.len() < MAX_IDLE_BUFFERS {
+        pool.push(writer);
+    }
+    Ok(value)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

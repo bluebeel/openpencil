@@ -619,6 +619,7 @@ pub use doc_sync::*;
 
 pub(crate) mod agent_context;
 pub(crate) mod export_stream;
+pub(crate) mod http_export;
 mod lean_profile;
 mod lean_tools;
 pub(crate) mod raster_response;

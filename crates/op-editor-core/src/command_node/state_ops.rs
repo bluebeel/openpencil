@@ -24,12 +24,12 @@ use jian_ops_schema::node::PenNode;
 use std::collections::HashSet;
 
 impl EditorState {
-    /// Compute the numeric seed for the next editor-minted `n{N}` id —
-    /// `max_node_id() + 1`. `None` on `u64` exhaustion. Pub so the
+    /// Seed the next editor-minted `n{N}` above live IDs and the runtime
+    /// allocation floor retained across undo. None on exhaustion. Pub so the
     /// `batch_design` MCP tool can predict (off a doc snapshot) the ids the
     /// host will allocate at apply, mirroring `cmd_insert_subtree`'s seed.
     pub fn next_node_id_seed(&self) -> Option<u64> {
-        self.max_node_id().checked_add(1).map(|n| n.max(1))
+        self.standalone_next_id_seed().ok()
     }
 
     /// `InsertNode` — build + append a fresh leaf on the active page.
@@ -182,6 +182,11 @@ impl EditorState {
         target_parent: &NodeId,
         index: Option<usize>,
     ) -> bool {
+        if let Some(result) =
+            crate::structural_moves::move_to(self, node_id, target_parent, index, false)
+        {
+            return result;
+        }
         if !node_id.is_real() || target_parent == node_id {
             return false;
         }

@@ -11,6 +11,10 @@
 use super::{to_sk_rect, NativeBackend};
 use op_editor_ui::{Color, Rect};
 
+#[path = "gradient_cache.rs"]
+mod cache;
+pub(super) use cache::{linear as linear_shader, radial as radial_shader};
+
 impl NativeBackend {
     /// Fill a (round-)rectangle with a linear gradient. `stops`
     /// carries `(offset, color)` pairs ordered by ascending offset;
@@ -33,17 +37,7 @@ impl NativeBackend {
             return;
         }
         let (start, end) = linear_gradient_endpoints(rect, angle_deg);
-        let (colors, offsets) = gradient_color_arrays(stops, opacity);
-        let grad_colors = skia_safe::gradient::Colors::new(
-            &colors[..],
-            Some(offsets.as_slice()),
-            skia_safe::TileMode::Clamp,
-            None,
-        );
-        let gradient = skia_safe::gradient::Gradient::new(grad_colors, premul_interpolation());
-        let Some(shader) =
-            skia_safe::gradient::shaders::linear_gradient((start, end), &gradient, None)
-        else {
+        let Some(shader) = linear_shader(start, end, stops, opacity) else {
             // Skia refused to build the shader (degenerate input);
             // degrade to first-stop solid so the node still paints.
             self.fill_round_rect(canvas, rect, radius, fold_opacity(stops[0].1, opacity));
@@ -88,17 +82,7 @@ impl NativeBackend {
         // web/export.
         let outer = (rect.size.x.max(rect.size.y)) * radius_frac.clamp(0.0, 1.0);
         let outer = outer.max(0.01); // Sub-pixel radii confuse skia's shader.
-        let (colors, offsets) = gradient_color_arrays(stops, opacity);
-        let grad_colors = skia_safe::gradient::Colors::new(
-            &colors[..],
-            Some(offsets.as_slice()),
-            skia_safe::TileMode::Clamp,
-            None,
-        );
-        let gradient = skia_safe::gradient::Gradient::new(grad_colors, premul_interpolation());
-        let Some(shader) =
-            skia_safe::gradient::shaders::radial_gradient((center, outer), &gradient, None)
-        else {
+        let Some(shader) = radial_shader(center, outer, stops, opacity) else {
             self.fill_round_rect(canvas, rect, radius, fold_opacity(stops[0].1, opacity));
             return;
         };

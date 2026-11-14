@@ -8,6 +8,8 @@ mod actor_rebase;
 mod clones;
 mod forward;
 mod forward_apply;
+mod forward_mutation;
+mod forward_regions;
 mod forward_structure;
 mod header;
 mod header_map;

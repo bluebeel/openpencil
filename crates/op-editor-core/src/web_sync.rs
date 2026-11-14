@@ -20,7 +20,7 @@ use jian_ops_schema::PenDocument;
 mod web_sync_error;
 pub use web_sync_error::WebSyncError;
 #[path = "web_sync_committed.rs"]
-mod committed;
+pub(crate) mod committed;
 pub use committed::{CommittedFeedError, CommittedMetadata};
 
 /// A whole-document live-sync payload plus editor-only view state carried by

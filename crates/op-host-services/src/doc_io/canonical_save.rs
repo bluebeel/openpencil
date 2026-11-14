@@ -152,7 +152,7 @@ pub(super) fn write_compact_document_with_thumbnails<
     meta: EditorMeta,
     thumbnails: &ImageThumbSnapshot,
 ) -> Result<StreamingSaveStats, DocIoError> {
-    let stats = jian_ops_schema::image_table::write_document_compact_with_extension(
+    let stats = jian_ops_schema::image_table::write_object_compact_with_extension(
         writer,
         document,
         thumbnails,

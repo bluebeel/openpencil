@@ -310,7 +310,8 @@ pub use style_guide_tools::{
     GetStyleGuide, GetStyleGuideTags, ListStyleGuides,
 };
 pub use style_ops_tools::{
-    replace_all_matching_properties_snapshot, search_all_unique_properties_snapshot,
+    replace_all_matching_properties_snapshot, replace_all_matching_properties_snapshot_for_call,
+    search_all_unique_properties_snapshot, search_all_unique_properties_snapshot_for_call,
     ReplaceAllMatchingProperties, SearchAllUniqueProperties,
 };
 pub use theme_presets::{

@@ -20,7 +20,6 @@ pub(crate) fn requires_id_seed(command: &C) -> bool {
         | C::UpsertComponent { .. }
         | C::UpsertScreen { .. }
         | C::InstantiateComponent { .. }
-        | C::CreateComponent { .. }
         | C::InstantiateKitComponent { .. }
         | C::AddPage { .. }
         | C::DuplicatePage { .. }
@@ -30,7 +29,8 @@ pub(crate) fn requires_id_seed(command: &C) -> bool {
         | C::PasteClipboard { .. }
         | C::ImportSvg { .. }
         | C::PromoteLegacyWidgets => true,
-        C::SetVariableColor { .. }
+        C::CreateComponent { .. }
+        | C::SetVariableColor { .. }
         | C::InsertAuthoredSubtree { .. }
         | C::InsertAuthoredSubtreePreservingRoots { .. }
         | C::SetActiveAxisValue { .. }
@@ -112,7 +112,6 @@ pub(crate) fn may_change_identities(command: &C) -> bool {
         | C::UpsertComponent { .. }
         | C::UpsertScreen { .. }
         | C::InstantiateComponent { .. }
-        | C::CreateComponent { .. }
         | C::InstantiateKitComponent { .. }
         | C::AddPage { .. }
         | C::DuplicatePage { .. }
@@ -126,14 +125,14 @@ pub(crate) fn may_change_identities(command: &C) -> bool {
         | C::InsertAuthoredSubtreePreservingRoots { .. }
         | C::PatchNodeData { .. }
         | C::DeleteNode { .. }
-        | C::DeleteComponent { .. }
         | C::DeletePage { .. }
         | C::Undo
         | C::Redo
         | C::DeleteSelected
         | C::UngroupSelected
         | C::CutSelected => true,
-        C::SetVariableColor { .. }
+        C::CreateComponent { .. }
+        | C::SetVariableColor { .. }
         | C::SetActiveAxisValue { .. }
         | C::CycleActiveAxisValue { .. }
         | C::UpdateNode { .. }
@@ -148,6 +147,7 @@ pub(crate) fn may_change_identities(command: &C) -> bool {
         | C::MergeThemePreset { .. }
         | C::MergeAppState { .. }
         | C::SetDesignMd { .. }
+        | C::DeleteComponent { .. }
         | C::RenameComponent { .. }
         | C::SetActivePage { .. }
         | C::RenamePage { .. }

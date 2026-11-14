@@ -33,7 +33,7 @@ pub(super) fn rebuild_registry_with_authority(
     macro_rules! register_tool {
         ($name:literal, $tool:expr) => {
             if should_register(requested_tool, $name) {
-                r.register(Box::new($tool));
+                r.register(http_export::wrap(Box::new($tool)));
             }
         };
     }
@@ -174,11 +174,17 @@ pub(super) fn rebuild_registry_with_authority(
     register_tool!("codegen_export", codegen_export_snapshot(doc));
     register_tool!(
         "search_all_unique_properties",
-        search_all_unique_properties_snapshot(doc)
+        match arguments {
+            Some(args) => op_mcp::search_all_unique_properties_snapshot_for_call(doc, args),
+            None => search_all_unique_properties_snapshot(doc),
+        }
     );
     register_tool!(
         "replace_all_matching_properties",
-        replace_all_matching_properties_snapshot(doc)
+        match arguments {
+            Some(args) => op_mcp::replace_all_matching_properties_snapshot_for_call(doc, args),
+            None => replace_all_matching_properties_snapshot(doc),
+        }
     );
     register_tool!(
         "snapshot_layout",
@@ -301,19 +307,32 @@ pub(super) fn rebuild_registry_with_authority(
     }
     register_tool!(
         "create_generator",
-        op_mcp::generator_tools::create_generator_snapshot(doc)
+        match arguments {
+            Some(args) => op_mcp::generator_tools::create_generator_snapshot_for_call(doc, args),
+            None => op_mcp::generator_tools::create_generator_snapshot(doc),
+        }
     );
     register_tool!(
         "update_generator_params",
-        op_mcp::generator_tools::update_generator_params_snapshot(doc)
+        match arguments {
+            Some(args) =>
+                op_mcp::generator_tools::update_generator_params_snapshot_for_call(doc, args),
+            None => op_mcp::generator_tools::update_generator_params_snapshot(doc),
+        }
     );
     register_tool!(
         "get_generator",
-        op_mcp::generator_tools::get_generator_snapshot(doc)
+        match arguments {
+            Some(args) => op_mcp::generator_tools::get_generator_snapshot_for_call(doc, args),
+            None => op_mcp::generator_tools::get_generator_snapshot(doc),
+        }
     );
     register_tool!(
         "detach_generator",
-        op_mcp::generator_tools::detach_generator_snapshot(doc)
+        match arguments {
+            Some(args) => op_mcp::generator_tools::detach_generator_snapshot_for_call(doc, args),
+            None => op_mcp::generator_tools::detach_generator_snapshot(doc),
+        }
     );
     register_tool!("get_design_prompt", get_design_prompt_snapshot(doc));
     register_tool!("design_skeleton", design_skeleton_snapshot());

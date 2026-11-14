@@ -29,6 +29,18 @@ fn transform(node: &SceneNode) -> Option<OverlayTransform> {
 }
 
 impl SceneSelection<'_> {
+    /// Visit only branches that can actually supply paint for this export:
+    /// the selected subtree and required sibling mask sources. Ancestors
+    /// contribute geometry/composites, never their unrelated own fills.
+    pub fn all_paint_sources(&self, mut predicate: impl FnMut(&SceneNode) -> bool) -> bool {
+        !self.visible
+            || (predicate(self.node)
+                && self.contexts.iter().all(|context| match context {
+                    Context::Mask(node) => predicate(node),
+                    Context::Ancestor(_) => true,
+                }))
+    }
+
     /// Conservative painted bounds in page coordinates, using the canvas
     /// effect/transform allocator's same geometry. Clips and masks constrain
     /// this branch; no unselected sibling geometry is included.

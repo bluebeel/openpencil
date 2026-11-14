@@ -34,8 +34,19 @@ pub struct QuerySceneCacheStats {
     pub uncached_builds: u64,
 }
 
+#[path = "export_scene_cache.rs"]
+mod exports;
+pub use exports::{
+    prepare_export_scene_cached, CachedExportScene, ExportScenePolicy, ExportSceneUnavailable,
+};
+
 enum Key {
     Scene(SceneInputs),
+    Export {
+        input: SceneInputs,
+        policy: ExportScenePolicy,
+        selected: Option<String>,
+    },
     Snap {
         scene: Weak<LayoutScene>,
         parent: Option<String>,
@@ -45,6 +56,18 @@ impl Key {
     fn matches(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::Scene(a), Self::Scene(b)) => a.matches(b),
+            (
+                Self::Export {
+                    input: a,
+                    policy: pa,
+                    selected: sa,
+                },
+                Self::Export {
+                    input: b,
+                    policy: pb,
+                    selected: sb,
+                },
+            ) => a.matches(b) && pa == pb && sa == sb,
             (
                 Self::Snap {
                     scene: a,
@@ -60,13 +83,13 @@ impl Key {
     }
     fn live(&self) -> bool {
         match self {
-            Self::Scene(input) => input.owner_live(),
+            Self::Scene(input) | Self::Export { input, .. } => input.owner_live(),
             Self::Snap { scene, .. } => scene.strong_count() != 0,
         }
     }
     fn stable(&self) -> bool {
         match self {
-            Self::Scene(input) => input.fonts_stable(),
+            Self::Scene(input) | Self::Export { input, .. } => input.fonts_stable(),
             _ => true,
         }
     }
@@ -75,6 +98,15 @@ impl Key {
             + 32
             + match self {
                 Self::Scene(input) => storage::input_bytes(input),
+                Self::Export {
+                    input,
+                    policy,
+                    selected,
+                } => {
+                    storage::input_bytes(input)
+                        + policy.bytes()
+                        + selected.as_ref().map_or(0, String::capacity)
+                }
                 Self::Snap { parent, .. } => parent.as_ref().map_or(0, String::capacity),
             }
     }
@@ -112,13 +144,6 @@ impl WeakValue {
                 .is_some_and(|value| value.strong_count() != 0),
         }
     }
-    fn upgrade(&self) -> Option<Value> {
-        match self {
-            Self::Scene(value) => value.upgrade().map(Value::Scene),
-            Self::Snap(None) => Some(Value::Snap(None)),
-            Self::Snap(Some(value)) => value.upgrade().map(|value| Value::Snap(Some(value))),
-        }
-    }
 }
 struct Entry {
     key: Arc<Key>,
@@ -132,7 +157,7 @@ struct Retired {
 }
 enum BuildState {
     Building,
-    Ready(WeakValue),
+    Ready(Value),
     Failed,
 }
 struct BuildSlot {
@@ -154,12 +179,12 @@ impl BuildSlot {
                 BuildState::Building => {
                     state = self.wake.wait(state).unwrap_or_else(|e| e.into_inner())
                 }
-                BuildState::Ready(value) => return value.upgrade(),
+                BuildState::Ready(value) => return Some(value.clone()),
                 BuildState::Failed => return None,
             }
         }
     }
-    fn publish(&self, value: WeakValue) {
+    fn publish(&self, value: Value) {
         *self.state.lock().unwrap_or_else(|e| e.into_inner()) = BuildState::Ready(value);
         self.wake.notify_all();
     }
@@ -354,7 +379,7 @@ fn get_or_build(key: Option<Key>, compute: impl FnOnce() -> Value) -> Value {
                 if !admit(Arc::clone(&key), &value) {
                     record_uncached();
                 }
-                guard.slot.publish(value.weak());
+                guard.slot.publish(value.clone());
                 guard.finished = true;
                 return value;
             }

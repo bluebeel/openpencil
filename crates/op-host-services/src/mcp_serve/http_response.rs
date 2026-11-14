@@ -9,7 +9,12 @@ pub(crate) fn write_mcp_http_response_with_origin<S: std::io::Write>(
     body: &str,
     cors_origin: Option<&str>,
 ) -> Result<(), McpServeError> {
+    let resolved = super::http_export::complete_response(body)?;
+    let body = resolved.as_deref().unwrap_or(body);
     if let Some(result) = super::export_stream::try_write(stream, status, body, cors_origin) {
+        if result.is_err() {
+            super::http_export::cancel_current();
+        }
         return result;
     }
     let cors_line = cors_origin

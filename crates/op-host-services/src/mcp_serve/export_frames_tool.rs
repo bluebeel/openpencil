@@ -153,7 +153,11 @@ fn export_frames_snapshot_inner(state: &EditorState, admitted: bool) -> ExportFr
             active_page_index: 0,
         })
     } else if admitted {
-        RasterSnapshot::admitted(derive)
+        RasterSnapshot::capture_http(
+            state,
+            op_pen_loader::ExportScenePolicy::ActivePresentation,
+            derive,
+        )
     } else {
         RasterSnapshot::from_scene(derive())
     };

@@ -9,18 +9,24 @@ use crate::export::{
     SharedRasterTarget,
 };
 
+#[path = "raster_snapshot_shared.rs"]
+mod shared;
+use shared::{Queued, Scene};
+
 #[derive(Clone)]
 pub(super) struct RasterSnapshot {
-    scene: Arc<LayoutScene>,
+    scene: Scene,
     admission: Option<Result<Arc<RasterAdmission>, ExportError>>,
+    queued: Option<Arc<Queued>>,
 }
 
 impl RasterSnapshot {
     /// Legacy/discovery construction claims no headless request capacity.
     pub fn from_scene(scene: LayoutScene) -> Self {
         Self {
-            scene: Arc::new(scene),
+            scene: Scene::Immediate(Arc::new(scene)),
             admission: None,
+            queued: None,
         }
     }
 
@@ -41,25 +47,55 @@ impl RasterSnapshot {
                 let admission = Arc::new(admission);
                 super::raster_response::retain(&admission);
                 Self {
-                    scene: Arc::new(derive()),
+                    scene: Scene::Immediate(Arc::new(derive())),
                     admission: Some(Ok(admission)),
+                    queued: None,
                 }
             }
             Err(error) => Self {
-                scene: Arc::new(LayoutScene {
+                scene: Scene::Immediate(Arc::new(LayoutScene {
                     pages: Vec::new(),
                     active_page_index: 0,
-                }),
+                })),
                 admission: Some(Err(error)),
+                queued: None,
             },
         }
     }
 
-    pub fn ready(&self) -> Result<(), ExportError> {
-        match &self.admission {
-            Some(Err(error)) => Err(error.clone()),
-            _ => Ok(()),
+    /// Only trusted headless HTTP capture uses reuse/deferred admission.
+    /// Other public/custom callers retain the existing fresh synchronous path.
+    pub fn capture_http(
+        state: &op_editor_core::EditorState,
+        policy: op_pen_loader::ExportScenePolicy,
+        derive: impl FnOnce() -> LayoutScene,
+    ) -> Self {
+        if let Some(cancel) = super::http_export::capture_token() {
+            Self {
+                scene: Scene::captured(op_pen_loader::prepare_export_scene_cached(state, policy)),
+                admission: None,
+                queued: Some(Arc::new(Queued::new(cancel))),
+            }
+        } else {
+            Self::admitted(derive)
         }
+    }
+    pub fn is_http_deferred(&self) -> bool {
+        self.queued.is_some()
+    }
+    fn active_admission(&self) -> Result<Option<&Arc<RasterAdmission>>, ExportError> {
+        if let Some(queued) = &self.queued {
+            return queued.get().map(Some);
+        }
+        match &self.admission {
+            Some(Ok(permit)) => Ok(Some(permit)),
+            Some(Err(error)) => Err(error.clone()),
+            None => Ok(None),
+        }
+    }
+    pub fn ready(&self) -> Result<(), ExportError> {
+        self.scene.ready()?;
+        self.active_admission().map(|_| ())
     }
 
     pub fn render(
@@ -78,9 +114,9 @@ impl RasterSnapshot {
         scale: f32,
         sampling: RasterSampling,
     ) -> Result<Vec<u8>, ExportError> {
-        let admission = match &self.admission {
-            Some(Ok(admission)) => admission.as_ref(),
-            Some(Err(error)) => return Err(error.clone()),
+        self.scene.ready()?;
+        let admission = match self.active_admission()? {
+            Some(admission) => admission.as_ref(),
             None => {
                 // Preserve synchronous public-factory/discovery behavior.
                 // Only request-specific constructors enter the shared worker.
@@ -119,11 +155,11 @@ impl RasterSnapshot {
         format: RasterFormat,
         scale: f32,
     ) -> Result<Vec<Result<(), ExportError>>, ExportError> {
-        match &self.admission {
-            Some(Ok(admission)) => {
+        self.scene.ready()?;
+        match self.active_admission()? {
+            Some(admission) => {
                 admission.export_files(Arc::clone(&self.scene), targets, format, scale)
             }
-            Some(Err(error)) => Err(error.clone()),
             None => Ok(crate::export::export_scene_files(
                 &self.scene,
                 &targets,
@@ -172,7 +208,10 @@ impl RasterSnapshot {
             }
             return;
         };
-        if let Some(Ok(admission)) = &self.admission {
+        if let Some(admission) = self
+            .active_admission()
+            .expect("ready already validated admission")
+        {
             let mut consumed = 0;
             let result = admission.render_active_nodes_until(
                 Arc::clone(&self.scene),

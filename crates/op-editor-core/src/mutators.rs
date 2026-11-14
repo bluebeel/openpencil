@@ -558,6 +558,11 @@ impl EditorState {
     /// a layer-panel drop into a container inserts at index 0, the top of
     /// the child list — `layer-dnd-utils.ts`).
     pub fn reorder_into(&mut self, source: NodeId, parent: NodeId) -> bool {
+        if let Some(result) =
+            crate::structural_moves::move_to(self, &source, &parent, Some(0), true)
+        {
+            return result;
+        }
         if source == parent || !source.is_real() || !parent.is_real() {
             return false;
         }
@@ -584,6 +589,9 @@ impl EditorState {
     }
 
     fn reorder_relative(&mut self, source: NodeId, anchor: NodeId, before: bool) -> bool {
+        if let Some(result) = crate::structural_moves::relative(self, &source, &anchor, before) {
+            return result;
+        }
         if source == anchor || !source.is_real() || !anchor.is_real() {
             return false;
         }

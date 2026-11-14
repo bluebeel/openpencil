@@ -7,15 +7,14 @@ use mcp_serve::{
     tool_profile::McpAccessProfile,
 };
 use op_editor_core::{CommandEditCapture, EditorCommand as C};
-use std::{
-    path::{Path, PathBuf},
-    time::Duration,
-};
+use std::path::{Path, PathBuf};
 #[path = "document_recovery.rs"]
 pub(super) mod recovery;
 use std::sync::atomic::Ordering;
 #[path = "managed_group_budget.rs"]
 mod budget;
+#[path = "managed_group_limits.rs"]
+mod limits;
 #[path = "managed_group_metrics.rs"]
 mod metrics;
 #[path = "managed_group_queue.rs"]
@@ -53,13 +52,7 @@ pub(super) struct Groups {
 impl Default for Groups {
     fn default() -> Self {
         Self {
-            queue: queue::Queue::new(queue::Limits {
-                calls: 128,
-                bytes: 128 * 1024 * 1024,
-                group_calls: 32,
-                group_bytes: 32 * 1024 * 1024,
-                wait: Duration::from_millis(2),
-            }),
+            queue: queue::Queue::new(limits::queue_limits()),
             metrics: Default::default(),
             #[cfg(test)]
             saves: std::sync::atomic::AtomicUsize::new(0),

@@ -267,6 +267,7 @@ pub(super) fn serve_http_connection<S: std::io::Read + std::io::Write>(
         return Ok(false);
     };
     let _export_stream = super::export_stream::Scope::new(&req.body);
+    let _http_export = super::http_export::Scope::new(&req.body);
     if req.method == "OPTIONS" {
         return reply(stream, "204 No Content", "").map(|()| false);
     }

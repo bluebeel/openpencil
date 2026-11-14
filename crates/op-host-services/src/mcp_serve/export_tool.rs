@@ -147,9 +147,11 @@ pub(crate) fn export_nodes_from_scene(scene: LayoutScene) -> ExportNodes {
 }
 
 pub(crate) fn export_nodes_snapshot_admitted(state: &EditorState) -> ExportNodes {
-    export_nodes_from_snapshot(RasterSnapshot::admitted(|| {
-        op_pen_loader::editor_state_to_active_page_layout_scene(state)
-    }))
+    export_nodes_from_snapshot(RasterSnapshot::capture_http(
+        state,
+        op_pen_loader::ExportScenePolicy::ActiveCanvas,
+        || op_pen_loader::editor_state_to_active_page_layout_scene(state),
+    ))
 }
 
 pub(super) fn export_nodes_from_snapshot(scene: RasterSnapshot) -> ExportNodes {

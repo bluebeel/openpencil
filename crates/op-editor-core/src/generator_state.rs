@@ -59,6 +59,25 @@ impl EditorState {
             .ok_or_else(|| GeneratorError::NotAGenerator { id: id.to_string() })?
     }
 
+    /// Read the spec, child count and ownership status with one document lookup
+    /// and one spec decode. The returned values never borrow the live document.
+    pub fn generator_read_summary(
+        &self,
+        id: &NodeId,
+    ) -> Result<(GeneratorSpec, usize, bool), GeneratorError> {
+        let (_, node) = self
+            .locate_generator_node(id)
+            .ok_or_else(|| GeneratorError::NodeNotFound { id: id.to_string() })?;
+        let spec = generator_spec_of(node)
+            .ok_or_else(|| GeneratorError::NotAGenerator { id: id.to_string() })??;
+        let children = node.children().map(Vec::as_slice).unwrap_or(&[]);
+        let edited = spec
+            .output_hash
+            .as_ref()
+            .is_some_and(|stored| stored != &output_hash(children));
+        Ok((spec, children.len(), edited))
+    }
+
     /// Run `spec` for the generator frame `node` (whose id is `id`) and
     /// return its owned children.
     fn run_generator_program(
@@ -69,7 +88,7 @@ impl EditorState {
     ) -> Result<Vec<PenNode>, GeneratorError> {
         spec.validate()?;
         let runner = runner.ok_or(GeneratorError::RuntimeUnavailable)?;
-        let mut frame = node.clone();
+        let mut frame = crate::pen_node_ext::clone_without_children(node);
         if let Some(children) = frame.children_mut() {
             children.clear();
         }

@@ -176,11 +176,13 @@ pub(super) fn lean_registry(
         }));
     }
     if wants("get_screenshot") {
-        registry.register(Box::new(if requested_tool.is_some() {
-            LeanScreenshot::snapshot_admitted(doc)
-        } else {
-            LeanScreenshot::snapshot(doc)
-        }));
+        registry.register(super::http_export::wrap(Box::new(
+            if requested_tool.is_some() {
+                LeanScreenshot::snapshot_admitted(doc)
+            } else {
+                LeanScreenshot::snapshot(doc)
+            },
+        )));
     }
     if wants("finalize_design") {
         registry.register(Box::new(finalize_design_snapshot(doc)));

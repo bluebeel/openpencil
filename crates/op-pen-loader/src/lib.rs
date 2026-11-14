@@ -65,7 +65,8 @@ mod query_scene_cache;
 mod scene_cache;
 mod scene_inputs;
 pub use query_scene_cache::{
-    active_query_scene_cached, query_scene_cache_stats, query_snap_index_cached,
+    active_query_scene_cached, prepare_export_scene_cached, query_scene_cache_stats,
+    query_snap_index_cached, CachedExportScene, ExportScenePolicy, ExportSceneUnavailable,
     QuerySceneCacheStats,
 };
 mod shader_preset;

@@ -190,6 +190,7 @@ fn save_serializable_document_with_thumbnails_to_path<
     save_serializable_document_with_format(document, meta, thumbnails, path, SaveFormat::Pretty)
 }
 
+#[derive(Clone, Copy)]
 enum SaveFormat {
     Pretty,
     Compact,
@@ -208,14 +209,22 @@ fn save_serializable_document_with_format<
     // leave a half-written file on disk.
     let (tmp, file) = create_sibling_temp(path)?;
     let write_result = (|| {
-        save_buffer::with_buffered_file(file, |writer| match format {
+        let serialize = |writer: &mut std::io::BufWriter<save_buffer::SaveTarget>| match format {
             SaveFormat::Pretty => canonical_save::write_serializable_document_with_thumbnails(
                 writer, document, meta, thumbnails,
             ),
             SaveFormat::Compact => canonical_save::write_compact_document_with_thumbnails(
                 writer, document, meta, thumbnails,
             ),
-        })?;
+        };
+        match format {
+            SaveFormat::Pretty => {
+                save_buffer::with_buffered_file(file, serialize)?;
+            }
+            SaveFormat::Compact => {
+                save_buffer::with_shared_buffered_file(file, serialize)?;
+            }
+        }
         commit_staged_document(&tmp, path)
     })();
     if write_result.is_err() {

@@ -633,3 +633,9 @@ impl ForestPatch {
         )
     }
 }
+
+#[path = "owned_compact.rs"]
+mod owned_compact;
+pub(super) use owned_compact::{
+    header as compact_owned_header, list as compact_owned_list, node as compact_owned_node,
+};

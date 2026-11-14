@@ -1,20 +1,24 @@
-//! Web metadata feed apply: exact target-header undo, not a full Doc snapshot.
+//! Committed web state apply: moved exact regions and one compact undo entry.
+//! Remote changes keep the established globally undoable snapshot-pull contract.
 
-use super::{patch, PendingScopedSnapshot, ScopedEditorSnapshot, TargetSpec};
+use super::{
+    forward_mutation as mutation, forward_regions as regions, patch, ScopedEditorSnapshot,
+};
 use crate::{
     web_sync::{CommittedFeedError as Error, CommittedMetadata},
-    EditorState, History, HistoryEntry, PenNodeExt,
+    EditorState, History, HistoryEntry,
 };
 use std::sync::Arc;
 
-/// Kept only until the associated repaint succeeds; lets a failed paint retain
-/// the old cursor and roll back exactly without a hidden full-document copy.
+/// Historical public name retained for callers; this also covers structural
+/// feed data. Held only until repaint/ack succeeds, never a full Doc clone.
 pub struct CommittedMetadataApply {
     snapshot: Arc<ScopedEditorSnapshot>,
     history: History,
     generation: u64,
     post_revision: u64,
     history_push_count: u64,
+    runtime_high_water: u64,
 }
 
 impl EditorState {
@@ -23,112 +27,81 @@ impl EditorState {
         batch: CommittedMetadata,
     ) -> Result<Option<CommittedMetadataApply>, Error> {
         let mut scopes = Vec::new();
-        let mut targets = Vec::new();
-        let mut refresh_components = false;
+        let mut refresh_components = batch.changes_structure;
         let mut touched = Vec::new();
         for operation in &batch.operations {
-            let scope = match &operation.page {
-                None => patch::Scope::Root,
-                Some(page) => patch::Scope::Page {
-                    index: page.index,
-                    id: page.id.clone(),
-                },
-            };
-            let current = patch::node(
-                patch::roots(&self.doc, &scope).map_err(|_| Error::Precondition)?,
-                &operation.path,
-            )
-            .ok_or(Error::Precondition)?;
-            if current.id_str() != operation.expected_id
-                || operation.value.id_str() != operation.expected_id
-                || std::mem::discriminant(current) != std::mem::discriminant(&operation.value)
-                || current.children().is_some() != operation.children_present
-                || operation.value.children().is_some() != operation.children_present
-                || operation
-                    .value
-                    .children()
-                    .is_some_and(|children| !children.is_empty())
-            {
-                return Err(Error::Precondition);
-            }
-            if let Some(id) = crate::NodeId::new_opt(&operation.expected_id) {
-                refresh_components |= self.components.is_document_backed(&id);
-                touched.push(id);
-            }
-            refresh_components |= matches!(current, jian_ops_schema::node::PenNode::Frame(node) if node.reusable == Some(true))
-                || matches!(&operation.value, jian_ops_schema::node::PenNode::Frame(node) if node.reusable == Some(true));
+            let scope = mutation::scope(operation.page());
+            patch::roots(&self.doc, &scope).map_err(|_| Error::Precondition)?;
             if !scopes.contains(&scope) {
-                scopes.push(scope.clone());
+                scopes.push(scope);
             }
-            let spec = TargetSpec {
-                scope,
-                path: operation.path.clone().into_boxed_slice(),
-                subtree: false,
-                splice: None,
-                topology: None,
-            };
-            if !targets.contains(&spec) {
-                targets.push(spec);
+            if let crate::web_sync::committed::Operation::Metadata(value) = operation {
+                if let Some(id) = crate::NodeId::new_opt(&value.expected_id) {
+                    touched.push(id);
+                }
+                refresh_components |= crate::NodeId::new_opt(&value.expected_id)
+                    .is_some_and(|id| self.components.is_document_backed(&id))
+                    || matches!(&value.value, jian_ops_schema::node::PenNode::Frame(node) if node.reusable == Some(true));
             }
         }
-        if targets.is_empty() {
+        if batch.operations.is_empty() {
             return Ok(None);
         }
-        // All preconditions and types are checked before the first assignment;
-        // metadata-only operations leave every subsequent structural path valid.
-        let pending = PendingScopedSnapshot::capture_targets(self, scopes, false, targets)
-            .map_err(|_| Error::Capture)?;
+        let mut snapshot = ScopedEditorSnapshot::auxiliary(self, scopes);
         let history = self.history.clone();
         let history_push_count = self.history_push_count;
-        for mut operation in batch.operations {
-            let scope = match operation.page {
-                None => patch::Scope::Root,
-                Some(page) => patch::Scope::Page {
-                    index: page.index,
-                    id: page.id,
-                },
-            };
-            let current = patch::node_mut(
-                patch::roots_mut(&mut self.doc, &scope).unwrap(),
-                &operation.path,
-            )
-            .unwrap();
-            let children = patch::children_slot(current).and_then(Option::take);
-            if let Some(slot) = patch::children_slot(&mut operation.value) {
-                *slot = children;
+        let runtime_high_water = self.runtime_id_high_water();
+        let mut before = Vec::new();
+        for operation in batch.operations {
+            match mutation::apply(&mut self.doc, operation) {
+                Ok(captured) => regions::remember(&mut before, captured),
+                Err(error) => {
+                    // Every live capture is disjoint, apart from independent
+                    // headers/child slots. No unversioned document mutation can
+                    // interleave while this exclusive borrow is held.
+                    for old in before.into_iter().rev() {
+                        old.restore(&mut self.doc);
+                    }
+                    return Err(error);
+                }
             }
-            *current = operation.value;
         }
-        let mut snapshot = pending
-            .compact(self)
-            .expect("validated metadata feed keeps page/node shape");
+        regions::normalize(&mut before, &self.doc);
+        snapshot.patches = mutation::compact(before, &self.doc);
         if snapshot.patches.is_empty() {
             return Ok(None);
         }
-        // Match the whole-snapshot pull's derived-state refresh, while retaining
-        // the live canonical document and its existing child allocations.
         if refresh_components {
             self.components = crate::ComponentLibrary::from_document(&self.doc);
         }
-        for id in touched {
-            self.ui.variables.fill_refs.remove(&id);
-            self.ui.variables.stroke_refs.remove(&id);
+        if batch.changes_structure {
+            self.ui.variables.fill_refs.clear();
+            self.ui.variables.stroke_refs.clear();
+            self.selection = crate::SelectionState::empty();
+        } else {
+            for id in touched {
+                self.ui.variables.fill_refs.remove(&id);
+                self.ui.variables.stroke_refs.remove(&id);
+            }
         }
         self.editor_ui.clear_document_derived();
         self.codegen.reset_for_document_replacement();
         self.instance_write_virtual_anchor = None;
         jian_ops_schema::image_thumbs::activate_for_document(&self.doc);
-        // Derived component/token caches are refreshed after compaction. Keep
-        // this external pull conservative for later actor-selective undo.
+        // Do not let selective undo jump across this external state boundary.
+        // A stale Full local entry remains behind the remote entry in global
+        // LIFO history, or conflicts explicitly for actor-selective traversal.
         snapshot.actor_safe = false;
         let snapshot = Arc::new(snapshot);
         self.history_push_entry(HistoryEntry::Scoped(Arc::clone(&snapshot)));
+        self.record_runtime_id_high_water(batch.highest_id);
         Ok(Some(CommittedMetadataApply {
             snapshot,
             history,
             generation: self.document_generation(),
             post_revision: self.document_revision(),
             history_push_count,
+            runtime_high_water,
         }))
     }
     pub fn rollback_committed_metadata(
@@ -144,6 +117,9 @@ impl EditorState {
         snapshot.exchange(self).map_err(|_| Error::Rollback)?;
         self.history = applied.history;
         self.history_push_count = applied.history_push_count;
+        self.runtime_node_high_water = applied.runtime_high_water;
+        // Keep the monotonic revision counter: a failed paint may already have
+        // derived scene data under the rejected revision. Never alias it later.
         self.editor_ui.clear_document_derived();
         self.codegen.reset_for_document_replacement();
         Ok(())

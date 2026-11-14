@@ -142,7 +142,9 @@ pub(crate) fn remap_subtree_ids_with_allocator(
     allocator: &mut dyn IdAllocator,
     taken: &mut HashSet<NodeId>,
 ) -> Result<(), IdAllocError> {
-    remap_subtree_ids_mapping_with_allocator(nodes, allocator, taken).map(drop)
+    let planned = allocate_forest_ids(nodes, allocator, taken)?;
+    commit_forest_ids(nodes, &mut planned.into_iter(), &mut |_, _| {});
+    Ok(())
 }
 
 /// Like [`remap_subtree_ids`] but returns the `(old_id, new_id)` pairs in
@@ -169,34 +171,47 @@ pub fn remap_subtree_ids_mapping_with_allocator(
     allocator: &mut dyn IdAllocator,
     taken: &mut HashSet<NodeId>,
 ) -> Result<Vec<(String, String)>, IdAllocError> {
-    let mut staged = nodes.to_vec();
-    let mut map = Vec::new();
-    remap_collect(&mut staged, allocator, taken, &mut map)?;
-    for (destination, remapped) in nodes.iter_mut().zip(staged) {
-        *destination = remapped;
-    }
+    let planned = allocate_forest_ids(nodes, allocator, taken)?;
+    let mut map = Vec::with_capacity(planned.len());
+    commit_forest_ids(nodes, &mut planned.into_iter(), &mut |old, new| {
+        map.push((old, new.to_owned()))
+    });
     Ok(map)
 }
 
-fn remap_collect(
-    nodes: &mut [PenNode],
+fn allocate_forest_ids(
+    nodes: &[PenNode],
     allocator: &mut dyn IdAllocator,
     taken: &mut HashSet<NodeId>,
-    map: &mut Vec<(String, String)>,
-) -> Result<(), IdAllocError> {
-    for node in nodes.iter_mut() {
-        let fresh = allocator.allocate(taken)?;
-        let old = node.base().id.clone();
-        let new = fresh.as_str().to_string();
-        node.base_mut().id = new.clone();
-        map.push((old, new));
-        // `children_mut` is also an insertion API. Remapping must not turn
-        // absent Ref children (inherit the master) into an empty override.
+) -> Result<Vec<NodeId>, IdAllocError> {
+    let mut planned = Vec::new();
+    let mut stack = vec![nodes.iter()];
+    while let Some(siblings) = stack.last_mut() {
+        let Some(node) = siblings.next() else {
+            stack.pop();
+            continue;
+        };
+        planned.push(allocator.allocate(taken)?);
+        if let Some(children) = node.children().filter(|children| !children.is_empty()) {
+            stack.push(children.iter());
+        }
+    }
+    Ok(planned)
+}
+fn commit_forest_ids(
+    nodes: &mut [PenNode],
+    planned: &mut impl Iterator<Item = NodeId>,
+    record: &mut impl FnMut(String, &str),
+) {
+    for node in nodes {
+        let fresh: String = planned.next().expect("one prepared ID per node").into();
+        let old = std::mem::replace(&mut node.base_mut().id, fresh);
+        record(old, node.id_str());
+        // A search/remap must preserve omitted Ref child overrides.
         if node.children().is_some() {
             if let Some(children) = node.children_mut() {
-                remap_collect(children, allocator, taken, map)?;
+                commit_forest_ids(children, planned, record);
             }
         }
     }
-    Ok(())
 }

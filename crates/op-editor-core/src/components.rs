@@ -23,6 +23,8 @@ use std::sync::{Arc, OnceLock};
 
 #[path = "component_document_index.rs"]
 mod document_index;
+#[path = "component_edit.rs"]
+mod edit;
 
 /// One reusable design fragment.
 ///
@@ -112,12 +114,20 @@ impl ComponentLibrary {
     /// an id walk when an edit has made that path stale. Directly inserted
     /// legacy components continue to borrow their owned `Component::root`.
     pub fn resolved_root<'a>(&'a self, doc: &'a PenDocument, id: &NodeId) -> Option<&'a PenNode> {
+        self.resolved_entry(doc, id).map(|(_, root)| root)
+    }
+    fn resolved_entry<'a>(
+        &'a self,
+        doc: &'a PenDocument,
+        id: &NodeId,
+    ) -> Option<(&'a Component, &'a PenNode)> {
         let component = self.find_by_id(id)?;
-        let Some(location) = self.document_backing.get(id) else {
-            return Some(&component.root);
+        let root = match self.document_backing.get(id) {
+            None => &component.root,
+            Some(location) => resolve_document_location(doc, location, id.as_str())
+                .or_else(|| find_node_in_document(doc, id.as_str()))?,
         };
-        resolve_document_location(doc, location, id.as_str())
-            .or_else(|| find_node_in_document(doc, id.as_str()))
+        Some((component, root))
     }
 
     /// Fast path used by active-page Ref expansion. Unlike
@@ -321,44 +331,12 @@ impl EditorState {
     /// runtime component registry. Frames also carry the canonical
     /// persisted `reusable` flag so reloads can rebuild the registry.
     pub fn create_component_from_node(&mut self, node_id: &NodeId, name: &str) -> bool {
-        let name = name.trim();
-        if !node_id.is_real() || name.is_empty() {
-            return false;
-        }
-        let Some(root) = walkers::find_node(self.active_children(), node_id) else {
-            return false;
-        };
-        if !is_component_root(root) {
-            return false;
-        }
-
-        let snap = self.snapshot_for_undo();
-        if let Some(live) = walkers::find_node_mut(self.active_children_mut(), node_id) {
-            set_reusable(live, true);
-        }
-        if !self.components.register_document_component(
-            &self.doc,
-            node_id.clone(),
-            name.to_string(),
-        ) {
-            return false;
-        }
-        self.push_undo(snap);
-        true
+        edit::create(self, node_id, Some(name))
     }
 
-    /// Promote a node using its current layer name as the component
-    /// label. Used by direct UI affordances that do not prompt.
+    /// Promote a node using its current layer name as the component label.
     pub fn create_component_from_node_name(&mut self, node_id: &NodeId) -> bool {
-        let Some(node) = walkers::find_node(self.active_children(), node_id) else {
-            return false;
-        };
-        let name = node
-            .base()
-            .name
-            .clone()
-            .unwrap_or_else(|| node.id_str().to_string());
-        self.create_component_from_node(node_id, &name)
+        edit::create(self, node_id, None)
     }
 
     /// Clone a registered component onto the active page with fresh
@@ -378,13 +356,12 @@ impl EditorState {
         allocator: &mut dyn IdAllocator,
     ) -> Result<Option<NodeId>, IdAllocError> {
         let (mut clone, name) = {
-            let Some(component) = self.components.find_by_id(component_id) else {
+            let Some((component, template)) =
+                self.components.resolved_entry(&self.doc, component_id)
+            else {
                 return Ok(None);
             };
-            let Some(template) = self.components.resolved_root(&self.doc, component_id) else {
-                return Ok(None);
-            };
-            let mut taken = self.collect_node_ids();
+            let mut taken = allocator.document_collision_ids(&self.doc);
             (
                 walkers::deep_clone_with_allocator(template, allocator, &mut taken)?,
                 component.name.clone(),
@@ -475,7 +452,7 @@ impl EditorState {
                 else {
                     return Ok(None);
                 };
-                let mut taken = self.collect_node_ids();
+                let mut taken = allocator.document_collision_ids(&self.doc);
                 let detached = walkers::deep_clone_with_allocator(&merged, allocator, &mut taken)?;
                 let new_id = NodeId::new(detached.base().id.clone());
                 let snap = self.snapshot_for_undo();

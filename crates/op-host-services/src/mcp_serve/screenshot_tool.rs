@@ -60,8 +60,15 @@ impl McpTool for GetScreenshot {
         };
 
         // Resolve "root" alias to the first top-level node on the active page.
+        let root_node_id = if raw_id == "root" {
+            self.root_node_id
+                .clone()
+                .or_else(|| scene_root_node_id(&self.scene))
+        } else {
+            None
+        };
         let node_id: &str = if raw_id == "root" {
-            match &self.root_node_id {
+            match &root_node_id {
                 Some(id) => id.as_str(),
                 None => {
                     return ToolOutcome::Err(
@@ -118,13 +125,19 @@ pub(crate) fn get_screenshot_from_scene(scene: LayoutScene) -> GetScreenshot {
 }
 
 pub(crate) fn get_screenshot_snapshot_admitted(state: &EditorState) -> GetScreenshot {
-    get_screenshot_from_snapshot(RasterSnapshot::admitted(|| {
-        op_pen_loader::editor_state_to_active_page_layout_scene(state)
-    }))
+    get_screenshot_from_snapshot(RasterSnapshot::capture_http(
+        state,
+        op_pen_loader::ExportScenePolicy::ActiveCanvas,
+        || op_pen_loader::editor_state_to_active_page_layout_scene(state),
+    ))
 }
 
 pub(super) fn get_screenshot_from_snapshot(scene: RasterSnapshot) -> GetScreenshot {
-    let root_node_id = scene_root_node_id(&scene);
+    let root_node_id = if scene.is_http_deferred() {
+        None
+    } else {
+        scene_root_node_id(&scene)
+    };
     GetScreenshot {
         scene,
         root_node_id,

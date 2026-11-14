@@ -67,6 +67,9 @@ impl EditorState {
             EditorCommand::InsertNode { .. }
                 | EditorCommand::BatchInsert { .. }
                 | EditorCommand::GroupSelected
+                | EditorCommand::AddPage { .. }
+                | EditorCommand::DuplicatePage { .. }
+                | EditorCommand::InstantiateComponent { .. }
                 | EditorCommand::DuplicateSelected { .. }
                 | EditorCommand::PasteClipboard { .. }
         ) {

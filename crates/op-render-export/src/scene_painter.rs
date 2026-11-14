@@ -29,6 +29,9 @@ use op_host_native::{NativeBackend, NativeFrameBackend};
 use skia_safe::Canvas;
 use std::cell::RefCell;
 
+#[path = "image_preparation.rs"]
+mod image_preparation;
+
 thread_local! {
     /// Per-thread `NativeBackend` so repeated exports / screenshots
     /// don't re-pay the constructor's CJK font prewarm and keep the
@@ -75,7 +78,11 @@ pub(crate) fn with_prepared_nodes<R>(
     nodes: &[SceneNode],
     action: impl FnOnce(&mut dyn FnMut(&Canvas)) -> R,
 ) -> R {
-    with_prepared_draw(|backend, canvas| draw_nodes(backend, canvas, nodes), action)
+    with_prepared_draw(
+        |backend| image_preparation::nodes_ready(backend, nodes),
+        |backend, canvas| draw_nodes(backend, canvas, nodes),
+        action,
+    )
 }
 
 pub fn paint_selection(canvas: &Canvas, selection: &SceneSelection<'_>, viewport: Rect) {
@@ -88,6 +95,11 @@ pub(crate) fn with_prepared_selection<R>(
     action: impl FnOnce(&mut dyn FnMut(&Canvas)) -> R,
 ) -> R {
     with_prepared_draw(
+        |backend| {
+            selection.all_paint_sources(|node| {
+                image_preparation::nodes_ready(backend, std::slice::from_ref(node))
+            })
+        },
         |backend, canvas| {
             let mut frame = NativeFrameBackend::new(backend, canvas);
             let mut cx = PaintCx {
@@ -119,20 +131,25 @@ impl<F: FnOnce()> Drop for OnDrop<F> {
 }
 
 fn with_prepared_draw<R>(
+    mut images_ready: impl FnMut(&mut NativeBackend) -> bool,
     mut draw: impl FnMut(&mut NativeBackend, &Canvas),
     action: impl FnOnce(&mut dyn FnMut(&Canvas)) -> R,
 ) -> R {
     EXPORT_BACKEND.with(|cell| {
         let mut backend = cell.borrow_mut();
-        ensure_images_decoded(&mut backend, &mut draw);
-        let mut paint = |canvas: &Canvas| {
-            let saved = canvas.save();
-            let _restore = OnDrop(Some(|| {
-                canvas.restore_to_count(saved);
-            }));
-            op_host_native::raster_sampling::with_scene_export(|| draw(&mut backend, canvas));
-        };
-        NativeBackend::with_export_text_reuse(|| action(&mut paint))
+        NativeBackend::with_export_text_reuse(|| {
+            // A no-image scene needs no resource-discovery paint. Warm images
+            // likewise need no throwaway text/vector/gradient traversal.
+            if !images_ready(&mut backend) {
+                ensure_images_decoded(&mut backend, &mut draw);
+            }
+            let mut paint = |canvas: &Canvas| {
+                let saved = canvas.save();
+                let _restore = OnDrop(Some(|| canvas.restore_to_count(saved)));
+                op_host_native::raster_sampling::with_scene_export(|| draw(&mut backend, canvas));
+            };
+            action(&mut paint)
+        })
     })
 }
 
@@ -178,16 +195,22 @@ fn ensure_images_decoded(
     let _pump = DECODE_PUMP
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(mut surface) = skia_safe::surfaces::raster_n32_premul((1, 1)) else {
+        return;
+    };
     // The scene is static, but the pending queue is bounded (one discovery
     // pass may not capture every miss) and an external consumer can hold an
     // id in flight across passes — iterate, with a bounded budget.
     for _ in 0..64 {
         // Sampled BEFORE the paint — see "Exit discipline" above.
         let in_flight_before_paint = has_in_flight_decodes();
-        let Some(mut surface) = skia_safe::surfaces::raster_n32_premul((1, 1)) else {
-            return;
-        };
-        draw(backend, surface.canvas());
+        {
+            let canvas = surface.canvas();
+            canvas.clear(skia_safe::Color::TRANSPARENT);
+            let saved = canvas.save();
+            let _restore = OnDrop(Some(|| canvas.restore_to_count(saved)));
+            draw(backend, canvas);
+        }
         let pending = take_pending_decodes(usize::MAX);
         if pending.is_empty() {
             if !in_flight_before_paint && !has_in_flight_decodes() {
