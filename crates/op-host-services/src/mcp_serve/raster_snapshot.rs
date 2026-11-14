@@ -37,10 +37,14 @@ impl RasterSnapshot {
         derive: impl FnOnce() -> LayoutScene,
     ) -> Self {
         match admission {
-            Ok(admission) => Self {
-                scene: Arc::new(derive()),
-                admission: Some(Ok(Arc::new(admission))),
-            },
+            Ok(admission) => {
+                let admission = Arc::new(admission);
+                super::raster_response::retain(&admission);
+                Self {
+                    scene: Arc::new(derive()),
+                    admission: Some(Ok(admission)),
+                }
+            }
             Err(error) => Self {
                 scene: Arc::new(LayoutScene {
                     pages: Vec::new(),
@@ -197,6 +201,17 @@ mod tests {
         drop(snapshot);
         assert_eq!(worker.stats().admitted, 1);
         drop(delegate);
+        assert_eq!(worker.stats().admitted, 0);
+    }
+
+    #[test]
+    fn transport_keeps_admission_after_snapshot_drops() {
+        let worker = SharedRasterWorker::new().unwrap();
+        let response = super::super::raster_response::RasterResponseScope::new();
+        let snapshot = RasterSnapshot::from_admission(worker.try_acquire(), empty_scene);
+        drop(snapshot);
+        assert_eq!(worker.stats().admitted, 1);
+        drop(response);
         assert_eq!(worker.stats().admitted, 0);
     }
 }

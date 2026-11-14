@@ -113,6 +113,7 @@ fn dispatch_inner<S: Read + Write>(
     ctx: &ConnCtx<'_>,
     conversion_body: Option<String>,
 ) -> Result<bool> {
+    let _raster_response = crate::mcp_serve::raster_response::RasterResponseScope::new();
     let state = ctx.state;
     let hub = ctx.hub;
     let managed_lifecycle_token = &ctx.authority.managed_lifecycle_token;

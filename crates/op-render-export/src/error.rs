@@ -44,6 +44,7 @@ pub enum ExportError {
     RenderWorkerBusy {
         max_admitted: usize,
     },
+    SharedWorkBusy,
     RenderWorkerStart {
         message: String,
     },
@@ -136,6 +137,9 @@ impl fmt::Display for ExportError {
             ExportError::RenderWorkerBusy { max_admitted } => write!(
                 f,
                 "raster renderer is busy ({max_admitted} requests admitted); retry later"
+            ),
+            ExportError::SharedWorkBusy => f.write_str(
+                "shared raster/conversion capacity is busy; retry later"
             ),
             ExportError::RenderWorkerStart { message } => {
                 write!(f, "could not start raster renderer: {message}")

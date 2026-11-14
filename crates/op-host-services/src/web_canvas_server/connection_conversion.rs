@@ -1,30 +1,9 @@
 //! Transfer large conversion bodies without changing borrowed dispatch users.
 
+use crate::export::{shared_work_gate, SharedWorkGate};
 use std::io::{Read, Write};
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use super::{ConnCtx, Result};
-
-// Conversion runs outside document locks. Without admission every connection
-// could allocate a complete import graph simultaneously across all tenants.
-static CONVERSION_ACTIVE: AtomicBool = AtomicBool::new(false);
-
-struct ConversionLease<'a>(&'a AtomicBool);
-
-impl<'a> ConversionLease<'a> {
-    fn acquire(active: &'a AtomicBool) -> Option<Self> {
-        active
-            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .ok()
-            .map(|_| Self(active))
-    }
-}
-
-impl Drop for ConversionLease<'_> {
-    fn drop(&mut self) {
-        self.0.store(false, Ordering::Release);
-    }
-}
 
 pub(super) fn serve_conversion<S: Write>(
     stream: &mut S,
@@ -32,7 +11,7 @@ pub(super) fn serve_conversion<S: Write>(
     owned_body: Option<String>,
     cors_origin: Option<&str>,
 ) -> Result<bool> {
-    serve_conversion_with_gate(stream, request, owned_body, cors_origin, &CONVERSION_ACTIVE)
+    serve_conversion_with_gate(stream, request, owned_body, cors_origin, shared_work_gate())
 }
 
 fn serve_conversion_with_gate<S: Write>(
@@ -40,13 +19,15 @@ fn serve_conversion_with_gate<S: Write>(
     request: &crate::mcp_serve::HttpRequest,
     owned_body: Option<String>,
     cors_origin: Option<&str>,
-    active: &AtomicBool,
+    gate: &SharedWorkGate,
 ) -> Result<bool> {
-    let Some(_conversion_lease) = ConversionLease::acquire(active) else {
+    let Some(_conversion_lease) = gate.try_conversion() else {
         crate::mcp_serve::write_mcp_http_response_with_origin(
             stream,
             "503 Service Unavailable",
-            &crate::mcp_serve::rest_error_body("another Figma conversion is active; retry later"),
+            &crate::mcp_serve::rest_error_body(
+                "shared raster/conversion capacity is busy; retry later",
+            ),
             cors_origin,
         )?;
         return Ok(false);

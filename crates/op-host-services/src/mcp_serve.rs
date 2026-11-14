@@ -698,6 +698,7 @@ pub use doc_sync::*;
 pub(crate) mod agent_context;
 mod lean_profile;
 mod lean_tools;
+pub(crate) mod raster_response;
 mod raster_snapshot;
 mod resident_charge;
 mod resident_documents;

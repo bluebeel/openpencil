@@ -13,7 +13,11 @@ use op_editor_ui::layout_scene::LayoutScene;
 
 use crate::{ExportError, RasterFileTarget, RasterFormat, RasterSampling};
 
-const MAX_ADMITTED: usize = 2;
+use crate::shared_work::{
+    shared_work_gate, SharedWorkGate, SharedWorkLease, MAX_RENDER_ADMISSIONS,
+};
+
+const MAX_ADMITTED: usize = MAX_RENDER_ADMISSIONS;
 
 /// Resolved page/node identity; the scene is shared without a document clone.
 #[derive(Debug, Clone)]
@@ -61,6 +65,7 @@ enum Job {
 struct WorkerState {
     sender: mpsc::SyncSender<Job>,
     counters: Arc<Counters>,
+    work_gate: SharedWorkGate,
 }
 
 /// Cloneable handle to one render thread, not one renderer per request.
@@ -74,10 +79,15 @@ pub struct SharedRasterWorker {
 pub struct RasterAdmission {
     state: Arc<WorkerState>,
     submission: Mutex<()>,
+    _work_lease: SharedWorkLease,
 }
 
 impl SharedRasterWorker {
     pub fn new() -> Result<Self, ExportError> {
+        Self::with_work_gate(SharedWorkGate::new())
+    }
+
+    pub(crate) fn with_work_gate(work_gate: SharedWorkGate) -> Result<Self, ExportError> {
         // One queued job plus one rendering. Replies have zero capacity, so
         // the worker never accumulates completed encoded images in a queue.
         let (sender, receiver) = mpsc::sync_channel::<Job>(1);
@@ -118,7 +128,11 @@ impl SharedRasterWorker {
                 message: error.to_string(),
             })?;
         Ok(Self {
-            state: Arc::new(WorkerState { sender, counters }),
+            state: Arc::new(WorkerState {
+                sender,
+                counters,
+                work_gate,
+            }),
         })
     }
 
@@ -133,9 +147,14 @@ impl SharedRasterWorker {
             .map_err(|_| ExportError::RenderWorkerBusy {
                 max_admitted: MAX_ADMITTED,
             })?;
+        let Some(work_lease) = self.state.work_gate.try_render() else {
+            self.state.counters.admitted.fetch_sub(1, Ordering::AcqRel);
+            return Err(ExportError::SharedWorkBusy);
+        };
         Ok(RasterAdmission {
             state: Arc::clone(&self.state),
             submission: Mutex::new(()),
+            _work_lease: work_lease,
         })
     }
 
@@ -235,7 +254,7 @@ impl Drop for RasterAdmission {
 pub fn shared_raster_worker() -> Result<&'static SharedRasterWorker, ExportError> {
     static WORKER: OnceLock<Result<SharedRasterWorker, ExportError>> = OnceLock::new();
     WORKER
-        .get_or_init(SharedRasterWorker::new)
+        .get_or_init(|| SharedRasterWorker::with_work_gate(shared_work_gate().clone()))
         .as_ref()
         .map_err(Clone::clone)
 }
