@@ -5,7 +5,12 @@ service. External model/agent processes are excluded; the load generator is
 included in the aggregate memory measurement. Each client sends sequential
 MCP batches, and a bounded request window provides backpressure.
 
-The latest [batched checkpoint](engine-checkpoint-10.md) reduces multi-file,
+The latest [batched checkpoint](engine-checkpoint-11.md) combines copy and
+component-inheritance fixes, cheaper exact history capture, ID validation and
+ligature/spacing parity before one build. MUI Native SSIM rises to 0.999695;
+copy-program CPU falls about 10% and single-file edit CPU about 15% in matched
+runs. All bounded context and cold-export memory gates pass below 1 GB.
+The [previous batched checkpoint](engine-checkpoint-10.md) reduces multi-file,
 undo, program and shadow CPU costs while retaining all 12 checkpoint-9 PNGs.
 It fixes advertised kit-tool dispatch and repeated-copy references, and records
 strict 1 GB workload gates plus a 1,000-agent-ID idle sample. Single-file
