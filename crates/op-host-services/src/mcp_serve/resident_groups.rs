@@ -237,7 +237,7 @@ pub(crate) fn dispatch(
                         let _actor = super::agent_context::AgentDeliveryScope::enter(fallback_pin);
                         super::file_path::process_message_for_file_path_arg_with_contexts(&contexts, current.as_deref(), &line, profile)
                             .map(|reply|reply.unwrap_or_default())
-                    }).await.map_err(|_| { unconfirmed_fence.trip(); crate::web_canvas_server::WebCanvasError::Config(crate::document_recovery::REQUIRED.into()) })??
+                    }).await.map_err(|_| { unconfirmed_fence.trip(); crate::web_canvas_server_error::WebCanvasError::Config(crate::document_recovery::REQUIRED.into()) })??
                 }
             };
             Ok(crate::web_canvas_server::async_completion::Response { body, _retained: Box::new((queue_charge,global_charge,pin)) })

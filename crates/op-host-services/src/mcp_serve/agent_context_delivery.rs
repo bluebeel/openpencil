@@ -26,7 +26,7 @@ impl Drop for Scope {
         });
     }
 }
-pub(super) fn permit(
+pub(in crate::mcp_serve::agent_context) fn permit(
     contexts: &AgentContexts,
     document: &Path,
     line: &str,
