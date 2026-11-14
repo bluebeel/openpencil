@@ -374,22 +374,39 @@ export function opCkRoundedShadowGeometry(values) {
     color:[r,g,b,a], inner:Boolean(inner), kernel:blur > 0 ? kernel : 0 };
 }
 
-export function opCkDrawRoundedShadow(CK, canvas, effects, source, values) {
+function opCkFitShadowCorners(w,h,corners) {
+  const r=corners.map(v=>Math.max(0,v)); let scale=1;
+  for (const [sum,extent] of [[r[0]+r[1],w],[r[3]+r[2],w],[r[0]+r[3],h],[r[1]+r[2],h]]) {
+    if (sum>extent) scale=Math.min(scale,extent/sum);
+  }
+  return r.map(v=>Math.fround(v*scale));
+}
+export function opCkDrawRoundedShadow(CK, canvas, effects, source, values, corners = null) {
   const shape = opCkRoundedShadowGeometry(values);
   if (!shape) return false;
+  if (corners && (corners.length !== 4 || !corners.every(Number.isFinite))) return false;
   if (shape.empty || (!shape.bounds && !shape.inner)) return true;
-  const mask = CK.RRectXY(shape.mask, shape.maskRadius, shape.maskRadius);
+  if (corners) corners=opCkFitShadowCorners(values[2],values[3],corners);
+  const rounded = (bounds, radii, scalar) => radii
+    ? Float32Array.from([...bounds, ...radii.flatMap(r => [Math.max(0,r),Math.max(0,r)])])
+    : CK.RRectXY(bounds,scalar,scalar);
+  const mask = rounded(shape.mask,corners,shape.maskRadius);
   const bounds = shape.bounds ?? [0,0,0,0];
   const corner = Math.max(0, Math.min(shape.corner, (bounds[2]-bounds[0])*.5, (bounds[3]-bounds[1])*.5));
+  const growth = shape.inner ? -values[8] : values[8];
+  const width=Math.fround(values[2]+Math.fround(growth*2));
+  const height=Math.fround(values[3]+Math.fround(growth*2));
+  const grown = corners ? (shape.bounds ? opCkFitShadowCorners(width,height,
+    corners.map(r=>growth===0 || r<=0 ? r : Math.max(Math.fround(r+growth),0))) : [0,0,0,0]) : null;
   const [r,g,b,a] = shape.color;
   let shader = null, filter = null, paint = null, cut = null;
   let saved = false, layered = false;
   try {
     if (shape.kernel === 1) {
       shader = opCkMakeRuntimeShader(effects.get(source),
-        ['bounds','radius','blur','inner','tint'],
-        [...bounds,corner,shape.blur,shape.inner?1:0,
-          Math.fround(r*a),Math.fround(g*a),Math.fround(b*a),a], [4,1,1,1,4]);
+        ['bounds',corners?'radii':'radius','blur','inner','tint'],
+        [...bounds,...(grown ?? [corner]),shape.blur,shape.inner?1:0,
+          Math.fround(r*a),Math.fround(g*a),Math.fround(b*a),a], [4,corners?4:1,1,1,4]);
       if (!shader) return false;
     }
     paint = new CK.Paint();
@@ -415,7 +432,7 @@ export function opCkDrawRoundedShadow(CK, canvas, effects, source, values) {
           if (!filter) return false;
           cut.setMaskFilter(filter);
         }
-        canvas.drawRRect(CK.RRectXY(bounds,corner,corner),cut);
+        canvas.drawRRect(rounded(bounds,grown,corner),cut);
       }
     } else {
       if (shape.blur > 0) {
@@ -423,7 +440,7 @@ export function opCkDrawRoundedShadow(CK, canvas, effects, source, values) {
         if (!filter) return false;
         paint.setMaskFilter(filter);
       }
-      canvas.drawRRect(CK.RRectXY(bounds,shape.corner,shape.corner),paint);
+      canvas.drawRRect(rounded(bounds,grown,shape.corner),paint);
     }
     return true;
   } catch (_error) { return false; }
@@ -454,6 +471,7 @@ export async function opCkInit(canvasId) {
   const el = document.getElementById(canvasId);
   const runtimeEffects = opCkCreateRuntimeEffectCache(CK);
   let shadowKernelSource = '';
+  let cornerShadowKernelSource = '';
 
   const systemTypefaces = [];
   const systemTypefaceKeys = new Set();
@@ -1288,6 +1306,17 @@ export async function opCkInit(canvasId) {
     fillRect(x, y, w, h, r, g, b, a) { const p = fillPaint(r, g, b, a); canvas.drawRect(CK.LTRBRect(x, y, x + w, y + h), p); },
     strokeRect(x, y, w, h, r, g, b, a, sw) { const p = strokePaint(r, g, b, a, sw); canvas.drawRect(CK.LTRBRect(x, y, x + w, y + h), p); },
     setShadowKernelSource(source) { shadowKernelSource = String(source); },
+    setCornerShadowKernelSource(source) { cornerShadowKernelSource = String(source); },
+    fillRoundRectShadowPerCorner(...values) {
+      if (values.length !== 18) return false;
+      const corners=values.slice(4,8);
+      if (corners.every(r=>r===corners[0])) {
+        return opCkDrawRoundedShadow(CK,canvas,runtimeEffects,shadowKernelSource,
+          [...values.slice(0,4),corners[0],...values.slice(8)]);
+      }
+      return opCkDrawRoundedShadow(CK,canvas,runtimeEffects,cornerShadowKernelSource,
+        [...values.slice(0,4),0,...values.slice(8)],corners);
+    },
     fillRoundRectShadow(...values) {
       return opCkDrawRoundedShadow(CK, canvas, runtimeEffects, shadowKernelSource, values);
     },

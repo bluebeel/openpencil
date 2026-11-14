@@ -55,7 +55,13 @@ pub(super) fn paint_drop_shadows(
         if footprint * zoom * dpi_scale < MIN_VISIBLE_EFFECT_DEVICE_PX {
             continue;
         }
-        paint_round_shadow(cx, s, world_rect, radius, zoom);
+        let corners = scaled_non_uniform_corner_radii(node, zoom).map(|r| {
+            r.map(|v| {
+                v.max(0.0)
+                    .min(world_rect.size.x.min(world_rect.size.y) * 0.5)
+            })
+        });
+        paint_round_shadow(cx, s, world_rect, radius, corners, zoom);
     }
     if exclude {
         cx.backend.restore();

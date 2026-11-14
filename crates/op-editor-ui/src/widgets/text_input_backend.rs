@@ -241,6 +241,15 @@ impl RenderBackend for BaselineAdjustingBackend<'_> {
     fn fill_drop_shadow(&mut self, rect: Rect, radius: f32, blur: f32, color: Color) {
         self.inner.fill_drop_shadow(rect, radius, blur, color);
     }
+    fn fill_round_rect_shadow_per_corner(
+        &mut self,
+        rect: Rect,
+        radii: [f32; 4],
+        shadow: &crate::RoundRectShadowOptions,
+    ) -> bool {
+        self.inner
+            .fill_round_rect_shadow_per_corner(rect, radii, shadow)
+    }
 
     fn fill_oval(&mut self, bounds: Rect, color: Color) {
         self.inner.fill_oval(bounds, color);

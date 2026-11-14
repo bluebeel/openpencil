@@ -12,6 +12,7 @@ pub(super) fn paint_round_shadow(
     shadow: &DropShadow,
     rect: Rect,
     radius: f32,
+    corners: Option<[f32; 4]>,
     zoom: f32,
 ) {
     let options = RoundRectShadowOptions {
@@ -25,7 +26,13 @@ pub(super) fn paint_round_shadow(
         kernel: shadow.blur_kernel,
         inner: shadow.inner,
     };
-    if !cx.backend.fill_round_rect_shadow(rect, radius, &options) && !shadow.inner {
+    let drawn = if let Some(corners) = corners {
+        cx.backend
+            .fill_round_rect_shadow_per_corner(rect, corners, &options)
+    } else {
+        cx.backend.fill_round_rect_shadow(rect, radius, &options)
+    };
+    if !drawn && !shadow.inner {
         if let Some((bounds, radius)) = options.silhouette(rect, radius) {
             cx.backend
                 .fill_drop_shadow(bounds, radius, options.blur, options.color);
@@ -35,9 +42,6 @@ pub(super) fn paint_round_shadow(
 
 pub(super) fn has_inset_shadow(node: &SceneNode) -> bool {
     matches!(node.kind, NodeKind::Frame | NodeKind::Rect)
-        && node
-            .corner_radii
-            .is_none_or(|radii| radii.windows(2).all(|pair| pair[0] == pair[1]))
         && node
             .effects
             .iter()
@@ -67,6 +71,10 @@ pub(super) fn paint_fill_and_insets(
                     shadow,
                     rect,
                     node.corner_radii.map_or(node.corner_radius, |r| r[0]) * zoom,
+                    crate::widgets::canvas_viewport_overlay::scaled_non_uniform_corner_radii(
+                        node, zoom,
+                    )
+                    .map(|r| r.map(|v| v.max(0.0).min(rect.size.x.min(rect.size.y) * 0.5))),
                     zoom,
                 );
             }

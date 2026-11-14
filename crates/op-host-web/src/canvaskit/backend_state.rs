@@ -8,6 +8,9 @@ impl CanvasKitBackend {
         let dpr = dpr.max(1.0);
         ck.set_dpr(dpr);
         ck.set_shadow_kernel_source(jian_core::render::shadow::TRIANGULAR_SHADOW_SHADER);
+        ck.set_corner_shadow_kernel_source(
+            jian_core::render::shadow::TRIANGULAR_CORNER_SHADOW_SHADER,
+        );
         Self {
             ck,
             dpr,
