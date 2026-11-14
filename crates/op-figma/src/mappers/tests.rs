@@ -443,6 +443,91 @@ fn drop_shadow_effect() {
 }
 
 #[test]
+fn shadow_colors_keep_source_float_bits_through_the_scene_codec() {
+    let rgb = [f32::from_bits(0x3e808180), 10.0_f32 / 255.0, 0.71234566];
+    for kind in ["DROP_SHADOW", "INNER_SHADOW"] {
+        for alpha in [0.0_f32, 0.05, 0.1, 0.33333334, 1.0] {
+            let effects = map_figma_effects(Some(&[obj(vec![
+                ("type", FigValue::Str(kind.into())),
+                ("radius", FigValue::Float(10.0)),
+                (
+                    "color",
+                    obj(vec![
+                        ("r", FigValue::Float(rgb[0])),
+                        ("g", FigValue::Float(rgb[1])),
+                        ("b", FigValue::Float(rgb[2])),
+                        ("a", FigValue::Float(alpha)),
+                    ]),
+                ),
+            ])]))
+            .unwrap();
+            let source = serde_json::json!({"version":"1.0.0","children":[{
+                "type":"rectangle","id":"shadow","width":10,"height":10,
+                "effects":effects}]})
+            .to_string();
+            let doc = jian_ops_schema::load_str(&source).unwrap().value;
+            let scene = op_pen_loader::pen_document_to_layout_scene_with_geometry_mode(
+                &doc,
+                &std::collections::BTreeMap::new(),
+                0,
+                true,
+            );
+            let effect = &scene.active_page().unwrap().children[0].effects[0];
+            let op_editor_ui::layout_scene::Effect::DropShadow(shadow) = effect else {
+                panic!("scene shadow");
+            };
+            assert_eq!(
+                [
+                    shadow.color.r,
+                    shadow.color.g,
+                    shadow.color.b,
+                    shadow.color.a
+                ]
+                .map(f32::to_bits),
+                [rgb[0], rgb[1], rgb[2], alpha].map(f32::to_bits)
+            );
+            assert_eq!(shadow.inner, kind == "INNER_SHADOW");
+        }
+    }
+}
+
+#[test]
+fn shadow_float_codec_keeps_defaults_clamping_and_ordinary_solid_hex() {
+    assert_eq!(
+        shadow_color_css(FigColor {
+            r: 1.2,
+            g: -0.2,
+            b: 0.0,
+            a: None
+        }),
+        "rgba(255,0,0,1)"
+    );
+    assert_eq!(
+        shadow_color_css(FigColor {
+            r: f64::NAN,
+            g: 1.0,
+            b: 0.0,
+            a: None
+        }),
+        "#00ff00"
+    );
+    let color = obj(vec![
+        ("r", FigValue::Float(0.25)),
+        ("g", FigValue::Float(0.5)),
+        ("b", FigValue::Float(0.125)),
+        ("a", FigValue::Float(0.05)),
+    ]);
+    let fill = map_single_fill(&obj(vec![
+        ("type", FigValue::Str("SOLID".into())),
+        ("color", color),
+    ]));
+    let Some(PenFill::Solid(fill)) = fill else {
+        panic!("solid fill");
+    };
+    assert_eq!(fill.color, "#4080200d");
+}
+
+#[test]
 fn background_blur_effect() {
     let effects = [obj(vec![
         ("type", FigValue::Str("BACKGROUND_BLUR".into())),

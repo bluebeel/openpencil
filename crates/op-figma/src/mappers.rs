@@ -386,7 +386,7 @@ fn map_single_effect(effect: &FigValue) -> Option<PenEffect> {
                 color: effect
                     .get("color")
                     .and_then(FigColor::from_value)
-                    .map(|c| figma_color_to_hex(&c))
+                    .map(shadow_color_css)
                     .unwrap_or_else(|| "#00000040".to_string()),
             }))
         }
@@ -400,6 +400,26 @@ fn map_single_effect(effect: &FigValue) -> Option<PenEffect> {
         })),
         _ => None,
     }
+}
+
+/// Shadows compose their float color through a coverage mask. Packing alpha
+/// into hex first changes e.g.0.05 to13/255 before the mask is applied.
+/// Functional RGB components stay f64 until normalization by the color codec.
+fn shadow_color_css(color: FigColor) -> String {
+    let alpha = color.a.unwrap_or(1.0);
+    if ![color.r, color.g, color.b, alpha]
+        .iter()
+        .all(|channel| channel.is_finite())
+    {
+        return figma_color_to_hex(&color);
+    }
+    format!(
+        "rgba({},{},{},{})",
+        color.r.clamp(0.0, 1.0) * 255.0,
+        color.g.clamp(0.0, 1.0) * 255.0,
+        color.b.clamp(0.0, 1.0) * 255.0,
+        alpha.clamp(0.0, 1.0),
+    )
 }
 
 // ── Auto-layout ───────────────────────────────────────────────────

@@ -563,18 +563,20 @@ pub(crate) fn parse_color(s: &str) -> Option<[f32; 4]> {
     if parts.len() < 3 {
         return None;
     }
-    let r = parts[0].parse::<f32>().ok()?;
-    let g = parts[1].parse::<f32>().ok()?;
-    let b = parts[2].parse::<f32>().ok()?;
+    // Normalize functional RGB before narrowing. An imported normalized f32
+    // may need more than f32 precision when expressed on the CSS0–255 scale.
+    let r = parts[0].parse::<f64>().ok()?;
+    let g = parts[1].parse::<f64>().ok()?;
+    let b = parts[2].parse::<f64>().ok()?;
     let a = if parts.len() >= 4 {
         parts[3].parse::<f32>().ok()?
     } else {
         1.0
     };
     Some([
-        (r / 255.0).clamp(0.0, 1.0),
-        (g / 255.0).clamp(0.0, 1.0),
-        (b / 255.0).clamp(0.0, 1.0),
+        (r / 255.0).clamp(0.0, 1.0) as f32,
+        (g / 255.0).clamp(0.0, 1.0) as f32,
+        (b / 255.0).clamp(0.0, 1.0) as f32,
         a.clamp(0.0, 1.0),
     ])
 }
@@ -612,6 +614,26 @@ mod color_tests {
         assert!((rgba[3] - 0.18).abs() < 1e-6);
         assert_eq!(parse_color("rgb(255,128,0)").map(|c| c[3]), Some(1.0));
         assert_eq!(parse_color("not-a-colour"), None);
+    }
+
+    #[test]
+    fn functional_rgb_normalizes_before_narrowing_and_preserves_integer_hex() {
+        for normalized in [
+            f32::from_bits(0x3e808180),
+            0.1234567,
+            10.0 / 255.0,
+            0.71234566,
+        ] {
+            let source = format!("rgba({},0,0,0.05)", f64::from(normalized) * 255.0);
+            let parsed = parse_color(&source).unwrap();
+            assert_eq!(parsed[0].to_bits(), normalized.to_bits());
+            assert_eq!(parsed[3].to_bits(), 0.05_f32.to_bits());
+        }
+        for byte in 0..=255 {
+            let source = format!("rgb({byte},{byte},{byte})");
+            let hex = format!("#{byte:02x}{byte:02x}{byte:02x}");
+            assert_eq!(parse_color(&source), parse_color(&hex));
+        }
     }
 
     #[test]
