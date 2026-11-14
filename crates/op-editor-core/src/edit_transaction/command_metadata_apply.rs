@@ -2,6 +2,7 @@
 //! resolution, borrowed admission, exact capture and direct metadata write.
 use super::*;
 use crate::command_node_attrs::bulk::{self, Prepared};
+use crate::PenNodeExt;
 use jian_ops_schema::node::PenNode;
 impl EditorState {
     /// Apply one supported metadata command with one first-ID resolution.
