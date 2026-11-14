@@ -75,6 +75,9 @@ pub(crate) fn process_live_save_for_file_path_arg(
     })();
     Ok(Some(match result {
         Ok(response) => response,
+        Err(AuthorityError::Uncertain) => {
+            return Err(McpServeError::Io(crate::document_recovery::REQUIRED.into()))
+        }
         Err(error) => error_response(&call, error.to_string()),
     }))
 }
@@ -178,13 +181,14 @@ pub(crate) fn process_message_for_file_path_arg_with_contexts(
         )
     } else {
         hub.acquire(&target.path).and_then(|lease| {
-            lease.with_editor(target.tool == "open_document", |state, stamp| {
+            lease.with_editor_guarded(target.tool == "open_document", |state, stamp, fence| {
                 let mut persisted = false;
                 let mut invalidate = false;
                 let mut write_failure = None;
                 let response =
                     with_agent_context(contexts, lease.path(), state, line, profile, |state| {
-                        super::process_message_with_applier_profiled(
+                        let operation = fence.watch();
+                        let result = super::process_message_with_applier_profiled(
                             state,
                             line,
                             profile,
@@ -260,6 +264,7 @@ pub(crate) fn process_message_for_file_path_arg_with_contexts(
                                     write_failure = Some(match rollback {
                                         Ok(()) => error.to_string(),
                                         Err(rollback) => {
+                                            fence.trip();
                                             format!("{error}; rollback failed: {rollback}")
                                         }
                                     });
@@ -269,7 +274,9 @@ pub(crate) fn process_message_for_file_path_arg_with_contexts(
                                 persisted = true;
                                 true
                             },
-                        )
+                        );
+                        operation.complete();
+                        result
                     });
                 let response = match write_failure {
                     Some(message) => Ok(Some(error_response(&call, message))),
@@ -285,6 +292,9 @@ pub(crate) fn process_message_for_file_path_arg_with_contexts(
     };
     match result {
         Ok(response) => response,
+        Err(super::resident_documents::AuthorityError::Uncertain) => {
+            Err(McpServeError::Io(crate::document_recovery::REQUIRED.into()))
+        }
         Err(error) => Ok(Some(error_response(&call, error.to_string()))),
     }
 }
@@ -330,9 +340,10 @@ fn process_save_copy(
     let destination_lease = (source.path() != destination)
         .then(|| hub.acquire(&destination))
         .transpose()?;
-    source.with_editor(false, |state, stamp| {
+    source.with_editor_guarded(false, |state, stamp, fence| {
         let mut persisted = false;
         let response = with_agent_context(contexts, source.path(), state, line, profile, |state| {
+            let operation = fence.watch();
             let saved = if let Some(destination_lease) = &destination_lease {
                 destination_lease
                     .with_destination(|path| {
@@ -346,7 +357,12 @@ fn process_save_copy(
                             value: result,
                         }
                     })
-                    .map_err(|e| McpServeError::Document(e.to_string()))
+                    .map_err(|e| {
+                        if matches!(e, AuthorityError::Uncertain) {
+                            fence.trip();
+                        }
+                        McpServeError::Document(e.to_string())
+                    })
                     .and_then(|result| result)
             } else {
                 stamp
@@ -355,6 +371,7 @@ fn process_save_copy(
                     .and_then(|_| super::save_editor_state(state, source.path()))
             };
             persisted = destination_lease.is_none() && saved.is_ok();
+            operation.complete();
             Ok(Some(save_response(call, &destination, &saved)))
         });
         ActionResult {
@@ -419,7 +436,10 @@ fn target_file_call(
 }
 
 fn same_path(target: &Path, current: &Path) -> bool {
-    match (target.canonicalize(), current.canonicalize()) {
+    match (
+        super::resident_documents::canonical_key(target),
+        super::resident_documents::canonical_key(current),
+    ) {
         (Ok(target), Ok(current)) => target == current,
         _ => false,
     }

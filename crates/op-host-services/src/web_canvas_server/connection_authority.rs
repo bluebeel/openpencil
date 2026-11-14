@@ -3,6 +3,7 @@
 use super::*;
 
 pub(super) struct ConnAuthority {
+    pub(super) managed_groups: super::managed_group_commit::Groups,
     pub(super) agent_contexts: Arc<crate::mcp_serve::agent_context::AgentContexts>,
     pub(super) managed_lifecycle_token: Option<String>,
     pub(super) allow_origins: Vec<String>,
@@ -13,6 +14,7 @@ impl ConnAuthority {
     /// daemon/tenant. Request admission never waits for document mutation.
     pub(super) fn new(state: &WebCanvasState) -> Self {
         Self {
+            managed_groups: super::managed_group_commit::Groups::default(),
             agent_contexts: Arc::clone(&state.agent_contexts),
             managed_lifecycle_token: state.managed_token.clone(),
             allow_origins: state.allow_origins.clone(),

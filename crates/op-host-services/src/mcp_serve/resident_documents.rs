@@ -19,7 +19,9 @@ use op_editor_core::EditorState;
 use super::resident_charge::{resident_charge, resident_charge_cached, ChargeCache};
 
 const RESERVATION: usize = 64 * 1024;
-const MAX_SOURCE_BYTES: u64 = 16 * 1024 * 1024;
+#[path = "resident_limits.rs"]
+mod resident_limits;
+use resident_limits::ResidentLimits;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum AuthorityError {
@@ -47,6 +49,7 @@ pub(super) enum AuthorityError {
     BoundPrimaryConflict {
         path: PathBuf,
     },
+    Uncertain,
     Poisoned,
 }
 
@@ -59,6 +62,7 @@ impl fmt::Display for AuthorityError {
             Self::StateOverBudget { path, max_bytes } => write!(f, "{} exceeds the resident state accounting limit ({max_bytes} bytes)", path.display()),
             Self::ExternalChange { path } => write!(f, "{} changed externally; retry against the new document", path.display()),
             Self::BoundPrimaryConflict { path } => write!(f, "{} is the bound live document; copying onto it requires a live-authority handoff", path.display()),
+            Self::Uncertain => f.write_str(crate::document_recovery::REQUIRED),
             Self::Poisoned => f.write_str("document authority is unavailable after a failed request"),
         }
     }
@@ -111,6 +115,7 @@ impl FileStamp {
 
 #[derive(Default)]
 struct Resident {
+    recovery: crate::document_recovery::DocumentRecovery,
     editor: Option<EditorState>,
     stamp: Option<FileStamp>,
     charge_cache: ChargeCache,
@@ -129,6 +134,7 @@ pub(super) struct ResidentDocuments {
     tick: AtomicU64,
     max_documents: usize,
     max_bytes: usize,
+    max_source_bytes: u64,
 }
 
 pub(super) struct DocumentLease<'a> {
@@ -144,7 +150,11 @@ pub(super) struct ActionResult<T> {
 
 impl Default for ResidentDocuments {
     fn default() -> Self {
-        Self::with_limits(8, 128 * 1024 * 1024)
+        let limits = ResidentLimits::from_environment();
+        Self {
+            max_source_bytes: limits.source_bytes,
+            ..Self::with_limits(8, limits.accounted_bytes)
+        }
     }
 }
 
@@ -156,6 +166,7 @@ impl ResidentDocuments {
             tick: AtomicU64::new(0),
             max_documents,
             max_bytes,
+            max_source_bytes: 512 * 1024 * 1024,
         }
     }
 
@@ -232,27 +243,59 @@ impl DocumentLease<'_> {
             .resident
             .lock()
             .map_err(|_| AuthorityError::Poisoned)?;
-        let result = action(self.path());
-        if result.persisted || result.invalidate {
-            resident.editor = None;
-            resident.stamp = None;
-            resident.charge_cache = ChargeCache::default();
-            self.slot.charge.store(RESERVATION, Ordering::Relaxed);
+        if resident.recovery.required() {
+            return Err(AuthorityError::Uncertain);
         }
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| action(self.path())));
+        if result.is_err() {
+            resident.recovery.trip();
+        }
+        resident.editor = None;
+        resident.stamp = None;
+        resident.charge_cache = ChargeCache::default();
+        self.slot.charge.store(RESERVATION, Ordering::Relaxed);
+        let result = result.map_err(|_| AuthorityError::Uncertain)?;
         Ok(result.value)
     }
 
+    #[cfg(test)]
     pub fn with_editor<T>(
         &self,
         create: bool,
         action: impl FnOnce(&mut EditorState, &FileStamp) -> ActionResult<T>,
     ) -> Result<T, AuthorityError> {
-        let mut resident = self
-            .slot
-            .resident
-            .lock()
-            .map_err(|_| AuthorityError::Poisoned)?;
+        self.with_editor_guarded(create, |editor, stamp, _| action(editor, stamp))
+    }
+
+    pub fn with_editor_guarded<T>(
+        &self,
+        create: bool,
+        action: impl FnOnce(
+            &mut EditorState,
+            &FileStamp,
+            &crate::document_recovery::DocumentRecovery,
+        ) -> ActionResult<T>,
+    ) -> Result<T, AuthorityError> {
+        let mut resident = self.slot.resident.lock().unwrap_or_else(|poison| {
+            let resident = poison.into_inner();
+            resident.recovery.trip();
+            resident
+        });
+        let recovering = resident.recovery.required();
+        if recovering {
+            resident.editor = None;
+            resident.stamp = None;
+            resident.charge_cache = ChargeCache::default();
+            self.slot.charge.store(RESERVATION, Ordering::Relaxed);
+        }
         if create && !self.path().exists() {
+            if recovering {
+                return Err(io(
+                    self.path(),
+                    "recover",
+                    "authoritative saved file is missing",
+                ));
+            }
             if let Some(parent) = self.path().parent() {
                 std::fs::create_dir_all(parent).map_err(|e| io(parent, "create directory", e))?;
             }
@@ -274,36 +317,78 @@ impl DocumentLease<'_> {
                 .cold_load
                 .lock()
                 .map_err(|_| AuthorityError::Poisoned)?;
-            if stamp.len > MAX_SOURCE_BYTES {
+            if stamp.len > self.hub.max_source_bytes {
                 return Err(AuthorityError::SourceTooLarge {
                     path: self.path().to_path_buf(),
                     bytes: stamp.len,
-                    max_bytes: MAX_SOURCE_BYTES,
+                    max_bytes: self.hub.max_source_bytes,
                 });
             }
-            let editor =
-                super::load_editor_state(self.path()).map_err(|e| io(self.path(), "load", e))?;
-            stamp.verify(self.path())?;
-            let charge = resident_charge(&editor, self.hub.max_bytes).map_err(|_| {
-                AuthorityError::StateOverBudget {
-                    path: self.path().to_path_buf(),
-                    max_bytes: self.hub.max_bytes,
+            let loaded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let editor = super::load_editor_state(self.path())
+                    .map_err(|e| io(self.path(), "load", e))?;
+                stamp.verify(self.path())?;
+                let charge = resident_charge(&editor, self.hub.max_bytes).map_err(|_| {
+                    AuthorityError::StateOverBudget {
+                        path: self.path().to_path_buf(),
+                        max_bytes: self.hub.max_bytes,
+                    }
+                })?;
+                Ok::<_, AuthorityError>((editor, charge))
+            }));
+            let (editor, charge) = match loaded {
+                Ok(result) => result?,
+                Err(_) => {
+                    resident.recovery.trip();
+                    return Err(AuthorityError::Uncertain);
                 }
-            })?;
+            };
             if !self.hub.adopt_charge(&self.slot, charge)? {
                 return Err(self.hub.capacity());
             }
             resident.editor = Some(editor);
             resident.stamp = Some(stamp);
+            let epoch = resident.recovery.epoch();
+            if resident.recovery.required() && !resident.recovery.recovered(epoch) {
+                return Err(AuthorityError::Uncertain);
+            }
+            self.slot.resident.clear_poison();
         }
         let expected = resident
             .stamp
             .as_ref()
             .cloned()
             .ok_or(AuthorityError::Poisoned)?;
+        let fence = resident.recovery.clone();
         let editor = resident.editor.as_mut().ok_or(AuthorityError::Poisoned)?;
         let before = accounting_marker(editor);
-        let result = action(editor, &expected);
+        let result = {
+            let operation = fence.watch();
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                action(editor, &expected, &fence)
+            }));
+            match outcome {
+                Ok(result) => {
+                    operation.complete();
+                    result
+                }
+                Err(_) => {
+                    drop(operation);
+                    resident.editor = None;
+                    resident.stamp = None;
+                    resident.charge_cache = ChargeCache::default();
+                    self.slot.charge.store(RESERVATION, Ordering::Relaxed);
+                    return Err(AuthorityError::Uncertain);
+                }
+            }
+        };
+        if fence.required() {
+            resident.editor = None;
+            resident.stamp = None;
+            resident.charge_cache = ChargeCache::default();
+            self.slot.charge.store(RESERVATION, Ordering::Relaxed);
+            return Err(AuthorityError::Uncertain);
+        }
         let changed = before != accounting_marker(editor) || result.persisted;
         let current = FileStamp::read(self.path());
         let keep = !result.invalidate

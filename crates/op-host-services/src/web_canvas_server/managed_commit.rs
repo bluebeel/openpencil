@@ -43,6 +43,7 @@ fn apply_command(
     command: &EditorCommand,
     path: Option<&Path>,
     repair: bool,
+    fence: &crate::document_recovery::DocumentRecovery,
 ) -> Result<bool, CommitError> {
     let Some(path) = path.filter(|_| command.may_change_document()) else {
         return Ok(mcp_serve::apply_command_with_undo(
@@ -51,6 +52,7 @@ fn apply_command(
             repair,
         ));
     };
+    let operation = fence.watch();
     let revision = editor.document_revision();
     let mut capture = mcp_serve::begin_command_capture(editor, command, repair);
     // Cut replaces its clipboard; move the old value aside instead of cloning
@@ -60,20 +62,30 @@ fn apply_command(
     let applied =
         mcp_serve::apply_command_with_command_capture(editor, command.clone(), &mut capture);
     if !applied {
+        let rolled_back = capture.abort(editor).is_ok();
+        if !rolled_back {
+            fence.trip();
+        }
         if let Some(clipboard) = clipboard {
             editor.clipboard = clipboard;
         }
+        operation.complete();
         return Ok(false);
     }
     if editor.document_revision() != revision {
         if let Err(source) = crate::doc_io::save_to_path_compact(editor, path) {
             let rollback = capture.abort(editor).err();
+            if rollback.is_some() {
+                fence.trip();
+            }
             if let Some(clipboard) = clipboard {
                 editor.clipboard = clipboard;
             }
+            operation.complete();
             return Err(CommitError::Save { source, rollback });
         }
     }
+    operation.complete();
     Ok(true)
 }
 
@@ -96,6 +108,8 @@ pub(super) fn dispatch(
 ) -> Result<String, WebCanvasError> {
     let mut state = ctx.state.lock().unwrap_or_else(|p| p.into_inner());
     let managed = matches!(ctx.mode, ServeMode::Managed);
+    state.ensure_document_available()?;
+    let fence = state.recovery.clone();
     // Routing released the lock to acquire alternate-file authority. Never
     // apply an old primary request to a newly opened document/context key.
     if managed && writes && state.current_path.as_deref() != routed_path {
@@ -134,6 +148,7 @@ pub(super) fn dispatch(
                         command,
                         commit_path.as_deref(),
                         mcp_serve::write_repairs::generated_tool(tool),
+                        &fence,
                     ) {
                         Ok(applied) => {
                             applied_any |=
@@ -150,6 +165,7 @@ pub(super) fn dispatch(
         },
     )?
     .unwrap_or_default();
+    state.ensure_document_available()?;
     if let Some(reason) = refused {
         state.editor.editor_ui.collab.set_notice(
             reason.notice_kind(),

@@ -103,6 +103,9 @@ pub(crate) fn document_push_reply(
     parsed: Result<PendingDocumentPush>,
     state: &mut WebCanvasState,
 ) -> WebReply {
+    if state.recovery.required() {
+        return super::managed_group_commit::recovery::refusal();
+    }
     match parsed.and_then(|push| state.apply_prepared_document_push(push, None)) {
         Ok(outcome) if outcome.applied => WebReply {
             status: "200 OK",

@@ -105,6 +105,8 @@ pub(super) fn serve_one_with_authority<S: Read + Write>(
 /// Dispatch parsed requests after the online loop has resolved their identity.
 #[path = "connection_conversion.rs"]
 mod conversion;
+#[path = "connection_files.rs"]
+mod files;
 pub(super) use conversion::dispatch_owned;
 
 fn dispatch_inner<S: Read + Write>(
@@ -365,6 +367,16 @@ fn dispatch_inner<S: Read + Write>(
         };
         let reply = {
             let mut guard = state.lock().unwrap_or_else(|p| p.into_inner());
+            if guard.recovery.required() && req.path != "/api/file/reload" {
+                let reply = super::managed_group_commit::recovery::refusal();
+                crate::mcp_serve::write_mcp_http_response_with_origin(
+                    stream,
+                    reply.status,
+                    &reply.body,
+                    cors_origin,
+                )?;
+                return Ok(false);
+            }
             let before = guard.version;
             let settings_before = crate::settings_io::fingerprint(&guard.editor);
             let credential_settings_before = (req.method == "POST"
@@ -376,6 +388,9 @@ fn dispatch_inner<S: Read + Write>(
                 Some(parsed) => document_push_reply(parsed, &mut guard),
                 None => handle_web_canvas_request(&req.method, &req.path, &req.body, &mut guard),
             };
+            if req.path == "/api/file/reload" && !guard.recovery.required() {
+                state.clear_poison();
+            }
             let reply = persist_api_settings(
                 &req.method,
                 &req.path,
@@ -507,53 +522,33 @@ fn dispatch_inner<S: Read + Write>(
     // Only copy the primary path while holding its lock; dispatching another
     // file must not hold up normal edits to the live document. Online paths
     // remain account-scoped and never reach the local filesystem router.
-    if !mcp_profile.deny_unshareable_tools {
-        let routed = crate::mcp_serve::file_path::process_live_save_for_file_path_arg(
-            current_path.as_deref(),
-            &req.body,
-            mcp_profile,
-            |destination| {
-                let mut guard = state.lock().unwrap_or_else(|p| p.into_inner());
-                crate::mcp_serve::agent_context::with_agent_context(
-                    &agent_contexts,
-                    &document_key,
-                    &mut guard.editor,
-                    &req.body,
-                    mcp_profile,
-                    |editor| {
-                        crate::doc_io::save_to_path(editor, destination).map_err(|error| {
-                            crate::mcp_serve::McpServeError::Document(error.to_string())
-                        })?;
-                        Ok(None)
-                    },
-                )
-                .map(|_| ())
-            },
+    if let Some(response) = files::route(
+        ctx,
+        &req.body,
+        current_path.as_deref(),
+        &document_key,
+        mcp_profile,
+    )? {
+        crate::mcp_serve::write_mcp_http_response_with_origin(
+            stream,
+            "200 OK",
+            &response,
+            cors_origin,
         )?;
-        let routed = match routed {
-            Some(response) => Some(response),
-            None => crate::mcp_serve::file_path::process_message_for_file_path_arg_with_contexts(
-                &agent_contexts,
-                current_path.as_deref(),
-                &req.body,
-                mcp_profile,
-            )?,
-        };
-        if let Some(response) = routed {
-            crate::mcp_serve::write_mcp_http_response_with_origin(
-                stream,
-                "200 OK",
-                &response,
-                cors_origin,
-            )?;
-            return Ok(false);
-        }
+        return Ok(false);
+    }
+    {
+        let guard = state.lock().unwrap_or_else(|p| p.into_inner());
+        guard.ensure_document_available()?;
     }
     #[cfg(feature = "mcp-debug-tools")]
     if let Some(response) = (mcp_profile.catalog
         == crate::mcp_serve::tool_catalog::McpToolCatalog::Full)
         .then(|| {
             let guard = state.lock().unwrap_or_else(|p| p.into_inner());
+            if guard.recovery.required() {
+                return None;
+            }
             crate::mcp_live::screenshot::maybe_serve(
                 &req.body,
                 op_mcp::debug_tools_enabled(),
@@ -603,15 +598,26 @@ fn dispatch_inner<S: Read + Write>(
             return Ok(false);
         }
     };
-    let response = super::managed_commit::dispatch(
+    let response = match super::managed_group_commit::dispatch(
         ctx,
         &req.body,
         mcp_profile,
         current_path.as_deref(),
         &document_key,
-        _agent_admission.is_active(),
+        &_agent_admission,
         mcp_write,
-    )?;
+    ) {
+        Some(response) => response?,
+        None => super::managed_commit::dispatch(
+            ctx,
+            &req.body,
+            mcp_profile,
+            current_path.as_deref(),
+            &document_key,
+            _agent_admission.is_active(),
+            mcp_write,
+        )?,
+    };
     // Released only once the commit is visible in the shared state.
     drop(mcp_write_pass);
     let status = if response.is_empty() {

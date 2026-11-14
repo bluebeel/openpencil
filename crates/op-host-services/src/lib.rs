@@ -74,6 +74,7 @@ pub mod design_md_llm_error;
 pub mod design_session;
 pub mod design_variants;
 pub mod doc_io;
+pub(crate) mod document_recovery;
 pub mod export;
 pub mod export_batch;
 pub mod export_html;

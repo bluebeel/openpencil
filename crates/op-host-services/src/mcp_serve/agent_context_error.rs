@@ -3,6 +3,7 @@ use std::fmt;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum AgentContextError {
     Busy,
+    AdmissionExhausted,
     InvalidAgent,
     Capacity {
         resource: &'static str,
@@ -21,6 +22,7 @@ pub(crate) enum AgentContextError {
 impl fmt::Display for AgentContextError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::AdmissionExhausted => f.write_str("agent-context-capacity: admission identities exhausted; restart the authority"),
             Self::Busy => f.write_str("agent-context-busy: this agentId already has an active call"),
             Self::InvalidAgent => f.write_str("agentId must contain 1–96 ASCII letters, digits, '.', '_', ':' or '-'"),
             Self::Capacity { resource, limit } => write!(f, "agent-context-capacity: {resource} limit reached ({limit}); retry after releasing context resources"),

@@ -22,7 +22,7 @@ pub(crate) use error::AgentContextError;
 const UI_ALLOWANCE: usize = 64 * 1024;
 const MAX_CLIPBOARD: usize = 4 * 1024 * 1024;
 const MAX_SELECTION: usize = 1024;
-const AGENT_BASE: usize = 256;
+const AGENT_BASE: usize = 288;
 
 #[derive(Default)]
 struct UiContext {
@@ -64,14 +64,23 @@ impl AgentData {
     }
 }
 
+#[path = "agent_context_execution.rs"]
+mod execution;
+use execution::AdmissionOwner;
+pub(crate) use execution::{with_agent_context_permit, AgentExecutionPermit};
+
 struct Slot {
-    admitted: Option<std::thread::ThreadId>,
+    admitted: Option<AdmissionOwner>,
+    execution_pins: usize,
+    execution_reservation: usize,
+    admission_released: bool,
     data: Option<AgentData>,
     charge: usize,
 }
 
 #[derive(Default)]
 struct Ledger {
+    next_admission: u64,
     agents: HashMap<String, Slot>,
     charge: usize,
 }
@@ -112,18 +121,21 @@ impl AgentContexts {
             return Ok(AgentAdmission {
                 store: self,
                 agent: None,
+                ticket: None,
             });
         }
         let Some(call) = op_mcp::parse_tool_call(line.trim()) else {
             return Ok(AgentAdmission {
                 store: self,
                 agent: None,
+                ticket: None,
             });
         };
         let Some(agent) = call.arguments.get("agentId") else {
             return Ok(AgentAdmission {
                 store: self,
                 agent: None,
+                ticket: None,
             });
         };
         if let Some(denied) = profile.refuse_call(&call.tool, &call.arguments) {
@@ -133,11 +145,20 @@ impl AgentContexts {
         }
         validate_agent(agent)?;
         let mut ledger = self.ledger.lock().unwrap_or_else(|p| p.into_inner());
+        let ticket = ledger
+            .next_admission
+            .checked_add(1)
+            .ok_or(AgentContextError::AdmissionExhausted)?;
+        let owner = AdmissionOwner {
+            thread: std::thread::current().id(),
+            ticket,
+        };
         if let Some(slot) = ledger.agents.get_mut(agent) {
             if slot.admitted.is_some() || slot.data.is_none() {
                 return Err(AgentContextError::Busy);
             }
-            slot.admitted = Some(std::thread::current().id());
+            slot.admitted = Some(owner);
+            slot.admission_released = false;
         } else {
             if ledger.agents.len() >= self.max_agents {
                 return Err(AgentContextError::Capacity {
@@ -155,30 +176,40 @@ impl AgentContexts {
             ledger.agents.insert(
                 agent.clone(),
                 Slot {
-                    admitted: Some(std::thread::current().id()),
+                    admitted: Some(owner),
+                    execution_pins: 0,
+                    execution_reservation: 0,
+                    admission_released: false,
                     data: Some(AgentData::default()),
                     charge: AGENT_BASE,
                 },
             );
         }
+        ledger.next_admission = ticket;
         Ok(AgentAdmission {
             store: self,
             agent: Some(agent.clone()),
+            ticket: Some(ticket),
         })
     }
 
-    fn checkout<'a>(
+    fn checkout_with_permit<'a>(
         &'a self,
         agent: &str,
         document: &Path,
+        permit: Option<&AgentExecutionPermit>,
     ) -> Result<Lease<'a>, AgentContextError> {
         let mut ledger = self.ledger.lock().unwrap_or_else(|p| p.into_inner());
         if let Some(slot) = ledger.agents.get(agent) {
-            if slot.data.is_none()
-                || slot
+            let allowed = match permit {
+                Some(permit) => slot
                     .admitted
-                    .is_some_and(|owner| owner != std::thread::current().id())
-            {
+                    .is_some_and(|owner| permit.allows(self, agent, owner)),
+                None => slot.admitted.is_none_or(|owner| {
+                    !slot.admission_released && owner.thread == std::thread::current().id()
+                }),
+            };
+            if slot.data.is_none() || !allowed {
                 return Err(AgentContextError::Busy);
             }
             let data = slot.data.as_ref().unwrap();
@@ -190,6 +221,8 @@ impl AgentContexts {
                     limit: self.max_documents_per_agent,
                 });
             }
+        } else if permit.is_some() {
+            return Err(AgentContextError::Busy);
         } else if ledger.agents.len() >= self.max_agents {
             return Err(AgentContextError::Capacity {
                 resource: "agents",
@@ -197,7 +230,28 @@ impl AgentContexts {
             });
         }
         let previous = ledger.agents.get(agent).map_or(0, |slot| slot.charge);
-        let reservation = previous.max(AGENT_BASE) + UI_ALLOWANCE + document.as_os_str().len();
+        let actual = ledger
+            .agents
+            .get(agent)
+            .and_then(|slot| slot.data.as_ref())
+            .map_or(AGENT_BASE, AgentData::charge);
+        let pinned = ledger
+            .agents
+            .get(agent)
+            .map_or(0, |slot| slot.execution_reservation);
+        // A queued permit owns its original UI allowance through save/rollback;
+        // unrelated documents cannot consume that reservation between stages.
+        let reservation = execution::reservation::checkout(
+            actual.max(AGENT_BASE),
+            pinned,
+            permit.is_some(),
+            UI_ALLOWANCE,
+            document.as_os_str().len(),
+        )
+        .ok_or(AgentContextError::Capacity {
+            resource: "queued actor UI bytes",
+            limit: pinned,
+        })?;
         let total = ledger.charge - previous + reservation;
         if total > self.max_bytes {
             return Err(AgentContextError::Capacity {
@@ -208,6 +262,9 @@ impl AgentContexts {
         ledger.charge = total;
         let slot = ledger.agents.entry(agent.into()).or_insert_with(|| Slot {
             admitted: None,
+            execution_pins: 0,
+            execution_reservation: 0,
+            admission_released: true,
             data: Some(AgentData::default()),
             charge: 0,
         });
@@ -225,6 +282,7 @@ impl AgentContexts {
 pub(crate) struct AgentAdmission<'a> {
     store: &'a AgentContexts,
     agent: Option<String>,
+    ticket: Option<u64>,
 }
 impl AgentAdmission<'_> {
     pub(crate) fn is_active(&self) -> bool {
@@ -237,7 +295,15 @@ impl Drop for AgentAdmission<'_> {
         if let Some(agent) = &self.agent {
             let mut ledger = self.store.ledger.lock().unwrap_or_else(|p| p.into_inner());
             if let Some(slot) = ledger.agents.get_mut(agent) {
-                slot.admitted = None;
+                if slot
+                    .admitted
+                    .is_some_and(|owner| Some(owner.ticket) == self.ticket)
+                {
+                    slot.admission_released = true;
+                    if slot.execution_pins == 0 {
+                        slot.admitted = None;
+                    }
+                }
             }
         }
     }
@@ -292,8 +358,13 @@ impl Lease<'_> {
 impl Drop for Lease<'_> {
     fn drop(&mut self) {
         let Some(data) = self.data.take() else { return };
-        let charge = data.charge();
+        let actual = data.charge();
         let mut ledger = self.store.ledger.lock().unwrap_or_else(|p| p.into_inner());
+        let pinned = ledger
+            .agents
+            .get(&self.agent)
+            .map_or(0, |slot| slot.execution_reservation);
+        let charge = actual.max(pinned);
         ledger.charge = ledger.charge - self.reservation + charge;
         let slot = ledger.agents.get_mut(&self.agent).unwrap();
         slot.charge = charge;
@@ -331,6 +402,18 @@ pub(crate) fn with_agent_context(
     profile: McpAccessProfile,
     action: impl FnOnce(&mut EditorState) -> Result<Option<String>, McpServeError>,
 ) -> Result<Option<String>, McpServeError> {
+    with_agent_context_impl(contexts, document, state, line, profile, None, action)
+}
+
+fn with_agent_context_impl(
+    contexts: &AgentContexts,
+    document: &Path,
+    state: &mut EditorState,
+    line: &str,
+    profile: McpAccessProfile,
+    permit: Option<&AgentExecutionPermit>,
+    action: impl FnOnce(&mut EditorState) -> Result<Option<String>, McpServeError>,
+) -> Result<Option<String>, McpServeError> {
     if super::sniff::is_control_message(line) {
         return action(state);
     }
@@ -346,7 +429,7 @@ pub(crate) fn with_agent_context(
     if let Err(error) = validate_agent(agent) {
         return refusal(&call, error.to_string());
     }
-    let lease = match contexts.checkout(agent, document) {
+    let lease = match contexts.checkout_with_permit(agent, document, permit) {
         Ok(lease) => lease,
         Err(error) => return refusal(&call, error.to_string()),
     };
