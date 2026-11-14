@@ -467,18 +467,19 @@ impl EditorState {
         component_id: &NodeId,
         allocator: &mut dyn IdAllocator,
     ) -> Result<Option<NodeId>, IdAllocError> {
-        let (template, name) = {
+        let (mut clone, name) = {
             let Some(component) = self.components.find_by_id(component_id) else {
                 return Ok(None);
             };
             let Some(template) = self.components.resolved_root(&self.doc, component_id) else {
                 return Ok(None);
             };
-            let template = template.clone();
-            (template, component.name.clone())
+            let mut taken = self.collect_node_ids();
+            (
+                walkers::deep_clone_with_allocator(template, allocator, &mut taken)?,
+                component.name.clone(),
+            )
         };
-        let mut taken = self.collect_node_ids();
-        let mut clone = walkers::deep_clone_with_allocator(&template, allocator, &mut taken)?;
         set_reusable(&mut clone, false);
         walkers::translate_subtree(&mut clone, 20.0, 20.0);
         clone.base_mut().name = Some(name);

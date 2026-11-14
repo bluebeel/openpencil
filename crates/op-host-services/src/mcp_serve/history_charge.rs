@@ -4,7 +4,7 @@
 //! Adding/removing a checkpoint therefore visits only newly live/dead edges,
 //! rather than every leaf of every retained checkpoint on every request.
 use super::{new_ledger, ChargeError, RootCharge};
-use op_editor_core::{EditorState, PenDocument, SharedComponent, SharedNode};
+use op_editor_core::{EditorState, PenDocument, ScopedEditorSnapshot, SharedComponent, SharedNode};
 use std::{
     collections::{HashMap, HashSet},
     mem::{size_of, size_of_val},
@@ -29,6 +29,7 @@ enum Value<'a> {
     Pages(&'a Arc<Pages>),
     Component(&'a Arc<SharedComponent>),
     Components(&'a Arc<Components>),
+    Scoped(&'a Arc<ScopedEditorSnapshot>),
 }
 // A weak control block prevents an address from identifying another allocation
 // while cached. Arc::make_mut also detaches weak-observed metadata/edge arrays.
@@ -40,6 +41,7 @@ enum Owner {
     Pages(Weak<Pages>),
     Component(Weak<SharedComponent>),
     Components(Weak<Components>),
+    Scoped(Weak<ScopedEditorSnapshot>),
 }
 struct Entry {
     _owner: Owner,
@@ -87,6 +89,7 @@ impl Value<'_> {
             Self::Pages(v) => (Arc::as_ptr(v) as usize, 3),
             Self::Component(v) => (Arc::as_ptr(v) as usize, 4),
             Self::Components(v) => (Arc::as_ptr(v) as usize, 5),
+            Self::Scoped(v) => (Arc::as_ptr(v) as usize, 6),
         };
         Key { pointer, kind }
     }
@@ -98,6 +101,7 @@ impl Value<'_> {
             Self::Pages(v) => Owner::Pages(Arc::downgrade(v)),
             Self::Component(v) => Owner::Component(Arc::downgrade(v)),
             Self::Components(v) => Owner::Components(Arc::downgrade(v)),
+            Self::Scoped(v) => Owner::Scoped(Arc::downgrade(v)),
         }
     }
     fn child_count(self) -> usize {
@@ -108,6 +112,7 @@ impl Value<'_> {
             Self::Pages(v) => v.len(),
             Self::Component(_) => 1,
             Self::Components(v) => v.len(),
+            Self::Scoped(v) => v.retained_roots().count() + 1,
         }
     }
     fn visit(self, mut visit: impl FnMut(Value<'_>) -> Result<(), Error>) -> Result<(), Error> {
@@ -134,6 +139,12 @@ impl Value<'_> {
                     visit(Value::Component(c))?;
                 }
             }
+            Self::Scoped(v) => {
+                for root in v.retained_roots() {
+                    visit(Value::Node(root))?;
+                }
+                visit(Value::Components(v.components().components_arc()))?;
+            }
         }
         Ok(())
     }
@@ -155,6 +166,7 @@ impl Value<'_> {
             Self::Nodes(v) => edge_bytes(v),
             Self::Pages(v) => edge_bytes(v),
             Self::Components(v) => edge_bytes(v),
+            Self::Scoped(v) => v.storage_bytes(),
         };
         Ok(RootCharge {
             serialized: count.serialized.bytes,
@@ -285,20 +297,33 @@ impl HistoryChargeCache {
         let mut next = HashMap::new();
         let mut backing = HashSet::new();
         let mut extra = 0usize;
-        for snapshot in state.history.past.iter().chain(state.history.future.iter()) {
+        for entry in state.history.past.iter().chain(state.history.future.iter()) {
             extra = extra
-                .checked_add(size_of_val(snapshot))
+                .checked_add(size_of_val(entry))
                 .ok_or(Error::Charge(ChargeError::OverLimit))?;
-            let values = [
-                Value::Document(
-                    snapshot.doc.metadata_arc(),
-                    snapshot.doc.metadata_storage_bytes(),
-                ),
-                Value::Nodes(snapshot.doc.root_children_arc()),
-                Value::Pages(snapshot.doc.page_children_arcs()),
-                Value::Components(snapshot.components.components_arc()),
-            ];
-            for value in values {
+            let (values, components) = if let Some(snapshot) = entry.full_snapshot() {
+                (
+                    [
+                        Some(Value::Document(
+                            snapshot.doc.metadata_arc(),
+                            snapshot.doc.metadata_storage_bytes(),
+                        )),
+                        Some(Value::Nodes(snapshot.doc.root_children_arc())),
+                        Some(Value::Pages(snapshot.doc.page_children_arcs())),
+                        Some(Value::Components(snapshot.components.components_arc())),
+                    ],
+                    &snapshot.components,
+                )
+            } else {
+                let snapshot = entry
+                    .scoped_snapshot()
+                    .expect("full or scoped history entry");
+                (
+                    [Some(Value::Scoped(snapshot)), None, None, None],
+                    snapshot.components(),
+                )
+            };
+            for value in values.into_iter().flatten() {
                 if !next.contains_key(&value.key()) && next.len() >= self.max_entries {
                     return Err(Error::Capacity);
                 }
@@ -307,9 +332,9 @@ impl HistoryChargeCache {
                     return Err(Error::Capacity);
                 }
             }
-            if backing.insert(snapshot.components.backing_identity()) {
+            if backing.insert(components.backing_identity()) {
                 extra = extra
-                    .checked_add(snapshot.components.backing_storage_bytes())
+                    .checked_add(components.backing_storage_bytes())
                     .ok_or(Error::Charge(ChargeError::OverLimit))?;
             }
         }

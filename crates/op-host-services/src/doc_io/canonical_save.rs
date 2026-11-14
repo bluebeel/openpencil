@@ -36,8 +36,10 @@ impl CanonicalSaveSnapshot {
         let history_anchor = state
             .history
             .future
-            .back()
-            .or_else(|| state.history.past.back())
+            .iter()
+            .rev()
+            .chain(state.history.past.iter().rev())
+            .find_map(|entry| entry.full_snapshot())
             .map(|snapshot| &snapshot.doc);
         let anchor = previous
             .map(|snapshot| &snapshot.document)
@@ -133,6 +135,31 @@ pub(super) fn write_serializable_document_with_thumbnails<
     // `jian_ops_schema` is not owned by this pass — carry its sentence
     // verbatim so the wire text is unchanged.
     .map_err(|e| DocIoError::Serialize(e.to_string()))?;
+    Ok(StreamingSaveStats {
+        wrote_images_table: stats.wrote_images_table,
+        wrote_image_thumbs: stats.wrote_image_thumbs,
+    })
+}
+
+/// Compact autosaves retain the pretty writer's typed numeric spellings and
+/// field/image order while omitting insignificant whitespace.
+pub(super) fn write_compact_document_with_thumbnails<
+    W: Write,
+    D: Serialize + jian_ops_schema::image_table::SaveImageOrder + ?Sized,
+>(
+    writer: &mut W,
+    document: &D,
+    meta: EditorMeta,
+    thumbnails: &ImageThumbSnapshot,
+) -> Result<StreamingSaveStats, DocIoError> {
+    let stats = jian_ops_schema::image_table::write_document_compact_with_extension(
+        writer,
+        document,
+        thumbnails,
+        "editorMeta",
+        &meta,
+    )
+    .map_err(|error| DocIoError::Serialize(error.to_string()))?;
     Ok(StreamingSaveStats {
         wrote_images_table: stats.wrote_images_table,
         wrote_image_thumbs: stats.wrote_image_thumbs,

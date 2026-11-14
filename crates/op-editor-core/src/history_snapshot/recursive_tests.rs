@@ -174,8 +174,24 @@ fn recursive_history_100_standalone_edits_in_10000_node_frame() {
         }));
         assert_eq!(state.history.past.len(), step as usize);
     }
-    let first = &state.history.past.front().unwrap().doc.root_children()[0];
-    let last = &state.history.past.back().unwrap().doc.root_children()[0];
+    let first = &state
+        .history
+        .past
+        .front()
+        .unwrap()
+        .full_snapshot()
+        .unwrap()
+        .doc
+        .root_children()[0];
+    let last = &state
+        .history
+        .past
+        .back()
+        .unwrap()
+        .full_snapshot()
+        .unwrap()
+        .doc
+        .root_children()[0];
     assert!(Arc::ptr_eq(
         &first.children().unwrap()[0],
         &last.children().unwrap()[0]
@@ -200,7 +216,19 @@ fn recursive_history_100_standalone_edits_in_10000_node_frame() {
             serde_json::to_vec(&reference).unwrap()
         );
     }
-    let shared = SharedDoc::capture(&state.doc, Some(&state.history.past.back().unwrap().doc));
+    let shared = SharedDoc::capture(
+        &state.doc,
+        Some(
+            &state
+                .history
+                .past
+                .back()
+                .unwrap()
+                .full_snapshot()
+                .unwrap()
+                .doc,
+        ),
+    );
     assert_eq!(
         serde_json::to_vec(&shared).unwrap(),
         serde_json::to_vec(&state.doc).unwrap()

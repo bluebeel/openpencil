@@ -1,0 +1,298 @@
+//! Compact trusted page-local history. Complete public snapshots remain separate.
+use super::*;
+use crate::history_snapshot::SharedNode;
+use jian_ops_schema::{node::PenNode, page::PenPage};
+use std::{collections::BTreeMap, mem};
+mod patch;
+pub(crate) use patch::Scope;
+pub use patch::ScopedHistoryError;
+use patch::{PageHeader, Patch};
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScopedEditorSnapshot {
+    generation: u64,
+    page_count: Option<usize>,
+    scopes: Vec<Scope>,
+    patches: Vec<Patch>,
+    page_headers: Vec<PageHeader>,
+    selection: SelectionState,
+    pub active_page_index: usize,
+    components: SharedComponents,
+    app_state_owner: BTreeMap<String, usize>,
+    fill_refs: HashMap<NodeId, String>,
+    stroke_refs: HashMap<NodeId, String>,
+    preserve_authored_geometry: bool,
+    pub revision: u64,
+}
+// New undo fields must be consciously classified here too. Workspace snapshots
+// remain on Full while the chooser is active; no mutable document revision is
+// used as evidence that public, unversioned content was unchanged.
+const _: fn(&EditorSnapshot) = |EditorSnapshot {
+                                    doc: _,
+                                    selection: _,
+                                    active_page_index: _,
+                                    components: _,
+                                    app_state_owner: _,
+                                    fill_refs: _,
+                                    stroke_refs: _,
+                                    preserve_authored_geometry: _,
+                                    workspace_directions: _,
+                                    revision: _,
+                                }| {};
+
+#[derive(Debug)]
+pub(crate) struct PendingScopedSnapshot {
+    metadata: ScopedEditorSnapshot,
+    forests: Vec<CapturedForest>,
+}
+#[derive(Debug)]
+enum CapturedForest {
+    Root(Vec<PenNode>),
+    Page { index: usize, page: PenPage },
+}
+impl PendingScopedSnapshot {
+    pub(crate) fn scopes(&self) -> Vec<Scope> {
+        self.metadata.scopes.clone()
+    }
+    pub(crate) fn revision(&self) -> u64 {
+        self.metadata.revision
+    }
+    pub(crate) fn restore(&mut self, state: &mut EditorState) -> Result<(), ScopedHistoryError> {
+        self.metadata.validate_shape(state)?;
+        for forest in mem::take(&mut self.forests) {
+            match forest {
+                CapturedForest::Root(nodes) => state.doc.children = nodes,
+                CapturedForest::Page { index, page } => {
+                    state.doc.pages.as_mut().unwrap()[index] = page
+                }
+            }
+        }
+        state.selection = self.metadata.selection.clone();
+        state.ui.active_page_index = self.metadata.active_page_index;
+        state.components = self.metadata.components.materialize();
+        state.app_state_owner = self.metadata.app_state_owner.clone();
+        state.ui.variables.fill_refs = self.metadata.fill_refs.clone();
+        state.ui.variables.stroke_refs = self.metadata.stroke_refs.clone();
+        state.editor_ui.preserve_authored_geometry = self.metadata.preserve_authored_geometry;
+        state.revision = self.metadata.revision;
+        state.sync_dirty_flag();
+        Ok(())
+    }
+    pub(crate) fn capture(state: &EditorState, scopes: Vec<Scope>) -> Self {
+        let forests = scopes
+            .iter()
+            .map(|scope| match scope {
+                Scope::Root => CapturedForest::Root(state.doc.children.clone()),
+                Scope::Page { index, .. } => CapturedForest::Page {
+                    index: *index,
+                    page: state.doc.pages.as_ref().unwrap()[*index].clone(),
+                },
+            })
+            .collect();
+        Self {
+            metadata: ScopedEditorSnapshot::auxiliary(state, scopes),
+            forests,
+        }
+    }
+    pub(crate) fn compact(
+        mut self,
+        state: &EditorState,
+    ) -> Result<ScopedEditorSnapshot, ScopedHistoryError> {
+        self.metadata.validate_shape(state)?;
+        for forest in self.forests {
+            let (scope, old) = match forest {
+                CapturedForest::Root(nodes) => (Scope::Root, nodes),
+                CapturedForest::Page { index, mut page } => {
+                    let current = &state.doc.pages.as_ref().unwrap()[index];
+                    let children = mem::take(&mut page.children);
+                    let header = page_metadata(current);
+                    if !page_metadata_matches(&page, &header) {
+                        self.metadata.page_headers.push(PageHeader {
+                            index,
+                            old: page.clone(),
+                        });
+                    }
+                    (Scope::Page { index, id: page.id }, children)
+                }
+            };
+            patch::compact_forest(
+                old,
+                patch::roots(&state.doc, &scope)?,
+                scope,
+                &mut self.metadata.patches,
+            );
+        }
+        self.metadata.patches.shrink_to_fit();
+        self.metadata.page_headers.shrink_to_fit();
+        Ok(self.metadata)
+    }
+}
+fn page_metadata(page: &PenPage) -> PenPage {
+    PenPage {
+        id: page.id.clone(),
+        name: page.name.clone(),
+        children: Vec::new(),
+        background_color: page.background_color.clone(),
+        state: page.state.clone(),
+        lifecycle: page.lifecycle.clone(),
+    }
+}
+fn page_metadata_matches(a: &PenPage, b: &PenPage) -> bool {
+    a == b
+        && crate::history_snapshot::metadata_sensitivity(a)
+            == crate::history_snapshot::metadata_sensitivity(b)
+}
+impl ScopedEditorSnapshot {
+    fn auxiliary(state: &EditorState, scopes: Vec<Scope>) -> Self {
+        Self {
+            generation: state.document_generation,
+            page_count: state.doc.pages.as_ref().map(Vec::len),
+            scopes,
+            patches: Vec::new(),
+            page_headers: Vec::new(),
+            selection: state.selection.clone(),
+            active_page_index: state.ui.active_page_index,
+            components: SharedComponents::capture(
+                &state.components,
+                state
+                    .history
+                    .future
+                    .back()
+                    .or_else(|| state.history.past.back())
+                    .map(|entry| match entry {
+                        HistoryEntry::Full(snapshot) => &snapshot.components,
+                        HistoryEntry::Scoped(snapshot) => snapshot.components(),
+                    }),
+            ),
+            app_state_owner: state.app_state_owner.clone(),
+            fill_refs: state.ui.variables.fill_refs.clone(),
+            stroke_refs: state.ui.variables.stroke_refs.clone(),
+            preserve_authored_geometry: state.editor_ui.preserve_authored_geometry,
+            revision: state.revision,
+        }
+    }
+    pub(crate) fn scopes(&self) -> Vec<Scope> {
+        self.scopes.clone()
+    }
+    pub fn components(&self) -> &SharedComponents {
+        &self.components
+    }
+    pub fn retained_roots(&self) -> impl Iterator<Item = &Arc<SharedNode>> {
+        self.patches.iter().flat_map(Patch::retained_roots)
+    }
+    /// Includes every owned non-SharedNode allocation. Shared component roots
+    /// and backing are exposed separately for identity-aware ledger accounting.
+    pub fn storage_bytes(&self) -> usize {
+        fn id(id: &NodeId) -> usize {
+            64 + 4 * id.as_str().len()
+        }
+        fn refs(map: &HashMap<NodeId, String>) -> usize {
+            128 + map.capacity() * (mem::size_of::<(NodeId, String)>() + 16)
+                + map
+                    .iter()
+                    .map(|(key, value)| id(key) + value.capacity())
+                    .sum::<usize>()
+        }
+        let mut total = mem::size_of::<Self>()
+            + 2 * mem::size_of::<usize>()
+            + self.scopes.capacity() * mem::size_of::<Scope>()
+            + self.patches.capacity() * mem::size_of::<Patch>()
+            + self.page_headers.capacity() * mem::size_of::<PageHeader>()
+            + self.patches.iter().map(Patch::storage_bytes).sum::<usize>()
+            + self
+                .scopes
+                .iter()
+                .map(|scope| match scope {
+                    Scope::Root => 0,
+                    Scope::Page { id, .. } => id.capacity(),
+                })
+                .sum::<usize>()
+            + self.selection.set.capacity() * mem::size_of::<NodeId>()
+            + id(&self.selection.anchor)
+            + self.selection.set.iter().map(id).sum::<usize>()
+            + refs(&self.fill_refs)
+            + refs(&self.stroke_refs)
+            + 1024
+            + self.app_state_owner.len() * 256
+            + self
+                .app_state_owner
+                .keys()
+                .map(String::capacity)
+                .sum::<usize>();
+        struct Count(usize);
+        impl std::io::Write for Count {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0 = self.0.saturating_add(bytes.len());
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        for header in &self.page_headers {
+            let mut count = Count(0);
+            if serde_json::to_writer(&mut count, &header.old).is_err() {
+                return usize::MAX;
+            }
+            total = total.saturating_add(count.0.saturating_mul(4));
+        }
+        total
+    }
+    fn validate_shape(&self, state: &EditorState) -> Result<(), ScopedHistoryError> {
+        if state.document_generation != self.generation {
+            return Err(ScopedHistoryError::DocumentGenerationChanged {
+                expected: self.generation,
+                actual: state.document_generation,
+            });
+        }
+        if state.doc.pages.as_ref().map(Vec::len) != self.page_count {
+            return Err(ScopedHistoryError::PageShapeChanged);
+        }
+        for scope in &self.scopes {
+            patch::roots(&state.doc, scope)?;
+        }
+        Ok(())
+    }
+    /// All destinations are validated before any write. One historical side
+    /// becomes the reverse entry; no permanent before/after document pair.
+    pub(crate) fn exchange(&mut self, state: &mut EditorState) -> Result<(), ScopedHistoryError> {
+        self.validate_shape(state)?;
+        for patch in &self.patches {
+            patch.validate(&state.doc)?;
+        }
+        let reverse = Self::auxiliary(state, self.scopes.clone());
+        for patch in &mut self.patches {
+            patch.exchange(&mut state.doc);
+        }
+        let reordered: Vec<_> = self
+            .patches
+            .iter()
+            .filter_map(Patch::order_scope)
+            .cloned()
+            .collect();
+        for patch in &mut self.patches {
+            patch.rebase(&state.doc, &reordered);
+        }
+        for header in &mut self.page_headers {
+            let current = &mut state.doc.pages.as_mut().unwrap()[header.index];
+            let children = mem::take(&mut current.children);
+            mem::swap(current, &mut header.old);
+            current.children = children;
+        }
+        state.selection = mem::replace(&mut self.selection, reverse.selection);
+        state.ui.active_page_index =
+            mem::replace(&mut self.active_page_index, reverse.active_page_index);
+        state.components = self.components.materialize();
+        self.components = reverse.components;
+        state.app_state_owner = mem::replace(&mut self.app_state_owner, reverse.app_state_owner);
+        state.ui.variables.fill_refs = mem::replace(&mut self.fill_refs, reverse.fill_refs);
+        state.ui.variables.stroke_refs = mem::replace(&mut self.stroke_refs, reverse.stroke_refs);
+        state.editor_ui.preserve_authored_geometry = mem::replace(
+            &mut self.preserve_authored_geometry,
+            reverse.preserve_authored_geometry,
+        );
+        state.revision = mem::replace(&mut self.revision, reverse.revision);
+        state.sync_dirty_flag();
+        Ok(())
+    }
+}

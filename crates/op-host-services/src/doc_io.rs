@@ -40,6 +40,8 @@ pub mod atomic_file;
 mod canonical_save;
 mod clean_copy;
 #[cfg(test)]
+mod compact_save_tests;
+#[cfg(test)]
 mod editor_meta_roundtrip_tests;
 mod error;
 #[cfg(test)]
@@ -94,6 +96,19 @@ pub fn save_to_path(state: &EditorState, path: &std::path::Path) -> Result<(), D
         op_pen_loader::EditorMeta::from_state(state),
         &thumbnails,
         path,
+    )
+}
+
+/// Atomically save an agent edit with compact JSON. The canonical values,
+/// image tables and editor metadata are identical to an explicit pretty save.
+pub fn save_to_path_compact(state: &EditorState, path: &std::path::Path) -> Result<(), DocIoError> {
+    let thumbnails = jian_ops_schema::image_thumbs::capture_snapshot();
+    save_serializable_document_with_format(
+        &state.doc,
+        op_pen_loader::EditorMeta::from_state(state),
+        &thumbnails,
+        path,
+        SaveFormat::Compact,
     )
 }
 
@@ -172,14 +187,34 @@ fn save_serializable_document_with_thumbnails_to_path<
     thumbnails: &jian_ops_schema::image_thumbs::ImageThumbSnapshot,
     path: &std::path::Path,
 ) -> Result<(), DocIoError> {
+    save_serializable_document_with_format(document, meta, thumbnails, path, SaveFormat::Pretty)
+}
+
+enum SaveFormat {
+    Pretty,
+    Compact,
+}
+
+fn save_serializable_document_with_format<
+    D: serde::Serialize + jian_ops_schema::image_table::SaveImageOrder + ?Sized,
+>(
+    document: &D,
+    meta: op_pen_loader::EditorMeta,
+    thumbnails: &jian_ops_schema::image_thumbs::ImageThumbSnapshot,
+    path: &std::path::Path,
+    format: SaveFormat,
+) -> Result<(), DocIoError> {
     // Write through a sibling temp file so a crash mid-write doesn't
     // leave a half-written file on disk.
     let (tmp, file) = create_sibling_temp(path)?;
     let write_result = (|| {
-        save_buffer::with_buffered_file(file, |writer| {
-            canonical_save::write_serializable_document_with_thumbnails(
+        save_buffer::with_buffered_file(file, |writer| match format {
+            SaveFormat::Pretty => canonical_save::write_serializable_document_with_thumbnails(
                 writer, document, meta, thumbnails,
-            )
+            ),
+            SaveFormat::Compact => canonical_save::write_compact_document_with_thumbnails(
+                writer, document, meta, thumbnails,
+            ),
         })?;
         commit_staged_document(&tmp, path)
     })();

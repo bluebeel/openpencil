@@ -99,9 +99,9 @@ pub fn load_editor_state(path: &Path) -> Result<EditorState, McpServeError> {
         .map_err(|error| McpServeError::Document(format!("load {}: {error}", path.display())))
 }
 
-/// Serialize through the same streaming, atomic path as desktop Save.
+/// Compact agent traffic through the same streaming, atomic commit as desktop Save.
 fn save_editor_state(state: &EditorState, path: &Path) -> Result<(), McpServeError> {
-    crate::doc_io::save_to_path(state, path)
+    crate::doc_io::save_to_path_compact(state, path)
         .map_err(|error| McpServeError::Document(format!("save {}: {error}", path.display())))
 }
 
@@ -201,7 +201,7 @@ fn process_message(
 mod command_apply;
 mod stdio_dispatch;
 pub(crate) use command_apply::{
-    apply_command_with_undo, apply_command_with_undo_captured, apply_command_with_undo_report,
+    apply_command_with_command_capture, apply_command_with_undo, apply_command_with_undo_report,
 };
 use stdio_dispatch::process_message_with_auto_finalize;
 

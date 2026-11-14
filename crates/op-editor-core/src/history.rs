@@ -15,6 +15,11 @@ use crate::selection::SelectionState;
 use crate::state::EditorState;
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
+mod entry;
+mod scoped;
+pub use entry::HistoryEntry;
+pub(crate) use scoped::{PendingScopedSnapshot, Scope};
+pub use scoped::{ScopedEditorSnapshot, ScopedHistoryError};
 
 /// Document-dependent comparison state. Camera and other view-only state stay
 /// outside history; picking a direction must be undoable as a usable comparison.
@@ -80,8 +85,8 @@ pub struct EditorSnapshot {
 /// O(1) `pop_front` rather than an O(n) `Vec::remove(0)`.
 #[derive(Debug, Clone, Default)]
 pub struct History {
-    pub past: VecDeque<EditorSnapshot>,
-    pub future: VecDeque<EditorSnapshot>,
+    pub past: VecDeque<HistoryEntry>,
+    pub future: VecDeque<HistoryEntry>,
 }
 
 impl History {
@@ -141,7 +146,7 @@ impl EditorState {
         let history = std::mem::take(&mut self.history);
         // Rollback captures inside a command still need its actual current
         // state. Give them a sharing anchor without exposing the real stacks.
-        self.history.past.push_back(before.clone());
+        self.history.past.push_back(before.clone().into());
         self.undo_capture_suspended = true;
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             operation(self, Some(&before))
@@ -169,8 +174,16 @@ impl EditorState {
         let anchor = self
             .history
             .future
-            .back()
-            .or_else(|| self.history.past.back());
+            .iter()
+            .rev()
+            .find_map(HistoryEntry::full_snapshot)
+            .or_else(|| {
+                self.history
+                    .past
+                    .iter()
+                    .rev()
+                    .find_map(HistoryEntry::full_snapshot)
+            });
         self.snapshot_for_history_with_anchor(anchor)
     }
 
@@ -203,8 +216,12 @@ impl EditorState {
             self.mark_document_changed();
             return;
         }
+        self.history_push_entry(snapshot.into());
+    }
+
+    pub(crate) fn history_push_entry(&mut self, entry: HistoryEntry) {
         self.history_push_count = self.history_push_count.saturating_add(1);
-        self.history.past.push_back(snapshot);
+        self.history.past.push_back(entry);
         if self.history.past.len() > HISTORY_CAP {
             self.history.past.pop_front();
         }
@@ -298,10 +315,28 @@ impl EditorState {
         let Some(previous) = self.history.past.pop_back() else {
             return false;
         };
-        let current = self.snapshot_for_history_with_anchor(Some(&previous));
-        self.history.future.push_back(current);
-        self.restore(previous);
-        true
+        match previous {
+            HistoryEntry::Full(previous) => {
+                let current = self.snapshot_for_history_with_anchor(Some(&previous));
+                self.history.future.push_back(current.into());
+                self.restore(previous);
+                true
+            }
+            HistoryEntry::Scoped(previous) => {
+                let mut previous = Arc::unwrap_or_clone(previous);
+                if previous.exchange(self).is_err() {
+                    self.history
+                        .past
+                        .push_back(HistoryEntry::Scoped(Arc::new(previous)));
+                    false
+                } else {
+                    self.history
+                        .future
+                        .push_back(HistoryEntry::Scoped(Arc::new(previous)));
+                    true
+                }
+            }
+        }
     }
 
     /// Redo the last undone change. Returns false when redo is empty.
@@ -309,10 +344,28 @@ impl EditorState {
         let Some(next) = self.history.future.pop_back() else {
             return false;
         };
-        let current = self.snapshot_for_history_with_anchor(Some(&next));
-        self.history.past.push_back(current);
-        self.restore(next);
-        true
+        match next {
+            HistoryEntry::Full(next) => {
+                let current = self.snapshot_for_history_with_anchor(Some(&next));
+                self.history.past.push_back(current.into());
+                self.restore(next);
+                true
+            }
+            HistoryEntry::Scoped(next) => {
+                let mut next = Arc::unwrap_or_clone(next);
+                if next.exchange(self).is_err() {
+                    self.history
+                        .future
+                        .push_back(HistoryEntry::Scoped(Arc::new(next)));
+                    false
+                } else {
+                    self.history
+                        .past
+                        .push_back(HistoryEntry::Scoped(Arc::new(next)));
+                    true
+                }
+            }
+        }
     }
 }
 

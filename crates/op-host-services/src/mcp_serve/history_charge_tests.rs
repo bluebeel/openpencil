@@ -57,10 +57,26 @@ fn history_union_tracks_edits_undo_redo_replacement_and_drops_background_weak_en
     equivalent(&state, &mut cache);
     equivalent(&state, &mut cache);
     assert_eq!(cache.history.additions, 0);
-    let background = state.history.past.front().unwrap().doc.root_children()[0].clone();
+    let background = state
+        .history
+        .past
+        .front()
+        .unwrap()
+        .full_snapshot()
+        .unwrap()
+        .doc
+        .root_children()[0]
+        .clone();
     let mut replacement = state.doc.clone();
     replacement.name = Some("replacement metadata with larger storage".repeat(50));
-    state.history.past.front_mut().unwrap().doc = SharedDoc::capture(&replacement, None);
+    state
+        .history
+        .past
+        .front_mut()
+        .unwrap()
+        .full_snapshot_mut()
+        .unwrap()
+        .doc = SharedDoc::capture(&replacement, None);
     equivalent(&state, &mut cache);
     assert!(cache.history.additions > 0);
     state.history.past.clear();

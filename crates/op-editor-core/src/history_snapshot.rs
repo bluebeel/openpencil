@@ -27,6 +27,12 @@ mod sensitivity;
 pub use components::{SharedComponent, SharedComponents};
 use node::share_children;
 pub use node::SharedNode;
+pub(crate) fn metadata_sensitivity<T: Serialize + ?Sized>(value: &T) -> Box<[u8]> {
+    sensitivity::bytes(value)
+}
+pub(crate) fn metadata_matches(a: &PenNode, b: &PenNode) -> bool {
+    a == b && sensitivity::bytes(a) == sensitivity::bytes(b)
+}
 
 /// A structurally-shared mirror of a [`PenDocument`] for undo history.
 ///

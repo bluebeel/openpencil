@@ -5,7 +5,7 @@
 
 use super::{connection::ConnCtx, ServeMode};
 use crate::{doc_io::DocIoError, mcp_serve, web_canvas_server_error::WebCanvasError};
-use op_editor_core::{EditorCommand, EditorState, LocalEditError};
+use op_editor_core::{CommandEditError, EditorCommand, EditorState};
 use std::path::Path;
 
 #[derive(Debug)]
@@ -13,7 +13,7 @@ enum CommitError {
     AuthorityChanged,
     Save {
         source: DocIoError,
-        rollback: Option<LocalEditError>,
+        rollback: Option<CommandEditError>,
     },
 }
 
@@ -51,13 +51,13 @@ fn apply_command(
         ));
     };
     let revision = editor.document_revision();
-    let capture = editor.begin_local_edit();
+    let mut capture = editor.begin_command_edit(command);
     // Cut replaces its clipboard; move the old value aside instead of cloning
     // a potentially large tree. The checkpoint deliberately excludes it.
     let clipboard = matches!(command, EditorCommand::CutSelected)
         .then(|| std::mem::take(&mut editor.clipboard));
     let applied =
-        mcp_serve::apply_command_with_undo_captured(editor, command.clone(), true, &capture);
+        mcp_serve::apply_command_with_command_capture(editor, command.clone(), true, &mut capture);
     if !applied {
         if let Some(clipboard) = clipboard {
             editor.clipboard = clipboard;
@@ -65,8 +65,8 @@ fn apply_command(
         return Ok(false);
     }
     if editor.document_revision() != revision {
-        if let Err(source) = crate::doc_io::save_to_path(editor, path) {
-            let rollback = editor.abort_local_edit(capture).err();
+        if let Err(source) = crate::doc_io::save_to_path_compact(editor, path) {
+            let rollback = editor.abort_command_edit(capture).err();
             if let Some(clipboard) = clipboard {
                 editor.clipboard = clipboard;
             }

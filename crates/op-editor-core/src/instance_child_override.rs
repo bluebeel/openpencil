@@ -308,7 +308,13 @@ mod tests {
         state.finish_instance_write(scope);
 
         assert_eq!(state.history.past.len(), crate::HISTORY_CAP);
-        let newest = state.history.past.back().expect("newest history snapshot");
+        let newest = state
+            .history
+            .past
+            .back()
+            .expect("newest history snapshot")
+            .full_snapshot()
+            .unwrap();
         assert!(matches!(
             newest
                 .doc

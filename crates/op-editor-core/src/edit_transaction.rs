@@ -10,6 +10,8 @@ use crate::history::{EditorSnapshot, History};
 use crate::state::EditorState;
 use jian_ops_schema::PenDocument;
 use std::collections::BTreeMap;
+mod command_capture;
+pub use command_capture::{CommandEditCapture, CommandEditError};
 
 /// Source of a document edit or install.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

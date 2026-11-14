@@ -242,7 +242,12 @@ pub(super) fn apply_kit_component_on_page(
         state.ui.active_page_index = original_page_index;
         state.selection = original_selection.clone();
         if matches!(&changed, Ok(true)) {
-            if let Some(snapshot) = state.history.past.back_mut() {
+            if let Some(snapshot) = state
+                .history
+                .past
+                .back_mut()
+                .and_then(crate::HistoryEntry::full_snapshot_mut)
+            {
                 snapshot.active_page_index = original_page_index;
                 snapshot.selection = original_selection;
             }

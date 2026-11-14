@@ -679,7 +679,12 @@ impl EditorState {
                     self.ui.active_page_index = original_page_index;
                     self.selection = original_selection.clone();
                     if matches!(&changed, Ok(true)) {
-                        if let Some(snapshot) = self.history.past.back_mut() {
+                        if let Some(snapshot) = self
+                            .history
+                            .past
+                            .back_mut()
+                            .and_then(crate::HistoryEntry::full_snapshot_mut)
+                        {
                             snapshot.active_page_index = original_page_index;
                             snapshot.selection = original_selection;
                         }

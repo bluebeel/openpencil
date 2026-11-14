@@ -313,8 +313,8 @@ fn undo_redo_transitions_share_arcs_with_the_destination() {
     let dest = state.history.past.back().unwrap().clone();
     assert!(state.undo());
     let redo_entry = state.history.future.back().unwrap();
-    let d = dest.doc.root_children();
-    let r = redo_entry.doc.root_children();
+    let d = dest.full_snapshot().unwrap().doc.root_children();
+    let r = redo_entry.full_snapshot().unwrap().doc.root_children();
     let shared = (0..d.len()).filter(|&i| Arc::ptr_eq(&d[i], &r[i])).count();
     assert!(
         shared >= d.len() - 1,
@@ -326,8 +326,8 @@ fn undo_redo_transitions_share_arcs_with_the_destination() {
     let dest2 = state.history.future.back().unwrap().clone();
     assert!(state.redo());
     let undo_entry = state.history.past.back().unwrap();
-    let d2 = dest2.doc.root_children();
-    let u = undo_entry.doc.root_children();
+    let d2 = dest2.full_snapshot().unwrap().doc.root_children();
+    let u = undo_entry.full_snapshot().unwrap().doc.root_children();
     let shared2 = (0..d2.len())
         .filter(|&i| Arc::ptr_eq(&d2[i], &u[i]))
         .count();

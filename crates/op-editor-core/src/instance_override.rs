@@ -38,8 +38,10 @@
 //! the swapped tree; `finish_instance_write` repairs any snapshot
 //! captured during the scope by routing each captured display state back
 //! onto the original Ref.
-
 use crate::history::EditorSnapshot;
+pub use crate::instance_child_override::{
+    resolve_instance_display_node_for_anchor, split_instance_child_anchor,
+};
 use crate::node_id::NodeId;
 use crate::pen_node_ext::PenNodeExt;
 use crate::state::EditorState;
@@ -47,11 +49,6 @@ use crate::walkers::{find_node, find_node_mut};
 use jian_ops_schema::node::PenNode;
 use jian_ops_schema::PenDocument;
 use serde_json::{Map, Value};
-
-pub use crate::instance_child_override::{
-    resolve_instance_display_node_for_anchor, split_instance_child_anchor,
-};
-
 /// Properties stored directly on the `RefNode` (instance-level), not
 /// as overrides — mirrors TS `INSTANCE_DIRECT_PROPS`.
 ///
@@ -76,11 +73,9 @@ pub const INSTANCE_DIRECT_PROPS: &[&str] = &[
     "blendMode",
     "maskType",
 ];
-
 /// Keys that identify the node / route its overrides — never diffed,
 /// never routed.
 const STRUCTURAL_KEYS: &[&str] = &["id", "type", "ref", "descendants", "children", "reusable"];
-
 /// Resolve the merged DISPLAY node for a selected instance — the TS
 /// property-panel merge: component base → `descendants[ref.target]`
 /// top-level overrides → the RefNode's own defined props. The result
@@ -152,7 +147,6 @@ pub fn resolve_instance_display_node(doc: &PenDocument, ref_node: &PenNode) -> O
     }
     serde_json::from_value(Value::Object(merged)).ok()
 }
-
 /// State carried across a swap–run–diff–restore instance write. See
 /// the module docs for the protocol.
 #[derive(Debug)]
@@ -165,7 +159,6 @@ pub struct InstanceWriteScope {
     display_before: Map<String, Value>,
     history_push_count_before: u64,
 }
-
 impl EditorState {
     /// Begin an instance-write scope for the selection anchor when it
     /// is a resolvable `Ref` root or virtual instance child. `None`
@@ -180,7 +173,6 @@ impl EditorState {
         }
         self.begin_instance_write(&anchor)
     }
-
     /// Swap the effective display node for `anchor` into its authored
     /// Ref's tree slot so anchor-keyed panel mutators write into it. A
     /// virtual child keeps its virtual id; a Ref root keeps the Ref id.
@@ -290,7 +282,10 @@ impl EditorState {
             .history_push_count
             .saturating_sub(scope.history_push_count_before);
         let repair_count = pushes_in_scope.min(self.history.past.len() as u64) as usize;
-        for snap in self.history.past.iter_mut().rev().take(repair_count) {
+        for entry in self.history.past.iter_mut().rev().take(repair_count) {
+            let Some(snap) = entry.full_snapshot_mut() else {
+                continue;
+            };
             repair_scope_snapshot(
                 snap,
                 &scope.ref_id,
@@ -759,7 +754,13 @@ mod tests {
             s.commit_history();
             s.set_selected_color(true, "#00ff00")
         });
-        let snap = s.history.past.back().expect("history entry pushed");
+        let snap = s
+            .history
+            .past
+            .back()
+            .expect("history entry pushed")
+            .full_snapshot()
+            .unwrap();
         let in_snap = snap
             .doc
             .snapshot_find_node(0, &NodeId::new("inst1"))

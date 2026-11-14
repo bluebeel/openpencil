@@ -32,6 +32,20 @@ pub(crate) fn apply_command_with_undo_captured(
     apply_command_impl(state, command, repair, Some(capture)).applied
 }
 
+pub(crate) fn apply_command_with_command_capture(
+    state: &mut EditorState,
+    command: EditorCommand,
+    repair: bool,
+    capture: &mut op_editor_core::CommandEditCapture,
+) -> bool {
+    let before = state.document_revision();
+    state.apply_command_edit_then(command, capture, |state| {
+        if repair {
+            super::repair_after_document_change(state, before);
+        }
+    })
+}
+
 fn apply_command_impl(
     state: &mut EditorState,
     command: EditorCommand,

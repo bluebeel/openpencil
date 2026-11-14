@@ -155,6 +155,24 @@ impl EditorState {
         allocator: &mut dyn IdAllocator,
         checkpoint: Option<&crate::EditorSnapshot>,
     ) -> Result<bool, IdAllocError> {
+        self.cmd_batch_with_checkpoints(commands, allocator, checkpoint, None)
+    }
+    pub(crate) fn cmd_batch_with_scoped_checkpoint(
+        &mut self,
+        commands: Vec<EditorCommand>,
+        allocator: &mut dyn IdAllocator,
+        scoped: &mut crate::history::PendingScopedSnapshot,
+    ) -> Result<bool, IdAllocError> {
+        debug_assert!(self.undo_capture_suspended);
+        self.cmd_batch_with_checkpoints(commands, allocator, None, Some(scoped))
+    }
+    fn cmd_batch_with_checkpoints(
+        &mut self,
+        commands: Vec<EditorCommand>,
+        allocator: &mut dyn IdAllocator,
+        checkpoint: Option<&crate::EditorSnapshot>,
+        mut scoped: Option<&mut crate::history::PendingScopedSnapshot>,
+    ) -> Result<bool, IdAllocError> {
         if commands.is_empty() {
             return Ok(false);
         }
@@ -166,9 +184,19 @@ impl EditorState {
             return Ok(false);
         }
         let marks_document_dirty = commands.iter().any(command_marks_document_dirty);
-        let pre = checkpoint
-            .cloned()
-            .unwrap_or_else(|| self.snapshot_for_history());
+        let pre = if scoped.is_none() {
+            Some(
+                checkpoint
+                    .cloned()
+                    .unwrap_or_else(|| self.snapshot_for_history()),
+            )
+        } else {
+            None
+        };
+        let before_revision = pre
+            .as_ref()
+            .map(|snapshot| snapshot.revision)
+            .unwrap_or_else(|| scoped.as_ref().unwrap().revision());
         // Park both stacks, not just their lengths: intermediate pushes used
         // to evict old entries at the cap, which truncate could not recover.
         // An empty scratch history also isolates sub-command snapshot repairs.
@@ -190,18 +218,38 @@ impl EditorState {
         match outcome {
             Ok(Ok(true)) => {
                 if marks_document_dirty {
-                    self.revision = pre.revision;
+                    self.revision = before_revision;
                     self.sync_dirty_flag();
-                    self.history_push_past(pre);
+                    if let Some(pre) = pre {
+                        self.history_push_past(pre);
+                    } else {
+                        self.mark_document_changed();
+                    }
                 }
                 Ok(true)
             }
             Ok(failure) => {
-                self.restore(pre);
+                if let Some(pre) = pre {
+                    self.restore(pre);
+                } else {
+                    scoped
+                        .as_mut()
+                        .unwrap()
+                        .restore(self)
+                        .expect("page-local Batch rollback");
+                }
                 failure
             }
             Err(panic) => {
-                self.restore(pre);
+                if let Some(pre) = pre {
+                    self.restore(pre);
+                } else {
+                    scoped
+                        .as_mut()
+                        .unwrap()
+                        .restore(self)
+                        .expect("page-local Batch rollback");
+                }
                 std::panic::resume_unwind(panic)
             }
         }

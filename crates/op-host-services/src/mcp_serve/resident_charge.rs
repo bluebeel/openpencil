@@ -264,55 +264,78 @@ fn resident_charge_mode(
     let mut documents = HashSet::new();
     let mut backing = HashSet::new();
     let mut edges = HashSet::new();
-    for snapshot in state.history.past.iter().chain(state.history.future.iter()) {
+    let mut scoped = HashSet::new();
+    for entry in state.history.past.iter().chain(state.history.future.iter()) {
         ledger.shared_storage = ledger
             .shared_storage
-            .saturating_add(std::mem::size_of_val(snapshot));
-        let mut doc_edges = snapshot.doc.edge_storage();
-        let roots_new = charge_edge(doc_edges.next().unwrap(), &mut ledger, &mut edges);
-        let pages_new = charge_edge(doc_edges.next().unwrap(), &mut ledger, &mut edges);
-        let components_new =
-            charge_edge(snapshot.components.edge_storage(), &mut ledger, &mut edges);
-        let metadata = snapshot.doc.metadata_arc();
-        if documents.insert(Arc::as_ptr(metadata) as usize) {
-            let charge = match cache.documents.get(metadata) {
-                Some(charge) => charge,
-                None => {
-                    let mut count = new_ledger(ledger.limit);
-                    count.serialize(metadata.as_ref())?;
-                    let bytes = snapshot.doc.metadata_storage_bytes();
-                    let charge = RootCharge {
-                        serialized: count.serialized.bytes,
-                        nodes: 0,
-                        shared_bytes: bytes,
-                    };
-                    cache.documents.insert(metadata, charge);
-                    charge
-                }
-            };
-            ledger.add_root(charge)?;
-        }
-        if roots_new {
-            for root in snapshot.doc.root_children() {
-                charge_shared(root, &mut ledger, &mut cache.nodes, &mut nodes, &mut edges)?;
+            .saturating_add(std::mem::size_of_val(entry));
+        let snapshot_components = if let Some(snapshot) = entry.full_snapshot() {
+            let mut doc_edges = snapshot.doc.edge_storage();
+            let roots_new = charge_edge(doc_edges.next().unwrap(), &mut ledger, &mut edges);
+            let pages_new = charge_edge(doc_edges.next().unwrap(), &mut ledger, &mut edges);
+            let metadata = snapshot.doc.metadata_arc();
+            if documents.insert(Arc::as_ptr(metadata) as usize) {
+                let charge = match cache.documents.get(metadata) {
+                    Some(charge) => charge,
+                    None => {
+                        let mut count = new_ledger(ledger.limit);
+                        count.serialize(metadata.as_ref())?;
+                        let bytes = snapshot.doc.metadata_storage_bytes();
+                        let charge = RootCharge {
+                            serialized: count.serialized.bytes,
+                            nodes: 0,
+                            shared_bytes: bytes,
+                        };
+                        cache.documents.insert(metadata, charge);
+                        charge
+                    }
+                };
+                ledger.add_root(charge)?;
             }
-        }
-        if pages_new {
-            for (i, storage) in doc_edges.enumerate() {
-                if charge_edge(storage, &mut ledger, &mut edges) {
-                    for root in snapshot.doc.page_children(i).unwrap() {
-                        charge_shared(root, &mut ledger, &mut cache.nodes, &mut nodes, &mut edges)?;
+            if roots_new {
+                for root in snapshot.doc.root_children() {
+                    charge_shared(root, &mut ledger, &mut cache.nodes, &mut nodes, &mut edges)?;
+                }
+            }
+            if pages_new {
+                for (i, storage) in doc_edges.enumerate() {
+                    if charge_edge(storage, &mut ledger, &mut edges) {
+                        for root in snapshot.doc.page_children(i).unwrap() {
+                            charge_shared(
+                                root,
+                                &mut ledger,
+                                &mut cache.nodes,
+                                &mut nodes,
+                                &mut edges,
+                            )?;
+                        }
                     }
                 }
             }
-        }
-        if backing.insert(snapshot.components.backing_identity()) {
+            &snapshot.components
+        } else {
+            let snapshot = entry
+                .scoped_snapshot()
+                .expect("full or scoped history entry");
+            if scoped.insert(Arc::as_ptr(snapshot) as usize) {
+                ledger.shared_storage = ledger
+                    .shared_storage
+                    .saturating_add(snapshot.storage_bytes());
+            }
+            for root in snapshot.retained_roots() {
+                charge_shared(root, &mut ledger, &mut cache.nodes, &mut nodes, &mut edges)?;
+            }
+            snapshot.components()
+        };
+        let components_new =
+            charge_edge(snapshot_components.edge_storage(), &mut ledger, &mut edges);
+        if backing.insert(snapshot_components.backing_identity()) {
             ledger.shared_storage = ledger
                 .shared_storage
-                .saturating_add(snapshot.components.backing_storage_bytes());
+                .saturating_add(snapshot_components.backing_storage_bytes());
         }
         if components_new {
-            for component in snapshot.components.components() {
+            for component in snapshot_components.components() {
                 if components.insert(Arc::as_ptr(component) as usize) {
                     let charge = match cache.components.get(component) {
                         Some(charge) => charge,
@@ -396,8 +419,14 @@ mod tests {
         ));
         let mut replacement = state.doc.clone();
         replacement.children[0].base_mut().name = Some("larger historical node".repeat(100));
-        state.history.past.back_mut().unwrap().doc =
-            op_editor_core::SharedDoc::capture(&replacement, None);
+        state
+            .history
+            .past
+            .back_mut()
+            .unwrap()
+            .full_snapshot_mut()
+            .unwrap()
+            .doc = op_editor_core::SharedDoc::capture(&replacement, None);
         let changed = resident_charge_cached(&state, 16 * 1024 * 1024, &mut cache).unwrap();
         assert!(changed > first);
         assert_eq!(changed, resident_charge(&state, 16 * 1024 * 1024).unwrap());
@@ -415,6 +444,10 @@ mod recursive_tests;
 #[cfg(test)]
 #[path = "history_charge_tests.rs"]
 mod history_charge_tests;
+
+#[cfg(test)]
+#[path = "resident_charge_scoped_tests.rs"]
+mod scoped_tests;
 
 #[cfg(test)]
 #[path = "resident_charge_boxed_tests.rs"]
