@@ -112,3 +112,29 @@ fn deep_json_transform_keeps_complete_metadata_and_serde_failure_contract() {
         serde_json::from_value::<PenNode>(bad).is_err()
     );
 }
+
+#[test]
+fn leaf_transform_calls_once_and_preserves_absent_or_empty_children() {
+    for raw in [
+        r#"{"type":"ref","id":"leaf","ref":"master","name":"before"}"#,
+        r#"{"type":"ref","id":"leaf","ref":"master","children":[],"name":"before"}"#,
+        r#"{"type":"frame","id":"leaf","children":[],"name":"before"}"#,
+        r#"{"type":"text","id":"leaf","content":"rich text","name":"before","fontSize":17.25}"#,
+    ] {
+        let source: PenNode = serde_json::from_str(raw).unwrap();
+        let original = serde_json::to_vec(&source).unwrap();
+        let mut calls = 0;
+        let actual = map_subtree_json(&source, |value, root| {
+            assert!(root);
+            calls += 1;
+            value["name"] = json!("after");
+        })
+        .unwrap();
+        assert_eq!(calls, 1);
+        assert_eq!(
+            serde_json::to_vec(&actual).unwrap(),
+            serde_json::to_vec(&reference(&source, "after").unwrap()).unwrap()
+        );
+        assert_eq!(serde_json::to_vec(&source).unwrap(), original);
+    }
+}

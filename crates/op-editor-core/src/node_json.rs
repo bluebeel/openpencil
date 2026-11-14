@@ -19,7 +19,14 @@ pub fn map_subtree_json(
         root: bool,
         transform: &mut impl FnMut(&mut Value, bool),
     ) -> Result<PenNode, serde_json::Error> {
-        let mut value = serde_json::to_value(clone_without_children(source))?;
+        // Leaves and authored empty containers have no descendant graph to
+        // strip. Serialize them by reference instead of cloning all metadata
+        // (strings, paints and optional callback groups) before serialization.
+        let mut value = if source.children().is_none_or(|children| children.is_empty()) {
+            serde_json::to_value(source)?
+        } else {
+            serde_json::to_value(clone_without_children(source))?
+        };
         transform(&mut value, root);
         let mut node: PenNode = serde_json::from_value(value)?;
         if let Some(children) = source.children() {
