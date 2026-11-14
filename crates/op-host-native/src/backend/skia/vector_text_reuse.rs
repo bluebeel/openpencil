@@ -8,6 +8,9 @@ use std::{
     rc::Rc,
 };
 
+#[path = "vector_geometry_reuse.rs"]
+mod geometry;
+
 // Shared by these scoped entries and persistent immutable coverage masks.
 const MAX_BYTES: usize = 8 * 1024 * 1024;
 const MAX_ENTRIES: usize = 512;
@@ -135,7 +138,9 @@ impl Cache {
         if self.entries >= self.max_entries || bytes > self.max_bytes.saturating_sub(self.bytes) {
             return false;
         }
-        super::stencil::trim_retained_cache(self.max_bytes - self.bytes - bytes);
+        let available = self.max_bytes - self.bytes - bytes;
+        geometry::trim(available);
+        super::stencil::trim_retained_cache(available.saturating_sub(geometry::retained_bytes()));
         self.entries += 1;
         self.bytes += bytes;
         true
@@ -444,12 +449,90 @@ pub(super) fn glyph_metadata(
     metadata
 }
 
-pub(super) fn cache_headroom() -> usize {
+pub(super) fn request_headroom() -> usize {
     ACTIVE.with(|slot| {
         slot.borrow().as_ref().map_or(MAX_BYTES, |cache| {
             cache.max_bytes.saturating_sub(cache.bytes)
         })
     })
+}
+
+pub(super) fn cache_headroom() -> usize {
+    request_headroom().saturating_sub(geometry::retained_bytes())
+}
+
+pub(super) fn transformed_path(path: &Path, matrix: &Matrix, even_odd: bool) -> Path {
+    let build = || {
+        let mut result = path.with_transform(matrix);
+        if even_odd {
+            result.set_fill_type(skia_safe::PathFillType::EvenOdd);
+        }
+        result
+    };
+    if !jian_skia::raster_sampling::is_point_sampling()
+        || !matrix.is_finite()
+        || matrix.has_perspective()
+    {
+        return build();
+    }
+    let key = geometry::Key::Transform {
+        matrix: std::array::from_fn(|i| matrix[i].to_bits()),
+        even_odd,
+    };
+    match geometry::get_or_build(path, key, || Some(geometry::Value::Path(build()))) {
+        Some(geometry::Value::Path(path)) => path,
+        _ => unreachable!("successful transformed path cache kind"),
+    }
+}
+pub(super) fn fitted_path(
+    path: &Path,
+    bounds: [f32; 4],
+    even_odd: bool,
+    build: impl FnOnce() -> Path,
+) -> Path {
+    if !jian_skia::raster_sampling::is_point_sampling()
+        || bounds.iter().any(|value| !value.is_finite())
+    {
+        return build();
+    }
+    let key = geometry::Key::Fit {
+        bounds: bounds.map(f32::to_bits),
+        even_odd,
+    };
+    match geometry::get_or_build(path, key, || Some(geometry::Value::Path(build()))) {
+        Some(geometry::Value::Path(path)) => path,
+        _ => unreachable!("successful fitted path cache kind"),
+    }
+}
+pub(super) fn tight_bounds(path: &Path) -> skia_safe::Rect {
+    if !jian_skia::raster_sampling::is_point_sampling() {
+        return path.compute_tight_bounds();
+    }
+    match geometry::get_or_build(path, geometry::Key::TightBounds, || {
+        Some(geometry::Value::Bounds(path.compute_tight_bounds()))
+    }) {
+        Some(geometry::Value::Bounds(bounds)) => bounds,
+        _ => unreachable!("successful path bounds cache kind"),
+    }
+}
+pub(super) fn stroked_path(
+    path: &Path,
+    paint: &skia_safe::Paint,
+    matrix: &Matrix,
+    build: impl FnOnce() -> Option<Path>,
+) -> Option<Path> {
+    let key = geometry::Key::Stroke {
+        matrix: std::array::from_fn(|i| matrix[i].to_bits()),
+        style: paint.style() as u32,
+        width: paint.stroke_width().to_bits(),
+        miter: paint.stroke_miter().to_bits(),
+        cap: paint.stroke_cap() as u32,
+        join: paint.stroke_join() as u32,
+    };
+    match geometry::get_or_build(path, key, || build().map(geometry::Value::Path))? {
+        geometry::Value::Path(path) => Some(path),
+        geometry::Value::Bounds(_) => unreachable!("stroke cache kind"),
+    }
 }
 
 #[cfg(test)]

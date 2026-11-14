@@ -181,7 +181,7 @@ impl NativeBackend {
         let s = size / 24.0;
         let mut matrix = skia_safe::Matrix::new_identity();
         matrix.set_scale_translate((s, s), (top_left.x, top_left.y));
-        let path = path.with_transform(&matrix);
+        let path = super::vector_text::transformed_path(&path, &matrix, false);
         let mut paint = skia_safe::Paint::new(jian_color_to_color4f(color), None);
         paint.set_stroke(true);
         paint.set_stroke_width(width);
@@ -281,10 +281,7 @@ impl NativeBackend {
         let s = size / viewbox;
         let mut matrix = skia_safe::Matrix::new_identity();
         matrix.set_scale_translate((s, s), (top_left.x, top_left.y));
-        let mut path = path.with_transform(&matrix);
-        if even_odd {
-            path.set_fill_type(skia_safe::PathFillType::EvenOdd);
-        }
+        let path = super::vector_text::transformed_path(&path, &matrix, even_odd);
         let mut paint = skia_safe::Paint::new(jian_color_to_color4f(color), None);
         jian_skia::raster_sampling::configure_geometry(&mut paint);
         raster_point::draw_path(canvas, &path, &paint);
@@ -329,10 +326,7 @@ impl NativeBackend {
             );
             return;
         };
-        let mut path = fit_path_to_rect(&path, rect);
-        if even_odd {
-            path.set_fill_type(skia_safe::PathFillType::EvenOdd);
-        }
+        let path = fit_path_to_rect_with_rule(&path, rect, even_odd);
         raster_point::clip_path(canvas, &path);
     }
 
@@ -348,10 +342,7 @@ impl NativeBackend {
             return;
         };
         let even_odd = explicit_even_odd.unwrap_or(inferred_even_odd);
-        let mut path = fit_path_to_rect(&path, rect);
-        if even_odd {
-            path.set_fill_type(skia_safe::PathFillType::EvenOdd);
-        }
+        let path = fit_path_to_rect_with_rule(&path, rect, even_odd);
         let mut paint = skia_safe::Paint::new(jian_color_to_color4f(color), None);
         jian_skia::raster_sampling::configure_geometry(&mut paint);
         raster_point::draw_path(canvas, &path, &paint);
@@ -513,10 +504,7 @@ impl NativeBackend {
     ) -> Option<skia_safe::Path> {
         let (_, path, inferred_even_odd) = self.cached_svg_path(d)?;
         let even_odd = explicit_even_odd.unwrap_or(inferred_even_odd);
-        let mut path = fit_path_to_rect(&path, rect);
-        if even_odd {
-            path.set_fill_type(skia_safe::PathFillType::EvenOdd);
-        }
+        let path = fit_path_to_rect_with_rule(&path, rect, even_odd);
         Some(path)
     }
 
@@ -680,7 +668,28 @@ fn has_multiple_close_commands(d: &str) -> bool {
 }
 
 fn fit_path_to_rect(path: &skia_safe::Path, rect: Rect) -> skia_safe::Path {
-    let bounds = path.compute_tight_bounds();
+    fit_path_to_rect_with_rule(path, rect, false)
+}
+fn fit_path_to_rect_with_rule(
+    path: &skia_safe::Path,
+    rect: Rect,
+    even_odd: bool,
+) -> skia_safe::Path {
+    super::vector_text::fitted_path(
+        path,
+        [rect.origin.x, rect.origin.y, rect.size.x, rect.size.y],
+        even_odd,
+        || {
+            let mut fitted = fit_path_to_rect_uncached(path, rect);
+            if even_odd {
+                fitted.set_fill_type(skia_safe::PathFillType::EvenOdd);
+            }
+            fitted
+        },
+    )
+}
+fn fit_path_to_rect_uncached(path: &skia_safe::Path, rect: Rect) -> skia_safe::Path {
+    let bounds = super::vector_text::tight_bounds(path);
     if !bounds.is_finite()
         || !rect.size.x.is_finite()
         || !rect.size.y.is_finite()

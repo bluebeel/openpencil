@@ -18,6 +18,21 @@ mod stencil;
 mod units;
 pub(super) use units::MetadataCache;
 
+pub(super) fn transformed_path(path: &Path, matrix: &Matrix, even_odd: bool) -> Path {
+    reuse::transformed_path(path, matrix, even_odd)
+}
+pub(super) fn fitted_path(
+    path: &Path,
+    bounds: [f32; 4],
+    even_odd: bool,
+    build: impl FnOnce() -> Path,
+) -> Path {
+    reuse::fitted_path(path, bounds, even_odd, build)
+}
+pub(super) fn tight_bounds(path: &Path) -> Rect {
+    reuse::tight_bounds(path)
+}
+
 pub(super) fn with_export_scope<R>(action: impl FnOnce() -> R) -> R {
     reuse::with_scope(action)
 }
@@ -199,17 +214,21 @@ pub(super) fn draw_path(canvas: &Canvas, path: &Path, paint: &Paint) -> bool {
         {
             let matrix = canvas.local_to_device_as_3x3();
             if matrix.is_finite() && !matrix.has_perspective() {
-                let mut outline = PathBuilder::new();
-                if skia_safe::path_utils::fill_path_with_paint(
-                    path,
-                    paint,
-                    &mut outline,
-                    None,
-                    matrix,
-                ) {
+                let outline = reuse::stroked_path(path, paint, &matrix, || {
+                    let mut outline = PathBuilder::new();
+                    skia_safe::path_utils::fill_path_with_paint(
+                        path,
+                        paint,
+                        &mut outline,
+                        None,
+                        matrix,
+                    )
+                    .then(|| outline.detach())
+                });
+                if let Some(outline) = outline {
                     let mut source = paint.clone();
                     source.set_style(skia_safe::PaintStyle::Fill);
-                    return draw_path(canvas, &outline.detach(), &source);
+                    return draw_path(canvas, &outline, &source);
                 }
             }
         }
