@@ -57,15 +57,17 @@ pub fn render_node_on_page_raster_bytes_with_sampling(
     if sampling == RasterSampling::Native {
         return super::render_node_on_page_raster_bytes(page, node_id, format, scale);
     }
-    let node = page
-        .find(node_id)
+    let batch = super::SceneSelectionBatch::new(page, [node_id]);
+    let selected = batch
+        .get(node_id)
         .ok_or_else(|| ExportError::NodeNotFoundOnPage {
             node_id: node_id.into(),
             page_id: page.id.clone(),
         })?;
-    render_scene_node_raster_bytes_with_sampling(node, format, scale, sampling)
+    super::render_selected_node_raster_bytes_with_sampling(&selected, format, scale, sampling)
 }
 
+/// Raw isolated-node API. Use the selected-node variant for ancestor context.
 pub fn render_scene_node_raster_bytes_with_sampling(
     node: &SceneNode,
     format: RasterFormat,
@@ -109,23 +111,13 @@ pub fn export_node_raster_with_viewport_and_sampling(
         );
     }
     let page = scene.active_page().ok_or(ExportError::NoActivePage)?;
-    let node = page
-        .find(node_id)
+    let batch = super::SceneSelectionBatch::new(page, [node_id]);
+    let selected = batch
+        .get(node_id)
         .ok_or_else(|| ExportError::NodeNotFoundOnActivePage {
             node_id: node_id.into(),
         })?;
-    if node.hidden {
-        return Err(ExportError::NodeHidden {
-            node_id: node_id.into(),
-        });
-    }
-    let bytes = render_scene_nodes_raster_bytes(
-        std::slice::from_ref(node),
-        viewport,
-        format,
-        scale,
-        0.0,
-        sampling,
-    )?;
+    let bytes =
+        super::render_selected_node_in_viewport(&selected, viewport, format, scale, 0.0, sampling)?;
     std::fs::write(target, bytes).map_err(|error| ExportError::Write(error.to_string()))
 }

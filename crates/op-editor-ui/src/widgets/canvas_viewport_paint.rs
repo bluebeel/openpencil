@@ -51,6 +51,9 @@ use video_badge::paint_video_badge;
 
 #[path = "canvas_viewport_paint/entry.rs"]
 mod entry;
+#[path = "canvas_viewport_paint/selection.rs"]
+mod selection;
+pub use selection::{paint_export_selection, SceneSelection, SceneSelectionBatch};
 #[path = "canvas_viewport_paint/hits.rs"]
 mod hits;
 #[path = "canvas_viewport_paint/path_points.rs"]

@@ -571,22 +571,26 @@ fn measure_text_with_letter_spacing(
     text: &str,
     font: &WrapFont<'_>,
 ) -> f32 {
-    let base = if font.family.is_empty() {
-        backend.measure_text_weighted(text, font.font_size, font.weight)
+    if font.family.is_empty() {
+        let base = backend.measure_text_weighted(text, font.font_size, font.weight);
+        let gaps = text.chars().count().saturating_sub(1) as f32;
+        (base + gaps * font.letter_spacing).max(0.0)
     } else {
-        backend.measure_text_family_kerned(
-            text,
-            font.font_size,
-            font.family,
-            font.weight,
-            font.italic,
-            font.kerning,
-            0.0,
-            font.font_features,
-        )
-    };
-    let gaps = text.chars().count().saturating_sub(1) as f32;
-    (base + gaps * font.letter_spacing).max(0.0)
+        // The backend knows shaped clusters and owns tracking. Counting
+        // source characters here can invent gaps inside a ligature.
+        backend
+            .measure_text_family_kerned(
+                text,
+                font.font_size,
+                font.family,
+                font.weight,
+                font.italic,
+                font.kerning,
+                font.letter_spacing,
+                font.font_features,
+            )
+            .max(0.0)
+    }
 }
 
 fn build_probe(probe: &mut String, current: &str, suffix: &str) {

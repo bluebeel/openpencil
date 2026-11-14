@@ -146,6 +146,17 @@ pub(super) fn paint_image_fill_layer(
     world_rect: Rect,
     zoom: f32,
 ) -> bool {
+    paint_image_fill_layer_with_corners(cx, node, layer, world_rect, zoom, true)
+}
+
+fn paint_image_fill_layer_with_corners(
+    cx: &mut PaintCx<'_>,
+    node: &SceneNode,
+    layer: &SceneFillLayer,
+    world_rect: Rect,
+    zoom: f32,
+    inherit_corners: bool,
+) -> bool {
     let SceneFillLayer::Image {
         src,
         src_id,
@@ -165,8 +176,16 @@ pub(super) fn paint_image_fill_layer(
         return false;
     };
     let mut image = SceneNode::leaf(node.id.as_str(), node.kind.clone());
-    image.corner_radius = node.corner_radius;
-    image.corner_radii = node.corner_radii;
+    image.corner_radius = if inherit_corners {
+        node.corner_radius
+    } else {
+        0.0
+    };
+    image.corner_radii = if inherit_corners {
+        node.corner_radii
+    } else {
+        None
+    };
     image.image_src = Some(Arc::clone(src));
     image.image_src_id = *src_id;
     image.image_thumbnail_src = thumbnail_src.clone();
@@ -208,7 +227,10 @@ pub(super) fn paint_clipped_shape_rich_fill_layer(
             true
         }
         SceneFillLayer::Image { .. } => {
-            paint_image_fill_layer(cx, node, layer, world_rect, zoom);
+            // The caller already owns the exact shape silhouette. Applying
+            // rectangular corner radii again can remove valid polygon/path
+            // coverage or multiply antialiasing at an ellipse boundary.
+            paint_image_fill_layer_with_corners(cx, node, layer, world_rect, zoom, false);
             true
         }
     }

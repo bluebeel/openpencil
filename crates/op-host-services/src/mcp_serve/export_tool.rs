@@ -208,7 +208,8 @@ fn render_pdf(scene: &LayoutScene, node_ids: &[String], scale: f32, mode: &str) 
             "pdfMode must be separate or combined".into(),
         );
     }
-    let resolved = op_render_export::resolve_page_nodes(page, node_ids.iter().map(String::as_str));
+    let resolved =
+        op_render_export::SceneSelectionBatch::new(page, node_ids.iter().map(String::as_str));
     if mode == "separate" {
         let files: Vec<_> = node_ids
             .iter()
@@ -219,8 +220,8 @@ fn render_pdf(scene: &LayoutScene, node_ids: &[String], scale: f32, mode: &str) 
                         node_id: id.clone(),
                         page_id: page.id.clone(),
                     })
-                    .and_then(|node| {
-                        crate::export_pdf::render_scene_node_pdf_bytes_scaled(node, scale)
+                    .and_then(|selected| {
+                        crate::export_pdf::render_selected_node_pdf_bytes_scaled(&selected, scale)
                     });
                 match result {
                     Ok(bytes) => serde_json::json!({"nodeId":id,"format":"pdf",
@@ -237,7 +238,7 @@ fn render_pdf(scene: &LayoutScene, node_ids: &[String], scale: f32, mode: &str) 
     let mut errors = Vec::new();
     for id in node_ids {
         match resolved.get(id.as_str()) {
-            Some(node) if !node.hidden => valid.push(id.as_str()),
+            Some(selected) if selected.is_visible() => valid.push(id.as_str()),
             _ => errors.push(serde_json::json!({"nodeId":id,"format":"pdf",
                 "error":format!("node {id} is missing or hidden on the active page")})),
         }
@@ -245,11 +246,7 @@ fn render_pdf(scene: &LayoutScene, node_ids: &[String], scale: f32, mode: &str) 
     if valid.is_empty() {
         return ToolOutcome::OkJson(serde_json::json!({"files":errors}).to_string());
     }
-    let nodes = valid
-        .iter()
-        .filter_map(|id| resolved.get(*id).copied())
-        .collect::<Vec<_>>();
-    match crate::export_pdf::render_resolved_nodes_pdf_bytes(&nodes, scale) {
+    match crate::export_pdf::render_selection_batch_pdf_bytes(&resolved, &valid, scale) {
         Ok(bytes) => {
             let mut files = vec![serde_json::json!({"nodeIds":valid,"format":"pdf",
                 "bytes_base64":base64::engine::general_purpose::STANDARD.encode(bytes)})];

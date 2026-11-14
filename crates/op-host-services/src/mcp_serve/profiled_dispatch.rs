@@ -90,9 +90,16 @@ where
     let requested_tool = call.as_ref().map(|call| call.tool.as_str());
     let arguments = call.as_ref().map(|call| &call.arguments);
     let mut registry = rebuild_registry(state, requested_tool, profile, arguments);
-    if bound_authority && requested_tool == Some("batch_tools") {
+    if requested_tool == Some("batch_tools") {
         if let Some(arguments) = arguments {
-            registry.register(atomic_tools::prepare(state, arguments, profile));
+            if bound_authority || atomic_tools::read_only(arguments) {
+                registry.register(atomic_tools::prepare(
+                    state,
+                    arguments,
+                    profile,
+                    bound_authority,
+                ));
+            }
         }
     }
     process_tool_message_with_registry(&registry, line, |tool_name, cmd| {

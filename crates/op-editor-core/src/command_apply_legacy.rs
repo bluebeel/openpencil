@@ -5,7 +5,7 @@ use crate::{DocumentIdAllocator, EditorCommand, EditorState};
 #[path = "command_allocation_policy.rs"]
 pub(super) mod allocation_policy;
 
-/// Private to one top-level InsertNode/BatchInsert. Its initial counter is
+/// Private to one top-level fresh-ID insertion/clone. Its initial counter is
 /// above every current node/page id, and these commands introduce only ids
 /// minted through this same allocator. Mixed batches keep full collision sets.
 struct LeafHighWaterAllocator(DocumentIdAllocator);
@@ -64,7 +64,10 @@ impl EditorState {
         };
         if matches!(
             command,
-            EditorCommand::InsertNode { .. } | EditorCommand::BatchInsert { .. }
+            EditorCommand::InsertNode { .. }
+                | EditorCommand::BatchInsert { .. }
+                | EditorCommand::DuplicateSelected { .. }
+                | EditorCommand::PasteClipboard { .. }
         ) {
             self.apply_with_allocator_checkpoint(
                 command,

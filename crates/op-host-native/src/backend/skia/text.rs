@@ -202,8 +202,7 @@ impl NativeBackend {
                 },
             )
         } else if uses_advance_grid(text, kerning, Some(font_features)) {
-            self.measure_nominal_grid(text, font_size, family, weight, italic)
-                + text.chars().count().saturating_sub(1) as f32 * letter_spacing
+            self.measure_nominal_grid(text, font_size, family, weight, italic, letter_spacing)
         } else {
             self.measure_text_family_styled(text, font_size, family, weight, italic)
                 + text.chars().count().saturating_sub(1) as f32 * letter_spacing
@@ -217,6 +216,7 @@ impl NativeBackend {
         family: &str,
         weight: u16,
         italic: bool,
+        letter_spacing: f32,
     ) -> f32 {
         jian_skia::with_font_lock(|| {
             let segments = self
@@ -229,11 +229,13 @@ impl NativeBackend {
                     Some(family),
                     weight,
                     italic,
-                );
+                ) + text.chars().count().saturating_sub(1) as f32 * letter_spacing;
             }
+            let last_segment = segments.len() - 1;
             segments
                 .into_iter()
-                .map(|segment| {
+                .enumerate()
+                .map(|(index, segment)| {
                     let mut font = skia_safe::Font::new(&segment.typeface, font_size);
                     font.set_hinting(skia_safe::FontHinting::None);
                     font.set_subpixel(true);
@@ -244,10 +246,29 @@ impl NativeBackend {
                     } else {
                         1.0
                     };
-                    widths
-                        .into_iter()
-                        .map(|width| quantize_advance(width * factor, font_size))
-                        .sum::<f32>()
+                    let trailing = index != last_segment;
+                    jian_skia::advance_grid::measure_nominal_advances(
+                        &widths,
+                        font_size,
+                        letter_spacing,
+                        factor,
+                        trailing,
+                    )
+                    .unwrap_or_else(|| {
+                        // Preserve the established fallback for nonfinite or
+                        // out-of-range metrics; modern finite inputs share paint's
+                        // checked integer-prefix and final tracking conversion.
+                        let steps = if trailing {
+                            widths.len()
+                        } else {
+                            widths.len().saturating_sub(1)
+                        };
+                        widths
+                            .iter()
+                            .map(|width| quantize_advance(*width * factor, font_size))
+                            .sum::<f32>()
+                            + steps as f32 * letter_spacing
+                    })
                 })
                 .sum()
         })

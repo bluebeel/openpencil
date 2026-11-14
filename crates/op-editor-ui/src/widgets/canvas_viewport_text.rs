@@ -163,7 +163,7 @@ fn measure_line_slices(
     letter_spacing: f32,
 ) -> f32 {
     let mut w = 0.0;
-    let mut chars = 0usize;
+    let mut first_slice = true;
     for_each_slice_range(&node.text_runs, line_start, line_end, |start, end, run| {
         let style = resolved_slice_style(
             node,
@@ -173,6 +173,10 @@ fn measure_line_slices(
             run.map(|i| &node.text_runs[i]),
         );
         let slice = &text[start..end];
+        if !first_slice {
+            w += letter_spacing;
+        }
+        first_slice = false;
         w += backend.measure_text_family_kerned(
             slice,
             style.font_size,
@@ -180,12 +184,11 @@ fn measure_line_slices(
             style.weight,
             style.italic,
             node.font_kerning,
-            0.0,
+            letter_spacing,
             &node.font_features,
         );
-        chars += slice.chars().count();
     });
-    w + chars.saturating_sub(1) as f32 * letter_spacing
+    w
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -202,9 +205,7 @@ fn draw_slice(
     font_features: &std::collections::BTreeMap<String, u32>,
 ) -> (f32, f32) {
     let jc = (style.color).to_jian();
-    if (letter_spacing.abs() < f32::EPSILON
-        || kerning == Some(true)
-        || font_features.values().any(|value| *value != 0))
+    if (letter_spacing.abs() < f32::EPSILON || kerning.is_some() || !font_features.is_empty())
         && justify_extra <= 0.0
     {
         backend.draw_text(
@@ -229,6 +230,9 @@ fn draw_slice(
         );
         return (x + advance + letter_spacing, x + advance);
     }
+    // Explicit authored font options keep a complete backend run, even when
+    // every feature is disabled. Splitting those runs would bypass the
+    // backend's precise nominal prefixes and cluster-aware tracking.
     // Per-char path — letter spacing after every glyph (legacy painter
     // model) plus the justify share after each space.
     let mut cursor = x;

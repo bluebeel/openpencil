@@ -39,6 +39,8 @@ mod error;
 pub mod pdf;
 mod scene_painter;
 mod scene_sampling;
+mod selection;
+pub use selection::*;
 mod shared_raster;
 mod shared_work;
 mod svg;
@@ -185,16 +187,18 @@ pub fn export_node_raster_with_margin(
     format.ensure_supported()?;
     let scale = clamp_scale(scale);
     let page = scene.active_page().ok_or(ExportError::NoActivePage)?;
-    let node = page
-        .find(node_id)
+    let batch = SceneSelectionBatch::new(page, [node_id]);
+    let selected = batch
+        .get(node_id)
         .ok_or_else(|| ExportError::NodeNotFoundOnActivePage {
-            node_id: node_id.to_string(),
+            node_id: node_id.to_owned(),
         })?;
-    export_scene_node_raster_with_margin(node, target, format, scale, margin)
+    export_selected_node_raster(&selected, target, format, scale, margin)
 }
 
-/// Export an already-resolved node without another page-tree search. Batch
-/// callers can resolve all requested identities in one traversal first.
+/// Export an isolated already-resolved subtree without containing-page context.
+/// Use `SceneSelectionBatch` / `export_selected_node_raster` when inherited
+/// transforms, clips, masks or composite layers must be retained.
 pub fn export_scene_node_raster(
     node: &SceneNode,
     target: &StdPath,
@@ -237,26 +241,21 @@ pub fn export_node_raster_with_viewport(
 ) -> Result<(), ExportError> {
     format.ensure_supported()?;
     let page = scene.active_page().ok_or(ExportError::NoActivePage)?;
-    let node = page
-        .find(node_id)
+    let batch = SceneSelectionBatch::new(page, [node_id]);
+    let selected = batch
+        .get(node_id)
         .ok_or_else(|| ExportError::NodeNotFoundOnActivePage {
-            node_id: node_id.to_string(),
+            node_id: node_id.to_owned(),
         })?;
-    if node.hidden {
-        return Err(ExportError::NodeHidden {
-            node_id: node_id.to_string(),
-        });
-    }
-    render_raster(
+    let bytes = render_selected_node_in_viewport(
+        &selected,
         viewport,
-        target,
         format,
-        clamp_scale(scale),
+        scale,
         0.0,
-        |canvas| {
-            paint_node(canvas, node);
-        },
-    )
+        RasterSampling::Native,
+    )?;
+    std::fs::write(target, bytes).map_err(|error| ExportError::Write(error.to_string()))
 }
 
 /// In-memory variant of [`export_node_raster`] — renders a single node
@@ -299,16 +298,18 @@ pub fn render_node_on_page_raster_bytes(
     scale: f32,
 ) -> Result<Vec<u8>, ExportError> {
     format.ensure_supported()?;
-    let node = page
-        .find(node_id)
+    let batch = SceneSelectionBatch::new(page, [node_id]);
+    let selected = batch
+        .get(node_id)
         .ok_or_else(|| ExportError::NodeNotFoundOnPage {
-            node_id: node_id.to_string(),
+            node_id: node_id.to_owned(),
             page_id: page.id.clone(),
         })?;
-    render_scene_node_raster_bytes(node, format, scale)
+    render_selected_node_raster_bytes(&selected, format, scale)
 }
 
-/// Render a borrowed already-resolved subtree without another page lookup.
+/// Render a borrowed isolated subtree without containing-page context. Page/ID
+/// entrypoints and `render_selected_node_raster_bytes` retain ancestor context.
 pub fn render_scene_node_raster_bytes(
     node: &SceneNode,
     format: RasterFormat,

@@ -14,12 +14,12 @@ use super::{
 use crate::layout_scene::{MaskType, SceneFillLayer};
 use crate::ImageBlendMode;
 
-enum ActiveMask<'a> {
+pub(super) enum ActiveMask<'a> {
     Clip,
     Pixel { node: &'a SceneNode, kind: MaskType },
 }
 
-fn mask_type(node: &SceneNode) -> Option<MaskType> {
+pub(super) fn mask_type(node: &SceneNode) -> Option<MaskType> {
     node.mask_type
         .or_else(|| node.is_mask.then_some(MaskType::Alpha))
 }
@@ -66,6 +66,41 @@ fn begin_mask<'a>(
     options: &PaintNodeOptions<'_, '_>,
     transforms: &[OverlayTransform],
 ) -> Option<ActiveMask<'a>> {
+    begin_mask_with_bounds(cx, mask, kind, options, || {
+        let content = front_siblings
+            .iter()
+            .rev()
+            .take_while(|node| mask_type(node).is_none());
+        sibling_mask_layer_bounds(
+            mask,
+            content,
+            options.viewport_origin,
+            options.zoom,
+            options.cull,
+            options.hidden,
+            transforms,
+        )
+    })
+}
+
+/// A selected export has already resolved and cropped its only content
+/// branch. Do not walk or allocate for the unselected front siblings.
+pub(super) fn begin_export_mask<'a>(
+    cx: &mut PaintCx<'_>,
+    mask: &'a SceneNode,
+    options: &PaintNodeOptions<'_, '_>,
+    bounds: Rect,
+) -> Option<ActiveMask<'a>> {
+    begin_mask_with_bounds(cx, mask, mask_type(mask)?, options, || bounds)
+}
+
+fn begin_mask_with_bounds<'a>(
+    cx: &mut PaintCx<'_>,
+    mask: &'a SceneNode,
+    kind: MaskType,
+    options: &PaintNodeOptions<'_, '_>,
+    bounds: impl FnOnce() -> Rect,
+) -> Option<ActiveMask<'a>> {
     let clip_eligible = match kind {
         MaskType::Alpha => alpha_clip_is_exact(mask),
         MaskType::Vector => vector_clip_is_exact(mask),
@@ -82,28 +117,36 @@ fn begin_mask<'a>(
         return None;
     }
 
-    // Only the siblings between this mask and the next mask toward the front
-    // belong to this run. Include both their effect-aware subtrees and the
-    // complete mask source, then cap the allocation at the visible cull.
-    let content = front_siblings
-        .iter()
-        .rev()
-        .take_while(|node| mask_type(node).is_none());
-    let bounds = sibling_mask_layer_bounds(
-        mask,
-        content,
-        options.viewport_origin,
-        options.zoom,
-        options.cull,
-        options.hidden,
-        transforms,
-    );
     cx.backend
-        .push_composite_layer(bounds, 1.0, ImageBlendMode::Normal);
+        .push_composite_layer(bounds(), 1.0, ImageBlendMode::Normal);
     Some(ActiveMask::Pixel { node: mask, kind })
 }
 
-fn finish_active_mask(
+pub(super) fn export_mask_supported(mask: &SceneNode) -> bool {
+    let Some(kind) = mask_type(mask) else {
+        return false;
+    };
+    !mask.hidden && (kind != MaskType::Vector || export_mask_is_geometry_clip(mask))
+}
+
+pub(super) fn export_mask_is_geometry_clip(mask: &SceneNode) -> bool {
+    let eligible = match mask_type(mask) {
+        Some(MaskType::Alpha) => alpha_clip_is_exact(mask),
+        Some(MaskType::Vector) => vector_clip_is_exact(mask),
+        _ => false,
+    };
+    eligible
+        && !mask.hidden
+        && mask.bounds.size.x > 0.0
+        && mask.bounds.size.y > 0.0
+        && (mask
+            .svg_path
+            .as_deref()
+            .is_some_and(|d| !d.trim().is_empty())
+            || (mask.path_closed && flatten_path_points(mask).as_slice().len() >= 3))
+}
+
+pub(super) fn finish_active_mask(
     cx: &mut PaintCx<'_>,
     active: Option<ActiveMask<'_>>,
     options: &PaintNodeOptions<'_, '_>,

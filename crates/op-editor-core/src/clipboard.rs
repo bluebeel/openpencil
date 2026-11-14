@@ -80,6 +80,16 @@ impl EditorState {
         if self.clipboard.is_empty() {
             return Ok(Vec::new());
         }
+        if let Some(prepared) =
+            crate::mutators::clone_splice::paste(self, allocator, offset_doc_px)?
+        {
+            let ids = prepared.commit(self.active_children_mut());
+            if !ids.is_empty() {
+                self.selection.anchor = ids[0].clone();
+                self.selection.set = ids.clone();
+            }
+            return Ok(ids);
+        }
         let mut taken = self.collect_node_ids();
         let originals = self.clipboard.clone();
         let anchor = self.selection.set.first().cloned();

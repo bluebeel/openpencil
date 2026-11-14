@@ -18,6 +18,9 @@ use std::path::Path as StdPath;
 
 use crate::ExportError;
 
+mod selection;
+pub use selection::{render_selected_node_pdf_bytes_scaled, render_selection_batch_pdf_bytes};
+
 const PDF_MARGIN: f32 = 16.0;
 
 fn render_pdf_item(
@@ -82,16 +85,18 @@ pub fn render_node_on_page_pdf_bytes_scaled(
     node_id: &str,
     scale: f32,
 ) -> Result<Vec<u8>, ExportError> {
-    let node = page
-        .find(node_id)
+    let batch = crate::SceneSelectionBatch::new(page, [node_id]);
+    let selected = batch
+        .get(node_id)
         .ok_or_else(|| ExportError::NodeNotFoundOnPage {
-            node_id: node_id.to_string(),
+            node_id: node_id.to_owned(),
             page_id: page.id.clone(),
         })?;
-    render_scene_node_pdf_bytes_scaled(node, scale)
+    render_selected_node_pdf_bytes_scaled(&selected, scale)
 }
 
-/// Serialize one borrowed resolved subtree; no containing-page search.
+/// Serialize one borrowed isolated subtree; containing-page context is absent.
+/// Page/ID and selected-node entrypoints retain ancestor context.
 pub fn render_scene_node_pdf_bytes_scaled(
     node: &SceneNode,
     scale: f32,
@@ -130,16 +135,13 @@ pub fn render_nodes_pdf_bytes(
     if node_ids.is_empty() {
         return Err(ExportError::NoNodeIdsRequested);
     }
-    let resolved = crate::resolve_page_nodes(page, node_ids.iter().copied());
-    let nodes = node_ids
-        .iter()
-        .filter_map(|id| resolved.get(*id).copied())
-        .collect::<Vec<_>>();
-    render_resolved_nodes_pdf_bytes(&nodes, scale)
+    let batch = crate::SceneSelectionBatch::new(page, node_ids.iter().copied());
+    render_selection_batch_pdf_bytes(&batch, node_ids, scale)
 }
 
-/// Combined PDF from ordered borrowed nodes. Missing-ID policy belongs to the
-/// caller; hidden/unpainted subtrees retain the existing skip behavior.
+/// Combined PDF from ordered isolated subtrees with no containing-page context.
+/// Use `render_selection_batch_pdf_bytes` for context-aware borrowed batches.
+/// Missing-ID policy belongs to the caller; hidden/unpainted nodes are skipped.
 pub fn render_resolved_nodes_pdf_bytes(
     nodes: &[&SceneNode],
     scale: f32,

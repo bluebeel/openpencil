@@ -17,10 +17,15 @@ impl AtomicCommandSimulation {
                 Ok(allocator) => (allocator, None),
                 Err(error) => (DocumentIdAllocator::sequential(1), Some(error)),
             };
+        let mut state = source.clone_for_command_simulation();
+        // Reads observe the pre-transaction history, not the empty scratch
+        // history of the DSL simulator. Undo capture stays suspended, so
+        // staged commands do not invent intermediate history entries.
+        state.history = source.history.clone();
         Self {
             allocator,
             seed_error,
-            state: source.clone_for_command_simulation(),
+            state,
             floor: IdFloor::default(),
         }
     }

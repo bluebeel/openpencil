@@ -375,8 +375,8 @@ fn render_job(job: &RasterJob) -> Result<Vec<u8>, ExportError> {
 
 fn render_node_batch_job(job: NodeBatchJob) {
     let page = job.scene.active_page();
-    let nodes =
-        page.map(|page| crate::resolve_page_nodes(page, job.node_ids.iter().map(String::as_str)));
+    let nodes = page
+        .map(|page| crate::SceneSelectionBatch::new(page, job.node_ids.iter().map(String::as_str)));
     for (index, id) in job.node_ids.iter().enumerate() {
         let result = match &nodes {
             None => Err(ExportError::NoActivePage),
@@ -384,7 +384,9 @@ fn render_node_batch_job(job: NodeBatchJob) {
                 None => Err(ExportError::NodeNotFoundOnActivePage {
                     node_id: id.clone(),
                 }),
-                Some(node) => crate::render_scene_node_raster_bytes(node, job.format, job.scale),
+                Some(selected) => {
+                    crate::render_selected_node_raster_bytes(&selected, job.format, job.scale)
+                }
             },
         };
         if job.reply.send((index, result)).is_err() || job.advance.recv().is_err() {

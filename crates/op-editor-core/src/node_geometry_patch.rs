@@ -4,11 +4,22 @@ use crate::PenNodeExt;
 use jian_ops_schema::{node::PenNode, sizing::SizingBehavior};
 use serde_json::{Map, Value};
 
-pub(crate) fn apply(node: &mut PenNode, patch: &Map<String, Value>) -> bool {
-    if !patch.iter().all(|(key, value)| {
+pub(crate) fn parse(raw: &str) -> Option<Map<String, Value>> {
+    let Value::Object(patch) = serde_json::from_str(raw).ok()? else {
+        return None;
+    };
+    supported(&patch).then_some(patch)
+}
+
+fn supported(patch: &Map<String, Value>) -> bool {
+    patch.iter().all(|(key, value)| {
         matches!(key.as_str(), "x" | "y" | "rotation" | "width" | "height")
             && value.as_f64().is_some_and(f64::is_finite)
-    }) {
+    })
+}
+
+pub(crate) fn apply(node: &mut PenNode, patch: &Map<String, Value>) -> bool {
+    if !supported(patch) {
         return false;
     }
     let (width, height) = dimension_presence(node);

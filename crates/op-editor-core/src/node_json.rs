@@ -54,4 +54,6 @@ pub(crate) use header::map_header_json_in_place;
 
 #[path = "node_geometry_patch.rs"]
 mod geometry;
-pub(crate) use geometry::apply as apply_numeric_geometry_patch;
+pub(crate) use geometry::{
+    apply as apply_numeric_geometry_patch, parse as parse_numeric_geometry_patch,
+};

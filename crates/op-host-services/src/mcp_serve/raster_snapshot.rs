@@ -174,15 +174,15 @@ impl RasterSnapshot {
             }
         } else {
             let nodes =
-                crate::export::resolve_page_nodes(page, node_ids.iter().map(String::as_str));
+                crate::export::SceneSelectionBatch::new(page, node_ids.iter().map(String::as_str));
             for id in node_ids {
                 let result = nodes
                     .get(id.as_str())
                     .ok_or_else(|| ExportError::NodeNotFoundOnActivePage {
                         node_id: id.clone(),
                     })
-                    .and_then(|node| {
-                        crate::export::render_scene_node_raster_bytes(node, format, scale)
+                    .and_then(|selected| {
+                        crate::export::render_selected_node_raster_bytes(&selected, format, scale)
                     });
                 consume(id, result);
             }

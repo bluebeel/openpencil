@@ -20,6 +20,9 @@ use crate::state::EditorState;
 use crate::walkers::{find_node, is_ancestor_in_set, translate_subtree};
 use jian_ops_schema::node::PenNode;
 
+#[path = "align_index.rs"]
+mod indexed;
+
 /// The six align edges + two distribute axes the PropertyPanel's
 /// Align section exposes. Ported verbatim from shell-core.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,6 +54,17 @@ impl EditorState {
     /// Returns true when at least one node moved; pushes history
     /// only on real motion.
     pub fn align_selected(&mut self, action: AlignAction) -> bool {
+        if let Some(deltas) = indexed::plan(self, action) {
+            if deltas.is_empty() {
+                return false;
+            }
+            let pre = self.snapshot_for_undo();
+            let moved = indexed::apply(self.active_children_mut(), deltas);
+            if moved {
+                self.push_undo(pre);
+            }
+            return moved;
+        }
         let editable: Vec<NodeId> = self
             .selection
             .set

@@ -1,9 +1,12 @@
 //! Resolve requested batch identities once and stream complete files in order.
 
+#[cfg(test)]
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use op_editor_ui::layout_scene::{LayoutScene, SceneNode, ScenePage};
+use op_editor_ui::layout_scene::LayoutScene;
+#[cfg(test)]
+use op_editor_ui::layout_scene::{SceneNode, ScenePage};
 
 use crate::{ExportError, RasterFormat};
 
@@ -25,20 +28,22 @@ pub fn export_scene_files(
             .map(|_| Err(ExportError::NoActivePage))
             .collect();
     };
-    let nodes = requested_nodes(page, targets);
+    let nodes =
+        crate::SceneSelectionBatch::new(page, targets.iter().map(|target| target.node_id.as_str()));
     targets
         .iter()
         .map(|target| {
-            let node = nodes.get(target.node_id.as_str()).ok_or_else(|| {
+            let selected = nodes.get(target.node_id.as_str()).ok_or_else(|| {
                 ExportError::NodeNotFoundOnActivePage {
                     node_id: target.node_id.clone(),
                 }
             })?;
-            crate::export_scene_node_raster(node, &target.path, format, scale)
+            crate::export_selected_node_raster(&selected, &target.path, format, scale, 0.0)
         })
         .collect()
 }
 
+#[cfg(test)]
 fn requested_nodes<'a>(
     page: &'a ScenePage,
     targets: &[RasterFileTarget],

@@ -22,6 +22,8 @@ use crate::walkers::{self, find_node, find_node_mut, reorder_in_children, Reorde
 use jian_ops_schema::node::PenNode;
 use std::collections::HashSet;
 
+#[path = "clone_splice.rs"]
+pub(crate) mod clone_splice;
 #[path = "selection_nodes.rs"]
 pub(crate) mod selection_nodes;
 
@@ -497,6 +499,15 @@ impl EditorState {
         if self.selection.set.is_empty() {
             return Ok(None);
         }
+        if let Some(prepared) = clone_splice::duplicate(self, allocator, offset_doc_px)? {
+            let ids = prepared.commit(self.active_children_mut());
+            if ids.is_empty() {
+                return Ok(None);
+            }
+            self.selection.anchor = ids.last().cloned().unwrap();
+            self.selection.set = ids;
+            return Ok(Some(self.selection.anchor.clone()));
+        }
         let mut taken = self.collect_node_ids();
         let targets = self.selection.set.clone();
         let mut staged_children = self.active_children().to_vec();
@@ -736,6 +747,10 @@ pub(crate) fn duplicate_in_children_with_allocator(
         return Ok(Some(new_id));
     }
     for child in children.iter_mut() {
+        // Searching must not author empty vectors on unrelated containers.
+        if child.children().is_none() {
+            continue;
+        }
         if let Some(grand) = child.children_mut() {
             if let Some(new_id) =
                 duplicate_in_children_with_allocator(grand, target, allocator, taken, offset)?

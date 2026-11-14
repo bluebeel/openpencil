@@ -38,7 +38,7 @@ use jian_ops_schema::variable::{VariableKind, VariableScalar};
 
 mod app_state;
 mod boolean;
-mod helpers;
+pub(crate) mod helpers;
 
 pub(crate) use helpers::command_marks_document_dirty;
 use helpers::{

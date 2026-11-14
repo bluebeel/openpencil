@@ -22,6 +22,8 @@
 //! | `command_node_attrs/widget_props.rs`| widget text / number / bindings writers |
 //! | `command_node_attrs/state_ops.rs`   | `impl EditorState` command methods   |
 
+pub(crate) mod borrowed;
+pub(crate) mod bulk;
 mod slots;
 mod state_ops;
 mod widget_props;

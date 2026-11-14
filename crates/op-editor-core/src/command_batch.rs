@@ -205,7 +205,48 @@ impl EditorState {
         let was_suspended = std::mem::replace(&mut self.undo_capture_suspended, true);
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let mut scoped = crate::command_id_scope::ScopedIdAllocator::new(allocator);
-            for cmd in commands {
+            let mut commands = commands.into_iter().peekable();
+            while let Some(cmd) = commands.next() {
+                if commands.peek().is_some() {
+                    if let Some(first) = crate::command_node_attrs::bulk::prepare(&cmd) {
+                        if let Some(second) = commands
+                            .peek()
+                            .and_then(crate::command_node_attrs::bulk::prepare)
+                        {
+                            let mut attributes =
+                                vec![cmd, commands.next().expect("peeked attribute command")];
+                            let mut prepared = vec![first, second];
+                            while let Some(next) = commands
+                                .peek()
+                                .and_then(crate::command_node_attrs::bulk::prepare)
+                            {
+                                prepared.push(next);
+                                attributes.push(commands.next().expect("peeked attribute command"));
+                            }
+                            for command in &attributes {
+                                scoped.prepare(command);
+                            }
+                            let outcome = crate::command_node_attrs::bulk::apply(
+                                self,
+                                &attributes,
+                                &prepared,
+                            );
+                            // Preserve the original monotonic counter on both
+                            // success and the accepted prefix of a failed span.
+                            let accepted = match outcome {
+                                Ok(()) => attributes.len(),
+                                Err(index) => index,
+                            };
+                            for _ in 0..accepted {
+                                self.mark_document_changed();
+                            }
+                            if outcome.is_err() {
+                                return Ok(false);
+                            }
+                            continue;
+                        }
+                    }
+                }
                 scoped.prepare(&cmd);
                 let outcome = self.apply_with_allocator(cmd, &mut scoped);
                 if !matches!(&outcome, Ok(true)) {

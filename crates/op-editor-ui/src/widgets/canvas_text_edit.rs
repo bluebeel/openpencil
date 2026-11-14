@@ -101,14 +101,18 @@ pub fn text_edit_layout(backend: &mut dyn RenderBackend, node: &SceneNode) -> Te
     } else {
         text.split('\n').map(str::to_string).collect()
     };
-    // Shrink-to-fit for auto-width text: an auto-width (`text_wrap ==
+    // Explicit font-layout metadata preserves the authored point size. Box
+    // width controls wrapping/clipping; a rounding epsilon or fallback font
+    // width must not silently scale an explicitly authored font.
+    // Legacy shrink-to-fit for auto-width text: an auto-width (`text_wrap ==
     // false`) node's box was sized by the authoring app to hug the
     // text in ITS font. A wider fallback font overflows that box (and
     // gets clipped by the parent frame). Scale the font down so the
     // widest line fits, preserving the imported layout. Wrapping text
     // breaks lines instead, so it is left untouched.
     let box_w = node.bounds.size.x;
-    if !node.text_wrap && box_w > 0.0 {
+    let authored_metrics = node.font_kerning.is_some() || !node.font_features.is_empty();
+    if !authored_metrics && !node.text_wrap && box_w > 0.0 {
         let widest = lines
             .iter()
             .map(|l| {
@@ -178,18 +182,16 @@ pub fn measure_line_width(
         &std::collections::BTreeMap<String, u32>,
     ),
 ) -> f32 {
-    let base = backend.measure_text_family_kerned(
+    backend.measure_text_family_kerned(
         line,
         font_size,
         family,
         weight,
         italic,
         kerning,
-        0.0,
+        letter_spacing,
         font_features,
-    );
-    let extra = line.chars().count().saturating_sub(1) as f32 * letter_spacing;
-    base + extra
+    )
 }
 
 impl TextEditLayout {
@@ -261,8 +263,8 @@ impl TextEditLayout {
     /// Horizontal advance of `line`'s first `byte_offset` bytes —
     /// the caret x relative to the line's left edge. Mirrors the
     /// painter's two advance models: substring measure when there is
-    /// no letter spacing (whole-line draw), per-char measure plus
-    /// spacing AFTER every char when there is (per-char draw).
+    /// no letter spacing or explicit font options (whole-run draw), legacy
+    /// per-char measure plus spacing after each char otherwise.
     fn prefix_width(&self, backend: &mut dyn RenderBackend, line: &str, byte_offset: usize) -> f32 {
         let offset = prev_char_boundary(line, byte_offset.min(line.len()));
         if offset == 0 {
@@ -270,8 +272,8 @@ impl TextEditLayout {
         }
         let prefix = &line[..offset];
         if self.letter_spacing.abs() < f32::EPSILON
-            || self.font_kerning == Some(true)
-            || self.font_features.values().any(|value| *value != 0)
+            || self.font_kerning.is_some()
+            || !self.font_features.is_empty()
         {
             let advance = backend.measure_text_family_kerned(
                 prefix,

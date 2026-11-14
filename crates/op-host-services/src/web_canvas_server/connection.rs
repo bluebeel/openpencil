@@ -610,8 +610,9 @@ fn dispatch_inner<S: Read + Write>(
     // write, so the decision is made BEFORE dispatch — the alternative is
     // discovering it from an `EditorCommand` the tool has already produced,
     // which is after the point where refusing is still honest.
-    let mcp_write = op_mcp::parse_tool_call(&req.body)
-        .is_some_and(|call| crate::mcp_serve::tool_profile::tool_writes(&call.tool));
+    let mcp_write = op_mcp::parse_tool_call(&req.body).is_some_and(|call| {
+        crate::mcp_serve::tool_profile::call_writes(&call.tool, &call.arguments)
+    });
     let mcp_write_pass = match admit_mutation(ctx, mcp_write) {
         MutationAdmission::NotAWrite => None,
         MutationAdmission::Admitted(pass) => pass,

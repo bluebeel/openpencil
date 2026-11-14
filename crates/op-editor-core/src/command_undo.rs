@@ -5,6 +5,13 @@ use crate::command_apply::command_marks_document_dirty;
 use crate::{EditorCommand, EditorState, IdAllocError, IdAllocator};
 
 impl EditorCommand {
+    /// Whether page/node identities may be inserted, removed or rewritten.
+    /// The exhaustive classification keeps batch result tracking proportional
+    /// to structural steps, without rescanning a document for scalar writes.
+    pub fn may_change_document_identities(&self) -> bool {
+        crate::command_apply_legacy::allocation_policy::may_change_identities(self)
+    }
+
     /// Whether an accepted command can change canonical document content.
     /// Undo/redo change content without recording a new forward undo step.
     pub fn may_change_document(&self) -> bool {

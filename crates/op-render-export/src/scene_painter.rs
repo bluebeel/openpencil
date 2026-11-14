@@ -21,6 +21,7 @@
 //! `export_pdf.rs` paints through this bridge too — skia's PDF canvas
 //! is a `skia_safe::Canvas`, so it inherits the same parity.
 
+use canvas_viewport_paint::SceneSelection;
 use op_editor_ui::layout_scene::SceneNode;
 use op_editor_ui::widgets::{canvas_viewport_paint, PaintCx};
 use op_editor_ui::{Point2D, Rect};
@@ -74,19 +75,62 @@ pub(crate) fn with_prepared_nodes<R>(
     nodes: &[SceneNode],
     action: impl FnOnce(&mut dyn FnMut(&Canvas)) -> R,
 ) -> R {
+    with_prepared_draw(|backend, canvas| draw_nodes(backend, canvas, nodes), action)
+}
+
+pub fn paint_selection(canvas: &Canvas, selection: &SceneSelection<'_>, viewport: Rect) {
+    with_prepared_selection(selection, viewport, |paint| paint(canvas));
+}
+
+pub(crate) fn with_prepared_selection<R>(
+    selection: &SceneSelection<'_>,
+    viewport: Rect,
+    action: impl FnOnce(&mut dyn FnMut(&Canvas)) -> R,
+) -> R {
+    with_prepared_draw(
+        |backend, canvas| {
+            let mut frame = NativeFrameBackend::new(backend, canvas);
+            let mut cx = PaintCx {
+                backend: &mut frame,
+            };
+            canvas_viewport_paint::paint_export_selection(&mut cx, selection, viewport);
+        },
+        action,
+    )
+}
+
+fn draw_nodes(backend: &mut NativeBackend, canvas: &Canvas, nodes: &[SceneNode]) {
+    let mut frame = NativeFrameBackend::new(backend, canvas);
+    let mut cx = PaintCx {
+        backend: &mut frame,
+    };
+    for node in nodes.iter().rev() {
+        canvas_viewport_paint::paint_node(&mut cx, node, Point2D::ZERO, 1.0, no_cull());
+    }
+}
+
+struct OnDrop<F: FnOnce()>(Option<F>);
+impl<F: FnOnce()> Drop for OnDrop<F> {
+    fn drop(&mut self) {
+        if let Some(action) = self.0.take() {
+            action();
+        }
+    }
+}
+
+fn with_prepared_draw<R>(
+    mut draw: impl FnMut(&mut NativeBackend, &Canvas),
+    action: impl FnOnce(&mut dyn FnMut(&Canvas)) -> R,
+) -> R {
     EXPORT_BACKEND.with(|cell| {
         let mut backend = cell.borrow_mut();
-        ensure_images_decoded(&mut backend, nodes);
+        ensure_images_decoded(&mut backend, &mut draw);
         let mut paint = |canvas: &Canvas| {
-            op_host_native::raster_sampling::with_scene_export(|| {
-                let mut frame = NativeFrameBackend::new(&mut backend, canvas);
-                let mut cx = PaintCx {
-                    backend: &mut frame,
-                };
-                for node in nodes.iter().rev() {
-                    canvas_viewport_paint::paint_node(&mut cx, node, Point2D::ZERO, 1.0, no_cull());
-                }
-            });
+            let saved = canvas.save();
+            let _restore = OnDrop(Some(|| {
+                canvas.restore_to_count(saved);
+            }));
+            op_host_native::raster_sampling::with_scene_export(|| draw(&mut backend, canvas));
         };
         NativeBackend::with_export_text_reuse(|| action(&mut paint))
     })
@@ -124,7 +168,10 @@ static DECODE_PUMP: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// suppressed from re-recording the released id — the export returned
 /// without the bitmap and shipped placeholder art (windows-x86_64 CI,
 /// 2026-08-29, the stolen-decode regression test).
-fn ensure_images_decoded(backend: &mut NativeBackend, nodes: &[SceneNode]) {
+fn ensure_images_decoded(
+    backend: &mut NativeBackend,
+    draw: &mut dyn FnMut(&mut NativeBackend, &Canvas),
+) {
     use op_editor_ui::widgets::canvas_viewport_image::{
         cached_bytes_for, has_in_flight_decodes, mark_decode_done, take_pending_decodes,
     };
@@ -140,15 +187,7 @@ fn ensure_images_decoded(backend: &mut NativeBackend, nodes: &[SceneNode]) {
         let Some(mut surface) = skia_safe::surfaces::raster_n32_premul((1, 1)) else {
             return;
         };
-        {
-            let mut frame = NativeFrameBackend::new(backend, surface.canvas());
-            let mut cx = PaintCx {
-                backend: &mut frame,
-            };
-            for node in nodes.iter().rev() {
-                canvas_viewport_paint::paint_node(&mut cx, node, Point2D::ZERO, 1.0, no_cull());
-            }
-        }
+        draw(backend, surface.canvas());
         let pending = take_pending_decodes(usize::MAX);
         if pending.is_empty() {
             if !in_flight_before_paint && !has_in_flight_decodes() {

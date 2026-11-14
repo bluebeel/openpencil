@@ -9,33 +9,27 @@
 //! hex checks happen BEFORE the mutable borrow + write. Carved off
 //! `command_node_attrs.rs` to keep every file under the 800-line cap.
 
-use super::slots::{
-    node_effects_slot, node_stroke_slot, set_stroke_side_width, set_stroke_width_preserving_sides,
-    sided_stroke_thickness, stroke_side_index, stroke_side_widths, write_corner_radius,
-    write_corner_radius_at,
-};
+use super::slots::{node_effects_slot, write_corner_radius_at};
 use super::widget_props::{node_bindings_slot, write_widget_number, write_widget_text};
 use super::{WidgetNumberField, WidgetTextField};
 use crate::command::{EffectField, NodeFlag, StrokeSide};
-use crate::fills::{set_primary_fill_hex, set_primary_stroke_hex};
 use crate::node_id::NodeId;
 use crate::pen_node_ext::PenNodeExt;
 use crate::state::EditorState;
 use crate::walkers::find_node_mut;
-use jian_ops_schema::node::{BoolOrExpression, FontWeight, PenNode, TextContent};
-use jian_ops_schema::style::{BlurBody, PenEffect, PenStroke, ShadowBody, StrokeThickness};
+use jian_ops_schema::node::{BoolOrExpression, PenNode};
+use jian_ops_schema::style::PenEffect;
 
 impl EditorState {
     /// `SetNodeRotation` — write rotation (degrees) on a node.
     pub(crate) fn cmd_set_node_rotation(&mut self, node_id: &NodeId, degrees: f32) -> bool {
-        if !node_id.is_real() || !degrees.is_finite() {
+        if !node_id.is_real() {
             return false;
         }
         let Some(node) = find_node_mut(self.active_children_mut(), node_id) else {
             return false;
         };
-        node.base_mut().rotation = Some(degrees as f64);
-        true
+        super::borrowed::set_node_rotation(node, node_id, degrees)
     }
 
     /// `SetNodeText` — set the plain-text content of a Text node.
@@ -47,25 +41,19 @@ impl EditorState {
         let Some(node) = find_node_mut(self.active_children_mut(), node_id) else {
             return false;
         };
-        match node {
-            PenNode::Text(t) => {
-                t.content = TextContent::Plain(text.to_string());
-                true
-            }
-            _ => false,
-        }
+        super::borrowed::set_node_text(node, node_id, text)
     }
 
     /// `SetNodeCornerRadius` — write corner radius on a node. Rejects
     /// negative / non-finite values.
     pub(crate) fn cmd_set_node_corner_radius(&mut self, node_id: &NodeId, radius: f32) -> bool {
-        if !node_id.is_real() || !radius.is_finite() || radius < 0.0 {
+        if !node_id.is_real() {
             return false;
         }
         let Some(node) = find_node_mut(self.active_children_mut(), node_id) else {
             return false;
         };
-        write_corner_radius(node, radius as f64)
+        super::borrowed::set_node_corner_radius(node, node_id, radius)
     }
 
     pub(crate) fn cmd_set_node_corner_radius_at(
@@ -104,37 +92,25 @@ impl EditorState {
     /// `SetNodeFontSize` — set the font size on a Text node. Rejects
     /// non-Text kinds + non-positive sizes.
     pub(crate) fn cmd_set_node_font_size(&mut self, node_id: &NodeId, font_size: f32) -> bool {
-        if !node_id.is_real() || !font_size.is_finite() || font_size <= 0.0 {
+        if !node_id.is_real() {
             return false;
         }
         let Some(node) = find_node_mut(self.active_children_mut(), node_id) else {
             return false;
         };
-        match node {
-            PenNode::Text(t) => {
-                t.font_size = Some(font_size as f64);
-                true
-            }
-            _ => false,
-        }
+        super::borrowed::set_node_font_size(node, node_id, font_size)
     }
 
     /// `SetNodeFontWeight` — set the font weight (1..=1000) on a Text
     /// node. Rejects non-Text kinds + out-of-range weights.
     pub(crate) fn cmd_set_node_font_weight(&mut self, node_id: &NodeId, font_weight: u16) -> bool {
-        if !node_id.is_real() || font_weight == 0 || font_weight > 1000 {
+        if !node_id.is_real() {
             return false;
         }
         let Some(node) = find_node_mut(self.active_children_mut(), node_id) else {
             return false;
         };
-        match node {
-            PenNode::Text(t) => {
-                t.font_weight = Some(FontWeight::Number(font_weight as u32));
-                true
-            }
-            _ => false,
-        }
+        super::borrowed::set_node_font_weight(node, node_id, font_weight)
     }
 
     /// `SetNodeStrokeHex` — set the stroke color on a node. A node with
@@ -150,48 +126,23 @@ impl EditorState {
         if !node_id.is_real() {
             return false;
         }
-        let is_var_ref = hex.starts_with('$');
-        if !is_var_ref && crate::color_picker::parse_hex_rgb(hex).is_none() {
-            return false;
-        }
         let Some(node) = find_node_mut(self.active_children_mut(), node_id) else {
             return false;
         };
-        set_primary_stroke_hex(node, hex)
+        super::borrowed::set_node_stroke_hex(node, node_id, hex)
     }
 
     /// `SetNodeStrokeWidth` — set the stroke width (doc-px) on a node.
     /// Width 0 clears the stroke; width > 0 on a node with no stroke
     /// attaches a fresh stroke at that width.
     pub(crate) fn cmd_set_node_stroke_width(&mut self, node_id: &NodeId, width: f32) -> bool {
-        if !node_id.is_real() || !width.is_finite() || width < 0.0 {
+        if !node_id.is_real() {
             return false;
         }
         let Some(node) = find_node_mut(self.active_children_mut(), node_id) else {
             return false;
         };
-        let Some(slot) = node_stroke_slot(node) else {
-            return false;
-        };
-        if width == 0.0 {
-            *slot = None;
-        } else {
-            match slot {
-                Some(stroke) => set_stroke_width_preserving_sides(stroke, width),
-                none @ None => {
-                    *none = Some(PenStroke::from(jian_ops_schema::style::PenStrokeBody {
-                        thickness: StrokeThickness::Uniform(f64::from(width)),
-                        align: None,
-                        join: None,
-                        cap: None,
-                        dash_pattern: None,
-                        dash_offset: None,
-                        fill: None,
-                    }));
-                }
-            }
-        }
-        true
+        super::borrowed::set_node_stroke_width(node, node_id, width)
     }
 
     /// `SetNodeStrokeSideWidth` — set one side's stroke width
@@ -212,39 +163,13 @@ impl EditorState {
         side: StrokeSide,
         width: f64,
     ) -> bool {
-        if !node_id.is_real() || !width.is_finite() || width < 0.0 {
+        if !node_id.is_real() {
             return false;
         }
         let Some(node) = find_node_mut(self.active_children_mut(), node_id) else {
             return false;
         };
-        let Some(slot) = node_stroke_slot(node) else {
-            return false;
-        };
-        let mut widths = match slot.as_ref() {
-            Some(stroke) => stroke_side_widths(&stroke.thickness),
-            None => [0.0; 4],
-        };
-        widths[stroke_side_index(side)] = width;
-        if widths.iter().all(|value| *value <= 0.0) {
-            *slot = None;
-            return true;
-        }
-        match slot {
-            Some(stroke) => set_stroke_side_width(stroke, side, width),
-            none @ None => {
-                *none = Some(PenStroke::from(jian_ops_schema::style::PenStrokeBody {
-                    thickness: sided_stroke_thickness(widths),
-                    align: None,
-                    join: None,
-                    cap: None,
-                    dash_pattern: None,
-                    dash_offset: None,
-                    fill: None,
-                }));
-            }
-        }
-        true
+        super::borrowed::set_node_stroke_side_width_exact(node, node_id, side, width)
     }
 
     /// `SetNodeFillHex` — set the fill color on a node by id.
@@ -256,14 +181,10 @@ impl EditorState {
         if !node_id.is_real() {
             return false;
         }
-        let is_var_ref = hex.starts_with('$');
-        if !is_var_ref && crate::color_picker::parse_hex_rgb(hex).is_none() {
-            return false;
-        }
         let Some(node) = find_node_mut(self.active_children_mut(), node_id) else {
             return false;
         };
-        set_primary_fill_hex(node, hex)
+        super::borrowed::set_node_fill_hex(node, node_id, hex)
     }
 
     /// `SetNodeName` — rename a node by id. Rejects whitespace-only
@@ -272,15 +193,10 @@ impl EditorState {
         if !node_id.is_real() {
             return false;
         }
-        let trimmed = name.trim();
-        if trimmed.is_empty() {
-            return false;
-        }
         let Some(node) = find_node_mut(self.active_children_mut(), node_id) else {
             return false;
         };
-        node.base_mut().name = Some(trimmed.to_string());
-        true
+        super::borrowed::set_node_name(node, node_id, name)
     }
 
     /// `SetNodeFlag` — flip a boolean flag on a node. `Collapsed` has
@@ -296,22 +212,10 @@ impl EditorState {
         if !node_id.is_real() {
             return false;
         }
-        if matches!(flag, NodeFlag::Collapsed) {
-            // No `collapsed` field on `PenNodeBase` — collapse is a
-            // layer-panel UI flag, not part of the `.op` document.
-            return false;
-        }
         let Some(node) = find_node_mut(self.active_children_mut(), node_id) else {
             return false;
         };
-        match flag {
-            // `visible == false` is the hidden state, so a `Hidden`
-            // write inverts the sense.
-            NodeFlag::Hidden => node.base_mut().visible = Some(!value),
-            NodeFlag::Locked => node.base_mut().locked = Some(value),
-            NodeFlag::Collapsed => unreachable!("rejected above"),
-        }
-        true
+        super::borrowed::set_node_flag(node, node_id, flag, value)
     }
 
     /// `SetNodeFlip` — write the horizontal / vertical mirror flags on
@@ -323,19 +227,13 @@ impl EditorState {
         flip_x: Option<bool>,
         flip_y: Option<bool>,
     ) -> bool {
-        if !node_id.is_real() || (flip_x.is_none() && flip_y.is_none()) {
+        if !node_id.is_real() {
             return false;
         }
         let Some(node) = find_node_mut(self.active_children_mut(), node_id) else {
             return false;
         };
-        if let Some(fx) = flip_x {
-            node.base_mut().flip_x = Some(fx);
-        }
-        if let Some(fy) = flip_y {
-            node.base_mut().flip_y = Some(fy);
-        }
-        true
+        super::borrowed::set_node_flip(node, node_id, flip_x, flip_y)
     }
 
     /// `SetEllipseArc` — write arc geometry on an Ellipse node.
@@ -401,35 +299,10 @@ impl EditorState {
         if !node_id.is_real() {
             return false;
         }
-        let effect = match kind {
-            "shadow" => PenEffect::Shadow(ShadowBody {
-                blur_kernel: None,
-                inner: None,
-                visible: None,
-                offset_x: 4.0,
-                offset_y: 4.0,
-                blur: 8.0,
-                spread: 0.0,
-                color: "#00000040".to_string(),
-            }),
-            "blur" => PenEffect::Blur(BlurBody {
-                radius: 4.0,
-                visible: None,
-            }),
-            "background_blur" => PenEffect::BackgroundBlur(BlurBody {
-                radius: 10.0,
-                visible: None,
-            }),
-            _ => return false,
-        };
         let Some(node) = find_node_mut(self.active_children_mut(), node_id) else {
             return false;
         };
-        let Some(slot) = node_effects_slot(node) else {
-            return false;
-        };
-        slot.get_or_insert_with(Vec::new).push(effect);
-        true
+        super::borrowed::add_node_effect(node, node_id, kind)
     }
 
     /// `RemoveNodeEffect` — drop the effect at `index`. Rejects an
@@ -442,21 +315,7 @@ impl EditorState {
         let Some(node) = find_node_mut(self.active_children_mut(), node_id) else {
             return false;
         };
-        let Some(slot) = node_effects_slot(node) else {
-            return false;
-        };
-        let Some(effects) = slot.as_mut() else {
-            return false;
-        };
-        let i = index as usize;
-        if i >= effects.len() {
-            return false;
-        }
-        effects.remove(i);
-        if effects.is_empty() {
-            *slot = None;
-        }
-        true
+        super::borrowed::remove_node_effect(node, node_id, index)
     }
 
     /// `SetEffectParam` — write one scalar param of the effect at
@@ -470,32 +329,13 @@ impl EditorState {
         field: EffectField,
         value: f32,
     ) -> bool {
-        if !node_id.is_real() || !value.is_finite() {
+        if !node_id.is_real() {
             return false;
         }
         let Some(node) = find_node_mut(self.active_children_mut(), node_id) else {
             return false;
         };
-        let Some(slot) = node_effects_slot(node) else {
-            return false;
-        };
-        let Some(effects) = slot.as_mut() else {
-            return false;
-        };
-        let Some(effect) = effects.get_mut(index as usize) else {
-            return false;
-        };
-        let value = f64::from(value);
-        match (effect, field) {
-            (PenEffect::Shadow(s), EffectField::OffsetX) => s.offset_x = value,
-            (PenEffect::Shadow(s), EffectField::OffsetY) => s.offset_y = value,
-            (PenEffect::Shadow(s), EffectField::Blur) => s.blur = value.max(0.0),
-            (PenEffect::Shadow(s), EffectField::Spread) => s.spread = value,
-            (PenEffect::Blur(b), EffectField::Radius)
-            | (PenEffect::BackgroundBlur(b), EffectField::Radius) => b.radius = value.max(0.0),
-            _ => return false,
-        }
-        true
+        super::borrowed::set_effect_param(node, node_id, index, field, value)
     }
 
     pub(crate) fn cmd_set_effect_visible(
@@ -650,21 +490,6 @@ impl EditorState {
         let Some(node) = find_node_mut(self.active_children_mut(), node_id) else {
             return false;
         };
-        let Some(slot) = node_effects_slot(node) else {
-            return false;
-        };
-        let Some(effects) = slot.as_mut() else {
-            return false;
-        };
-        let Some(effect) = effects.get_mut(index as usize) else {
-            return false;
-        };
-        match effect {
-            PenEffect::Shadow(s) => {
-                s.color = hex.to_string();
-                true
-            }
-            _ => false,
-        }
+        super::borrowed::set_effect_color(node, node_id, index, hex)
     }
 }

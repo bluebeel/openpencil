@@ -312,7 +312,16 @@ impl McpAccessProfile {
         {
             return Some(ToolRefusal::UserTemplateDenied);
         }
-        self.refuse(tool)
+        match self.refuse(tool) {
+            Some(ToolRefusal::ScopeInsufficient)
+                if tool == "batch_tools"
+                    && self.scopes.can_read()
+                    && super::atomic_tools::read_only(arguments) =>
+            {
+                None
+            }
+            refusal => refusal,
+        }
     }
 
     /// Whether `list_scene_templates` may include the process-global saved
@@ -336,6 +345,11 @@ impl Default for McpAccessProfile {
 /// is admitted through the barrier rather than slipping past it.
 pub fn tool_writes(name: &str) -> bool {
     matches!(access_of(name), ToolAccess::Write)
+}
+
+/// Read-only batches skip mutation admission; unknown/mixed inputs remain writes.
+pub fn call_writes(name: &str, arguments: &std::collections::BTreeMap<String, String>) -> bool {
+    tool_writes(name) && !(name == "batch_tools" && super::atomic_tools::read_only(arguments))
 }
 
 /// The classification for `name`, if it is in the static catalog.

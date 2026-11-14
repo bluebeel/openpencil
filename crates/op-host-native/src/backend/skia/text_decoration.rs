@@ -94,8 +94,8 @@ fn geometry(backend: &mut NativeBackend, request: &TextDecorationRequest<'_>) ->
     };
     // Match the widget's whole-run versus per-character justification path.
     if (request.letter_spacing.abs() < f32::EPSILON
-        || request.kerning == Some(true)
-        || request.font_features.values().any(|v| *v != 0))
+        || request.kerning.is_some()
+        || !request.font_features.is_empty())
         && request.justify_extra <= 0.0
     {
         backend.shaped_text.visit_glyphs(
