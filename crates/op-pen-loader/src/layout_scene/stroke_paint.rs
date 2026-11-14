@@ -3,7 +3,7 @@
 
 use super::*;
 use crate::payload::StrokePayload;
-use jian_widgets::{StrokePaintCap, StrokePaintJoin, StrokePaintStyle};
+use jian_scene::{StrokePaintCap, StrokePaintJoin, StrokePaintStyle};
 use std::sync::Arc;
 
 pub(super) fn stroke_paint_to_scene(
