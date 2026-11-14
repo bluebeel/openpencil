@@ -372,6 +372,7 @@ fn correlated_text_export_reuse_matches_independent_camera_scopes_byte_for_byte(
         italic: false,
         underline: true,
         strikethrough: false,
+        text_decoration_skip_ink: None,
     });
     let mut rtl = SceneNode::leaf("rtl", NodeKind::Text);
     rtl.bounds = Rect::xywh(6.0, 57.25, 184.0, 38.0);

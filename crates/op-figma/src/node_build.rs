@@ -194,6 +194,7 @@ pub fn text_node(
         font_style,
         font_kerning: props.font_kerning,
         font_features: props.font_features,
+        text_decoration_skip_ink: props.text_decoration_skip_ink,
         letter_spacing: props.letter_spacing,
         line_height: props.line_height,
         text_align: props.text_align,

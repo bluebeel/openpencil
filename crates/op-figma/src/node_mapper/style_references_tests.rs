@@ -287,3 +287,21 @@ fn linked_opentype_salt_is_inherited_without_replacing_explicit_feature_arrays()
         assert_eq!(features.get("salt"), if explicit { None } else { Some(&1) });
     }
 }
+
+#[test]
+fn linked_skip_ink_fills_absent_setting_but_keeps_explicit_override() {
+    let mut style = linked_style();
+    style.set("textDecorationSkipInk", FigValue::Bool(false));
+    let mut explicit = node("Local Font", 0.0);
+    explicit.set("textDecorationSkipInk", FigValue::Bool(true));
+    let mut nodes = vec![style, node("Local Font", 0.0), explicit];
+    resolve_style_references(&mut nodes);
+    assert_eq!(
+        map_figma_text_props(&nodes[1]).text_decoration_skip_ink,
+        Some(false)
+    );
+    assert_eq!(
+        map_figma_text_props(&nodes[2]).text_decoration_skip_ink,
+        Some(true)
+    );
+}

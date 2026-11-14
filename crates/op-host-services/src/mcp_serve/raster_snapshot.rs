@@ -109,6 +109,26 @@ impl RasterSnapshot {
         admission.render_with_sampling(Arc::clone(&self.scene), target, format, scale, sampling)
     }
 
+    pub fn export_files(
+        &self,
+        targets: Vec<crate::export::RasterFileTarget>,
+        format: RasterFormat,
+        scale: f32,
+    ) -> Result<Vec<Result<(), ExportError>>, ExportError> {
+        match &self.admission {
+            Some(Ok(admission)) => {
+                admission.export_files(Arc::clone(&self.scene), targets, format, scale)
+            }
+            Some(Err(error)) => Err(error.clone()),
+            None => Ok(crate::export::export_scene_files(
+                &self.scene,
+                &targets,
+                format,
+                scale,
+            )),
+        }
+    }
+
     pub fn render_active_node(
         &self,
         node_id: &str,

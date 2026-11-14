@@ -44,11 +44,27 @@ pub fn seed_assignments_from_instances(
     symbol_tree: &HashMap<String, &TreeNode>,
     cache: &mut HashMap<String, String>,
 ) {
+    seed_assignments_inner(root, symbol_tree, cache, None);
+}
+pub(crate) fn seed_assignments_for_symbols(
+    root: &TreeNode,
+    symbol_tree: &HashMap<String, &TreeNode>,
+    cache: &mut HashMap<String, String>,
+    wanted: &HashSet<String>,
+) {
+    seed_assignments_inner(root, symbol_tree, cache, Some(wanted));
+}
+fn seed_assignments_inner(
+    root: &TreeNode,
+    symbol_tree: &HashMap<String, &TreeNode>,
+    cache: &mut HashMap<String, String>,
+    wanted: Option<&HashSet<String>>,
+) {
     // symbol guid -> pk -> pooled evidence.
     type Pool = HashMap<String, HashMap<String, (f64, Vec<String>, bool)>>;
     let mut pool: Pool = HashMap::new();
 
-    fn collect(node: &TreeNode, pool: &mut Pool) {
+    fn collect(node: &TreeNode, pool: &mut Pool, wanted: Option<&HashSet<String>>) {
         let figma = &node.figma;
         // A swapped instance's derived belongs to the swapped-in
         // component, not its base `symbolID`, so pooling it under the
@@ -64,6 +80,7 @@ pub fn seed_assignments_from_instances(
                         g.get_f64("localID")? as u64
                     ))
                 })
+                .filter(|sym| wanted.map_or(true, |keys| keys.contains(sym)))
             {
                 let per_sym = pool.entry(sym_guid).or_default();
                 let mut take = |entry: &FigValue| {
@@ -108,10 +125,10 @@ pub fn seed_assignments_from_instances(
             }
         }
         for c in &node.children {
-            collect(c, pool);
+            collect(c, pool, wanted);
         }
     }
-    collect(root, &mut pool);
+    collect(root, &mut pool, wanted);
 
     // Geometry seeding: an instance whose single-segment entries carry
     // BOTH a size and a transform proves the shared pk -> node mapping
@@ -124,7 +141,7 @@ pub fn seed_assignments_from_instances(
     type GeomSeeds = Vec<(String, Option<FigVec2>, Vec<GeomEntry>)>;
     let mut geom_seeds: GeomSeeds = Vec::new();
 
-    fn collect_geom(node: &TreeNode, out: &mut GeomSeeds) {
+    fn collect_geom(node: &TreeNode, out: &mut GeomSeeds, wanted: Option<&HashSet<String>>) {
         let figma = &node.figma;
         // Swapped instances (see `collect`) must not seed the base
         // component's cache — their geometry is the swapped-in one's.
@@ -139,6 +156,7 @@ pub fn seed_assignments_from_instances(
                         g.get_f64("localID")? as u64
                     ))
                 })
+                .filter(|sym| wanted.map_or(true, |keys| keys.contains(sym)))
             {
                 let single_pk = |entry: &FigValue| -> Option<String> {
                     let guids = entry.get("guidPath").and_then(|p| p.get_array("guids"))?;
@@ -194,10 +212,10 @@ pub fn seed_assignments_from_instances(
             }
         }
         for c in &node.children {
-            collect_geom(c, out);
+            collect_geom(c, out, wanted);
         }
     }
-    collect_geom(root, &mut geom_seeds);
+    collect_geom(root, &mut geom_seeds, wanted);
 
     for (sym_guid, per_pk) in &pool {
         let Some(symbol) = symbol_tree.get(sym_guid).copied() else {

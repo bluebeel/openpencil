@@ -108,7 +108,14 @@ pub(super) fn rebuild_registry(
         }
     );
     register_tool!("export_deck", export_deck_snapshot(doc));
-    register_tool!("export_frames", export_frames_snapshot(doc));
+    register_tool!(
+        "export_frames",
+        if requested_tool.is_some() {
+            export_frames_tool::export_frames_snapshot_admitted(doc)
+        } else {
+            export_frames_snapshot(doc)
+        }
+    );
     register_tool!("get_deck_boards", get_deck_boards_snapshot(doc));
     register_tool!(
         "list_scene_templates",

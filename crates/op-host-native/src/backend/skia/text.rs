@@ -4,6 +4,9 @@
 //! support landed; the typeface caches stay fields on the spine
 //! struct, this sibling only houses the `impl` block.
 
+#[path = "text_decoration.rs"]
+mod decoration;
+
 use op_editor_core::text_script::needs_complex_shaping;
 use op_editor_ui::{Point2D, TextBaselineRequest, TextLayout};
 
@@ -34,6 +37,14 @@ pub(super) fn uses_advance_grid(
 }
 
 impl NativeBackend {
+    pub fn draw_text_decoration(
+        &mut self,
+        canvas: &skia_safe::Canvas,
+        request: &op_editor_ui::TextDecorationRequest<'_>,
+    ) -> bool {
+        decoration::draw(self, canvas, request)
+    }
+
     /// Reuse immutable outlines only for this export's repeated cameras.
     /// Nested calls share the same bounded cache; return/unwind releases it.
     pub fn with_export_text_reuse<R>(action: impl FnOnce() -> R) -> R {
@@ -423,6 +434,7 @@ impl NativeBackend {
                             (x, y).into(),
                             &paint,
                             modern,
+                            Some(&self.shaped_text.metadata),
                         ) {
                             canvas.draw_glyphs_at(
                                 &glyphs,
@@ -445,6 +457,7 @@ impl NativeBackend {
                             (x, y).into(),
                             &paint,
                             modern,
+                            Some(&self.shaped_text.metadata),
                         ) {
                             canvas.draw_str(&segment.text, (x, y), &font, &paint);
                         }

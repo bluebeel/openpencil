@@ -126,7 +126,7 @@ fn ellipse(id: &str, x: f64, y: f64, w: f64, h: f64) -> PenNode {
 
 fn text(id: &str, x: f64, y: f64, w: f64, h: f64, body: &str) -> PenNode {
     PenNode::Text(TextNode {
-            font_features: None,
+        font_features: None,
         font_kerning: None,
         base: PenNodeBase {
             id: id.into(),
@@ -148,6 +148,7 @@ fn text(id: &str, x: f64, y: f64, w: f64, h: f64, body: &str) -> PenNode {
         text_growth: None,
         underline: None,
         strikethrough: None,
+        text_decoration_skip_ink: None,
         fill: None,
         effects: None,
         state: None,

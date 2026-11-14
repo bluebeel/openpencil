@@ -63,6 +63,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # `strip` removes the symbol table — measured ~7.5 MB off the native binary, and
 # trims the wasm too (the production web bundle never needs symbol names).
 strip = true
+
 # Cross-crate inlining + dedup of monomorphized generics (e.g. PenNode::clone is
 # duplicated ~20× without it). "thin" gets most of the win at a fraction of the
 # fat-LTO link time.
@@ -76,3 +77,7 @@ codegen-units = 1
 # size-opt levels measurably slow it. panic = "abort" is also intentionally NOT
 # set yet — it needs a thread-isolation audit of the chat/codegen workers, some
 # of which rely on unwinding to contain a panicking task.
+
+# Codec work must stay optimized in the normal headless development build too.
+[profile.dev.package.libwebp-sys]
+opt-level = 3

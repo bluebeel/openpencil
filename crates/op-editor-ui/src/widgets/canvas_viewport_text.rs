@@ -25,7 +25,9 @@ use crate::layout_scene::{SceneNode, SceneTextAlign, SceneTextRun};
 use crate::widgets::canvas_text_edit::text_edit_layout;
 use crate::widgets::canvas_viewport::EditCaret;
 use crate::widgets::PaintCx;
-use crate::{Color, Point2D, Rect, RenderBackend, TextBaselineRequest, TextLayout};
+use crate::{
+    Color, Point2D, Rect, RenderBackend, TextBaselineRequest, TextDecorationRequest, TextLayout,
+};
 use jian_core::text_input::prev_char_boundary;
 
 /// Fully resolved paint style for one line slice.
@@ -36,6 +38,7 @@ struct SliceStyle {
     italic: bool,
     underline: bool,
     strikethrough: bool,
+    text_decoration_skip_ink: Option<bool>,
     color: Color,
 }
 
@@ -123,6 +126,7 @@ fn resolved_slice_style(
             italic: node.italic,
             underline: node.underline,
             strikethrough: node.strikethrough,
+            text_decoration_skip_ink: node.text_decoration_skip_ink,
             color: ink,
         },
         Some(r) => SliceStyle {
@@ -139,6 +143,7 @@ fn resolved_slice_style(
             italic: r.italic,
             underline: r.underline,
             strikethrough: r.strikethrough,
+            text_decoration_skip_ink: r.text_decoration_skip_ink.or(node.text_decoration_skip_ink),
             color: r.fill.unwrap_or(ink),
         },
     }
@@ -476,7 +481,30 @@ pub(crate) fn paint_text_node(
                         paint_node.font_kerning,
                         &paint_node.font_features,
                     );
-                    decorate_slice(cx.backend, style, slice_x0, glyph_end, baseline_y);
+                    let handled = style.text_decoration_skip_ink.is_some_and(|skip_ink| {
+                        (style.underline || style.strikethrough)
+                            && cx.backend.draw_text_decoration(&TextDecorationRequest {
+                                text: slice,
+                                font_family: family,
+                                font_size: style.font_size,
+                                font_weight: style.weight,
+                                italic: style.italic,
+                                kerning: paint_node.font_kerning,
+                                letter_spacing,
+                                line_height: paint_node.line_height,
+                                justify_extra,
+                                font_features: &paint_node.font_features,
+                                origin: Point2D::new(slice_x0, baseline_y),
+                                width: glyph_end - slice_x0,
+                                color: style.color,
+                                underline: style.underline,
+                                strikethrough: style.strikethrough,
+                                skip_ink,
+                            })
+                    });
+                    if !handled {
+                        decorate_slice(cx.backend, style, slice_x0, glyph_end, baseline_y);
+                    }
                     x = next_x;
                 },
             );

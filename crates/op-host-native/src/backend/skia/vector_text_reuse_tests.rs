@@ -28,11 +28,11 @@ fn export_outline_reuse_exact_keys_scope_and_font_generation() {
         };
         with_scope(|| {
             for _ in 0..4 {
-                outline(&font, &glyphs, &positions, origin, path).unwrap();
+                outline(&font, &glyphs, &positions, origin, true, path).unwrap();
             }
             assert_eq!(calls.get(), 1);
             with_scope(|| {
-                outline(&font, &glyphs, &positions, origin, path).unwrap();
+                outline(&font, &glyphs, &positions, origin, true, path).unwrap();
             });
             assert_eq!(calls.get(), 1, "nested scope shares outer cache");
             outline(
@@ -40,6 +40,7 @@ fn export_outline_reuse_exact_keys_scope_and_font_generation() {
                 &glyphs,
                 &positions,
                 origin,
+                true,
                 path,
             )
             .unwrap();
@@ -48,11 +49,28 @@ fn export_outline_reuse_exact_keys_scope_and_font_generation() {
                 &glyphs,
                 &[positions[0], Point::new(17.5, 0.0)],
                 origin,
+                true,
                 path,
             )
             .unwrap();
-            outline(&font, &glyphs, &positions, Point::new(1.5, 24.2), path).unwrap();
-            outline(&font, &[glyphs[1], glyphs[0]], &positions, origin, path).unwrap();
+            outline(
+                &font,
+                &glyphs,
+                &positions,
+                Point::new(1.5, 24.2),
+                true,
+                path,
+            )
+            .unwrap();
+            outline(
+                &font,
+                &[glyphs[1], glyphs[0]],
+                &positions,
+                origin,
+                true,
+                path,
+            )
+            .unwrap();
             assert_eq!(calls.get(), 5);
             with_cache(|cache| {
                 let generation = cache.generation;
@@ -61,11 +79,11 @@ fn export_outline_reuse_exact_keys_scope_and_font_generation() {
                 assert_eq!(cache.bytes, 0);
                 assert_eq!(cache.entries, 0);
             });
-            outline(&font, &glyphs, &positions, origin, path).unwrap();
+            outline(&font, &glyphs, &positions, origin, true, path).unwrap();
             assert_eq!(calls.get(), 6);
         });
         assert!(ACTIVE.with(|slot| slot.borrow().is_none()));
-        outline(&font, &glyphs, &positions, origin, path).unwrap();
+        outline(&font, &glyphs, &positions, origin, true, path).unwrap();
         assert_eq!(calls.get(), 7, "no retained reuse after export");
     });
 }
@@ -162,7 +180,8 @@ fn export_text_reuse_keeps_per_camera_paint_stroke_and_positions_exact() {
                         &positions,
                         Point::new(4.25, 32.2),
                         &paint,
-                        true
+                        true,
+                        None
                     ));
                 })
                 .unwrap();
@@ -181,5 +200,57 @@ fn export_text_reuse_keeps_per_camera_paint_stroke_and_positions_exact() {
         let expected = render();
         let actual = with_scope(render);
         assert_eq!(actual, expected);
+    });
+}
+
+#[test]
+fn glyph_metadata_cache_keys_face_glyph_and_generation_including_fallbacks() {
+    let calls = Cell::new(0);
+    let missing = || {
+        calls.set(calls.get() + 1);
+        None
+    };
+    with_scope(|| {
+        for _ in 0..4 {
+            assert!(glyph_metadata(10, 4, missing).is_none());
+        }
+        assert_eq!(
+            calls.get(),
+            1,
+            "unsupported glyph metadata also reuses its fallback decision"
+        );
+        glyph_metadata(11, 4, missing);
+        glyph_metadata(10, 5, missing);
+        assert_eq!(calls.get(), 3);
+        with_cache(|cache| cache.refresh(cache.generation.wrapping_add(1)));
+        glyph_metadata(10, 4, missing);
+        assert_eq!(calls.get(), 4);
+    });
+}
+
+#[test]
+fn outline_reuse_separates_legacy_and_font_unit_geometry() {
+    jian_skia::with_font_lock(|| {
+        let font = font();
+        let glyphs = font.str_to_glyphs_vec("A");
+        let positions = [Point::default()];
+        let calls = Cell::new(0);
+        let build = || {
+            calls.set(calls.get() + 1);
+            Some(Path::default())
+        };
+        with_scope(|| {
+            for _ in 0..2 {
+                outline(&font, &glyphs, &positions, Point::default(), false, build).unwrap();
+            }
+            for _ in 0..2 {
+                outline(&font, &glyphs, &positions, Point::default(), true, build).unwrap();
+            }
+            assert_eq!(
+                calls.get(),
+                2,
+                "geometry variant is part of the exact cache key"
+            );
+        });
     });
 }

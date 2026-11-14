@@ -2,6 +2,43 @@ use super::*;
 use crate::test_support::{filled_rect, scene_with};
 use op_editor_ui::Color;
 
+#[test]
+fn shared_worker_streams_partial_file_batch_and_reuses_renderer_for_bytes() {
+    let worker = SharedRasterWorker::new().unwrap();
+    let scene = scene();
+    let admission = worker.try_acquire().unwrap();
+    let directory = std::env::temp_dir().join(format!("op-worker-files-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let targets = ["red", "absent", "blue"]
+        .into_iter()
+        .map(|id| crate::RasterFileTarget {
+            node_id: id.into(),
+            path: directory.join(format!("{id}.png")),
+        })
+        .collect();
+    let results = admission
+        .export_files(Arc::clone(&scene), targets, RasterFormat::Png, 1.0)
+        .unwrap();
+    assert_eq!(results.len(), 3);
+    assert!(results[0].is_ok() && results[2].is_ok());
+    assert_eq!(
+        results[1],
+        Err(ExportError::NodeNotFoundOnActivePage {
+            node_id: "absent".into()
+        })
+    );
+    assert!(!directory.join("absent.png").exists());
+    let bytes = admission
+        .render(Arc::clone(&scene), node("blue"), RasterFormat::Png, 1.0)
+        .unwrap();
+    assert_eq!(std::fs::read(directory.join("blue.png")).unwrap(), bytes);
+    assert_eq!(worker.stats().backend_initializations, 1);
+    assert_eq!(worker.stats().completed_jobs, 2);
+    drop(admission);
+    assert_eq!(worker.stats().admitted, 0);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
 fn scene() -> Arc<LayoutScene> {
     Arc::new(scene_with(vec![
         filled_rect("red", 8.0, 12.0, 24.0, 16.0, Color::RED),

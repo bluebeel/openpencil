@@ -63,7 +63,10 @@ fn full_scene(state: &op_editor_core::EditorState, paged: bool, full_content: bo
         }
         prepared = std::borrow::Cow::Owned(snapshot);
     }
-    if full_content && !state.editor_ui.preserve_authored_geometry {
+    if full_content
+        && !state.editor_ui.preserve_authored_geometry
+        && document_needs_presentation(&prepared)
+    {
         let mut snapshot = prepared.into_owned();
         let original = snapshot.clone();
         prepare_presentation(&mut snapshot.children, &original, None);
@@ -79,6 +82,9 @@ fn full_scene(state: &op_editor_core::EditorState, paged: bool, full_content: bo
     } else {
         crate::adapter::pen_document_to_payload(&prepared).payload
     };
+    // Payload fields are owned/shared. Do not retain an expanded canonical
+    // graph while allocating the second full paint representation below.
+    drop(prepared);
     let var_table: VariableTable = editor_state_var_table(state);
 
     LayoutScene {
@@ -272,11 +278,7 @@ pub(crate) fn roots_to_page_payload(
     {
         prepared = std::borrow::Cow::Owned(nodes);
     }
-    if full_content && !state.editor_ui.preserve_authored_geometry {
-        let mut nodes = prepared.into_owned();
-        prepare_presentation(&mut nodes, &state.doc, page_id);
-        prepared = std::borrow::Cow::Owned(nodes);
-    }
+    prepared = roots_with_presentation(state, prepared, page_id, full_content);
     let payload = crate::adapter::pen_roots_to_page_payload(
         &page.id,
         &page.name,
@@ -290,6 +292,37 @@ pub(crate) fn roots_to_page_payload(
     payload
 }
 
+fn roots_need_presentation(roots: &[jian_ops_schema::node::PenNode]) -> bool {
+    crate::initial_text_snapshot::has_content_binding(roots)
+        || crate::full_content_snapshot::needs_snapshot(roots)
+}
+
+fn document_needs_presentation(doc: &jian_ops_schema::PenDocument) -> bool {
+    roots_need_presentation(&doc.children)
+        || doc.pages.as_ref().is_some_and(|pages| {
+            pages
+                .iter()
+                .any(|page| roots_need_presentation(&page.children))
+        })
+}
+
+fn roots_with_presentation<'a>(
+    state: &op_editor_core::EditorState,
+    roots: std::borrow::Cow<'a, [jian_ops_schema::node::PenNode]>,
+    page_id: Option<&str>,
+    full_content: bool,
+) -> std::borrow::Cow<'a, [jian_ops_schema::node::PenNode]> {
+    if !full_content
+        || state.editor_ui.preserve_authored_geometry
+        || !roots_need_presentation(&roots)
+    {
+        return roots;
+    }
+    let mut nodes = roots.into_owned();
+    prepare_presentation(&mut nodes, &state.doc, page_id);
+    std::borrow::Cow::Owned(nodes)
+}
+
 fn prepare_presentation(
     roots: &mut Vec<jian_ops_schema::node::PenNode>,
     doc: &jian_ops_schema::PenDocument,
@@ -300,3 +333,7 @@ fn prepare_presentation(
         *roots = nodes;
     }
 }
+
+#[cfg(test)]
+#[path = "presentation_borrow_tests.rs"]
+mod presentation_borrow_tests;

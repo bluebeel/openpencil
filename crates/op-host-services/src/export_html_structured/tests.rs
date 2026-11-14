@@ -1,6 +1,5 @@
 //! Per-kind emission tests plus the two invariants the whole exporter
 //! rests on: nothing outside the file, and text that is text.
-
 use super::*;
 use op_editor_ui::layout_scene::{
     Effect, NodeKind, SceneFillType, SceneGradient, SceneGradientStop, SceneImageFit, SceneStroke,
@@ -199,6 +198,7 @@ fn styled_runs_become_spans_without_breaking_the_flat_text() {
         italic: false,
         underline: false,
         strikethrough: false,
+        text_decoration_skip_ink: None,
     }];
 
     let body = body_of(board(vec![node]));

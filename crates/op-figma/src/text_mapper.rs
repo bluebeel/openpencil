@@ -20,6 +20,7 @@ pub struct TextProps {
     pub font_style: Option<FontStyleKind>,
     pub font_kerning: Option<bool>,
     pub font_features: Option<BTreeMap<String, u32>>,
+    pub text_decoration_skip_ink: Option<bool>,
     pub letter_spacing: Option<f64>,
     pub line_height: Option<f64>,
     pub text_align: Option<TextAlign>,
@@ -51,6 +52,7 @@ pub fn map_figma_text_props(node: &FigValue) -> TextProps {
         },
         font_kerning: map_font_kerning(node),
         font_features: map_font_features(node),
+        text_decoration_skip_ink: Some(node.get_bool("textDecorationSkipInk").unwrap_or(true)),
         letter_spacing: map_letter_spacing(node),
         line_height: map_line_height(node),
         // Figma omits LEFT defaults. Make it explicit so a centered parent
@@ -165,6 +167,7 @@ fn build_content(node: &FigValue) -> TextContent {
             || s.fill.is_some()
             || s.underline.is_some()
             || s.strikethrough.is_some()
+            || s.text_decoration_skip_ink.is_some()
     });
     if has_override {
         TextContent::Styled(segments)
@@ -190,6 +193,7 @@ fn build_segment(
         underline: None,
         strikethrough: None,
         href: None,
+        text_decoration_skip_ink: None,
     };
     if style_id <= 0 {
         return seg;
@@ -203,6 +207,7 @@ fn build_segment(
     let Some(ov) = override_style else {
         return seg;
     };
+    seg.text_decoration_skip_ink = ov.get_bool("textDecorationSkipInk");
     let font_name = ov.get("fontName");
     if let Some(family) = font_name.and_then(|f| f.get_str("family")) {
         if !family.is_empty() {

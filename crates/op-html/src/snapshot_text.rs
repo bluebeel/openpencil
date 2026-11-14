@@ -165,6 +165,7 @@ impl SnapshotCtx<'_> {
             text_growth: Some(sizing.growth),
             underline: None,
             strikethrough: None,
+            text_decoration_skip_ink: None,
             fill,
             effects: None,
             state: None,
@@ -230,6 +231,7 @@ fn styled_content(
             },
             underline: decoration.contains("underline").then_some(true),
             strikethrough: decoration.contains("line-through").then_some(true),
+            text_decoration_skip_ink: None,
             href: segment
                 .get("href")
                 .and_then(Value::as_str)

@@ -166,6 +166,7 @@ pub fn build_leaf_node(
             text_growth: None,
             underline: None,
             strikethrough: None,
+            text_decoration_skip_ink: None,
             fill: None,
             effects: None,
             state: None,

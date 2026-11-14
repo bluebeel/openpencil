@@ -17,6 +17,7 @@ use std::collections::{HashMap, HashSet};
 
 mod apply;
 mod assignment;
+pub(crate) use assignment::seed_assignments_for_symbols;
 #[cfg(test)]
 mod assignment_tests;
 pub(crate) use cache::fig_value_bytes as value_retained_bound;

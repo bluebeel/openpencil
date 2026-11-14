@@ -11,7 +11,7 @@ use std::sync::{
 
 use op_editor_ui::layout_scene::LayoutScene;
 
-use crate::{ExportError, RasterFormat, RasterSampling};
+use crate::{ExportError, RasterFileTarget, RasterFormat, RasterSampling};
 
 const MAX_ADMITTED: usize = 2;
 
@@ -36,13 +36,26 @@ struct Counters {
     backend_initializations: AtomicUsize,
 }
 
-struct Job {
+struct RasterJob {
     scene: Arc<LayoutScene>,
     target: SharedRasterTarget,
     format: RasterFormat,
     scale: f32,
     sampling: RasterSampling,
     reply: mpsc::SyncSender<Result<Vec<u8>, ExportError>>,
+}
+
+struct FileJob {
+    scene: Arc<LayoutScene>,
+    targets: Vec<RasterFileTarget>,
+    format: RasterFormat,
+    scale: f32,
+    reply: mpsc::SyncSender<Vec<Result<(), ExportError>>>,
+}
+
+enum Job {
+    Raster(RasterJob),
+    Files(FileJob),
 }
 
 struct WorkerState {
@@ -82,9 +95,23 @@ impl SharedRasterWorker {
                             .fetch_add(1, Ordering::Relaxed);
                         initialized = true;
                     }
-                    let result = render_job(&job);
-                    worker_counters.completed.fetch_add(1, Ordering::Relaxed);
-                    let _ = job.reply.send(result);
+                    match job {
+                        Job::Raster(job) => {
+                            let result = render_job(&job);
+                            worker_counters.completed.fetch_add(1, Ordering::Relaxed);
+                            let _ = job.reply.send(result);
+                        }
+                        Job::Files(job) => {
+                            let results = crate::export_scene_files(
+                                &job.scene,
+                                &job.targets,
+                                job.format,
+                                job.scale,
+                            );
+                            worker_counters.completed.fetch_add(1, Ordering::Relaxed);
+                            let _ = job.reply.send(results);
+                        }
+                    }
                 }
             })
             .map_err(|error| ExportError::RenderWorkerStart {
@@ -153,18 +180,47 @@ impl RasterAdmission {
         let (reply, receive) = mpsc::sync_channel(0);
         self.state
             .sender
-            .send(Job {
+            .send(Job::Raster(RasterJob {
                 scene,
                 target,
                 format,
                 scale,
                 sampling,
                 reply,
-            })
+            }))
             .map_err(|_| ExportError::RenderWorkerUnavailable)?;
         receive
             .recv()
             .map_err(|_| ExportError::RenderWorkerUnavailable)?
+    }
+
+    /// Stream a whole file batch on the same renderer thread as byte exports.
+    /// No editor state or encoded file buffers cross the request channel.
+    pub fn export_files(
+        &self,
+        scene: Arc<LayoutScene>,
+        targets: Vec<RasterFileTarget>,
+        format: RasterFormat,
+        scale: f32,
+    ) -> Result<Vec<Result<(), ExportError>>, ExportError> {
+        let _submission = self
+            .submission
+            .lock()
+            .map_err(|_| ExportError::RenderWorkerUnavailable)?;
+        let (reply, receive) = mpsc::sync_channel(0);
+        self.state
+            .sender
+            .send(Job::Files(FileJob {
+                scene,
+                targets,
+                format,
+                scale,
+                reply,
+            }))
+            .map_err(|_| ExportError::RenderWorkerUnavailable)?;
+        receive
+            .recv()
+            .map_err(|_| ExportError::RenderWorkerUnavailable)
     }
 }
 
@@ -184,7 +240,7 @@ pub fn shared_raster_worker() -> Result<&'static SharedRasterWorker, ExportError
         .map_err(Clone::clone)
 }
 
-fn render_job(job: &Job) -> Result<Vec<u8>, ExportError> {
+fn render_job(job: &RasterJob) -> Result<Vec<u8>, ExportError> {
     let page_id = match &job.target {
         SharedRasterTarget::Page { page_id } | SharedRasterTarget::Node { page_id, .. } => page_id,
     };

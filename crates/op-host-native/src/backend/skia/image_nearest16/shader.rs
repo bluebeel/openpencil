@@ -51,6 +51,9 @@ float4 storeRGBA8(float4 value) {
 float2 nearestTexel(float2 uv) {
     int2 size = int2(sourceSize);
     int2 coord = int2(min(floor(clamp(uv, 0.0, 1.0) * 65536.0), 65535.0));
+    //65535*32768=2147450880 fits signed32. A compile-time choice removes
+    // the wide-source work entirely rather than branching for every sample.
+    if (directAddress) return float2((coord * size) / 65536) + .5;
     // Base256 limbs keep every intermediate in signed32 range, including
     // sources wider than32768. This is floor(coord * size / 65536).
     int2 hi = coord / 256;
@@ -105,8 +108,20 @@ half4 main(float2 p) {
 }
 "#;
 
+const MAX_DIRECT_DIMENSION: i32 = 32768;
+
+// Exactly two programs per render thread. A uniform branch did not improve
+// measured CPU sampling throughput, so select the program at construction.
+fn make_effect(small: bool) -> Option<RuntimeEffect> {
+    let source = format!(
+        "const bool directAddress = {};\n{SOURCE}",
+        if small { "true" } else { "false" }
+    );
+    RuntimeEffect::make_for_shader(&source, None).ok()
+}
 thread_local! {
-    static EFFECT: Option<RuntimeEffect> = RuntimeEffect::make_for_shader(SOURCE, None).ok();
+    static EFFECT: Option<RuntimeEffect> = make_effect(false);
+    static SMALL_EFFECT: Option<RuntimeEffect> = make_effect(true);
 }
 
 #[cfg(test)]
@@ -180,7 +195,13 @@ pub(super) fn make_with_rotation(
         grid,
     ];
     let bytes: Vec<u8> = uniforms.iter().flat_map(|v| v.to_ne_bytes()).collect();
-    EFFECT.with(|effect| {
+    let effect = if image.width() <= MAX_DIRECT_DIMENSION && image.height() <= MAX_DIRECT_DIMENSION
+    {
+        &SMALL_EFFECT
+    } else {
+        &EFFECT
+    };
+    effect.with(|effect| {
         let effect = effect.as_ref()?;
         if effect.uniform_size() != bytes.len() {
             return None;
@@ -245,7 +266,7 @@ mod tests {
 
     #[test]
     fn fixed_nearest_clamps_and_avoids_signed_product_overflow() {
-        for width in [375, 32769, 65537] {
+        for width in [375, 32768, 32769, 65537] {
             for u in [-0.25_f32, 0.99999, 1.25] {
                 let coordinate = (u.clamp(0.0, 1.0) * 65536.0).floor().min(65535.0) as u64;
                 let texel = coordinate * width as u64 / 65536;
@@ -254,6 +275,54 @@ mod tests {
                     (pixel.r(), pixel.g(), pixel.b(), pixel.a()),
                     ((texel % 251) as u8, (texel / 251 % 251) as u8, 37, 255),
                     "width{width},u{u}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn direct_and_wide_address_programs_cover_every_fixed_coordinate_at_the_threshold() {
+        for width in [32767, 32768, 32769] {
+            let source: Vec<u8> = (0..width)
+                .flat_map(|x| [(x % 251) as u8, (x / 251 % 251) as u8, 37, 255])
+                .collect();
+            let info = skia_safe::ImageInfo::new(
+                (width, 1),
+                skia_safe::ColorType::RGBA8888,
+                skia_safe::AlphaType::Unpremul,
+                None,
+            );
+            let image = skia_safe::images::raster_from_data(
+                &info,
+                Data::new_copy(&source),
+                width as usize * 4,
+            )
+            .unwrap();
+            let mut surface = skia_safe::surfaces::raster_n32_premul((256, 256)).unwrap();
+            let shape = RRect::new_rect_xy(skia_safe::Rect::from_wh(256.0, 256.0), 0.0, 0.0);
+            // At pixel(x,y), UV.x=(x+256*y+.5)/65536. All65536 fixed
+            // coordinates appear exactly once, in both compiled programs.
+            let shader = make_with_rotation(
+                surface.canvas(),
+                &image,
+                &Matrix::default(),
+                Some([1.0 / 256.0, 1.0, -1.0 / 512.0, 0.0, 0.0, 0.5]),
+                &shape,
+                0.0,
+            )
+            .unwrap();
+            let mut paint = skia_safe::Paint::default();
+            paint.set_shader(shader);
+            surface.canvas().draw_rect(shape.rect(), &paint);
+            let snapshot = surface.image_snapshot();
+            let pixels = snapshot.peek_pixels().unwrap();
+            for coord in 0..65536 {
+                let texel = coord as u64 * width as u64 / 65536;
+                let color = pixels.get_color((coord % 256, coord / 256));
+                assert_eq!(
+                    (color.r(), color.g(), color.b(), color.a()),
+                    ((texel % 251) as u8, (texel / 251 % 251) as u8, 37, 255),
+                    "width{width},coord{coord}"
                 );
             }
         }
@@ -429,8 +498,8 @@ mod tests {
             let side = 1.0 / zoom;
             let local = Matrix::scale((side / 4.0, side / 4.0));
             let shape = RRect::new_rect_xy(skia_safe::Rect::from_wh(side, side), 0.0, 0.0);
-            let effect = RuntimeEffect::make_for_shader(SOURCE, None);
-            assert!(effect.is_ok(), "{effect:?}");
+            let effect = make_effect(false);
+            assert!(effect.is_some(), "{effect:?}");
             let shader = make(canvas, &image, &local, &shape, 2.0).unwrap();
             let mut paint = skia_safe::Paint::default();
             paint.set_shader(shader);

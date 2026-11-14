@@ -211,6 +211,7 @@ fn build_text_node_in_path(
                     fill: segment.style.fill,
                     underline: segment.style.underline,
                     strikethrough: segment.style.strike,
+                    text_decoration_skip_ink: None,
                     href: segment.style.href,
                 })
                 .collect(),
@@ -219,7 +220,7 @@ fn build_text_node_in_path(
     let text_box = layout::map_text_box(block_style, path, context);
     let effects = crate::mapper::map_text_shadow(block_style, context);
     let mut text = TextNode {
-            font_features: None,
+        font_features: None,
         font_kerning: None,
         base: PenNodeBase {
             id: context.generate_id(),
@@ -244,6 +245,7 @@ fn build_text_node_in_path(
         text_growth: text_box.growth,
         underline: decoration(block_style, "underline").then_some(true),
         strikethrough: decoration(block_style, "line-through").then_some(true),
+        text_decoration_skip_ink: None,
         fill: crate::mapper::text_paint_color(block_style, text_fill_override)
             .map(|color| vec![solid_fill(color)]),
         effects,

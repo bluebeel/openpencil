@@ -507,6 +507,7 @@ fn build_node(variant: FigmaNodeVariant, base: PenNodeBase) -> PenNode {
         FigmaNodeVariant::Text => PenNode::Text(TextNode {
             font_features: None,
             font_kerning: None,
+            text_decoration_skip_ink: Some(true),
             base,
             width: None,
             height: None,

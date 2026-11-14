@@ -10,8 +10,8 @@ use crate::figma_types::{
 };
 use crate::image_resolver::{resolve_image_blobs_owned_with, ImageTransform};
 use crate::node_mapper::{
-    convert_tree_all_pages, convert_tree_page, empty_import_result,
-    resolve_style_references_with_mode, FigmaImportResult, FigmaPageInfo,
+    convert_tree_all_pages, empty_import_result, resolve_style_references_with_mode,
+    FigmaImportResult, FigmaPageInfo,
 };
 use crate::progress::FigImportPhase;
 use crate::tree::{build_tree_owned, guid_to_string, is_user_page, TreeNode};
@@ -191,12 +191,14 @@ impl PreparedFig {
         } = self;
         let tree = tree.expect("prepared file with pages must have a document tree");
         observer(FigImportPhase::ConvertPage);
-        let result = convert_tree_page(&tree, blobs, &file_name, page_index, layout_mode);
-        // Conversion owns its output; release the decoded source tree
-        // before image transforms/base64 can allocate another large
-        // document-sized payload.
-        observer(FigImportPhase::ReleaseSource);
-        drop(tree);
+        let result = crate::node_mapper::convert_tree_page_owned(
+            tree,
+            blobs,
+            &file_name,
+            page_index,
+            layout_mode,
+            observer,
+        );
         observer(FigImportPhase::ResolveImages);
         let result = resolve_images(result, image_files, image_transform);
         observer(FigImportPhase::Complete);

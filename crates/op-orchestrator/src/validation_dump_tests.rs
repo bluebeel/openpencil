@@ -44,7 +44,7 @@ fn make_frame(id: &str, children: Option<Vec<PenNode>>) -> PenNode {
 
 fn make_text(id: &str, content: &str) -> PenNode {
     PenNode::Text(TextNode {
-            font_features: None,
+        font_features: None,
         font_kerning: None,
         base: PenNodeBase {
             id: id.to_string(),
@@ -64,6 +64,7 @@ fn make_text(id: &str, content: &str) -> PenNode {
         text_growth: None,
         underline: None,
         strikethrough: None,
+        text_decoration_skip_ink: None,
         fill: None,
         effects: None,
         state: None,
@@ -388,7 +389,7 @@ fn dump_text_fields() {
     use jian_ops_schema::node::{FontWeight, TextAlign, TextGrowth};
     let mut state = state_with_nodes(vec![]);
     state.doc.children = vec![PenNode::Text(TextNode {
-            font_features: None,
+        font_features: None,
         font_kerning: None,
         base: PenNodeBase {
             id: "t1".to_string(),
@@ -408,6 +409,7 @@ fn dump_text_fields() {
         text_growth: Some(TextGrowth::FixedWidth),
         underline: None,
         strikethrough: None,
+        text_decoration_skip_ink: None,
         fill: None,
         effects: None,
         state: None,

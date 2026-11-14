@@ -80,6 +80,7 @@ fn text_label(id: &str, role: Option<&str>, content: &str) -> PenNode {
         text_growth: None,
         underline: None,
         strikethrough: None,
+        text_decoration_skip_ink: None,
         fill: None,
         effects: None,
         state: None,

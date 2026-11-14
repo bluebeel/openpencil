@@ -29,8 +29,10 @@ use op_editor_ui::Rect;
 use skia_safe::{Canvas, EncodedImageFormat};
 use std::path::Path as StdPath;
 
+mod batch_files;
 mod correlated_raster;
 mod editor;
+mod encoding;
 mod error;
 pub mod pdf;
 mod scene_painter;
@@ -38,6 +40,7 @@ mod scene_sampling;
 mod shared_raster;
 mod svg;
 
+pub use batch_files::{export_scene_files, RasterFileTarget};
 pub use correlated_raster::{RasterSampling, MAX_CORRELATED_WORKING_BYTES};
 pub use editor::{
     default_export_file_name, export_editor_state, export_editor_state_to_path, EditorExportScope,
@@ -116,9 +119,8 @@ impl RasterFormat {
     }
 
     fn ensure_supported(self) -> Result<(), ExportError> {
-        // The pinned iOS and Android Skia archives omit WebP. Desktop keeps
-        // the historical best-effort Skia encode path without enabling a new
-        // feature that would change its pinned binary key.
+        // Mobile retains its explicit capability gate. Desktop uses a separate
+        // codec so WebP support does not depend on a Skia archive variant.
         if matches!(self, RasterFormat::Webp) && cfg!(any(target_os = "ios", target_os = "android"))
         {
             return Err(ExportError::UnsupportedFormat { format: "WEBP" });
@@ -181,12 +183,35 @@ pub fn export_node_raster_with_margin(
         .ok_or_else(|| ExportError::NodeNotFoundOnActivePage {
             node_id: node_id.to_string(),
         })?;
+    export_scene_node_raster_with_margin(node, target, format, scale, margin)
+}
+
+/// Export an already-resolved node without another page-tree search. Batch
+/// callers can resolve all requested identities in one traversal first.
+pub fn export_scene_node_raster(
+    node: &SceneNode,
+    target: &StdPath,
+    format: RasterFormat,
+    scale: f32,
+) -> Result<(), ExportError> {
+    export_scene_node_raster_with_margin(node, target, format, scale, MARGIN)
+}
+
+fn export_scene_node_raster_with_margin(
+    node: &SceneNode,
+    target: &StdPath,
+    format: RasterFormat,
+    scale: f32,
+    margin: f32,
+) -> Result<(), ExportError> {
+    format.ensure_supported()?;
+    let scale = clamp_scale(scale);
     let mut acc = BoundsAcc::new();
     collect_bounds(node, glam::Affine2::IDENTITY, &mut acc);
     let bounds = acc
         .into_rect()
         .ok_or_else(|| ExportError::NodePaintsNothing {
-            node_id: node_id.to_string(),
+            node_id: node.id.clone(),
         })?;
     render_raster(bounds, target, format, scale, margin.max(0.0), |canvas| {
         paint_node(canvas, node);
@@ -312,9 +337,8 @@ fn render_raster(
     margin: f32,
     paint: impl FnOnce(&Canvas),
 ) -> Result<(), ExportError> {
-    let data = render_raster_bytes(bounds, format, scale, margin, paint)?;
-    std::fs::write(target, data).map_err(|e| ExportError::Write(e.to_string()))?;
-    Ok(())
+    let surface = render_raster_surface(bounds, format, scale, margin, paint)?;
+    encoding::write_surface(surface, target, format)
 }
 
 /// In-memory variant of [`render_raster`] — encodes and returns the
@@ -328,6 +352,32 @@ pub fn render_raster_bytes(
     margin: f32,
     paint: impl FnOnce(&Canvas),
 ) -> Result<Vec<u8>, ExportError> {
+    let data = render_raster_data(bounds, format, scale, margin, paint)?;
+    Ok(data.as_bytes().to_vec())
+}
+
+// Pixel surfaces and snapshots drop before a caller copies encoded bytes.
+// File exports borrow the encoded backing directly and need no output copy.
+fn render_raster_data(
+    bounds: Rect,
+    format: RasterFormat,
+    scale: f32,
+    margin: f32,
+    paint: impl FnOnce(&Canvas),
+) -> Result<encoding::RasterData, ExportError> {
+    encoding::surface(
+        render_raster_surface(bounds, format, scale, margin, paint)?,
+        format,
+    )
+}
+
+fn render_raster_surface(
+    bounds: Rect,
+    format: RasterFormat,
+    scale: f32,
+    margin: f32,
+    paint: impl FnOnce(&Canvas),
+) -> Result<skia_safe::Surface, ExportError> {
     format.ensure_supported()?;
     let width_f = ((bounds.size.x + margin * 2.0) * scale).round();
     let height_f = ((bounds.size.y + margin * 2.0) * scale).round();
@@ -347,6 +397,7 @@ pub fn render_raster_bytes(
             height_px,
         });
     }
+    encoding::validate_dimensions(format, width_px, height_px)?;
     let info = skia_safe::ImageInfo::new(
         (width_px as i32, height_px as i32),
         skia_safe::ColorType::N32,
@@ -364,13 +415,7 @@ pub fn render_raster_bytes(
     canvas.scale((scale, scale));
     canvas.translate((margin - bounds.origin.x, margin - bounds.origin.y));
     paint(canvas);
-    let image = surface.image_snapshot();
-    let data = image
-        .encode(None, format.skia(), format.quality())
-        .ok_or(ExportError::Encode {
-            format: format.user_label(),
-        })?;
-    Ok(data.as_bytes().to_vec())
+    Ok(surface)
 }
 
 /// Bounding rect over every paintable node on `page`. The scene is
@@ -500,6 +545,8 @@ pub mod test_support {
     }
 }
 
+#[cfg(test)]
+mod encoding_tests;
 #[cfg(test)]
 mod shadow_tests;
 #[cfg(test)]

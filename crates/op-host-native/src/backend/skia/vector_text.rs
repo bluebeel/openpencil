@@ -12,6 +12,9 @@ use skia_safe::{
 mod curve;
 #[path = "vector_text_reuse.rs"]
 mod reuse;
+#[path = "vector_text_units.rs"]
+mod units;
+pub(super) use units::MetadataCache;
 
 pub(super) fn with_export_scope<R>(action: impl FnOnce() -> R) -> R {
     reuse::with_scope(action)
@@ -31,6 +34,7 @@ pub(super) fn draw(
     origin: Point,
     paint: &Paint,
     modern: bool,
+    metadata: Option<&std::cell::RefCell<MetadataCache>>,
 ) -> bool {
     let point = jian_skia::raster_sampling::is_point_sampling();
     if (!modern && !point) || glyphs.len() != positions.len() || glyphs.len() > MAX_GLYPHS {
@@ -57,8 +61,8 @@ pub(super) fn draw(
         }
         return false;
     }
-    let path = reuse::outline(font, glyphs, positions, origin, || {
-        build_outline(font, glyphs, positions, origin)
+    let path = reuse::outline(font, glyphs, positions, origin, modern, || {
+        build_outline(font, glyphs, positions, origin, modern, metadata)
     });
     path.is_some_and(|path| draw_path(canvas, &path, paint))
 }
@@ -68,6 +72,8 @@ fn build_outline(
     glyphs: &[GlyphId],
     positions: &[Point],
     origin: Point,
+    modern: bool,
+    metadata: Option<&std::cell::RefCell<MetadataCache>>,
 ) -> Option<Path> {
     let mut path = PathBuilder::new();
     for (&glyph, position) in glyphs.iter().zip(positions) {
@@ -76,7 +82,12 @@ fn build_outline(
         if !x.is_finite() || !y.is_finite() {
             return None;
         }
-        if let Some(outline) = font.get_path(glyph) {
+        let outline = if modern {
+            units::outline_with_metadata(font, glyph, metadata)
+        } else {
+            None
+        };
+        if let Some(outline) = outline.or_else(|| font.get_path(glyph)) {
             path.add_path_with_offset(&outline, (x, y), None);
         } else {
             let mut bounds = [Rect::default()];

@@ -113,7 +113,17 @@ fn zstd_decompress(bytes: &[u8]) -> Option<Vec<u8>> {
 
 /// Split a `.fig` file buffer into schema + data binary parts and
 /// extract embedded images.
+#[allow(dead_code)] // Eager container API remains available for compatibility diagnostics.
 pub fn fig_to_binary_parts(file_buffer: &[u8]) -> Result<FigBinaryParts, ContainerError> {
+    split_parts(file_buffer, true)
+}
+
+/// Keep encoded data bounded while the import decoder consumes one value at a time.
+pub(crate) fn fig_to_encoded_parts(file_buffer: &[u8]) -> Result<FigBinaryParts, ContainerError> {
+    split_parts(file_buffer, false)
+}
+
+fn split_parts(file_buffer: &[u8], decompress: bool) -> Result<FigBinaryParts, ContainerError> {
     let mut image_files: HashMap<String, Vec<u8>> = HashMap::new();
 
     // ZIP wrapper: anything not starting with the fig-kiwi magic.
@@ -155,12 +165,18 @@ pub fn fig_to_binary_parts(file_buffer: &[u8]) -> Result<FigBinaryParts, Contain
             break;
         }
         let raw_chunk = &canvas[start..start + chunk_size];
-        parts.push(decompress_chunk(raw_chunk));
+        parts.push(if decompress {
+            decompress_chunk(raw_chunk)
+        } else {
+            raw_chunk.to_vec()
+        });
         start += chunk_size;
     }
 
     Ok(FigBinaryParts { parts, image_files })
 }
+
+pub(crate) mod stream;
 
 #[cfg(test)]
 mod tests {

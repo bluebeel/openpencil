@@ -11,14 +11,15 @@ use jian_ops_schema::{
 };
 use op_editor_core::PenNodeExt;
 
+pub(crate) fn has_content_binding(nodes: &[PenNode]) -> bool {
+    nodes.iter().any(|node| {
+        matches!(node, PenNode::Text(text) if text.bindings.as_ref().is_some_and(|b| b.contains_key("content")))
+            || node.children().is_some_and(|children| has_content_binding(children))
+    })
+}
+
 pub(crate) fn apply(roots: &mut [PenNode], doc: &PenDocument, page_id: Option<&str>) {
-    fn has_binding(nodes: &[PenNode]) -> bool {
-        nodes.iter().any(|node| {
-            matches!(node, PenNode::Text(text) if text.bindings.as_ref().is_some_and(|b| b.contains_key("content")))
-                || node.children().is_some_and(|children| has_binding(children))
-        })
-    }
-    if !has_binding(roots) {
+    if !has_content_binding(roots) {
         return;
     }
     // Seed exactly the same app/page/self defaults as Preview, without mounting it.

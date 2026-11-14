@@ -21,6 +21,7 @@ pub use compact_float::FloatRecord;
 mod compact_guid;
 pub(crate) mod deferred;
 pub(crate) mod storage;
+pub(crate) mod stream;
 mod value;
 pub use value::FigValue;
 #[path = "kiwi/import_projection.rs"]
@@ -77,11 +78,30 @@ impl std::fmt::Display for KiwiError {
 pub struct ByteBuffer<'a> {
     data: &'a [u8],
     index: usize,
+    logical_len: usize,
 }
 
 impl<'a> ByteBuffer<'a> {
     pub fn new(data: &'a [u8]) -> Self {
-        ByteBuffer { data, index: 0 }
+        ByteBuffer {
+            data,
+            index: 0,
+            logical_len: data.len(),
+        }
+    }
+
+    // Framed fields retain the original suffix length for the existing array-count guard.
+    // Reads still use the actual slice, including for zero-byte struct arrays.
+    pub(super) fn with_tail(data: &'a [u8], tail: usize) -> Self {
+        Self {
+            data,
+            index: 0,
+            logical_len: data.len().saturating_add(tail),
+        }
+    }
+
+    fn array_remaining(&self) -> usize {
+        self.logical_len.saturating_sub(self.index)
     }
 
     fn at_end(&self) -> bool {
@@ -495,10 +515,10 @@ impl<'a, 'b> Decoder<'a, 'b> {
             // bytes left to read — rejects a hostile length that would
             // spin the decode loop billions of times (e.g. an array of
             // a zero-byte struct type).
-            if n as usize > self.bb.remaining() {
+            if n as usize > self.bb.array_remaining() {
                 return Err(KiwiError::OutOfBounds);
             }
-            let mut items = Vec::with_capacity((n as usize).min(self.bb.remaining()));
+            let mut items = Vec::with_capacity((n as usize).min(self.bb.array_remaining()));
             for _ in 0..n {
                 items.push(self.decode_type(resolved, depth + 1, scope)?);
             }
@@ -646,6 +666,7 @@ pub fn decode_message(schema: &Schema, data: &[u8]) -> Result<FigValue, KiwiErro
 
 /// Decode only import-relevant caches while validating the entire wire stream.
 /// Generic [`decode_message`] continues to retain every schema field.
+#[allow(dead_code)] // Matched eager import reference for streaming compatibility checks.
 pub(crate) fn decode_import_message(schema: &Schema, data: &[u8]) -> Result<FigValue, KiwiError> {
     let root_index = schema
         .definitions

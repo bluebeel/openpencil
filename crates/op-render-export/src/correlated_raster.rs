@@ -140,11 +140,7 @@ pub(crate) fn render(
         Pixmap::new(&info, &mut atlas, width as usize * 4).ok_or(ExportError::SurfaceAlloc)?;
     // Direct pixmap encoding preserves the final straight bytes; an N32
     // image encode would apply another premultiply/unpremultiply conversion.
-    pixels
-        .encode(format.skia(), format.quality())
-        .ok_or(ExportError::Encode {
-            format: format.user_label(),
-        })
+    super::encoding::pixmap_bytes(&pixels, format)
 }
 
 fn quantize(value: f32) -> u8 {

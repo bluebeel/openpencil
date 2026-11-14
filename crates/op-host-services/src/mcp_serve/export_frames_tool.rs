@@ -23,10 +23,14 @@ use std::path::PathBuf;
 use op_editor_core::EditorState;
 use op_mcp::{McpTool, ToolErrorCode, ToolOutcome};
 
-use crate::export_batch::export_frames_to_dir;
+use super::raster_snapshot::RasterSnapshot;
+use crate::export_batch::{raster_file_targets, report_results};
+use op_editor_core::export_batch::FrameExportTarget;
 
 pub struct ExportFrames {
-    state: EditorState,
+    scene: RasterSnapshot,
+    targets: Vec<FrameExportTarget>,
+    scale: f32,
 }
 
 impl McpTool for ExportFrames {
@@ -49,20 +53,39 @@ impl McpTool for ExportFrames {
             .map(|value| value.trim())
             .filter(|value| !value.is_empty())
             .unwrap_or("png");
-        if !matches!(extension, "png" | "jpeg" | "jpg" | "webp") {
+        let Some(format) = crate::export::RasterFormat::from_extension(extension) else {
             return ToolOutcome::Err(
                 ToolErrorCode::InvalidArgument,
                 format!("unknown format {extension:?}: must be one of png, jpeg, webp"),
             );
-        }
+        };
 
-        let targets = op_editor_core::export_batch::plan_frame_exports(&self.state, extension);
-        if targets.is_empty() {
+        if self.targets.is_empty() {
             return ToolOutcome::Err(
                 ToolErrorCode::InvalidArgument,
                 "the active page has no exportable top-level frames".into(),
             );
         }
+        if let Err(error) = self.scene.ready() {
+            return ToolOutcome::Err(ToolErrorCode::ToolFailed, error.to_string());
+        }
+        // Naming was planned once against the borrowed original state. Only
+        // the final suffix depends on the encoder, preserving planner ordering,
+        // selection, collision handling and names containing dots.
+        let targets: Vec<_> = self
+            .targets
+            .iter()
+            .map(|target| FrameExportTarget {
+                node_id: target.node_id.clone(),
+                file_name: format!(
+                    "{}.{extension}",
+                    target
+                        .file_name
+                        .strip_suffix(".png")
+                        .expect("PNG export plan")
+                ),
+            })
+            .collect();
         if let Err(error) = std::fs::create_dir_all(&directory) {
             return ToolOutcome::Err(
                 ToolErrorCode::Internal,
@@ -70,7 +93,15 @@ impl McpTool for ExportFrames {
             );
         }
 
-        let report = export_frames_to_dir(&self.state, &directory, &targets);
+        let results = match self.scene.export_files(
+            raster_file_targets(&directory, &targets),
+            format,
+            self.scale,
+        ) {
+            Ok(results) => results,
+            Err(error) => return ToolOutcome::Err(ToolErrorCode::ToolFailed, error.to_string()),
+        };
+        let report = report_results(&targets, results);
         // Partial success is reported, not raised: one unrenderable frame must
         // not throw away the files that did land.
         let failed: Vec<serde_json::Value> = report
@@ -92,7 +123,7 @@ impl McpTool for ExportFrames {
 }
 
 pub struct GetDeckBoards {
-    state: EditorState,
+    result: String,
 }
 
 impl McpTool for GetDeckBoards {
@@ -101,23 +132,45 @@ impl McpTool for GetDeckBoards {
     }
 
     fn call(&self, _args: &BTreeMap<String, String>) -> ToolOutcome {
-        let boards = op_editor_core::preview_slideshow::active_page_boards(&self.state);
-        ToolOutcome::OkJson(
-            serde_json::json!({ "count": boards.len(), "boards": boards }).to_string(),
-        )
+        ToolOutcome::OkJson(self.result.clone())
     }
 }
 
-/// Registration is gated on the requested tool, so these clones happen only
-/// when the tool being invoked is this one.
 pub fn export_frames_snapshot(state: &EditorState) -> ExportFrames {
+    export_frames_snapshot_inner(state, false)
+}
+
+pub(super) fn export_frames_snapshot_admitted(state: &EditorState) -> ExportFrames {
+    export_frames_snapshot_inner(state, true)
+}
+
+fn export_frames_snapshot_inner(state: &EditorState, admitted: bool) -> ExportFrames {
+    let targets = op_editor_core::export_batch::plan_frame_exports(state, "png");
+    let derive = || op_pen_loader::editor_state_to_active_page_export_layout_scene(state);
+    let scene = if targets.is_empty() {
+        RasterSnapshot::from_scene(op_editor_ui::layout_scene::LayoutScene {
+            pages: Vec::new(),
+            active_page_index: 0,
+        })
+    } else if admitted {
+        RasterSnapshot::admitted(derive)
+    } else {
+        RasterSnapshot::from_scene(derive())
+    };
     ExportFrames {
-        state: state.clone(),
+        scene,
+        targets,
+        scale: state.editor_ui.export_scale,
     }
 }
 
 pub fn get_deck_boards_snapshot(state: &EditorState) -> GetDeckBoards {
+    let boards = op_editor_core::preview_slideshow::active_page_boards(state);
     GetDeckBoards {
-        state: state.clone(),
+        result: serde_json::json!({ "count": boards.len(), "boards": boards }).to_string(),
     }
 }
+
+#[cfg(test)]
+#[path = "export_frames_tool_tests.rs"]
+mod tests;

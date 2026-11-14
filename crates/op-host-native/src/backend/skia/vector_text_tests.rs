@@ -29,6 +29,7 @@ fn render(origin: Point, modern: bool) -> (bool, Vec<u8>) {
         origin,
         &paint,
         modern,
+        None,
     );
     let pixels = surface
         .image_snapshot()
@@ -69,10 +70,15 @@ fn vector_text_baseline_snap_preserves_shaped_vertical_offsets() {
             &[Point::new(0.0, 0.375)],
             (4.25, 32.2).into(),
             &paint,
-            true
+            true,
+            None
         ));
         let mut path = PathBuilder::new();
-        path.add_path_with_offset(&font.get_path(glyphs[0]).unwrap(), (4.25, 32.375), None);
+        path.add_path_with_offset(
+            &units::outline(&font, glyphs[0]).unwrap_or_else(|| font.get_path(glyphs[0]).unwrap()),
+            (4.25, 32.375),
+            None,
+        );
         assert!(draw_path(expected.canvas(), &path.detach(), &paint));
         assert_eq!(
             actual

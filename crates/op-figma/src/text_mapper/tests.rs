@@ -347,3 +347,72 @@ fn sparse_style_ids_select_text_colors_by_declared_id() {
     assert_eq!(segments[3].fill, None, "IDs are not array offsets");
     assert_eq!(segments[4].fill, None, "unknown IDs inherit the node style");
 }
+
+#[test]
+fn underline_skip_ink_defaults_on_and_preserves_explicit_node_setting() {
+    for (setting, expected) in [(None, true), (Some(false), false), (Some(true), true)] {
+        let mut source = obj(vec![("textDecoration", FigValue::Str("UNDERLINE".into()))]);
+        if let Some(setting) = setting {
+            source.set("textDecorationSkipInk", FigValue::Bool(setting));
+        }
+        let props = map_figma_text_props(&source);
+        assert_eq!(props.text_decoration_skip_ink, Some(expected));
+        let node = crate::node_build::text_node(
+            jian_ops_schema::node::PenNodeBase::default(),
+            jian_ops_schema::sizing::SizingBehavior::Number(100.0),
+            jian_ops_schema::sizing::SizingBehavior::Number(20.0),
+            props,
+            None,
+            None,
+        );
+        let jian_ops_schema::node::PenNode::Text(node) = node else {
+            panic!()
+        };
+        assert_eq!(node.text_decoration_skip_ink, Some(expected));
+    }
+}
+
+#[test]
+fn underline_skip_ink_segments_inherit_or_keep_authored_overrides() {
+    let source = obj(vec![
+        ("textDecorationSkipInk", FigValue::Bool(false)),
+        (
+            "textData",
+            obj(vec![
+                ("characters", FigValue::Str("abc".into())),
+                (
+                    "characterStyleIDs",
+                    FigValue::Array([0, 1, 2].into_iter().map(FigValue::Int).collect()),
+                ),
+                (
+                    "styleOverrideTable",
+                    FigValue::Array(
+                        vec![
+                            obj(vec![
+                                ("styleID", FigValue::Int(1)),
+                                ("textDecorationSkipInk", FigValue::Bool(false)),
+                            ]),
+                            obj(vec![
+                                ("styleID", FigValue::Int(2)),
+                                ("textDecorationSkipInk", FigValue::Bool(true)),
+                            ]),
+                        ]
+                        .into(),
+                    ),
+                ),
+            ]),
+        ),
+    ]);
+    let props = map_figma_text_props(&source);
+    assert_eq!(props.text_decoration_skip_ink, Some(false));
+    let TextContent::Styled(segments) = props.content else {
+        panic!()
+    };
+    assert_eq!(
+        segments
+            .iter()
+            .map(|s| s.text_decoration_skip_ink)
+            .collect::<Vec<_>>(),
+        [None, Some(false), Some(true)]
+    );
+}

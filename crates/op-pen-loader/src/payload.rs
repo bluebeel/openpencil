@@ -197,6 +197,8 @@ pub struct NodePayload {
     /// Node-level strikethrough decoration. Text-only.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub strikethrough: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text_decoration_skip_ink: Option<bool>,
     /// Per-segment style runs when the canonical text content is
     /// `TextContent::Styled`. Each run covers `text.len()` bytes of
     /// the flattened `text` in order; empty for plain text.

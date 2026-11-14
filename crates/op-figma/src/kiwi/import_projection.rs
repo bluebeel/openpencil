@@ -144,7 +144,7 @@ impl Decoder<'_, '_> {
             return self.bb.skip_byte_array();
         }
         let count = self.bb.read_var_uint()? as usize;
-        if count > self.bb.remaining() {
+        if count > self.bb.array_remaining() {
             return Err(KiwiError::OutOfBounds);
         }
         for _ in 0..count {

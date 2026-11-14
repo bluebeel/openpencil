@@ -70,10 +70,15 @@ def usage(pid):
         return None
 
 
-async def monitor(process, report, limit):
+async def monitor(process, report, limit, scope="aggregate"):
+    if scope not in ("aggregate", "service"):
+        raise ValueError("memory scope must be aggregate or service")
     report["memoryLimitBytes"] = limit
+    report["memoryBudgetScope"] = scope
     report["memorySampleIntervalSeconds"] = .05
-    report["memoryScope"] = "shared service/renderer process + load-generator process; no external LLMs"
+    report["memoryScope"] = ("shared service/renderer process; load generator sampled separately"
+                             if scope == "service" else
+                             "shared service/renderer process + load-generator process; no external LLMs")
     report["physicalFootprintAvailable"] = bool(USAGE_API)
     report["cpuTickNanoseconds"] = CPU_TICK_NANOSECONDS if USAGE_API else None
     report["peakAggregateRssBytes"] = report["peakServiceRssBytes"] = 0
@@ -93,7 +98,9 @@ async def monitor(process, report, limit):
             peaks["rssBytes"] = max(peaks["rssBytes"], resident)
             if USAGE_API:
                 peaks["physicalFootprintBytes"] = max(peaks["physicalFootprintBytes"], footprint)
-            if resident > limit or (footprint is not None and footprint > limit):
+            charged_rss = service["rss"] if scope == "service" else resident
+            charged_physical = service["footprint"] if scope == "service" else footprint
+            if charged_rss > limit or (charged_physical is not None and charged_physical > limit):
                 report["memoryBudgetExceeded"] = True
                 process.terminate()  # Owned, unreaped subprocess only; no process-name kills.
                 return
@@ -115,7 +122,11 @@ def phase(name):
 
 
 def sha(path):
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        while chunk := stream.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def nodes(document):

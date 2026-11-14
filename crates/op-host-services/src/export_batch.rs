@@ -16,7 +16,9 @@
 
 use op_editor_core::export_batch::FrameExportTarget;
 use op_editor_core::EditorState;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(test)]
+use std::path::PathBuf;
 
 /// Batch export always writes PNG. The export dialog's format applies
 /// to the single-frame path only — a deck of screenshots wants lossless
@@ -53,23 +55,53 @@ pub fn export_frames_to_dir(
     directory: &Path,
     targets: &[FrameExportTarget],
 ) -> BatchExportReport {
-    let mut report = BatchExportReport::default();
+    export_frames_to_dir_with_format(state, directory, targets, crate::export::RasterFormat::Png)
+}
+
+/// Export all planned frames using the explicitly requested encoder. The UI's
+/// PNG-only entry point remains the wrapper above; MCP supports all raster formats.
+pub fn export_frames_to_dir_with_format(
+    state: &EditorState,
+    directory: &Path,
+    targets: &[FrameExportTarget],
+    format: crate::export::RasterFormat,
+) -> BatchExportReport {
     if targets.is_empty() {
-        return report;
+        return BatchExportReport::default();
     }
     // One scene for the whole batch — the layout pass is the expensive
     // part and it is identical for every frame on the page.
     let scene = op_pen_loader::editor_state_to_active_page_export_layout_scene(state);
-    let scale = state.editor_ui.export_scale;
+    let files = raster_file_targets(directory, targets);
+    let results =
+        crate::export::export_scene_files(&scene, &files, format, state.editor_ui.export_scale);
+    report_results(targets, results)
+}
+
+pub(crate) fn raster_file_targets(
+    directory: &Path,
+    targets: &[FrameExportTarget],
+) -> Vec<crate::export::RasterFileTarget> {
+    targets
+        .iter()
+        .map(|target| crate::export::RasterFileTarget {
+            node_id: target.node_id.as_str().into(),
+            path: directory.join(&target.file_name),
+        })
+        .collect()
+}
+
+pub(crate) fn report_results(
+    targets: &[FrameExportTarget],
+    results: Vec<Result<(), crate::export::ExportError>>,
+) -> BatchExportReport {
+    let mut report = BatchExportReport::default();
+    let mut results = results.into_iter();
     for target in targets {
-        let path: PathBuf = directory.join(&target.file_name);
-        match crate::export::export_node_raster(
-            &scene,
-            target.node_id.as_str(),
-            &path,
-            crate::export::RasterFormat::Png,
-            scale,
-        ) {
+        let result = results
+            .next()
+            .unwrap_or(Err(crate::export::ExportError::RenderWorkerUnavailable));
+        match result {
             Ok(()) => report.written.push(target.file_name.clone()),
             Err(e) => report
                 .failed

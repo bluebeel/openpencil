@@ -93,7 +93,7 @@ impl Decoder<'_, '_> {
             return self.skip_field(resolved, is_array, depth);
         }
         let count = self.bb.read_var_uint()? as usize;
-        if count > self.bb.remaining() {
+        if count > self.bb.array_remaining() {
             return Err(KiwiError::OutOfBounds);
         }
         // Each projected entry is consumed and released immediately. Array

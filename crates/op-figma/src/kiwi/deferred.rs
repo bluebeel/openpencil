@@ -32,6 +32,7 @@ struct Spec {
     array: bool,
     depth: u32,
     scope: DecodeScope,
+    trailing: usize,
 }
 enum Pending {
     Wire {
@@ -56,7 +57,7 @@ impl Pending {
             } => {
                 let mut decoder = Decoder {
                     schema: &shared.schema,
-                    bb: ByteBuffer::new(&bytes),
+                    bb: ByteBuffer::with_tail(&bytes, spec.trailing),
                     field_types: shared.field_types.clone(),
                     field_by_value: shared.field_by_value.clone(),
                     object_keys: shared.object_keys.clone(),
@@ -229,6 +230,7 @@ impl Decoder<'_, '_> {
                 array,
                 depth,
                 scope,
+                trailing: self.bb.array_remaining(),
             },
             apply: Vec::new(),
         }))))

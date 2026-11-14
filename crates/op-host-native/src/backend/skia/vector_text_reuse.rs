@@ -5,6 +5,7 @@ use std::{
     cell::RefCell,
     collections::HashMap,
     hash::{Hash, Hasher},
+    rc::Rc,
 };
 
 const MAX_BYTES: usize = 8 * 1024 * 1024;
@@ -36,6 +37,7 @@ pub(super) fn with_scope<R>(action: impl FnOnce() -> R) -> R {
 
 struct OutlineEntry {
     font: Font,
+    modern: bool,
     glyphs: Box<[GlyphId]>,
     positions: Box<[[u32; 2]]>,
     origin: [u32; 2],
@@ -52,6 +54,7 @@ struct Cache {
     generation: u64,
     outlines: HashMap<u64, Vec<OutlineEntry>>,
     flattened: HashMap<u64, Vec<FlatEntry>>,
+    metadata: HashMap<(u32, GlyphId), Option<Rc<super::units::GlyphMetadata>>>,
     bytes: usize,
     entries: usize,
     max_bytes: usize,
@@ -64,6 +67,7 @@ impl Cache {
             generation: jian_skia::font_generation(),
             outlines: HashMap::new(),
             flattened: HashMap::new(),
+            metadata: HashMap::new(),
             bytes: 0,
             entries: 0,
             max_bytes,
@@ -75,6 +79,7 @@ impl Cache {
         if self.generation != generation {
             self.outlines = HashMap::new();
             self.flattened = HashMap::new();
+            self.metadata = HashMap::new();
             self.bytes = 0;
             self.entries = 0;
             self.generation = generation;
@@ -104,11 +109,18 @@ fn point_bits(p: Point) -> [u32; 2] {
     [p.x.to_bits(), p.y.to_bits()]
 }
 
-fn outline_hash(font: &Font, glyphs: &[GlyphId], positions: &[Point], origin: Point) -> u64 {
+fn outline_hash(
+    font: &Font,
+    glyphs: &[GlyphId],
+    positions: &[Point],
+    origin: Point,
+    modern: bool,
+) -> u64 {
     let mut hash = std::collections::hash_map::DefaultHasher::new();
     font.typeface().unique_id().hash(&mut hash);
     font.size().to_bits().hash(&mut hash);
     glyphs.hash(&mut hash);
+    modern.hash(&mut hash);
     for p in positions {
         point_bits(*p).hash(&mut hash);
     }
@@ -121,19 +133,21 @@ pub(super) fn outline(
     glyphs: &[GlyphId],
     positions: &[Point],
     origin: Point,
+    modern: bool,
     build: impl FnOnce() -> Option<Path>,
 ) -> Option<Path> {
     // Avoid hashing/allocating on ordinary interactive or legacy paints.
     if !ACTIVE.with(|slot| slot.borrow().is_some()) {
         return build();
     }
-    let hash = outline_hash(font, glyphs, positions, origin);
+    let hash = outline_hash(font, glyphs, positions, origin, modern);
     let found = with_cache(|cache| {
         cache.outlines.get(&hash).and_then(|entries| {
             entries
                 .iter()
                 .find(|entry| {
                     entry.font == *font
+                        && entry.modern == modern
                         && entry.glyphs.as_ref() == glyphs
                         && entry.origin == point_bits(origin)
                         && entry.positions.len() == positions.len()
@@ -160,6 +174,7 @@ pub(super) fn outline(
         if cache.admit(bytes) {
             cache.outlines.entry(hash).or_default().push(OutlineEntry {
                 font: font.clone(),
+                modern,
                 glyphs: glyphs.into(),
                 positions: positions.iter().map(|p| point_bits(*p)).collect(),
                 origin: point_bits(origin),
@@ -220,3 +235,32 @@ pub(super) fn flattened(
 #[cfg(test)]
 #[path = "vector_text_reuse_tests.rs"]
 mod tests;
+
+pub(super) fn glyph_metadata(
+    face: u32,
+    glyph: GlyphId,
+    build: impl FnOnce() -> Option<super::units::GlyphMetadata>,
+) -> Option<Rc<super::units::GlyphMetadata>> {
+    let key = (face, glyph);
+    let mut present = false;
+    let cached = with_cache(|cache| {
+        if let Some(value) = cache.metadata.get(&key) {
+            present = true;
+            value.clone()
+        } else {
+            None
+        }
+    })
+    .flatten();
+    if present {
+        return cached;
+    }
+    let metadata = build().map(Rc::new);
+    with_cache(|cache| {
+        let bytes = ENTRY_OVERHEAD + 2 * metadata.as_ref().map_or(0, |m| m.bytes());
+        if cache.admit(bytes) {
+            cache.metadata.insert(key, metadata.clone());
+        }
+    });
+    metadata
+}

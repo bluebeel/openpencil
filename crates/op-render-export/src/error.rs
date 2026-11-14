@@ -76,6 +76,10 @@ pub enum ExportError {
         width_px: i64,
         height_px: i64,
     },
+    WebpOutputTooLarge {
+        width_px: i64,
+        height_px: i64,
+    },
     /// Skia refused to allocate the offscreen raster surface.
     SurfaceAlloc,
     UnknownRasterSampling {
@@ -162,6 +166,9 @@ impl fmt::Display for ExportError {
                  lower the scale / padding or export a smaller node"
             ),
             ExportError::SurfaceAlloc => f.write_str("alloc surface"),
+            ExportError::WebpOutputTooLarge { width_px, height_px } => write!(
+                f, "WebP output {width_px}x{height_px} px exceeds the codec limit (16383 px per side)"
+            ),
             ExportError::UnknownRasterSampling { value } => write!(f, "unknown raster sampling {value}; expected native or correlated4x2"),
             ExportError::CorrelatedPhysicalSize { width_px, height_px, max_side_px } => write!(f, "correlated source {width_px}x{height_px} exceeds the physical edge cap {max_side_px}"),
             ExportError::CorrelatedWorkingSet { requested_bytes, max_bytes } => write!(f, "correlated raster working set {requested_bytes} bytes exceeds {max_bytes} bytes"),

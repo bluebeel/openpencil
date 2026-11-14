@@ -4,8 +4,8 @@
 //! this module adds the geometric primitive structs worth typing and
 //! the `parseFigFile` pipeline that ties the container + Kiwi layers.
 
-use crate::container::{fig_to_binary_parts, ContainerError, FigBinaryParts};
-use crate::kiwi::{decode_binary_schema, decode_import_message, FigValue, KiwiError};
+use crate::container::{fig_to_encoded_parts, ContainerError, FigBinaryParts};
+use crate::kiwi::{decode_binary_schema, FigValue, KiwiError};
 use crate::progress::FigImportPhase;
 use std::collections::HashMap;
 
@@ -218,7 +218,7 @@ pub(crate) fn parse_fig_file_with_observer(
     observer: &mut dyn FnMut(FigImportPhase),
 ) -> Result<FigmaDecodedFile, FigFileError> {
     observer(FigImportPhase::Container);
-    let container = fig_to_binary_parts(bytes).map_err(FigFileError::Container)?;
+    let container = fig_to_encoded_parts(bytes).map_err(FigFileError::Container)?;
     decode_binary_parts(container, observer)
 }
 
@@ -227,7 +227,7 @@ pub(crate) fn parse_fig_file_owned_with_observer(
     observer: &mut dyn FnMut(FigImportPhase),
 ) -> Result<FigmaDecodedFile, FigFileError> {
     observer(FigImportPhase::Container);
-    let container = fig_to_binary_parts(&bytes).map_err(FigFileError::Container)?;
+    let container = fig_to_encoded_parts(&bytes).map_err(FigFileError::Container)?;
     drop(bytes);
     decode_binary_parts(container, observer)
 }
@@ -240,9 +240,19 @@ fn decode_binary_parts(
         return Err(FigFileError::TooFewParts(container.parts.len()));
     }
     observer(FigImportPhase::Schema);
-    let schema = decode_binary_schema(&container.parts[0]).map_err(FigFileError::Kiwi)?;
+    let schema_chunk = crate::container::stream::chunk(&container.parts[0]);
+    let mut schema_bytes = Vec::with_capacity(schema_chunk.len);
+    std::io::Read::read_to_end(&mut schema_chunk.reader(), &mut schema_bytes)
+        .map_err(|_| FigFileError::Kiwi(KiwiError::OutOfBounds))?;
+    let schema = decode_binary_schema(&schema_bytes).map_err(FigFileError::Kiwi)?;
     observer(FigImportPhase::Decode);
-    let raw = decode_import_message(&schema, &container.parts[1]).map_err(FigFileError::Kiwi)?;
+    let data = crate::container::stream::chunk(&container.parts[1]);
+    let raw = crate::kiwi::stream::decode(
+        &schema,
+        std::io::BufReader::with_capacity(64 * 1024, data.reader()),
+        data.len,
+    )
+    .map_err(FigFileError::Kiwi)?;
     observer(FigImportPhase::Extract);
     drop(container.parts);
     let (node_changes, blobs) = extract_decoded_root(raw).ok_or(FigFileError::NoNodeChanges)?;

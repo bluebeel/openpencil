@@ -70,6 +70,7 @@ pub fn text(id: &str, name: &str, x: f64, y: f64, w: f64, h: f64, content: &str)
         text_growth: None,
         underline: None,
         strikethrough: None,
+        text_decoration_skip_ink: None,
         fill: None,
         effects: None,
         state: None,

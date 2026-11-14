@@ -16,6 +16,9 @@ use jian_ops_schema::node::PenNode;
 use jian_ops_schema::page::PenPage;
 use std::collections::HashMap;
 
+mod dependencies;
+mod owned_page;
+pub(crate) use owned_page::convert_tree_page_owned;
 mod style_references;
 
 #[cfg(test)]

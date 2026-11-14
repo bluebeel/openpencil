@@ -19,7 +19,9 @@
 //! resolved geometry + paint fields, and `apply_payload`'s only
 //! transforms on them are lossless format conversions (colour array →
 //! struct, kind / fill-type string → enum).
-
+use crate::payload::{
+    DocPayload, GradientPayload, GradientStopPayload, NodePayload, ShaderPayload,
+};
 use jian_scene::layout_scene::NodeKind;
 use jian_scene::layout_scene::{
     stable_image_source_id, DropShadow, Effect, LayoutScene, SceneFillLayer, SceneFillType,
@@ -29,10 +31,6 @@ use jian_scene::layout_scene::{
 use op_editor_core::render_backend::{Color, ImageBlendMode};
 use op_editor_core::scene_vars::VariableTable;
 use std::sync::Arc;
-
-use crate::payload::{
-    DocPayload, GradientPayload, GradientStopPayload, NodePayload, ShaderPayload,
-};
 
 // Keep the legacy test module's historical local name; implementation lives in `editor_scene`.
 #[cfg(test)]
@@ -299,6 +297,7 @@ pub(crate) fn node_payload_to_scene(
         italic: node.italic,
         underline: node.underline,
         strikethrough: node.strikethrough,
+        text_decoration_skip_ink: node.text_decoration_skip_ink,
         line_height: node.line_height,
         letter_spacing: node.letter_spacing,
         text_align: text_align_to_scene(&node.text_align),
@@ -393,6 +392,7 @@ fn text_runs_to_scene(
                 italic: run.italic,
                 underline: run.underline,
                 strikethrough: run.strikethrough,
+                text_decoration_skip_ink: run.text_decoration_skip_ink,
             };
             start = end;
             scene

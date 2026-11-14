@@ -246,6 +246,7 @@ fn resolve_on_node(
             "textAlignHorizontal",
             "textAlignVertical",
             "textDecoration",
+            "textDecorationSkipInk",
             "textCase",
             "toggledOnOTFeatures",
             "toggledOffOTFeatures",

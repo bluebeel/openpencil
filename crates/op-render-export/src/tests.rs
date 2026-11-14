@@ -757,6 +757,7 @@ fn export_paints_styled_text_runs_with_decorations() {
         italic: false,
         underline: true,
         strikethrough: false,
+        text_decoration_skip_ink: None,
     }];
     let scene = scene_with(vec![node]);
     let tmp = std::env::temp_dir().join(format!("op-export-styled-{}.png", std::process::id()));

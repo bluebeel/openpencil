@@ -60,6 +60,7 @@ pub(crate) struct ShapedRun<'a> {
 pub(crate) struct ShapedText {
     collection: Rc<FontCollection>,
     built_generation: u64,
+    pub(super) metadata: std::cell::RefCell<super::vector_text::MetadataCache>,
 }
 
 impl ShapedText {
@@ -69,6 +70,7 @@ impl ShapedText {
             // registration can at worst leave this stale-low, costing one
             // harmless rebuild.
             built_generation: jian_skia::font_generation(),
+            metadata: std::cell::RefCell::new(super::vector_text::MetadataCache::default()),
             collection: Rc::new(build_collection(font_resolver)),
         })
     }
@@ -127,6 +129,20 @@ impl ShapedText {
         })
     }
 
+    /// Visit the same unwrapped glyph geometry used by paint, for ink gaps.
+    pub(super) fn visit_glyphs(
+        &mut self,
+        font_resolver: &FontResolver,
+        run: &ShapedRun<'_>,
+        action: impl FnMut(&skia_safe::Font, &[skia_safe::GlyphId], &[skia_safe::Point], f32),
+    ) {
+        let mut paragraph = self.build(font_resolver, run);
+        paragraph.layout(NATURAL_LAYOUT_BUDGET);
+        let natural = paragraph.max_intrinsic_width();
+        paragraph.layout(natural.ceil());
+        visit_positioned(&mut paragraph, run, action);
+    }
+
     /// Paint the run with `baseline_y` on its alphabetic baseline, matching
     /// the `draw_str` convention the unshaped path uses, so shaped and
     /// unshaped text sit on one line.
@@ -170,81 +186,29 @@ impl ShapedText {
                     paint.set_color4f(color, None);
                 }
                 jian_skia::raster_sampling::configure_geometry(&mut paint);
-                let character_offsets = run
-                    .text
-                    .char_indices()
-                    .map(|(offset, _)| offset)
-                    .collect::<Vec<_>>();
-                let use_grid =
-                    super::text::uses_advance_grid(run.text, run.kerning, run.font_features);
-                let mut advance_correction = 0.0;
-                paragraph.visit(|_, info| {
-                    let Some(info) = info else { return };
-                    let source = info.font();
-                    let mut font = skia_safe::Font::new(source.typeface(), source.size());
-                    font.set_skew_x(source.skew_x());
-                    font.set_embolden(source.is_embolden());
-                    font.set_hinting(skia_safe::FontHinting::None);
-                    font.set_subpixel(true);
-                    let adjusted = if use_grid {
-                        jian_skia::advance_grid::adjust_glyph_run(
-                            source,
-                            info.glyphs(),
-                            info.positions(),
-                            info.utf8_starts(),
-                            info.advance_x(),
-                        )
-                    } else {
-                        None
-                    };
-                    let base_positions = adjusted
-                        .as_ref()
-                        .map_or(info.positions(), |run| run.positions.as_slice());
-                    let origin_correction = advance_correction;
-                    if let Some(run) = &adjusted {
-                        advance_correction += run.advance_correction;
-                    }
-                    let positions;
-                    let glyph_positions = if run.letter_spacing != 0.0 {
-                        positions = base_positions
-                            .iter()
-                            .zip(info.utf8_starts())
-                            .map(|(position, offset)| {
-                                let character = character_offsets
-                                    .partition_point(|start| *start < *offset as usize);
-                                skia_safe::Point::new(
-                                    position.x + character as f32 * run.letter_spacing,
-                                    position.y,
-                                )
-                            })
-                            .collect::<Vec<_>>();
-                        positions.as_slice()
-                    } else {
-                        base_positions
-                    };
-                    let origin = (x + info.origin().x + origin_correction, baseline_y);
-                    let modern = run.kerning.is_some()
-                        || run
-                            .font_features
-                            .is_some_and(|features| !features.is_empty());
-                    if !super::vector_text::draw(
-                        canvas,
-                        &font,
-                        info.glyphs(),
-                        glyph_positions,
-                        origin.into(),
-                        &paint,
-                        modern,
-                    ) {
-                        canvas.draw_glyphs_at(
-                            info.glyphs(),
-                            glyph_positions,
-                            origin,
-                            &font,
+                let modern = run.kerning.is_some()
+                    || run
+                        .font_features
+                        .is_some_and(|features| !features.is_empty());
+                visit_positioned(
+                    &mut paragraph,
+                    run,
+                    |font, glyphs, positions, relative_x| {
+                        let origin = (x + relative_x, baseline_y);
+                        if !super::vector_text::draw(
+                            canvas,
+                            font,
+                            glyphs,
+                            positions,
+                            origin.into(),
                             &paint,
-                        );
-                    }
-                });
+                            modern,
+                            Some(&self.metadata),
+                        ) {
+                            canvas.draw_glyphs_at(glyphs, positions, origin, font, &paint);
+                        }
+                    },
+                );
                 return;
             }
             // `Paragraph::paint` places the line-box top; callers hand us a
@@ -333,4 +297,69 @@ fn build_collection(font_resolver: &FontResolver) -> FontCollection {
         collection.set_asset_font_manager(Some(provider.into()));
     }
     collection
+}
+
+fn visit_positioned(
+    paragraph: &mut Paragraph,
+    run: &ShapedRun<'_>,
+    mut action: impl FnMut(&skia_safe::Font, &[skia_safe::GlyphId], &[skia_safe::Point], f32),
+) {
+    let character_offsets = run
+        .text
+        .char_indices()
+        .map(|(offset, _)| offset)
+        .collect::<Vec<_>>();
+    let use_grid = super::text::uses_advance_grid(run.text, run.kerning, run.font_features);
+    let mut advance_correction = 0.0;
+    paragraph.visit(|_, info| {
+        let Some(info) = info else { return };
+        let source = info.font();
+        let mut font = skia_safe::Font::new(source.typeface(), source.size());
+        font.set_skew_x(source.skew_x());
+        font.set_embolden(source.is_embolden());
+        font.set_hinting(skia_safe::FontHinting::None);
+        font.set_subpixel(true);
+        let adjusted = if use_grid {
+            jian_skia::advance_grid::adjust_glyph_run(
+                source,
+                info.glyphs(),
+                info.positions(),
+                info.utf8_starts(),
+                info.advance_x(),
+            )
+        } else {
+            None
+        };
+        let base_positions = adjusted
+            .as_ref()
+            .map_or(info.positions(), |run| run.positions.as_slice());
+        let origin_correction = advance_correction;
+        if let Some(run) = &adjusted {
+            advance_correction += run.advance_correction;
+        }
+        let positions;
+        let glyph_positions = if run.letter_spacing != 0.0 {
+            positions = base_positions
+                .iter()
+                .zip(info.utf8_starts())
+                .map(|(position, offset)| {
+                    let character =
+                        character_offsets.partition_point(|start| *start < *offset as usize);
+                    skia_safe::Point::new(
+                        position.x + character as f32 * run.letter_spacing,
+                        position.y,
+                    )
+                })
+                .collect::<Vec<_>>();
+            positions.as_slice()
+        } else {
+            base_positions
+        };
+        action(
+            &font,
+            info.glyphs(),
+            glyph_positions,
+            info.origin().x + origin_correction,
+        );
+    });
 }

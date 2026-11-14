@@ -34,6 +34,10 @@ impl<'a> RenderBackend for NativeFrameBackend<'a> {
         self.inner.draw_text(self.canvas, layout, origin);
     }
 
+    fn draw_text_decoration(&mut self, request: &op_editor_ui::TextDecorationRequest<'_>) -> bool {
+        self.inner.draw_text_decoration(self.canvas, request)
+    }
+
     fn clip_rect(&mut self, rect: Rect) {
         self.inner.clip_rect(self.canvas, rect);
     }

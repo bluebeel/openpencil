@@ -397,6 +397,7 @@ mod tests {
             italic: false,
             underline: false,
             strikethrough: false,
+            text_decoration_skip_ink: None,
         }];
         let xml = emitted(&n);
         assert!(xml.contains("<a:t>plain </a:t>"), "{xml}");

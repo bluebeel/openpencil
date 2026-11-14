@@ -68,6 +68,7 @@ pub(crate) fn base_payload(base: &PenNodeBase, kind: &str) -> NodePayload {
         italic: false,
         underline: false,
         strikethrough: false,
+        text_decoration_skip_ink: None,
         text_runs: Vec::new(),
         line_height: 0.0,
         letter_spacing: 0.0,
