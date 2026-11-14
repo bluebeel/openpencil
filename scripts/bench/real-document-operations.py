@@ -125,6 +125,9 @@ class Case(families.FamilyWorkflows):
             'perAcknowledgementCrashRecoveryTested': False,
             'memoryTargetBytes': 1_000_000_000, 'memoryAllowanceBytes': args.max_bytes,
             'diagnosticAllowance': args.max_bytes > 1_000_000_000,
+            'memoryBudgetScope': args.memory_scope,
+            'memoryTargetIsReleaseGate': False,
+            'httpRequestTimeoutSeconds': args.request_timeout,
             'latencyScope': 'Workflow latency includes its setup, verification and cleanup calls; per-tool samples are also reported.',
             'fontParityScope': 'Resource inventory only. A produced PNG does not prove requested-font identity or Figma pixel parity.',
             'arbitraryCorpusImagePixelIdentityVerified': False,
@@ -534,7 +537,7 @@ class Case(families.FamilyWorkflows):
             self.report['serverPid'] = self.process.pid
             self.event('server-start', serverPid=self.process.pid)
             self.save()
-            self.sampler = asyncio.create_task(shared.monitor(self.process, self.report, self.args.max_bytes))
+            self.sampler = asyncio.create_task(shared.monitor(self.process, self.report, self.args.max_bytes, self.args.memory_scope))
             self.observer = asyncio.create_task(self.observe_phases())
             handshake = json.loads(await asyncio.wait_for(self.process.stdout.readline(), self.args.startup_timeout))
             assert handshake.get('ok'), handshake
@@ -636,6 +639,7 @@ class Case(families.FamilyWorkflows):
             self.report['status'] = 'completed-with-refusals'
         self.report['documentVersionInvariant'] = 'Not observed: current bounded MCP metadata lacks version; no whole-document fetch or extra SSE subscription was added.'
         self.report['allOperationsMeasured'] = all(x.get('status') == 'measured' for x in self.report['coverage'].values())
+        self.report['oneGbMemoryTargetMet'] = self.report['highestObservedServiceRssBytes'] <= self.report['memoryTargetBytes']
         self.report['strictOneGbBudgetPassed'] = self.report['status'] == 'passed' and self.args.max_bytes <= 1_000_000_000
         self.save()
         return self.report
@@ -662,21 +666,10 @@ async def main_async(args):
         fixtures.append(fixture)
     reports = []
     for fixture in fixtures:
-        startup_block = None
         for clients in args.clients:
             active = clients if args.requested_count_stress else min(clients, args.max_inflight)
             out = args.output / fixture['id'] / str(clients)
             out.parent.mkdir(exist_ok=True)
-            if startup_block:
-                out.mkdir()
-                report = {'status': 'not-run-startup-prerequisite', 'logicalClients': clients, 'attemptedClients': 0,
-                    'requestedActiveConcurrency': active, 'actualActiveConcurrency': 0, 'binaryPin': pin,
-                    'fixture': fixture, 'reason': 'Same full-document cold startup exceeded this exact binary/fixture memory allowance before any operation.',
-                    'blockingReport': startup_block, 'allOperationsMeasured': False}
-                checkpoint(out / 'report.json', report)
-                reports.append({'fixture': fixture['id'], 'clients': clients, 'status': report['status'], 'report': str(out / 'report.json')})
-                checkpoint(args.output / 'summary.json', {'results': reports, 'pin': pin, 'allOpsClaim': False})
-                continue
             case = Case(args, fixture, clients, active, out, manifest, pin)
             task = asyncio.create_task(case.run())
             try:
@@ -685,8 +678,6 @@ async def main_async(args):
                 report = case.report
                 report.update(status='deadline', error=f'Case deadline{args.timeout}s; no write retry')
                 case.save()
-            if report['status'] == 'blocked-resource' and report.get('startupSeconds') is None:
-                startup_block = str(out / 'report.json')
             reports.append({'fixture': fixture['id'], 'clients': clients,
                 'status': report['status'], 'report': str(out / 'report.json')})
             checkpoint(args.output / 'summary.json', {'results': reports, 'pin': pin,
@@ -714,8 +705,11 @@ def main():
     parser.add_argument('--family-write-budget', type=int, help='Per-family mutation request cap; default is enough to schedule every logical writer for its whole workflow')
     parser.add_argument('--render-budget', type=int, default=4)
     parser.add_argument('--max-raster-edge', type=int, default=1024)
-    parser.add_argument('--max-bytes', type=int, default=1_000_000_000)
+    parser.add_argument('--max-bytes', type=int, default=5_000_000_000,
+                        help='Hard diagnostic ceiling; the 1 GB optimization target is recorded separately')
+    parser.add_argument('--memory-scope', choices=['service', 'aggregate'], default='service')
     parser.add_argument('--timeout', type=float, default=90)
+    parser.add_argument('--request-timeout', type=float, default=60)
     parser.add_argument('--readonly-no-save', action='store_true')
     parser.add_argument('--profile-rendezvous', type=float, default=0)
     parser.add_argument('--startup-timeout', type=float, default=45)
@@ -726,7 +720,9 @@ def main():
         parser.error('--family-write-budget requires --write-budget-scope family')
     args.write_budget = 64 if args.write_budget is None else args.write_budget
     assert all(1 <= n <= 1000 for n in args.clients) and 1 <= args.max_inflight <= 1000
-    assert 1 <= args.max_bytes <= 5_000_000_000 and 1 <= args.timeout <= 180
+    assert 1 <= args.max_bytes <= 5_000_000_000 and 1 <= args.timeout <= 3600
+    assert 1 <= args.request_timeout <= 3600
+    shared.HTTP_TIMEOUT_SECONDS = args.request_timeout
     assert not args.readonly_no_save or (args.write_budget_scope == 'global' and args.write_budget == 0) or (args.write_budget_scope == 'family' and args.family_write_budget == 0)
     assert 0 <= args.profile_rendezvous <= 5
     assert 0 <= args.write_budget <= 10000 and 0 <= args.render_budget <= 1000

@@ -26,6 +26,7 @@ import time
 
 
 CURRENT_PHASE = "startup"
+HTTP_TIMEOUT_SECONDS = 60
 
 
 class DarwinUsage(ctypes.Structure):
@@ -152,7 +153,7 @@ async def request(port, method, route, value=None):
                       f"Content-Type: application/json\r\nContent-Length: {len(body)}\r\n"
                       "Connection: close\r\n\r\n").encode() + body)
         await writer.drain()
-        header = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), 60)
+        header = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), HTTP_TIMEOUT_SECONDS)
         lines = header.decode().split("\r\n")
         status = int(lines[0].split()[1])
         fields = dict(line.split(":", 1) for line in lines[1:] if ":" in line)
@@ -160,7 +161,7 @@ async def request(port, method, route, value=None):
         length = int(fields.get("content-length", "0"))
         if not 0 <= length <= 64 * 1024 * 1024:
             raise RuntimeError(f"response exceeds bounded64MiB: {length}")
-        payload = await asyncio.wait_for(reader.readexactly(length), 60)
+        payload = await asyncio.wait_for(reader.readexactly(length), HTTP_TIMEOUT_SECONDS)
         if status != 200:
             raise RuntimeError(f"HTTP{status}: {payload[:500]!r}")
         return json.loads(payload) if payload else {}

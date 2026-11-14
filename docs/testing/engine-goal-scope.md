@@ -6,9 +6,12 @@ goal’s acceptance scope, not a statement that the features are complete.
 
 Build a fully headless, agent-driven renderer/editor whose operations remain
 fast with 10, 100 and 1,000 logical agents editing one or multiple open files.
-Keep combined shared-service and renderer memory below 1 GB, use little CPU
-when idle, and minimize CPU per operation. External AI model/agent processes
-are outside that memory budget. Preserve exact `.fig` feature and rendering
+Prioritize correct, complete operations and low latency/CPU. As clarified by
+the user on November 14, exceeding 1 GB must not stop implementation,
+diagnostics or releases: use a 5 GB working ceiling and record memory alongside
+performance. Reducing combined service/renderer memory below 1 GB remains an
+optimization objective. External AI model/agent processes are outside that
+engine memory measurement. Preserve exact `.fig` feature and rendering
 fidelity; target SSIM 1.0 and exact RGBA identity, not rounded similarity.
 
 ## Explicit operation coverage
@@ -75,10 +78,13 @@ batch writes; remaining cold-import memory and exact Figma pixel differences.
 ## Iteration cadence
 
 Batch several independent fixes across parallel agents before rebuilding the
-shared optimized binaries. Use focused checks and small probes during the
-batch. Run the full reference gate once when the combined batch is ready;
-avoid repeating the complete test suites after each small change. Recheck
-earlier results when a new failure, code change or unresolved concern warrants it.
+shared optimized binaries. Check production types, then build the product once
+for the combined batch. Run focused checks and benchmarks against that pin;
+do not compile broad unit-test binaries before every product build. Record
+independent failures and continue other lanes. Complete diagnostic operations
+above 1 GB, within the 5 GB working ceiling, instead of stopping at the memory
+optimization target. Run the full reference gate once per coherent renderer
+batch. Repeat earlier checks only for changed code or unresolved failures.
 
 
 ## Checkpoint 13 continuation
