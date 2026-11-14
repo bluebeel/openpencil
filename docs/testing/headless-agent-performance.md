@@ -5,7 +5,11 @@ service. External model/agent processes are excluded; the load generator is
 included in the aggregate memory measurement. Each client sends sequential
 MCP batches, and a bounded request window provides backpressure.
 
-The latest [batched checkpoint](engine-checkpoint-7.md) adds streamed imports,
+The latest [batched checkpoint](engine-checkpoint-8.md) improves text/shadow parity,
+reduces importer memory, fixes atomic-batch undo and motion saves, and removes
+live-MCP accept polling. It records matched live-ping and undo-stage gains,
+unchanged agent/bulk invariants, and remaining cold-import and exact-pixel gaps.
+The [previous checkpoint](engine-checkpoint-7.md) adds streamed imports,
 improved text/underline parity, faster exact image addressing and shared bulk
 exports below 1 GB on the 101,000-node workload. It also fixes WebP and bulk
 format encoding and records the remaining cold-import and exact-pixel gaps.
