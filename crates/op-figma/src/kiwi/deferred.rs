@@ -37,7 +37,7 @@ struct Spec {
 enum Pending {
     Wire {
         shared: Arc<Shared>,
-        bytes: Arc<[u8]>,
+        bytes: Arc<super::wire_bytes::WireBytes>,
         spec: Spec,
         apply: Vec<Apply>,
     },
@@ -55,9 +55,10 @@ impl Pending {
                 spec,
                 apply,
             } => {
+                let raw = bytes.read();
                 let mut decoder = Decoder {
                     schema: &shared.schema,
-                    bb: ByteBuffer::with_tail(&bytes, spec.trailing),
+                    bb: ByteBuffer::with_tail(&raw, spec.trailing),
                     field_types: shared.field_types.clone(),
                     field_by_value: shared.field_by_value.clone(),
                     object_keys: shared.object_keys.clone(),
@@ -165,7 +166,7 @@ impl Deferred {
                 apply,
                 ..
             }) => {
-                16 + bytes.len()
+                bytes.retained()
                     + shared.retained_bound()
                     + apply.capacity() * std::mem::size_of::<Apply>()
                     + apply.iter().map(Apply::bytes).sum::<usize>()
@@ -187,7 +188,7 @@ impl Deferred {
             .as_ref()
         {
             Some(Pending::Wire { bytes, apply, .. }) => {
-                bytes.len() + 16 + apply.capacity() * std::mem::size_of::<Apply>()
+                bytes.retained() + apply.capacity() * std::mem::size_of::<Apply>()
             }
             Some(Pending::Mapped { source, apply }) => {
                 source.pending_bytes() + apply.capacity() * std::mem::size_of::<Apply>()
@@ -224,7 +225,7 @@ impl Decoder<'_, '_> {
         }
         Ok(Some(FigValue::Deferred(Deferred::new(Pending::Wire {
             shared: self.lazy_context.as_ref().unwrap().clone(),
-            bytes: Arc::from(&self.bb.data[start..end]),
+            bytes: super::wire_bytes::WireBytes::capture(&self.bb.data[start..end]),
             spec: Spec {
                 resolved,
                 array,

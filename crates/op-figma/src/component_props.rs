@@ -6,6 +6,7 @@
 //! rest of the importer already understands explicit symbol overrides, so this
 //! pass joins those two records before tree construction.
 
+use crate::figma_types::FigGuid;
 use crate::kiwi::FigValue;
 use crate::tree::guid_to_string;
 use std::collections::HashMap;
@@ -61,7 +62,7 @@ fn assignment_value<'a>(assignment: &'a FigValue, field: &str) -> Option<&'a Fig
 #[derive(Clone)]
 struct PropertyRoute {
     owner: FigValue,
-    owner_key: Option<String>,
+    owner_key: Option<FigGuid>,
     field: &'static str,
 }
 
@@ -83,13 +84,13 @@ fn visit_references(value: &FigValue, visit: &mut impl FnMut(&FigValue)) {
     }
 }
 
-fn component_property_routes(nodes: &[FigValue]) -> HashMap<String, Vec<PropertyRoute>> {
-    let mut routes: HashMap<String, Vec<PropertyRoute>> = HashMap::new();
+fn component_property_routes(nodes: &[FigValue]) -> HashMap<FigGuid, Vec<PropertyRoute>> {
+    let mut routes: HashMap<FigGuid, Vec<PropertyRoute>> = HashMap::new();
     for node in nodes {
         let Some(owner_guid) = node.get("guid").cloned() else {
             continue;
         };
-        let owner_key = guid_to_string(&owner_guid);
+        let owner_key = FigGuid::from_value(&owner_guid);
         for key in ["componentPropRefs", "componentPropertyReferences"] {
             let Some(references) = node.get(key) else {
                 continue;
@@ -104,7 +105,7 @@ fn component_property_routes(nodes: &[FigValue]) -> HashMap<String, Vec<Property
                     Some("TEXT_DATA" | "TEXT") => "textData",
                     _ => return,
                 };
-                if let Some(def_id) = reference.get("defID").and_then(guid_to_string) {
+                if let Some(def_id) = reference.get("defID").and_then(FigGuid::from_value) {
                     let targets = routes.entry(def_id).or_default();
                     if !targets
                         .iter()
@@ -112,7 +113,7 @@ fn component_property_routes(nodes: &[FigValue]) -> HashMap<String, Vec<Property
                     {
                         targets.push(PropertyRoute {
                             owner: owner_guid.clone(),
-                            owner_key: owner_key.clone(),
+                            owner_key,
                             field,
                         });
                     }
@@ -168,9 +169,9 @@ fn assignment_entries(holder: &FigValue) -> Vec<&FigValue> {
 
 fn visit_assignments<'a>(
     holder: &'a FigValue,
-    routes: &'a HashMap<String, Vec<PropertyRoute>>,
+    routes: &'a HashMap<FigGuid, Vec<PropertyRoute>>,
     scopes: &TextScopes,
-    mut visit: impl FnMut(&'a FigValue, Option<&'a str>, &'static str, &'a FigValue),
+    mut visit: impl FnMut(&'a FigValue, Option<FigGuid>, &'static str, &'a FigValue),
 ) {
     let assignments = assignment_entries(holder);
     if assignments.is_empty() {
@@ -180,19 +181,19 @@ fn visit_assignments<'a>(
     for assignment in assignments {
         let targets = assignment
             .get("defID")
-            .and_then(guid_to_string)
+            .and_then(FigGuid::from_value)
             .and_then(|id| routes.get(&id));
         for route in targets.into_iter().flatten() {
             let outside = master.as_ref().is_some_and(|master| {
                 if route.field == "textData" {
                     route
                         .owner_key
-                        .as_deref()
+                        .as_ref()
                         .is_none_or(|owner| !scopes.contains(master, owner))
                 } else {
                     route
                         .owner_key
-                        .as_deref()
+                        .as_ref()
                         .is_some_and(|owner| scopes.excludes_known_owner(master, owner))
                 }
             });
@@ -200,12 +201,7 @@ fn visit_assignments<'a>(
                 continue;
             }
             if let Some(target) = assignment_value(assignment, route.field) {
-                visit(
-                    &route.owner,
-                    route.owner_key.as_deref(),
-                    route.field,
-                    target,
-                );
+                visit(&route.owner, route.owner_key, route.field, target);
             }
         }
     }
@@ -213,7 +209,7 @@ fn visit_assignments<'a>(
 
 fn normalize_node(
     node: &mut FigValue,
-    routes: &HashMap<String, Vec<PropertyRoute>>,
+    routes: &HashMap<FigGuid, Vec<PropertyRoute>>,
     scopes: &TextScopes,
 ) {
     let authored = node
@@ -221,11 +217,11 @@ fn normalize_node(
         .and_then(|data| data.get_array("symbolOverrides"))
         .unwrap_or(&[]);
     let mut paths = PathIndex::authored(authored);
-    let node_guid = node.get("guid").and_then(guid_to_string);
+    let node_guid = node.get("guid").and_then(FigGuid::from_value);
     let mut direct_updates: Vec<(&'static str, FigValue)> = Vec::new();
     let mut additions = Vec::new();
     visit_assignments(node, routes, scopes, |owner, owner_key, field, target| {
-        if node_guid.as_deref() == owner_key {
+        if node_guid == owner_key {
             if matches!(field, "visible" | "textData") {
                 if let Some((_, value)) = direct_updates.iter_mut().find(|(key, _)| *key == field) {
                     *value = target.clone();

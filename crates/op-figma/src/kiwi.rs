@@ -23,6 +23,7 @@ pub(crate) mod deferred;
 pub(crate) mod storage;
 pub(crate) mod stream;
 mod value;
+mod wire_bytes;
 pub use value::FigValue;
 #[path = "kiwi/import_projection.rs"]
 mod import_projection;

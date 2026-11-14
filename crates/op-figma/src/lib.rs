@@ -24,6 +24,7 @@ mod mappers;
 mod mask;
 mod node_build;
 mod node_mapper;
+mod packed_blob;
 mod page_mapper;
 mod prepared;
 mod progress;

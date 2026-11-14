@@ -374,3 +374,34 @@ fn shared_master_cached_paints_survive_different_instance_placement_modes() {
         .unwrap()[0];
     assert_eq!(override_paint.get("color").unwrap().get_f64("b"), Some(1.0));
 }
+
+#[test]
+fn dense_modes_keep_latest_duplicate_ancestor_and_shared_master_cycle_fallback() {
+    let red = literal(color(1.0, 0.0, 0.0, 1.0));
+    let blue = literal(color(0.0, 0.0, 1.0, 1.0));
+    let mut first = layer(1, 10, None, Some(30));
+    first.set("fillPaints", FigValue::Array(vec![].into()));
+    let mut latest = layer(1, 10, None, Some(31));
+    latest.set("fillPaints", FigValue::Array(vec![].into()));
+    let mut nodes = vec![
+        collection(),
+        variable(10, 20, vec![(30, red), (31, blue)]),
+        first,
+        layer(2, 10, Some(1), None),
+        latest,
+        layer(5, 10, Some(6), None),
+        layer(6, 10, Some(5), None),
+    ];
+    resolve_color_variables(&mut nodes);
+    assert_eq!(
+        channel(&nodes[3], "b"),
+        1.0,
+        "duplicate parent metadata uses the latest record"
+    );
+    assert_eq!(
+        channel(&nodes[5], "g"),
+        1.0,
+        "a parent cycle retains fallback paint"
+    );
+    assert_eq!(channel(&nodes[6], "g"), 1.0);
+}

@@ -442,21 +442,11 @@ fn scale_tree_children_owned(children: Vec<TreeNode>, sx: f64, sy: f64) -> Vec<T
 /// after geometry conversion instead of being cloned and retained in
 /// two full buffers throughout the import.
 pub fn collect_image_blobs(blobs: Vec<BlobOrString>) -> HashMap<u32, Vec<u8>> {
-    let mut map = HashMap::new();
-    for (i, blob) in blobs.into_iter().enumerate() {
-        if let BlobOrString::Bytes(b) = blob {
-            if b.len() > 8 {
-                let is_image = (b[0] == 0x89 && b[1] == 0x50)
-                    || (b[0] == 0xFF && b[1] == 0xD8)
-                    || (b[0] == 0x47 && b[1] == 0x49)
-                    || (b[0] == 0x52 && b[1] == 0x49);
-                if is_image {
-                    map.insert(i as u32, b);
-                }
-            }
-        }
-    }
-    map
+    blobs
+        .into_iter()
+        .enumerate()
+        .filter_map(|(i, b)| b.into_image().map(|b| (i as u32, b)))
+        .collect()
 }
 
 #[cfg(test)]

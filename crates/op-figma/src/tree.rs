@@ -10,6 +10,9 @@ use std::collections::{HashMap, HashSet};
 /// a cyclic parent chain.
 const MAX_TREE_DEPTH: u32 = 1024;
 
+#[path = "tree_owned.rs"]
+mod owned;
+
 /// One node of the built document tree — a decoded node change plus
 /// its ordered children.
 #[derive(Debug, Clone)]
@@ -64,27 +67,6 @@ fn index_by_key(node_changes: &[FigValue]) -> (HashMap<String, FigValue>, Vec<St
             order.push(key.clone());
         }
         by_key.insert(key, nc.clone());
-    }
-    (by_key, order)
-}
-
-/// Owned counterpart to [`index_by_key`]. Full-file import no longer
-/// needs the decoded flat list after tree construction, so move each
-/// record into the index instead of deep-cloning all node values.
-fn index_by_key_owned(node_changes: Vec<FigValue>) -> (HashMap<String, FigValue>, Vec<String>) {
-    let mut by_key: HashMap<String, FigValue> = HashMap::new();
-    let mut order: Vec<String> = Vec::new();
-    for nc in node_changes {
-        if nc.get_str("phase") == Some("REMOVED") {
-            continue;
-        }
-        let Some(key) = nc.get("guid").and_then(guid_to_string) else {
-            continue;
-        };
-        if !by_key.contains_key(&key) {
-            order.push(key.clone());
-        }
-        by_key.insert(key, nc);
     }
     (by_key, order)
 }
@@ -189,10 +171,7 @@ pub fn build_tree(node_changes: &[FigValue]) -> Option<TreeNode> {
 /// node list. Prefer this for full-file conversion, where retaining the
 /// source list would only force a second copy of every nested value.
 pub fn build_tree_owned(node_changes: Vec<FigValue>) -> Option<TreeNode> {
-    let (mut by_key, order) = index_by_key_owned(node_changes);
-    let (children_of, root_key) = build_adjacency(&order, &by_key);
-    let root_key = root_key?;
-    Some(materialize(&root_key, &mut by_key, &children_of, 0))
+    owned::build(node_changes)
 }
 
 /// Build orphan-rooted trees for clipboard data with no `DOCUMENT`

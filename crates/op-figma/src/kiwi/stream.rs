@@ -7,6 +7,8 @@ struct Scanner<'a, R> {
     left: usize,
     template: Decoder<'a, 'static>,
     scratch: Vec<u8>,
+    packed: bool,
+    blobs: Option<Vec<crate::figma_types::BlobOrString>>,
 }
 impl<'a, R: BufRead> Scanner<'a, R> {
     fn byte(&mut self, out: &mut Vec<u8>) -> Result<u8, KiwiError> {
@@ -195,6 +197,7 @@ impl<'a, R: BufRead> Scanner<'a, R> {
         array: bool,
         depth: u32,
         scope: DecodeScope,
+        blob_array: bool,
     ) -> Result<FigValue, KiwiError> {
         if !array {
             return self.decode_value(kind, depth + 1, scope);
@@ -208,9 +211,18 @@ impl<'a, R: BufRead> Scanner<'a, R> {
             self.bytes(count, &mut bytes)?;
             return Ok(FigValue::Bytes(bytes.into()));
         }
-        let mut values = Vec::with_capacity(count);
+        let mut values = Vec::with_capacity(if blob_array { 0 } else { count });
+        let mut packed = Vec::with_capacity(if blob_array { count } else { 0 });
         for _ in 0..count {
-            values.push(self.decode_value(kind, depth + 1, scope)?)
+            let value = self.decode_value(kind, depth + 1, scope)?;
+            if blob_array {
+                packed.push(crate::figma_types::extract_blob(value).packed())
+            } else {
+                values.push(value)
+            }
+        }
+        if blob_array {
+            self.blobs = Some(packed)
         }
         Ok(FigValue::Array(values.into()))
     }
@@ -218,6 +230,7 @@ impl<'a, R: BufRead> Scanner<'a, R> {
         let mut pairs: Vec<(FigKey, FigValue)> = Vec::new();
         let mut slots: Vec<Option<usize>> =
             vec![None; self.template.schema.definitions[definition].fields.len()];
+        let mut blob_slots = std::collections::BTreeMap::new();
         loop {
             let id = self.uint(&mut Vec::new())?;
             if id == 0 {
@@ -230,17 +243,30 @@ impl<'a, R: BufRead> Scanner<'a, R> {
                 .ok_or_else(|| KiwiError::BadType(field.type_name.clone()))?;
             let name = self.template.object_keys[definition][index].clone();
             let scope = DecodeScope::Root.field(&name).unwrap();
-            let value = self.decode_field(kind, array, 0, scope)?;
-            if let Some(slot) = slots[index] {
-                pairs[slot].1 = value
+            let value = self.decode_field(
+                kind,
+                array,
+                0,
+                scope,
+                self.packed && name.as_ref() == "blobs" && array,
+            )?;
+            let slot = if let Some(slot) = slots[index] {
+                pairs[slot].1 = value;
+                slot
             } else {
-                slots[index] = Some(pairs.len());
-                pairs.push((name, value))
+                let slot = pairs.len();
+                slots[index] = Some(slot);
+                pairs.push((name, value));
+                slot
+            };
+            if let Some(blobs) = self.blobs.take() {
+                blob_slots.insert(slot, blobs);
             }
         }
         if self.left != 0 {
             return Err(KiwiError::TrailingBytes(self.left));
         }
+        self.blobs = blob_slots.into_iter().next_back().map(|(_, v)| v);
         Ok(FigValue::Object(pairs.into()))
     }
 }
@@ -251,11 +277,20 @@ fn io(error: std::io::Error) -> KiwiError {
         KiwiError::BadType(format!("stream read: {error}"))
     }
 }
+#[cfg(test)]
 pub(crate) fn decode<R: BufRead>(
     schema: &Schema,
     reader: R,
     len: usize,
 ) -> Result<FigValue, KiwiError> {
+    decode_with_blobs(schema, reader, len, false).map(|v| v.0)
+}
+pub(crate) fn decode_with_blobs<R: BufRead>(
+    schema: &Schema,
+    reader: R,
+    len: usize,
+    packed: bool,
+) -> Result<(FigValue, Option<Vec<crate::figma_types::BlobOrString>>), KiwiError> {
     let root = schema
         .definitions
         .iter()
@@ -268,13 +303,16 @@ pub(crate) fn decode<R: BufRead>(
         })
         .ok_or(KiwiError::NoRootMessage)?;
     let template = Decoder::new(schema, &[])?;
-    Scanner {
+    let mut scanner = Scanner {
         reader,
         left: len,
         template,
         scratch: Vec::new(),
-    }
-    .root(root)
+        packed,
+        blobs: None,
+    };
+    let root = scanner.root(root)?;
+    Ok((root, scanner.blobs))
 }
 
 #[cfg(test)]

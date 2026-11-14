@@ -100,17 +100,53 @@ impl FigVec2 {
 
 /// A decoded blob — Figma's `blobs` array holds either raw bytes
 /// (vector/path geometry) or strings.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum BlobOrString {
     Bytes(Vec<u8>),
     Str(String),
+    Packed(std::sync::Arc<crate::packed_blob::PackedBlob>),
 }
 
+impl PartialEq for BlobOrString {
+    fn eq(&self, other: &Self) -> bool {
+        match (self.as_bytes(), other.as_bytes()) {
+            (Some(a), Some(b)) => a == b,
+            _ => matches!((self,other),(Self::Str(a),Self::Str(b))if a==b),
+        }
+    }
+}
 impl BlobOrString {
+    pub(crate) fn packed(self) -> Self {
+        match self {
+            Self::Bytes(bytes) => match crate::packed_blob::PackedBlob::from_bytes(bytes) {
+                Ok(v) => Self::Packed(v),
+                Err(v) => Self::Bytes(v),
+            },
+            other => other,
+        }
+    }
+    pub(crate) fn into_image(self) -> Option<Vec<u8>> {
+        match self {
+            Self::Bytes(bytes) => {
+                let image = bytes.len() > 8
+                    && matches!(
+                        &bytes[..2],
+                        [0x89, 0x50] | [0xff, 0xd8] | [0x47, 0x49] | [0x52, 0x49]
+                    );
+                image.then_some(bytes)
+            }
+            Self::Packed(bytes) if bytes.image() => {
+                Some(crate::packed_blob::PackedBlob::into_vec(bytes))
+            }
+            _ => None,
+        }
+    }
+
     pub fn as_bytes(&self) -> Option<&[u8]> {
         match self {
             BlobOrString::Bytes(b) => Some(b),
             BlobOrString::Str(_) => None,
+            BlobOrString::Packed(value) => Some(value.get()),
         }
     }
 }
@@ -152,6 +188,24 @@ impl std::fmt::Display for FigFileError {
 /// The old borrowed extraction used `to_vec()` for both node values
 /// and blob bytes, briefly retaining a complete decoded tree alongside
 /// a second deep copy on large files.
+pub(crate) fn extract_blob(blob: FigValue) -> BlobOrString {
+    match blob {
+        FigValue::Object(fields) => fields
+            .into_iter()
+            .find_map(|(key, value)| {
+                (key.as_ref() == "bytes")
+                    .then_some(value)
+                    .and_then(|v| match v {
+                        FigValue::Bytes(b) => Some(BlobOrString::Bytes(b.into())),
+                        _ => None,
+                    })
+            })
+            .unwrap_or_else(|| BlobOrString::Bytes(Vec::new())),
+        FigValue::Str(v) => BlobOrString::Str(v.into()),
+        _ => BlobOrString::Bytes(Vec::new()),
+    }
+}
+
 fn extract_decoded_root(raw: FigValue) -> Option<(Vec<FigValue>, Vec<BlobOrString>)> {
     let FigValue::Object(pairs) = raw else {
         return None;
@@ -167,26 +221,7 @@ fn extract_decoded_root(raw: FigValue) -> Option<(Vec<FigValue>, Vec<BlobOrStrin
                 node_changes = Some(items.into());
             }
             ("blobs", FigValue::Array(items)) => {
-                blobs = items
-                    .into_iter()
-                    .map(|blob| match blob {
-                        FigValue::Object(fields) => fields
-                            .into_iter()
-                            .find_map(|(key, value)| {
-                                (key.as_ref() == "bytes")
-                                    .then_some(value)
-                                    .and_then(|value| match value {
-                                        FigValue::Bytes(bytes) => {
-                                            Some(BlobOrString::Bytes(bytes.into()))
-                                        }
-                                        _ => None,
-                                    })
-                            })
-                            .unwrap_or_else(|| BlobOrString::Bytes(Vec::new())),
-                        FigValue::Str(value) => BlobOrString::Str(value.into()),
-                        _ => BlobOrString::Bytes(Vec::new()),
-                    })
-                    .collect();
+                blobs = items.into_iter().map(extract_blob).collect();
             }
             (_, FigValue::Array(items))
                 if fallback_node_changes.is_none()
@@ -219,7 +254,7 @@ pub(crate) fn parse_fig_file_with_observer(
 ) -> Result<FigmaDecodedFile, FigFileError> {
     observer(FigImportPhase::Container);
     let container = fig_to_encoded_parts(bytes).map_err(FigFileError::Container)?;
-    decode_binary_parts(container, observer)
+    decode_binary_parts(container, observer, false)
 }
 
 pub(crate) fn parse_fig_file_owned_with_observer(
@@ -229,12 +264,13 @@ pub(crate) fn parse_fig_file_owned_with_observer(
     observer(FigImportPhase::Container);
     let container = fig_to_encoded_parts(&bytes).map_err(FigFileError::Container)?;
     drop(bytes);
-    decode_binary_parts(container, observer)
+    decode_binary_parts(container, observer, true)
 }
 
 fn decode_binary_parts(
     container: FigBinaryParts,
     observer: &mut dyn FnMut(FigImportPhase),
+    pack: bool,
 ) -> Result<FigmaDecodedFile, FigFileError> {
     if container.parts.len() < 2 {
         return Err(FigFileError::TooFewParts(container.parts.len()));
@@ -247,15 +283,19 @@ fn decode_binary_parts(
     let schema = decode_binary_schema(&schema_bytes).map_err(FigFileError::Kiwi)?;
     observer(FigImportPhase::Decode);
     let data = crate::container::stream::chunk(&container.parts[1]);
-    let raw = crate::kiwi::stream::decode(
+    let (raw, packed) = crate::kiwi::stream::decode_with_blobs(
         &schema,
         std::io::BufReader::with_capacity(64 * 1024, data.reader()),
         data.len,
+        pack,
     )
     .map_err(FigFileError::Kiwi)?;
     observer(FigImportPhase::Extract);
     drop(container.parts);
-    let (node_changes, blobs) = extract_decoded_root(raw).ok_or(FigFileError::NoNodeChanges)?;
+    let (node_changes, mut blobs) = extract_decoded_root(raw).ok_or(FigFileError::NoNodeChanges)?;
+    if let Some(packed) = packed {
+        blobs = packed
+    }
     Ok(FigmaDecodedFile {
         node_changes,
         blobs,
@@ -354,3 +394,7 @@ mod tests {
         assert_eq!(nc.len(), 1);
     }
 }
+
+#[cfg(test)]
+#[path = "figma_types/blob_tests.rs"]
+mod blob_tests;

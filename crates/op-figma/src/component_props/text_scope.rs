@@ -1,17 +1,18 @@
 //! A shared property id can name layers in many component variants.
 //! Only the actual instance master subtree is a target for that placement.
 
-use super::{guid_to_string, FigValue};
+use super::FigValue;
+use crate::figma_types::FigGuid;
 use std::collections::{HashMap, HashSet};
 
 pub(super) struct TextScopes {
-    masters: HashSet<String>,
-    targets: HashMap<String, String>,
-    owners: HashMap<String, OwnerScope>,
+    masters: HashSet<FigGuid>,
+    targets: HashMap<FigGuid, FigGuid>,
+    owners: HashMap<FigGuid, OwnerScope>,
 }
 
 struct OwnerScope {
-    ancestors: Vec<String>,
+    ancestors: Vec<FigGuid>,
     complete: bool,
 }
 
@@ -19,26 +20,26 @@ impl TextScopes {
     pub(super) fn new(nodes: &[FigValue]) -> Self {
         let by_id: HashMap<_, _> = nodes
             .iter()
-            .filter_map(|node| Some((node.get("guid").and_then(guid_to_string)?, node)))
+            .filter_map(|node| Some((node.get("guid").and_then(FigGuid::from_value)?, node)))
             .collect();
         let masters: HashSet<_> = by_id
             .iter()
             .filter(|(_, node)| node.get_str("type") == Some("SYMBOL"))
-            .map(|(id, _)| id.clone())
+            .map(|(id, _)| *id)
             .collect();
         let mut targets = HashMap::new();
         let mut owners = HashMap::new();
         for (id, node) in &by_id {
             if masters.contains(id) {
-                targets.insert(id.clone(), id.clone());
+                targets.insert(*id, *id);
             }
             if let Some(target) = node
                 .get("overriddenSymbolID")
                 .or_else(|| node.get("symbolData")?.get("symbolID"))
-                .and_then(guid_to_string)
+                .and_then(FigGuid::from_value)
             {
                 if masters.contains(&target) {
-                    targets.insert(id.clone(), target);
+                    targets.insert(*id, target);
                 }
             }
             if node.get("componentPropRefs").is_none()
@@ -47,7 +48,7 @@ impl TextScopes {
                 continue;
             }
             let mut ancestors = Vec::new();
-            let mut current = Some(id.clone());
+            let mut current = Some(*id);
             let mut complete = false;
             for _ in 0..1024 {
                 let Some(key) = current.take() else {
@@ -57,13 +58,13 @@ impl TextScopes {
                     break;
                 };
                 if masters.contains(&key) {
-                    ancestors.push(key.clone());
+                    ancestors.push(key);
                 }
                 let Some(parent) = ancestor.get("parentIndex") else {
                     complete = true;
                     break;
                 };
-                current = parent.get("guid").and_then(guid_to_string);
+                current = parent.get("guid").and_then(FigGuid::from_value);
                 if current.is_none() {
                     break;
                 }
@@ -72,7 +73,7 @@ impl TextScopes {
                 }
             }
             owners.insert(
-                id.clone(),
+                *id,
                 OwnerScope {
                     ancestors,
                     complete,
@@ -86,25 +87,28 @@ impl TextScopes {
         }
     }
 
-    pub(super) fn target(&self, holder: &FigValue) -> Option<String> {
+    pub(super) fn target(&self, holder: &FigValue) -> Option<FigGuid> {
         if let Some(target) = holder
             .get("overriddenSymbolID")
             .or_else(|| holder.get("symbolData")?.get("symbolID"))
-            .and_then(guid_to_string)
+            .and_then(FigGuid::from_value)
         {
             return self.masters.contains(&target).then_some(target);
         }
-        let id = holder.get("guid").and_then(guid_to_string).or_else(|| {
-            holder
-                .get("guidPath")?
-                .get_array("guids")?
-                .last()
-                .and_then(guid_to_string)
-        })?;
-        self.targets.get(&id).cloned()
+        let id = holder
+            .get("guid")
+            .and_then(FigGuid::from_value)
+            .or_else(|| {
+                holder
+                    .get("guidPath")?
+                    .get_array("guids")?
+                    .last()
+                    .and_then(FigGuid::from_value)
+            })?;
+        self.targets.get(&id).copied()
     }
 
-    pub(super) fn contains(&self, master: &str, owner: &str) -> bool {
+    pub(super) fn contains(&self, master: &FigGuid, owner: &FigGuid) -> bool {
         self.owners
             .get(owner)
             .is_some_and(|scope| scope.ancestors.iter().any(|ancestor| ancestor == master))
@@ -112,7 +116,7 @@ impl TextScopes {
 
     /// Unknown/partial ancestry cannot prove that a visibility/swap route is
     /// outside the placement. A different known master ancestry can.
-    pub(super) fn excludes_known_owner(&self, master: &str, owner: &str) -> bool {
+    pub(super) fn excludes_known_owner(&self, master: &FigGuid, owner: &FigGuid) -> bool {
         self.owners.get(owner).is_some_and(|scope| {
             scope.complete
                 && !scope.ancestors.is_empty()
