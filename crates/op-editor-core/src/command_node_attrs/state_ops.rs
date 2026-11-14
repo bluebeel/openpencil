@@ -394,6 +394,7 @@ impl EditorState {
         }
         let effect = match kind {
             "shadow" => PenEffect::Shadow(ShadowBody {
+                blur_kernel: None,
                 inner: None,
                 visible: None,
                 offset_x: 4.0,

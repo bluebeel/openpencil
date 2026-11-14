@@ -353,6 +353,44 @@ fn map_stroke_cap(v: Option<&str>) -> Option<StrokeCap> {
 // ── Effects ───────────────────────────────────────────────────────
 
 /// Map a Figma effect array to `PenEffect[]`.
+/// Preserve the measured compact-support profile only for known uniform
+/// rounded-rectangle silhouettes. Generic vector effects retain the legacy
+/// profile until their rasterized-mask blur contract is established.
+pub fn map_figma_node_effects(node: &FigValue) -> Option<Vec<PenEffect>> {
+    let mut effects = map_figma_effects(node.get_array("effects"))?;
+    let rounded = matches!(
+        node.get_str("type"),
+        Some("FRAME" | "RECTANGLE" | "COMPONENT" | "SYMBOL" | "INSTANCE")
+    );
+    let uniform = !node
+        .get_bool("rectangleCornerRadiiIndependent")
+        .unwrap_or(false)
+        || [
+            "rectangleTopLeftCornerRadius",
+            "rectangleTopRightCornerRadius",
+            "rectangleBottomLeftCornerRadius",
+            "rectangleBottomRightCornerRadius",
+        ]
+        .map(|key| node.get_f64(key).unwrap_or(0.0))
+        .windows(2)
+        .all(|pair| pair[0] == pair[1]);
+    if rounded
+        && uniform
+        && node
+            .get_f64("rectangleCornerSmoothing")
+            .or_else(|| node.get_f64("cornerSmoothing"))
+            .unwrap_or(0.0)
+            == 0.0
+    {
+        for effect in &mut effects {
+            if let PenEffect::Shadow(shadow) = effect {
+                shadow.blur_kernel = Some(jian_ops_schema::style::ShadowBlurKernel::Triangular);
+            }
+        }
+    }
+    Some(effects)
+}
+
 pub fn map_figma_effects(effects: Option<&[FigValue]>) -> Option<Vec<PenEffect>> {
     let effects = effects?;
     if effects.is_empty() {
@@ -377,6 +415,7 @@ fn map_single_effect(effect: &FigValue) -> Option<PenEffect> {
         "DROP_SHADOW" | "INNER_SHADOW" => {
             let offset = effect.get("offset");
             Some(PenEffect::Shadow(ShadowBody {
+                blur_kernel: None,
                 inner: Some(ty == "INNER_SHADOW"),
                 visible: None,
                 offset_x: offset.and_then(|o| o.get_f64("x")).unwrap_or(0.0) as f32,

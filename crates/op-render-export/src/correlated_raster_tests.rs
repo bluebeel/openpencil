@@ -267,6 +267,7 @@ fn native_shadow_width(scale: i32) -> f64 {
     node.bounds = Rect::xywh(64.0, 32.0, 64.0, 64.0);
     node.fill = Some(UiColor::WHITE);
     node.effects.push(Effect::DropShadow(DropShadow {
+        blur_kernel: Default::default(),
         offset_x: 0.0,
         offset_y: 0.0,
         blur: 12.0,

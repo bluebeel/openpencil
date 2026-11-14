@@ -6,7 +6,6 @@ use op_editor_ui::layout_scene::{
     SceneStrokeAlign, SceneTextAlign, SceneWidget,
 };
 use op_editor_ui::{Color, Rect};
-
 /// A 200x100 board at the canvas origin holding `children`.
 fn board(children: Vec<SceneNode>) -> SceneNode {
     let mut n = SceneNode::leaf("board", NodeKind::Frame);
@@ -384,6 +383,7 @@ fn effects_split_across_shadow_blur_and_backdrop_channels() {
     node.fill = Some(Color::WHITE);
     node.effects = vec![
         Effect::DropShadow(op_editor_ui::layout_scene::DropShadow {
+            blur_kernel: Default::default(),
             offset_x: 0.0,
             offset_y: 4.0,
             blur: 12.0,

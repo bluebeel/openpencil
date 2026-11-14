@@ -86,6 +86,9 @@ pub(crate) use reveal::{reveal_pop_scale, REVEAL_WIREFRAME_MS};
 #[cfg(test)]
 pub(crate) use shapes::arc_polygon;
 pub(crate) use shapes::paint_svg_path_node;
+mod rounded_shadow;
+use rounded_shadow::{has_inset_shadow, paint_fill_and_insets};
+
 use shapes::{paint_drop_shadows, paint_ellipse, push_clip_content};
 
 /// Effects whose zoom-scaled footprint stays under this many device
@@ -366,12 +369,15 @@ fn paint_node_inner<'a>(
     match &node.kind {
         NodeKind::Frame => {
             let has_children = !node.children.is_empty();
+            let inset = !options.fast_interaction && has_inset_shadow(node);
             // Image-fill Frames paint the bitmap behind their
             // children; gradient + solid fall back to the shared
             // fill/stroke painter. Without this branch a Frame whose
             // primary fill is `PenFill::Image { url }` only shows the
             // grey placeholder + its children, never the image.
-            if has_children {
+            if inset {
+                paint_fill_and_insets(cx, node, world_rect, zoom, !options.mask_source);
+            } else if has_children {
                 if paint_fill_layers(cx, node, world_rect, zoom) {
                     // Container stroke is deferred until after its children.
                 } else if let Some(src) = node.image_src.as_deref() {
@@ -440,7 +446,7 @@ fn paint_node_inner<'a>(
             if clipped {
                 cx.backend.restore();
             }
-            if has_children {
+            if has_children || inset {
                 paint_node_stroke(cx, node, world_rect, zoom);
             }
         }
@@ -470,13 +476,16 @@ fn paint_node_inner<'a>(
         }
         NodeKind::Rect => {
             let has_children = !node.children.is_empty();
+            let inset = !options.fast_interaction && has_inset_shadow(node);
             // Composite widgets that degrade to `rect` (switch /
             // checkbox / slider / progress / radio_group / number_input
             // / text_area) paint their recognizable static visual on the
             // design surface instead of the bare rect.
             let widget_painted = paint_widget_visual(cx, node, world_rect, zoom);
             if !widget_painted {
-                if has_children {
+                if inset {
+                    paint_fill_and_insets(cx, node, world_rect, zoom, !options.mask_source);
+                } else if has_children {
                     if paint_fill_layers(cx, node, world_rect, zoom) {
                         // Container stroke is deferred until after its children.
                     } else if let Some(src) = node.image_src.as_deref() {
@@ -527,7 +536,7 @@ fn paint_node_inner<'a>(
             if clipped {
                 cx.backend.restore();
             }
-            if has_children && !widget_painted {
+            if (has_children || inset) && !widget_painted {
                 paint_node_stroke(cx, node, world_rect, zoom);
             }
         }

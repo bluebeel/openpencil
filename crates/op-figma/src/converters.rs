@@ -16,7 +16,7 @@ use crate::layout_positioning::{
     apply_layout_positioning, order_children, sizing_parent_stack_mode,
 };
 use crate::mappers::{
-    fig_fill_color, map_figma_effects, map_figma_fills, map_figma_layout, map_figma_stroke,
+    fig_fill_color, map_figma_fills, map_figma_layout, map_figma_node_effects, map_figma_stroke,
     LayoutProps,
 };
 use crate::mask::{any_visible, figma_path_mask};
@@ -149,7 +149,7 @@ fn build_container(
     container.fill = map_figma_fills(figma.get_array("fillPaints"))
         .or_else(|| map_figma_fills(figma.get_array("backgroundPaints")));
     container.stroke = map_figma_stroke(figma);
-    container.effects = map_figma_effects(figma.get_array("effects"));
+    container.effects = map_figma_node_effects(figma);
     container
 }
 
@@ -377,7 +377,7 @@ fn convert_rectangle(
                 resolve_height(figma, parent_stack_mode, ctx),
                 map_figma_fills(figma.get_array("fillPaints")),
                 map_figma_stroke(figma),
-                map_figma_effects(figma.get_array("effects")),
+                map_figma_node_effects(figma),
                 figma_path_mask(figma),
             );
         }
@@ -388,7 +388,7 @@ fn convert_rectangle(
         corner_radius,
         fill: map_figma_fills(figma.get_array("fillPaints")),
         stroke: map_figma_stroke(figma),
-        effects: map_figma_effects(figma.get_array("effects")),
+        effects: map_figma_node_effects(figma),
         ..ContainerProps::default()
     };
     rectangle_node(common_props(figma, id), container)
@@ -465,7 +465,7 @@ fn convert_ellipse(
         height,
         map_figma_fills(figma.get_array("fillPaints")),
         map_figma_stroke(figma),
-        map_figma_effects(figma.get_array("effects")),
+        map_figma_node_effects(figma),
         start_angle,
         sweep_angle,
         inner_radius,
@@ -488,7 +488,7 @@ fn convert_line(tree: &TreeNode, ctx: &mut ConversionContext<'_>) -> PenNode {
         w,
         h,
         map_figma_stroke(figma),
-        map_figma_effects(figma.get_array("effects")),
+        map_figma_node_effects(figma),
     )
 }
 
@@ -598,7 +598,7 @@ fn convert_vector(
                 height,
                 map_figma_fills(figma.get_array("strokePaints")),
                 None,
-                map_figma_effects(figma.get_array("effects")),
+                map_figma_node_effects(figma),
                 figma_path_mask(figma),
             );
         }
@@ -613,7 +613,7 @@ fn convert_vector(
                 .then(|| map_figma_fills(figma.get_array("fillPaints")))
                 .flatten(),
             map_figma_stroke(figma),
-            map_figma_effects(figma.get_array("effects")),
+            map_figma_node_effects(figma),
             figma_path_mask(figma),
         );
     }
@@ -628,7 +628,7 @@ fn convert_vector(
             resolve_height(figma, parent_stack_mode, ctx),
             None,
             Some(stroke),
-            map_figma_effects(figma.get_array("effects")),
+            map_figma_node_effects(figma),
             figma_path_mask(figma),
         );
     }
@@ -666,7 +666,7 @@ fn convert_vector(
         height: Some(resolve_height(figma, parent_stack_mode, ctx)),
         fill: map_figma_fills(figma.get_array("fillPaints")),
         stroke: map_figma_stroke(figma),
-        effects: map_figma_effects(figma.get_array("effects")),
+        effects: map_figma_node_effects(figma),
         ..ContainerProps::default()
     };
     rectangle_node(common_props(figma, id), container)
@@ -747,7 +747,7 @@ fn build_icon_path_node(
         icon_h,
         fill,
         stroke,
-        map_figma_effects(figma.get_array("effects")),
+        map_figma_node_effects(figma),
         figma_path_mask(figma),
     )
 }

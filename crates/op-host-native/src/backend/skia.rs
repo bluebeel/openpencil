@@ -78,6 +78,7 @@ mod image_supersample;
 mod layer;
 mod path;
 mod raster_point;
+mod rounded_shadow;
 mod sampled_clip;
 mod shaped_text;
 mod svg_raster_cache;
@@ -793,3 +794,6 @@ mod complex_script_tests;
 #[cfg(all(test, not(target_os = "windows")))]
 #[path = "skia/font_import_tests.rs"]
 mod font_import_tests;
+
+#[cfg(test)]
+mod rounded_shadow_tests;

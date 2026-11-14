@@ -167,13 +167,38 @@ const opCkClampUnit = (value, fallback = 0) => {
 // Cache successful and failed RuntimeEffect compilations by exact SkSL source.
 // The cache lives for one CanvasKit bridge session, so repainting never invokes
 // the SkSL compiler again for a source it has already seen.
-export function opCkCreateRuntimeEffectCache(CK) {
+export function opCkCreateRuntimeEffectCache(CK, limits = {}) {
+  const requestedEntries = limits.maxEntries ?? 128;
+  const requestedBytes = limits.maxSourceBytes ?? 2 * 1024 * 1024;
+  const maxEntries = Number.isSafeInteger(requestedEntries) && requestedEntries >= 0
+    ? Math.min(128, requestedEntries) : 128;
+  const maxSourceBytes = Number.isSafeInteger(requestedBytes) && requestedBytes >= 0
+    ? Math.min(2 * 1024 * 1024, requestedBytes) : 2 * 1024 * 1024;
   const entries = new Map();
+  let sourceBytes = 0;
+  const remove = (key) => {
+    const record = entries.get(key);
+    if (!record) return;
+    entries.delete(key);
+    sourceBytes -= record.bytes;
+    try { if (record.entry?.effect?.delete) record.entry.effect.delete(); } catch (_error) {}
+  };
   return {
     get(sksl) {
       const source = String(sksl);
-      if (entries.has(source)) return entries.get(source);
-
+      if (entries.has(source)) {
+        const record = entries.get(source);
+        entries.delete(source);
+        entries.set(source, record);
+        return record.entry;
+      }
+      // Charge two bytes per JS code unit, independent of V8's optional
+      // one-byte string representation. Compiled programs are count-bounded.
+      const bytes = source.length * 2;
+      if (!(maxEntries > 0) || bytes > maxSourceBytes) return null;
+      while (entries.size && (entries.size >= maxEntries || sourceBytes + bytes > maxSourceBytes)) {
+        remove(entries.keys().next().value);
+      }
       let effect = null;
       let entry = null;
       try {
@@ -184,19 +209,19 @@ export function opCkCreateRuntimeEffectCache(CK) {
           for (let index = 0; index < uniformCount; index++) {
             reflected.set(effect.getUniformName(index), effect.getUniform(index));
           }
-          entry = {
-            effect,
-            reflected,
-            floatCount: Math.max(0, Math.trunc(Number(effect.getUniformFloatCount()) || 0)),
-          };
+          entry = { effect, reflected,
+            floatCount: Math.max(0, Math.trunc(Number(effect.getUniformFloatCount()) || 0)) };
         }
       } catch (_error) {
-        if (effect && effect.delete) effect.delete();
+        if (effect?.delete) effect.delete();
         entry = null;
       }
-      entries.set(source, entry);
+      entries.set(source, { entry, bytes });
+      sourceBytes += bytes;
       return entry;
     },
+    snapshot() { return { entries: entries.size, sourceBytes, maxEntries, maxSourceBytes }; },
+    dispose() { for (const key of entries.keys()) remove(key); },
   };
 }
 
@@ -328,6 +353,90 @@ export function opCkBuildMeshGradientData(x, y, w, h, rows, cols, colors) {
   return { positions, rgba, indices };
 }
 
+// Match the typed rounded-shadow geometry before converting arrays to Skia.
+export function opCkRoundedShadowGeometry(values) {
+  if (values.length !== 15 || !values.slice(0, 13).every(Number.isFinite)
+      || ![0, 1].includes(values[14])) return null;
+  const [x,y,w,h,radius,dx,dy,blur,spread,r,g,b,a,inner,kernel] = values;
+  if (!(w > 0 && h > 0)) return { empty: true };
+  const f = Math.fround;
+  const growth = inner ? -spread : spread;
+  const width = f(w + f(2 * growth)), height = f(h + f(2 * growth));
+  const mask = [x, y, f(x+w), f(y+h)];
+  let bounds = null, corner = 0;
+  if (width > 0 && height > 0) {
+    const left = f(f(x-growth)+dx), top = f(f(y-growth)+dy);
+    bounds = [left, top, f(left+width), f(top+height)];
+    corner = growth === 0 || radius <= 0 ? radius
+      : Math.min(Math.max(f(radius+growth), 0), f(Math.min(width,height)*.5));
+  }
+  return { mask, maskRadius:radius, bounds, corner, blur:Math.max(0,blur),
+    color:[r,g,b,a], inner:Boolean(inner), kernel:blur > 0 ? kernel : 0 };
+}
+
+export function opCkDrawRoundedShadow(CK, canvas, effects, source, values) {
+  const shape = opCkRoundedShadowGeometry(values);
+  if (!shape) return false;
+  if (shape.empty || (!shape.bounds && !shape.inner)) return true;
+  const mask = CK.RRectXY(shape.mask, shape.maskRadius, shape.maskRadius);
+  const bounds = shape.bounds ?? [0,0,0,0];
+  const corner = Math.max(0, Math.min(shape.corner, (bounds[2]-bounds[0])*.5, (bounds[3]-bounds[1])*.5));
+  const [r,g,b,a] = shape.color;
+  let shader = null, filter = null, paint = null, cut = null;
+  let saved = false, layered = false;
+  try {
+    if (shape.kernel === 1) {
+      shader = opCkMakeRuntimeShader(effects.get(source),
+        ['bounds','radius','blur','inner','tint'],
+        [...bounds,corner,shape.blur,shape.inner?1:0,
+          Math.fround(r*a),Math.fround(g*a),Math.fround(b*a),a], [4,1,1,1,4]);
+      if (!shader) return false;
+    }
+    paint = new CK.Paint();
+    paint.setColor(shader ? CK.Color4f(1,1,1,1) : CK.Color4f(r,g,b,a));
+    paint.setAntiAlias(shape.kernel !== 1);
+    paint.setStyle(CK.PaintStyle.Fill);
+    canvas.save(); saved = true;
+    if (shape.inner) canvas.clipRRect(mask, CK.ClipOp.Intersect, true);
+    if (shader) {
+      paint.setShader(shader);
+      const out = shape.inner ? shape.mask.map((v,i)=>v+(i<2?-1:1))
+        : bounds.map((v,i)=>v+(i<2?-shape.blur:shape.blur));
+      canvas.drawRect(out, paint);
+    } else if (shape.inner) {
+      canvas.saveLayer(null, shape.mask); layered = true;
+      canvas.drawRRect(mask, paint);
+      if (shape.bounds) {
+        cut = new CK.Paint(); cut.setColor(CK.Color4f(0,0,0,1));
+        cut.setAntiAlias(true); cut.setStyle(CK.PaintStyle.Fill);
+        cut.setBlendMode(CK.BlendMode.DstOut);
+        if (shape.blur > 0) {
+          filter = CK.MaskFilter.MakeBlur(CK.BlurStyle.Normal, shape.blur*.5, true);
+          if (!filter) return false;
+          cut.setMaskFilter(filter);
+        }
+        canvas.drawRRect(CK.RRectXY(bounds,corner,corner),cut);
+      }
+    } else {
+      if (shape.blur > 0) {
+        filter = CK.MaskFilter.MakeBlur(CK.BlurStyle.Normal, shape.blur*.5, true);
+        if (!filter) return false;
+        paint.setMaskFilter(filter);
+      }
+      canvas.drawRRect(CK.RRectXY(bounds,shape.corner,shape.corner),paint);
+    }
+    return true;
+  } catch (_error) { return false; }
+  finally {
+    if (layered) canvas.restore();
+    if (saved) canvas.restore();
+    if (cut) cut.delete();
+    if (paint) paint.delete();
+    if (filter?.delete) filter.delete();
+    if (shader?.delete) shader.delete();
+  }
+}
+
 // Initialise CanvasKit on `canvasId`. Returns a bridge object the Rust backend
 // drives. Text is rasterized with browser/system fonts by default; the Rust
 // side can additionally register Local Font Access faces through
@@ -344,6 +453,7 @@ export async function opCkInit(canvasId) {
   let shadowBasis = Float32Array.from(canvas.getTotalMatrix());
   const el = document.getElementById(canvasId);
   const runtimeEffects = opCkCreateRuntimeEffectCache(CK);
+  let shadowKernelSource = '';
 
   const systemTypefaces = [];
   const systemTypefaceKeys = new Set();
@@ -1177,6 +1287,10 @@ export async function opCkInit(canvasId) {
 
     fillRect(x, y, w, h, r, g, b, a) { const p = fillPaint(r, g, b, a); canvas.drawRect(CK.LTRBRect(x, y, x + w, y + h), p); },
     strokeRect(x, y, w, h, r, g, b, a, sw) { const p = strokePaint(r, g, b, a, sw); canvas.drawRect(CK.LTRBRect(x, y, x + w, y + h), p); },
+    setShadowKernelSource(source) { shadowKernelSource = String(source); },
+    fillRoundRectShadow(...values) {
+      return opCkDrawRoundedShadow(CK, canvas, runtimeEffects, shadowKernelSource, values);
+    },
     fillRoundRect(x, y, w, h, rad, r, g, b, a) { const p = fillPaint(r, g, b, a); canvas.drawRRect(CK.RRectXY(CK.LTRBRect(x, y, x + w, y + h), rad, rad), p); },
     fillRoundRectPerCorner(x, y, w, h, tl, tr, br, bl, r, g, b, a) {
       const rr = Float32Array.of(x, y, x + w, y + h, tl, tl, tr, tr, br, br, bl, bl);

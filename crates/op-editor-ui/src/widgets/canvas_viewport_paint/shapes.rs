@@ -3,7 +3,7 @@
 //! arc / donut tessellation, `clipContent` child clips and SVG-path
 //! nodes. Pure code motion — behaviour is unchanged.
 
-use super::shadow_geometry::{spread_radius, spread_rect};
+use super::rounded_shadow::paint_round_shadow;
 use super::MIN_VISIBLE_EFFECT_DEVICE_PX;
 use crate::layout_scene::{Effect, NodeKind, SceneNode};
 use crate::widgets::canvas_viewport_fill_layers::{
@@ -48,22 +48,7 @@ pub(super) fn paint_drop_shadows(
         if footprint * zoom * dpi_scale < MIN_VISIBLE_EFFECT_DEVICE_PX {
             continue;
         }
-        let Some(silhouette) = spread_rect(world_rect, s.spread * zoom) else {
-            continue;
-        };
-        let radius = spread_radius(radius, s.spread * zoom, silhouette);
-        let offset = cx
-            .backend
-            .shadow_offset_in_local_space(Point2D::new(s.offset_x * zoom, s.offset_y * zoom));
-        let shadow_rect = Rect {
-            origin: Point2D::new(
-                silhouette.origin.x + offset.x,
-                silhouette.origin.y + offset.y,
-            ),
-            size: silhouette.size,
-        };
-        cx.backend
-            .fill_drop_shadow(shadow_rect, radius, s.blur * zoom, s.color);
+        paint_round_shadow(cx, s, world_rect, radius, zoom);
     }
 }
 

@@ -586,6 +586,7 @@ fn state_effects(
             PenEffect::Shadow(body) if body.visible != Some(false) => {
                 let color = parse_state_color(&body.color, state_variables)?;
                 Some(Effect::DropShadow(DropShadow {
+                    blur_kernel: body.blur_kernel.unwrap_or_default(),
                     offset_x: body.offset_x,
                     offset_y: body.offset_y,
                     blur: body.blur,

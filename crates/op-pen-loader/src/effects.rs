@@ -3,7 +3,7 @@
 //! that file under the 800-line cap.
 
 use jian_ops_schema::node::PenNode;
-use jian_ops_schema::style::PenEffect;
+use jian_ops_schema::style::{PenEffect, ShadowBlurKernel};
 use jian_scene::layout_scene::{DropShadow, Effect};
 use serde::{Deserialize, Serialize};
 
@@ -13,6 +13,8 @@ pub struct ShadowPayload {
     pub offset_x: f32,
     pub offset_y: f32,
     pub blur: f32,
+    #[serde(default, skip_serializing_if = "ShadowBlurKernel::is_gaussian")]
+    pub blur_kernel: ShadowBlurKernel,
     /// Older payloads predate spread and retain their original zero spread.
     #[serde(default)]
     pub spread: f32,
@@ -31,6 +33,7 @@ pub fn effects_to_payload(effects: &[Effect]) -> Vec<ShadowPayload> {
         .iter()
         .filter_map(|e| match e {
             Effect::DropShadow(s) => Some(ShadowPayload {
+                blur_kernel: s.blur_kernel,
                 offset_x: s.offset_x,
                 offset_y: s.offset_y,
                 blur: s.blur,
@@ -101,6 +104,7 @@ pub fn background_blur_effect_from_payload(radius: Option<f32>) -> Option<Effect
 
 fn shadow_payload_to_effect(s: &ShadowPayload) -> Effect {
     Effect::DropShadow(DropShadow {
+        blur_kernel: s.blur_kernel,
         offset_x: s.offset_x,
         offset_y: s.offset_y,
         blur: s.blur,
@@ -162,6 +166,7 @@ pub fn shadows_from_canonical(node: &PenNode) -> Vec<ShadowPayload> {
             // rather than fabricate a wrong one.
             PenEffect::Shadow(s) if s.visible != Some(false) => {
                 parse_css_color(&s.color).map(|color| ShadowPayload {
+                    blur_kernel: s.blur_kernel.unwrap_or_default(),
                     offset_x: s.offset_x,
                     offset_y: s.offset_y,
                     blur: s.blur,
@@ -209,6 +214,7 @@ mod tests {
     fn effects_survive_payload_round_trip() {
         let original = vec![
             Effect::DropShadow(DropShadow {
+                blur_kernel: Default::default(),
                 offset_x: 4.0,
                 offset_y: 6.0,
                 blur: 12.0,
@@ -222,6 +228,7 @@ mod tests {
                 inner: false,
             }),
             Effect::DropShadow(DropShadow {
+                blur_kernel: Default::default(),
                 offset_x: -2.0,
                 offset_y: 0.0,
                 blur: 3.0,
@@ -350,6 +357,7 @@ mod tests {
         use jian_scene::layout_scene::BlurEffect;
         let effects = vec![
             Effect::DropShadow(DropShadow {
+                blur_kernel: Default::default(),
                 offset_x: 1.0,
                 offset_y: 2.0,
                 blur: 3.0,
@@ -366,5 +374,29 @@ mod tests {
         ];
         // Shadow survives; blur is carried elsewhere (layer_blur).
         assert_eq!(effects_to_payload(&effects).len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod shadow_profile_tests {
+    use super::*;
+    #[test]
+    fn shadow_profile_round_trips_and_old_payload_is_gaussian_without_a_new_field() {
+        let payload: ShadowPayload = serde_json::from_str(
+            r#"{"offset_x":0,"offset_y":2,"blur":8,"spread":0,"color":[0,0,0,0.1]}"#,
+        )
+        .unwrap();
+        assert_eq!(payload.blur_kernel, ShadowBlurKernel::Gaussian);
+        assert!(!serde_json::to_string(&payload)
+            .unwrap()
+            .contains("blur_kernel"));
+        let mut payload = payload;
+        payload.blur_kernel = ShadowBlurKernel::Triangular;
+        let effects = effects_from_payload(vec![payload]);
+        let back = effects_to_payload(&effects);
+        assert_eq!(back[0].blur_kernel, ShadowBlurKernel::Triangular);
+        let data = serde_json::to_string(&back).unwrap();
+        let back: Vec<ShadowPayload> = serde_json::from_str(&data).unwrap();
+        assert_eq!(back[0].blur_kernel, ShadowBlurKernel::Triangular);
     }
 }

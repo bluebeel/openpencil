@@ -537,6 +537,7 @@ mod tests {
         let mut node = rect("effects", Rect::xywh(10.0, 10.0, 20.0, 20.0));
         node.effects = vec![
             Effect::DropShadow(DropShadow {
+                blur_kernel: Default::default(),
                 offset_x: 10.0,
                 offset_y: -5.0,
                 blur: 8.0,
@@ -563,6 +564,7 @@ mod tests {
         let mut node = rect(id, Rect::xywh(0.0, 0.0, 10.0, 10.0));
         node.flip_x = true;
         node.effects = vec![Effect::DropShadow(DropShadow {
+            blur_kernel: Default::default(),
             offset_x: 20.0,
             offset_y: 0.0,
             blur: 0.0,
@@ -582,6 +584,7 @@ mod tests {
         ] {
             let mut node = rect("spread", Rect::xywh(10.0, 10.0, 20.0, 20.0));
             node.effects = vec![Effect::DropShadow(DropShadow {
+                blur_kernel: Default::default(),
                 offset_x: 20.0,
                 offset_y: 0.0,
                 blur: 0.0,

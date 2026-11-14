@@ -524,6 +524,7 @@ fn map_shadow(
         return None;
     }
     Some(ShadowBody {
+        blur_kernel: None,
         inner: inner.then_some(true),
         visible: None,
         offset_x: lengths[0],

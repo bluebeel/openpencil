@@ -172,6 +172,7 @@ pub fn push_drop_shadow(node: &mut PenNode) -> bool {
         return false;
     };
     effects.push(PenEffect::Shadow(ShadowBody {
+        blur_kernel: None,
         inner: None,
         visible: None,
         offset_x: 0.0,

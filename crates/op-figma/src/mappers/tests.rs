@@ -657,3 +657,48 @@ fn image_fill_rotation_retains_degrees_and_full_turns_without_nonfinite_values()
     };
     assert_eq!(image.rotation, None);
 }
+
+#[test]
+fn triangular_shadow_profile_is_limited_to_known_uniform_rounded_geometry() {
+    for (kind, expected) in [
+        ("FRAME", true),
+        ("RECTANGLE", true),
+        ("INSTANCE", true),
+        ("VECTOR", false),
+        ("TEXT", false),
+    ] {
+        let node = obj(vec![
+            ("type", FigValue::Str(kind.into())),
+            (
+                "effects",
+                FigValue::Array(vec![obj(vec![
+                    ("type", FigValue::Str("DROP_SHADOW".into())),
+                    ("radius", FigValue::Float(8.0)),
+                ])].into()),
+            ),
+        ]);
+        let effects = map_figma_node_effects(&node).unwrap();
+        let PenEffect::Shadow(s) = &effects[0] else {
+            panic!("shadow")
+        };
+        assert_eq!(s.blur_kernel.is_some(), expected);
+    }
+    for key in ["cornerSmoothing", "rectangleCornerSmoothing"] {
+        let node = obj(vec![
+            ("type", FigValue::Str("FRAME".into())),
+            (key, FigValue::Float(0.5)),
+            (
+                "effects",
+                FigValue::Array(vec![obj(vec![(
+                    "type",
+                    FigValue::Str("DROP_SHADOW".into()),
+                )])].into()),
+            ),
+        ]);
+        let effects = map_figma_node_effects(&node).unwrap();
+        let PenEffect::Shadow(s) = &effects[0] else {
+            panic!("shadow")
+        };
+        assert_eq!(s.blur_kernel, None);
+    }
+}

@@ -58,6 +58,27 @@ extern "C" {
         a: f32,
         sw: f32,
     );
+    #[wasm_bindgen(method, js_name = setShadowKernelSource)]
+    pub(super) fn set_shadow_kernel_source(this: &OpCk, source: &str);
+    #[wasm_bindgen(method, js_name = fillRoundRectShadow)]
+    pub(super) fn fill_round_rect_shadow(
+        this: &OpCk,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        radius: f32,
+        dx: f32,
+        dy: f32,
+        blur: f32,
+        spread: f32,
+        r: f32,
+        g: f32,
+        b: f32,
+        a: f32,
+        inner: bool,
+        kernel: u32,
+    ) -> bool;
     #[wasm_bindgen(method, js_name = fillRoundRect)]
     pub(super) fn fill_round_rect(
         this: &OpCk,

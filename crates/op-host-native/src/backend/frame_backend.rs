@@ -151,6 +151,16 @@ impl<'a> RenderBackend for NativeFrameBackend<'a> {
         }
     }
 
+    fn fill_round_rect_shadow(
+        &mut self,
+        rect: Rect,
+        radius: f32,
+        shadow: &op_editor_ui::RoundRectShadowOptions,
+    ) -> bool {
+        self.inner
+            .fill_round_rect_shadow(self.canvas, rect, radius, shadow)
+    }
+
     fn fill_drop_shadow(&mut self, rect: Rect, radius: f32, blur: f32, color: Color) {
         self.inner
             .fill_drop_shadow(self.canvas, rect, radius, blur, color);

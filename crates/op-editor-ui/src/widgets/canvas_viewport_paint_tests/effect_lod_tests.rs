@@ -104,6 +104,7 @@ fn fast_interaction_skips_every_effect_layer_at_any_zoom() {
     // fully visible sizes. Quality returns on gesture end.
     let node = effect_node(vec![
         Effect::DropShadow(DropShadow {
+            blur_kernel: Default::default(),
             offset_x: 4.0,
             offset_y: 4.0,
             blur: 12.0,
@@ -169,6 +170,7 @@ fn subpixel_shadow_skips_the_shadow_draw() {
     // Blur AND offset both under a third of a device pixel: the
     // shadow cannot move or soften the silhouette visibly.
     let node = effect_node(vec![Effect::DropShadow(DropShadow {
+        blur_kernel: Default::default(),
         offset_x: 2.0,
         offset_y: 2.0,
         blur: 4.0,
@@ -185,6 +187,7 @@ fn visible_offset_keeps_the_shadow_even_with_tiny_blur() {
     // A hard-edged shadow displaced 40 doc px is still a visible
     // 2 px fringe at 5% zoom — only fully sub-pixel shadows skip.
     let node = effect_node(vec![Effect::DropShadow(DropShadow {
+        blur_kernel: Default::default(),
         offset_x: 40.0,
         offset_y: 0.0,
         blur: 0.0,
@@ -198,6 +201,7 @@ fn visible_offset_keeps_the_shadow_even_with_tiny_blur() {
 #[test]
 fn signed_shadow_spread_scales_with_viewport_zoom_before_backend_paint() {
     let mut node = effect_node(vec![Effect::DropShadow(DropShadow {
+        blur_kernel: Default::default(),
         offset_x: 3.0,
         offset_y: 4.0,
         blur: 10.0,
@@ -226,6 +230,7 @@ fn signed_shadow_spread_scales_with_viewport_zoom_before_backend_paint() {
 #[test]
 fn positive_spread_keeps_a_visible_crisp_shadow_and_full_contraction_skips_it() {
     let mut node = effect_node(vec![Effect::DropShadow(DropShadow {
+        blur_kernel: Default::default(),
         offset_x: 0.0,
         offset_y: 0.0,
         blur: 0.0,
@@ -245,6 +250,7 @@ fn positive_spread_keeps_a_visible_crisp_shadow_and_full_contraction_skips_it() 
 #[test]
 fn negative_spread_keeps_a_crisp_shadow_visible_through_an_unfilled_node() {
     let mut node = effect_node(vec![Effect::DropShadow(DropShadow {
+        blur_kernel: Default::default(),
         offset_x: 0.0,
         offset_y: 0.0,
         blur: 0.0,

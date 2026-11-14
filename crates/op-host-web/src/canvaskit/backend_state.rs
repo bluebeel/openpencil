@@ -7,6 +7,7 @@ impl CanvasKitBackend {
     pub fn new(ck: OpCk, dpr: f32, logical_w: u32, logical_h: u32) -> Self {
         let dpr = dpr.max(1.0);
         ck.set_dpr(dpr);
+        ck.set_shadow_kernel_source(jian_core::render::shadow::TRIANGULAR_SHADOW_SHADER);
         Self {
             ck,
             dpr,

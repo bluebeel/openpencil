@@ -13,6 +13,7 @@ fn card(spread: f32, blur: f32) -> SceneNode {
     node.corner_radius = 12.0;
     node.fill = Some(Color::WHITE);
     node.effects = vec![Effect::DropShadow(DropShadow {
+        blur_kernel: Default::default(),
         offset_x: 12.0,
         offset_y: 0.0,
         blur,
@@ -146,6 +147,7 @@ fn rotated_svg_inner_shadows_keep_canvas_axis_offsets() {
         node.rotation = degrees.to_radians();
         node.fill = None;
         node.effects = vec![Effect::DropShadow(DropShadow {
+            blur_kernel: Default::default(),
             offset_x: 8.0,
             offset_y: 4.0,
             blur: 0.0,
