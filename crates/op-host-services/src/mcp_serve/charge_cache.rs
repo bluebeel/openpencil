@@ -12,7 +12,7 @@ use std::{
 
 const MAX_ENTRIES: usize = 16_384;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 pub(super) struct RootCharge {
     pub serialized: usize,
     pub nodes: usize,
