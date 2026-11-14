@@ -78,13 +78,15 @@ pub(crate) fn with_prepared_nodes<R>(
         let mut backend = cell.borrow_mut();
         ensure_images_decoded(&mut backend, nodes);
         let mut paint = |canvas: &Canvas| {
-            let mut frame = NativeFrameBackend::new(&mut backend, canvas);
-            let mut cx = PaintCx {
-                backend: &mut frame,
-            };
-            for node in nodes.iter().rev() {
-                canvas_viewport_paint::paint_node(&mut cx, node, Point2D::ZERO, 1.0, no_cull());
-            }
+            op_host_native::raster_sampling::with_scene_export(|| {
+                let mut frame = NativeFrameBackend::new(&mut backend, canvas);
+                let mut cx = PaintCx {
+                    backend: &mut frame,
+                };
+                for node in nodes.iter().rev() {
+                    canvas_viewport_paint::paint_node(&mut cx, node, Point2D::ZERO, 1.0, no_cull());
+                }
+            });
         };
         action(&mut paint)
     })

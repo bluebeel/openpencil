@@ -77,7 +77,7 @@ fn draw_path(canvas: &Canvas, path: &Path, paint: &Paint) -> bool {
     }
     if jian_skia::raster_sampling::is_point_sampling() {
         let mut point_paint = paint.clone();
-        jian_skia::raster_sampling::configure_paint(&mut point_paint);
+        jian_skia::raster_sampling::configure_final_src_over(&mut point_paint);
         canvas.draw_path(path, &point_paint);
         return true;
     }

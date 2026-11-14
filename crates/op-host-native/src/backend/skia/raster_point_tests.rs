@@ -124,3 +124,57 @@ fn correlated_text_keeps_original_float_color_for_direct_and_shaped_runs() {
         }
     });
 }
+
+fn shadow_sigma(scale: i32, point: bool) -> f64 {
+    let backend = NativeBackend::with_dpi(1.0);
+    let mut surface = skia_safe::surfaces::raster_n32_premul((192 * scale, 128 * scale)).unwrap();
+    surface.canvas().scale((scale as f32, scale as f32));
+    let mut draw = || {
+        backend.fill_drop_shadow(
+            surface.canvas(),
+            Rect::xywh(64.0, 32.0, 64.0, 64.0),
+            0.0,
+            12.0,
+            Color::WHITE,
+        )
+    };
+    if point {
+        jian_skia::raster_sampling::with_point_sampling(draw).unwrap();
+    } else {
+        draw();
+    }
+    let image = surface.image_snapshot();
+    let pixels = image.peek_pixels().unwrap();
+    let mut mass = 0f64;
+    let mut mean = 0f64;
+    for x in 0..192 * scale {
+        let a = f64::from(pixels.get_color((x, 64 * scale)).a());
+        mass += a;
+        mean += a * (f64::from(x) + 0.5) / f64::from(scale);
+    }
+    mean /= mass;
+    let mut variance = 0f64;
+    for x in 0..192 * scale {
+        let a = f64::from(pixels.get_color((x, 64 * scale)).a());
+        variance += a * ((f64::from(x) + 0.5) / f64::from(scale) - mean).powi(2);
+    }
+    (variance / mass - 64.0 * 64.0 / 12.0).max(0.0).sqrt()
+}
+
+#[test]
+fn correlated_shadow_width_survives_camera_resolution_and_live_device_behavior_is_unchanged() {
+    // The second moment of a Gaussian-convolved box is box variance+sigma².
+    // Estimate in logical coordinates, without a fitted output-pixel offset.
+    let native = shadow_sigma(1, false);
+    for scale in [2, 3] {
+        let camera = shadow_sigma(scale, true);
+        assert!(
+            (camera - native).abs() < 0.25,
+            "camera{scale} changed logical shadow sigma {native}->{camera}"
+        );
+    }
+    assert!(
+        shadow_sigma(2, false) < native * 0.6,
+        "legacy device-fixed Native sigma is preserved"
+    );
+}

@@ -435,7 +435,7 @@ impl NativeBackend {
         let mut paint = skia_safe::Paint::new(jian_color_to_color4f(color), None);
         paint.set_stroke(true);
         paint.set_stroke_width(width);
-        jian_skia::raster_sampling::configure_geometry(&mut paint);
+        raster_point::prepare_solid(&mut paint);
         paint.set_stroke_cap(skia_safe::PaintCap::Round);
         canvas.draw_line((from.x, from.y), (to.x, to.y), &paint);
     }
@@ -454,7 +454,7 @@ impl NativeBackend {
         // Skia paints aren't AA by default — chip / button edges
         // come out stair-stepped without this. Same call mirrored
         // into stroke_round_rect / stroke_line / stroke_svg_path.
-        jian_skia::raster_sampling::configure_geometry(&mut paint);
+        raster_point::prepare_solid(&mut paint);
         canvas.draw_round_rect(to_sk_rect(rect), radius, radius, &paint);
     }
 
@@ -468,15 +468,15 @@ impl NativeBackend {
         let vectors = radii.map(|radius| skia_safe::Vector::new(radius, radius));
         let rrect = skia_safe::RRect::new_rect_radii(to_sk_rect(rect), &vectors);
         let mut paint = skia_safe::Paint::new(jian_color_to_color4f(color), None);
-        jian_skia::raster_sampling::configure_geometry(&mut paint);
+        raster_point::prepare_solid(&mut paint);
         canvas.draw_rrect(rrect, &paint);
     }
 
     /// Drop shadow — a gaussian-blurred filled rounded rectangle.
-    /// `blur` is the CSS-style blur radius (doc-px × zoom, applied
-    /// by the caller); skia's mask-filter takes a sigma, and the
-    /// CSS blur-radius → sigma conversion is `radius / 2`. A zero
-    /// blur degrades to a crisp filled round rect.
+    /// `blur` is the CSS-style radius; sigma is `radius / 2`. Scene exports
+    /// additionally map sigma through the canvas transform; direct/live
+    /// callers retain their caller-scaled device-space blur. A zero blur
+    /// degrades to a crisp filled round rect.
     pub fn fill_drop_shadow(
         &self,
         canvas: &skia_safe::Canvas,
@@ -486,15 +486,17 @@ impl NativeBackend {
         color: Color,
     ) {
         let mut paint = skia_safe::Paint::new(jian_color_to_color4f(color), None);
-        jian_skia::raster_sampling::configure_geometry(&mut paint);
         let sigma = blur * 0.5;
         if sigma > 0.0 {
-            if let Some(mask) =
-                skia_safe::MaskFilter::blur(skia_safe::BlurStyle::Normal, sigma, false)
-            {
+            if let Some(mask) = skia_safe::MaskFilter::blur(
+                skia_safe::BlurStyle::Normal,
+                sigma,
+                jian_skia::raster_sampling::shadow_respects_ctm(),
+            ) {
                 paint.set_mask_filter(mask);
             }
         }
+        raster_point::prepare_solid(&mut paint);
         canvas.draw_round_rect(to_sk_rect(rect), radius, radius, &paint);
     }
 
@@ -511,7 +513,7 @@ impl NativeBackend {
         let mut paint = skia_safe::Paint::new(jian_color_to_color4f(color), None);
         paint.set_stroke(true);
         paint.set_stroke_width(width);
-        jian_skia::raster_sampling::configure_geometry(&mut paint);
+        raster_point::prepare_solid(&mut paint);
         canvas.draw_round_rect(to_sk_rect(rect), radius, radius, &paint);
     }
 
@@ -528,7 +530,7 @@ impl NativeBackend {
         let mut paint = skia_safe::Paint::new(jian_color_to_color4f(color), None);
         paint.set_stroke(true);
         paint.set_stroke_width(width);
-        jian_skia::raster_sampling::configure_geometry(&mut paint);
+        raster_point::prepare_solid(&mut paint);
         canvas.draw_rrect(rrect, &paint);
     }
 
@@ -536,14 +538,14 @@ impl NativeBackend {
     /// oval primitive so the curve is properly anti-aliased.
     pub fn fill_oval(&self, canvas: &skia_safe::Canvas, bounds: Rect, color: Color) {
         let mut paint = skia_safe::Paint::new(jian_color_to_color4f(color), None);
-        jian_skia::raster_sampling::configure_geometry(&mut paint);
+        raster_point::prepare_solid(&mut paint);
         canvas.draw_oval(to_sk_rect(bounds), &paint);
     }
 
     /// Stroked ellipse inscribed in `bounds`.
     pub fn stroke_oval(&self, canvas: &skia_safe::Canvas, bounds: Rect, color: Color, width: f32) {
         let mut paint = skia_safe::Paint::new(jian_color_to_color4f(color), None);
-        jian_skia::raster_sampling::configure_geometry(&mut paint);
+        raster_point::prepare_solid(&mut paint);
         paint.set_stroke(true);
         paint.set_stroke_width(width);
         canvas.draw_oval(to_sk_rect(bounds), &paint);
@@ -566,7 +568,7 @@ impl NativeBackend {
         builder.close();
         let path = builder.detach();
         let mut paint = skia_safe::Paint::new(jian_color_to_color4f(color), None);
-        jian_skia::raster_sampling::configure_geometry(&mut paint);
+        raster_point::prepare_solid(&mut paint);
         canvas.draw_path(&path, &paint);
     }
 
@@ -593,7 +595,7 @@ impl NativeBackend {
         builder.close();
         let path = builder.detach();
         let mut paint = skia_safe::Paint::new(jian_color_to_color4f(color), None);
-        jian_skia::raster_sampling::configure_geometry(&mut paint);
+        raster_point::prepare_solid(&mut paint);
         paint.set_stroke(true);
         paint.set_stroke_width(width);
         paint.set_stroke_join(skia_safe::PaintJoin::Round);
@@ -617,7 +619,7 @@ impl NativeBackend {
             return;
         }
         let mut paint = skia_safe::Paint::new(jian_color_to_color4f(color), None);
-        jian_skia::raster_sampling::configure_geometry(&mut paint);
+        raster_point::prepare_solid(&mut paint);
         paint.set_stroke(true);
         paint.set_stroke_cap(skia_safe::PaintCap::Round);
         paint.set_stroke_width(radius * 2.0);

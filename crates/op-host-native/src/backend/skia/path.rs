@@ -666,9 +666,11 @@ impl NativeBackend {
         jian_skia::raster_sampling::set_blend_mode(&mut cut, skia_safe::BlendMode::DstOut);
         let sigma = blur * 0.5;
         if sigma > 0.0 {
-            if let Some(mask) =
-                skia_safe::MaskFilter::blur(skia_safe::BlurStyle::Normal, sigma, false)
-            {
+            if let Some(mask) = skia_safe::MaskFilter::blur(
+                skia_safe::BlurStyle::Normal,
+                sigma,
+                jian_skia::raster_sampling::shadow_respects_ctm(),
+            ) {
                 cut.set_mask_filter(mask);
             }
         }

@@ -260,3 +260,93 @@ fn correlated_legacy_callback_remains_once_and_scene_mode_matches_worker() {
     }
     assert_eq!(worker.stats().backend_initializations, 1);
 }
+
+fn native_shadow_width(scale: i32) -> f64 {
+    use op_editor_ui::layout_scene::{DropShadow, Effect, NodeKind, SceneNode};
+    let mut node = SceneNode::leaf("shadow", NodeKind::Rect);
+    node.bounds = Rect::xywh(64.0, 32.0, 64.0, 64.0);
+    node.fill = Some(UiColor::WHITE);
+    node.effects.push(Effect::DropShadow(DropShadow {
+        offset_x: 0.0,
+        offset_y: 0.0,
+        blur: 12.0,
+        spread: 0.0,
+        color: UiColor::WHITE,
+        inner: false,
+    }));
+    let png = crate::render_scene_nodes_raster_bytes(
+        &[node],
+        Rect::xywh(0.0, 0.0, 192.0, 128.0),
+        RasterFormat::Png,
+        scale as f32,
+        0.0,
+        RasterSampling::Native,
+    )
+    .unwrap();
+    let pixels = decode(&png, 192 * scale, 128 * scale);
+    let mut mass = 0f64;
+    let mut mean = 0f64;
+    for x in 0..192 * scale {
+        let a = f64::from(pixels[((64 * scale * 192 * scale + x) * 4 + 3) as usize]);
+        mass += a;
+        mean += a * (f64::from(x) + 0.5) / f64::from(scale);
+    }
+    mean /= mass;
+    let mut variance = 0f64;
+    for x in 0..192 * scale {
+        let a = f64::from(pixels[((64 * scale * 192 * scale + x) * 4 + 3) as usize]);
+        variance += a * ((f64::from(x) + 0.5) / f64::from(scale) - mean).powi(2);
+    }
+    (variance / mass).sqrt()
+}
+
+#[test]
+fn correlated_native_scene_exports_preserve_logical_shadow_width_at_scale() {
+    let reference = native_shadow_width(1);
+    for scale in [2, 3] {
+        let actual = native_shadow_width(scale);
+        assert!(
+            (reference - actual).abs() < 0.25,
+            "Native export scale{scale} changes logical shadow width {reference}->{actual}"
+        );
+    }
+}
+
+#[test]
+fn correlated_scene_export_scope_restores_and_raw_callback_stays_unscoped() {
+    assert!(!raster_sampling::shadow_respects_ctm());
+    let error = std::panic::catch_unwind(|| {
+        raster_sampling::with_scene_export(|| {
+            assert!(raster_sampling::shadow_respects_ctm());
+            panic!("controlled scope test");
+        })
+    });
+    assert!(error.is_err());
+    assert!(!raster_sampling::shadow_respects_ctm());
+    let calls = Cell::new(0);
+    crate::render_raster_bytes(
+        Rect::xywh(0.0, 0.0, 8.0, 8.0),
+        RasterFormat::Png,
+        2.0,
+        0.0,
+        |canvas| {
+            calls.set(calls.get() + 1);
+            assert!(!raster_sampling::shadow_respects_ctm());
+            crate::paint_nodes(
+                canvas,
+                &[crate::test_support::filled_rect(
+                    "box",
+                    0.0,
+                    0.0,
+                    4.0,
+                    4.0,
+                    UiColor::WHITE,
+                )],
+            );
+            assert!(!raster_sampling::shadow_respects_ctm());
+        },
+    )
+    .unwrap();
+    assert_eq!(calls.get(), 1);
+    assert!(!raster_sampling::shadow_respects_ctm());
+}

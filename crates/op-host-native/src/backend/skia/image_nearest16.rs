@@ -141,7 +141,14 @@ pub(super) fn draw(
     if let Some(matrix) = image_adjustment_matrix(options.adjustments) {
         paint.set_color_filter(skia_safe::color_filters::matrix_row_major(&matrix, None));
     }
-    jian_skia::raster_sampling::configure_paint(&mut paint);
+    // grid0 emits byte-normalized colors and binary geometry alpha. The
+    // child uses NEAREST/CLAMP, so an opaque source cannot acquire Decal or
+    // filter alpha. Final paint opacity/adjustment filters are checked too.
+    if point && options.blend_mode == op_editor_ui::ImageBlendMode::Normal {
+        jian_skia::raster_sampling::configure_final_byte_image(&mut paint, image.is_opaque());
+    } else {
+        jian_skia::raster_sampling::configure_paint(&mut paint);
+    }
     canvas.draw_rect(draw_bounds, &paint);
     super::image_diagnostics::record_sharp_raster_hit();
     true

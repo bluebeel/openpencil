@@ -16,9 +16,15 @@ pub(super) fn rect(canvas: &Canvas, rect: Rect, color: Color, stroke: Option<f32
         paint.set_stroke(true);
         paint.set_stroke_width(width);
     }
-    jian_skia::raster_sampling::configure_paint(&mut paint);
+    jian_skia::raster_sampling::configure_final_src_over(&mut paint);
     canvas.draw_rect(to_sk_rect(rect), &paint);
     true
+}
+
+/// Prepare an ordinary solid draw after its color and filters are final.
+pub(super) fn prepare_solid(paint: &mut Paint) {
+    jian_skia::raster_sampling::configure_geometry(paint);
+    jian_skia::raster_sampling::configure_final_src_over(paint);
 }
 
 const MAX_VERTICES: usize = 65536;
