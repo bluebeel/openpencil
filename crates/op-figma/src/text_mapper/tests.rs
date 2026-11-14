@@ -416,3 +416,43 @@ fn underline_skip_ink_segments_inherit_or_keep_authored_overrides() {
         [None, Some(false), Some(true)]
     );
 }
+
+#[test]
+fn common_ligature_flags_map_to_liga_with_explicit_off_precedence() {
+    for (common, expected) in [(false, 0), (true, 1)] {
+        let mut node = obj(vec![("fontVariantCommonLigatures", FigValue::Bool(common))]);
+        assert_eq!(
+            map_figma_text_props(&node).font_features.unwrap()["liga"],
+            expected
+        );
+        node.set(
+            "toggledOffOTFeatures",
+            FigValue::Array(vec![FigValue::Str("LIGA".into())].into()),
+        );
+        assert_eq!(
+            map_figma_text_props(&node).font_features.unwrap()["liga"],
+            0
+        );
+    }
+    let node = obj(vec![
+        ("fontVariantCommonLigatures", FigValue::Bool(true)),
+        (
+            "textData",
+            obj(vec![(
+                "styleOverrideTable",
+                FigValue::Array(
+                    vec![obj(vec![(
+                        "fontVariantCommonLigatures",
+                        FigValue::Bool(false),
+                    )])]
+                    .into(),
+                ),
+            )]),
+        ),
+    ]);
+    assert_eq!(
+        map_figma_text_props(&node).font_features.unwrap()["liga"],
+        0,
+        "node-wide features cannot override an explicit mixed-span OFF setting"
+    );
+}

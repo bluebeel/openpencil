@@ -305,3 +305,64 @@ fn linked_skip_ink_fills_absent_setting_but_keeps_explicit_override() {
         Some(true)
     );
 }
+
+fn ligature_pair() -> Vec<FigValue> {
+    let mut style = linked_style();
+    style.set("fontVariantCommonLigatures", FigValue::Bool(true));
+    let mut text = node("Linked Font", -1.);
+    text.set("fontVariantCommonLigatures", FigValue::Bool(false));
+    text.set("letterSpacing", pixels(-1.));
+    text.set("textData", object(vec![("characters", string("fizz"))]));
+    text.set(
+        "size",
+        object(vec![("x", number(100.)), ("y", number(24.))]),
+    );
+    let cache = text.get_mut("derivedTextData").unwrap();
+    cache.set(
+        "layoutSize",
+        object(vec![("x", number(100.)), ("y", number(24.))]),
+    );
+    let glyphs = cache.get_array_mut("glyphs").unwrap();
+    glyphs[1].set("firstCharacter", FigValue::Uint(2));
+    glyphs[2].set("firstCharacter", FigValue::Uint(3));
+    vec![style, text]
+}
+
+#[test]
+fn linked_common_ligature_on_requires_saved_cluster_and_matching_layout() {
+    let mut values = ligature_pair();
+    resolve_style_references(&mut values);
+    assert_eq!(
+        map_figma_text_props(&values[1]).font_features.unwrap()["liga"],
+        1
+    );
+    for mode in [
+        "explicit",
+        "feature-off",
+        "tracking",
+        "geometry",
+        "no-cluster",
+    ] {
+        let mut values = ligature_pair();
+        let node = &mut values[1];
+        match mode {
+            "explicit" => node.set("isOverrideOverTextStyle", FigValue::Bool(true)),
+            "feature-off" => node.set(
+                "toggledOffOTFeatures",
+                FigValue::Array(vec![string("LIGA")].into()),
+            ),
+            "tracking" => node.set("letterSpacing", pixels(0.5)),
+            "geometry" => node.get_mut("size").unwrap().set("x", number(200.)),
+            _ => node
+                .get_mut("textData")
+                .unwrap()
+                .set("characters", string("abcd")),
+        }
+        resolve_style_references(&mut values);
+        assert_eq!(
+            map_figma_text_props(&values[1]).font_features.unwrap()["liga"],
+            0,
+            "{mode}"
+        );
+    }
+}

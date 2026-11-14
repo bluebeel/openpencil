@@ -90,10 +90,14 @@ fn map_font_kerning(node: &FigValue) -> Option<bool> {
 fn map_font_features(node: &FigValue) -> Option<BTreeMap<String, u32>> {
     let enabled = node.get_array("toggledOnOTFeatures");
     let disabled = node.get_array("toggledOffOTFeatures");
-    if enabled.is_none() && disabled.is_none() {
+    let common = node.get_bool("fontVariantCommonLigatures");
+    if enabled.is_none() && disabled.is_none() && common.is_none() {
         return None;
     }
     let mut features = BTreeMap::new();
+    if let Some(enabled) = common {
+        features.insert("liga".into(), u32::from(enabled));
+    }
     for (values, setting) in [(enabled, 1), (disabled, 0)] {
         for value in values.unwrap_or(&[]) {
             let Some(tag) = value.as_str().filter(|tag| {
@@ -103,6 +107,23 @@ fn map_font_features(node: &FigValue) -> Option<BTreeMap<String, u32>> {
             };
             features.insert(tag.to_ascii_lowercase(), setting);
         }
+    }
+    if node
+        .get("textData")
+        .and_then(|text| text.get_array("styleOverrideTable"))
+        .is_some_and(|table| {
+            table.iter().any(|style| {
+                style.get_bool("fontVariantCommonLigatures") == Some(false)
+                    || style.get_array("toggledOffOTFeatures").is_some_and(|tags| {
+                        tags.iter().any(|tag| {
+                            tag.as_str()
+                                .is_some_and(|tag| tag.eq_ignore_ascii_case("liga"))
+                        })
+                    })
+            })
+        })
+    {
+        features.insert("liga".into(), 0);
     }
     Some(features)
 }

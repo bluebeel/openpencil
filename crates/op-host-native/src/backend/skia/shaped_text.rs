@@ -92,8 +92,13 @@ impl ShapedText {
             let mut width = paragraph.max_intrinsic_width();
             if super::text::uses_advance_grid(run.text, run.kerning, run.font_features) {
                 let mut corrections = std::collections::BTreeMap::<usize, f32>::new();
+                let mut clusters = std::collections::BTreeMap::<usize, TrackingClusters>::new();
                 paragraph.visit(|line, info| {
                     if let Some(info) = info {
+                        let tracking = clusters.entry(line).or_default();
+                        for &cluster in info.utf8_starts().iter().take(info.glyphs().len()) {
+                            tracking.ordinal(cluster);
+                        }
                         if let Some(adjusted) = jian_skia::advance_grid::adjust_glyph_run(
                             info.font(),
                             info.glyphs(),
@@ -115,14 +120,19 @@ impl ShapedText {
                                 metrics.width as f32
                                     + corrections.get(&line).copied().unwrap_or(0.0),
                                 run.font_size,
-                            )
+                            ) + clusters.get(&line).map_or(0, |c| c.count.saturating_sub(1)) as f32
+                                * run.letter_spacing
                         })
                         .fold(0.0, f32::max);
+                    return width;
                 } else {
                     width = jian_skia::advance_grid::quantize_advance(
                         width + corrections.get(&0).copied().unwrap_or(0.0),
                         run.font_size,
                     );
+                    return width
+                        + clusters.get(&0).map_or(0, |c| c.count.saturating_sub(1)) as f32
+                            * run.letter_spacing;
                 }
             }
             width + run.text.chars().count().saturating_sub(1) as f32 * run.letter_spacing
@@ -311,7 +321,14 @@ fn visit_positioned(
         .collect::<Vec<_>>();
     let use_grid = super::text::uses_advance_grid(run.text, run.kerning, run.font_features);
     let mut advance_correction = 0.0;
-    paragraph.visit(|_, info| {
+    let mut tracking = TrackingClusters::default();
+    let mut current_line = None;
+    paragraph.visit(|line, info| {
+        if current_line != Some(line) {
+            current_line = Some(line);
+            advance_correction = 0.0;
+            tracking = TrackingClusters::default();
+        }
         let Some(info) = info else { return };
         let source = info.font();
         let mut font = skia_safe::Font::new(source.typeface(), source.size());
@@ -343,8 +360,11 @@ fn visit_positioned(
                 .iter()
                 .zip(info.utf8_starts())
                 .map(|(position, offset)| {
-                    let character =
-                        character_offsets.partition_point(|start| *start < *offset as usize);
+                    let character = if use_grid {
+                        tracking.ordinal(*offset)
+                    } else {
+                        character_offsets.partition_point(|start| *start < *offset as usize)
+                    };
                     skia_safe::Point::new(
                         position.x + character as f32 * run.letter_spacing,
                         position.y,
@@ -362,4 +382,22 @@ fn visit_positioned(
             info.origin().x + origin_correction,
         );
     });
+}
+
+/// Modern authored tracking is applied between shaped clusters, so an fi/ffi
+/// ligature receives one spacing step. Consecutive glyphs of one cluster keep
+/// their original mark offsets; unsupported/legacy text retains its old path.
+#[derive(Default)]
+struct TrackingClusters {
+    last: Option<u32>,
+    count: usize,
+}
+impl TrackingClusters {
+    fn ordinal(&mut self, cluster: u32) -> usize {
+        if self.last != Some(cluster) {
+            self.last = Some(cluster);
+            self.count += 1;
+        }
+        self.count.saturating_sub(1)
+    }
 }

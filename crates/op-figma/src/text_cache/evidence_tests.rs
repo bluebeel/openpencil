@@ -182,3 +182,65 @@ fn glyph_count_does_not_increase_retained_summary_or_figvalue_size() {
         std::mem::size_of::<Box<[FigValue]>>() + std::mem::size_of::<usize>()
     );
 }
+
+#[test]
+fn joined_ligature_evidence_handles_full_utf16_positions_and_three_unit_clusters() {
+    for suffix in ["fi", "fl", "ff", "ffi", "ffl"] {
+        let text = format!("🧪{}{}x", "x".repeat(600), suffix);
+        let mut evidence = TextEvidence::default();
+        {
+            let mut consume = evidence.glyph_consumer();
+            consume(&glyph(602, 0., 20.));
+            consume(&glyph(602 + suffix.len() as u32, 20., 20.));
+        }
+        assert!(evidence.confirms_common_ligatures(&text), "{suffix}");
+        assert!(!evidence.confirms_common_ligatures(&format!("🧪{}xyzx", "x".repeat(600))));
+        evidence.reset("glyphs");
+        assert!(!evidence.confirms_common_ligatures(&text));
+    }
+    let mut evidence = TextEvidence::default();
+    {
+        let mut consume = evidence.glyph_consumer();
+        for i in 0..70 {
+            consume(&glyph(i * 2, i as f32 * 10., 20.));
+        }
+        consume(&glyph(1000, 800., 20.));
+        consume(&glyph(1002, 810., 20.));
+    }
+    assert_eq!(evidence.joined_spans.len(), 64);
+    assert!(
+        !evidence.confirms_common_ligatures(&format!("{}fix", "x".repeat(1000))),
+        "after exhaustion, unretained spans cannot change a style"
+    );
+    assert!(evidence.joined_spans.capacity() <= 64);
+}
+
+#[test]
+fn joined_ligature_evidence_rejects_line_breaks_rotation_and_mixed_sizes() {
+    for (field, value) in [
+        ("fontSize", FigValue::Float(21.)),
+        ("rotation", FigValue::Float(1.)),
+    ] {
+        let mut right = glyph(2, 20., 20.);
+        right.set(field, value);
+        let mut evidence = TextEvidence::default();
+        {
+            let mut c = evidence.glyph_consumer();
+            c(&glyph(0, 0., 20.));
+            c(&right);
+        }
+        assert!(!evidence.confirms_common_ligatures("fix"));
+    }
+    let mut right = glyph(2, 20., 20.);
+    right
+        .get_mut("position")
+        .unwrap()
+        .set("y", FigValue::Float(20.));
+    let mut evidence = TextEvidence::default();
+    {
+        let mut c = evidence.glyph_consumer();
+        c(&glyph(0, 0., 20.));
+        c(&right);
+    }
+    assert!(!evidence.confirms_common_ligatures("fix"));
+}

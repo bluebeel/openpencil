@@ -134,6 +134,8 @@ pub struct TextEvidence {
     font: Option<(String, String)>,
     invalid_font: bool,
     tracking: Tracking,
+    // Sparse proof candidates at arbitrary UTF16 positions, capped per cache.
+    joined_spans: Vec<(u32, u8)>,
     pub(crate) layout: Option<Box<SavedTextLayout>>,
     pub(crate) layout_size: Option<(f64, f64)>,
 }
@@ -141,6 +143,7 @@ pub struct TextEvidence {
 impl TextEvidence {
     pub(crate) fn retained_bytes(&self) -> usize {
         std::mem::size_of::<Self>()
+            + self.joined_spans.capacity() * std::mem::size_of::<(u32, u8)>()
             + self.characters.as_ref().map_or(0, String::capacity)
             + self
                 .font
@@ -155,6 +158,7 @@ impl TextEvidence {
     pub(crate) fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         use std::hash::Hash;
         self.characters.hash(state);
+        self.joined_spans.hash(state);
         self.font.hash(state);
         self.invalid_font.hash(state);
         self.layout_size
@@ -178,6 +182,7 @@ impl TextEvidence {
         match field {
             "glyphs" => {
                 self.glyph_size = UniformMetric::default();
+                self.joined_spans.clear();
                 self.tracking = Tracking::default();
                 if let Some(layout) = &mut self.layout {
                     layout.markers.clear();
@@ -270,9 +275,52 @@ impl TextEvidence {
             && self.tracking.confirms(current, referenced)
     }
 
+    /// Positive proof only: known common Latin ligatures joined in saved
+    /// geometry. Candidate indices span the entire text; after64 candidates
+    /// later gaps remain unclassified and never override an authored setting.
+    pub(crate) fn confirms_common_ligatures(&self, text: &str) -> bool {
+        let mut utf16 = 0_u64;
+        for (byte, ch) in text.char_indices() {
+            if ch == 'f' {
+                if let Ok(index) = u32::try_from(utf16) {
+                    let tail = &text[byte..];
+                    if self.joined_spans.iter().any(|&(start, length)| {
+                        start == index
+                            && match length {
+                                2 => ["fi", "fl", "ff"]
+                                    .iter()
+                                    .any(|prefix| tail.starts_with(*prefix)),
+                                3 => ["ffi", "ffl"]
+                                    .iter()
+                                    .any(|prefix| tail.starts_with(*prefix)),
+                                _ => false,
+                            }
+                    }) {
+                        return true;
+                    }
+                }
+            }
+            utf16 += ch.len_utf16() as u64;
+        }
+        false
+    }
+
     fn observe_glyph(&mut self, value: &FigValue, previous: &mut Option<Glyph>) {
         let glyph = Glyph::from_value(value);
         self.glyph_size.observe(glyph.size);
+        if self.joined_spans.len() < 64 {
+            if let Some(left) = previous.as_ref() {
+                let span = left.character.zip(glyph.character).filter(|(a,b)| {
+                    a.is_finite() && *a >= 0.0 && a.fract() == 0.0 && *a <= f64::from(u32::MAX)
+                        && matches!(b-a, 2.0 | 3.0)
+                        && nearly_equal(left.rotation, 0.0) && nearly_equal(glyph.rotation, 0.0)
+                        && matches!((left.y,glyph.y,left.size,glyph.size),(Some(y),Some(z),Some(size),Some(other)) if nearly_equal(y,z) && size > 0.0 && nearly_equal(size,other))
+                });
+                if let Some((start, end)) = span {
+                    self.joined_spans.push((start as u32, (end - start) as u8));
+                }
+            }
+        }
         if let Some(marker) = SavedMarker::from_value(value) {
             self.layout
                 .get_or_insert_with(Box::default)

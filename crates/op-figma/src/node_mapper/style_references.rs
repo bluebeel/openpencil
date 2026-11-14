@@ -200,6 +200,39 @@ fn derived_confirms_auto_line_height(node: &FigValue, style: &FigValue) -> bool 
         && nearly_equal(height, referenced * lines as f64)
 }
 
+/// Restore a stale legacy ligature flag only when the linked style and
+/// saved font/size/tracking/geometry agree and an actual joined cluster proves
+/// common ligatures were effective. Explicit node/instance overrides win.
+fn derived_confirms_common_ligatures(node: &FigValue, style: &FigValue) -> bool {
+    if node.get_bool("fontVariantCommonLigatures") != Some(false)
+        || style.get_bool("fontVariantCommonLigatures") != Some(true)
+        || !derived_uses_style_font(node, style)
+        || node.get_array("toggledOffOTFeatures").is_some_and(|tags| {
+            tags.iter().any(|tag| {
+                tag.as_str()
+                    .is_some_and(|tag| tag.eq_ignore_ascii_case("liga"))
+            })
+        })
+    {
+        return false;
+    }
+    let (Some(cache), Some(text), Some(size)) = (
+        node.get("derivedTextData"),
+        node.get("textData").and_then(|t| t.get_str("characters")),
+        style.get_f64("fontSize"),
+    ) else {
+        return false;
+    };
+    let evidence = TextEvidence::from_cache(cache);
+    let Some((width, height)) = evidence.layout_size else {
+        return false;
+    };
+    let geometry = node.get("size");
+    matches!((evidence.metric("glyphs","fontSize"),effective_tracking_px(node,size),effective_tracking_px(style,size),geometry.and_then(|s|s.get_f64("x")),geometry.and_then(|s|s.get_f64("y"))),
+        (Some(saved),Some(current),Some(linked),Some(w),Some(h)) if size > 0.0 && nearly_equal(saved,size) && nearly_equal(current,linked) && nearly_equal(width,w) && nearly_equal(height,h))
+        && evidence.confirms_common_ligatures(text)
+}
+
 fn resolve_on_node(
     nc: &mut FigValue,
     style_map: &HashMap<String, FigValue>,
@@ -238,6 +271,7 @@ fn resolve_on_node(
         // Restore stale feature flags only with the same independent saved
         // family + tracking proof. Explicit node/instance overrides still win.
         let replace_features = replace_font_name && replace_tracking;
+        let replace_common_ligatures = use_derived && derived_confirms_common_ligatures(nc, &ts);
         for key in [
             "fontName",
             "fontSize",
@@ -248,6 +282,7 @@ fn resolve_on_node(
             "textDecoration",
             "textDecorationSkipInk",
             "textCase",
+            "fontVariantCommonLigatures",
             "toggledOnOTFeatures",
             "toggledOffOTFeatures",
         ] {
@@ -257,6 +292,7 @@ fn resolve_on_node(
                 "lineHeight" => replace_line_height,
                 "letterSpacing" => replace_tracking,
                 "toggledOnOTFeatures" | "toggledOffOTFeatures" => replace_features,
+                "fontVariantCommonLigatures" => replace_common_ligatures,
                 _ => false,
             };
             if replace_metric || nc.get(key).is_none() {
