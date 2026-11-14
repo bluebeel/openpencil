@@ -18,7 +18,7 @@ fn set_node_stroke_width_preserves_sided_edges() {
     let PenNode::Rectangle(r) = node else {
         panic!("rectangle");
     };
-    r.container.stroke = Some(PenStroke {
+    r.container.stroke = Some(PenStroke::from(jian_ops_schema::style::PenStrokeBody {
         thickness: StrokeThickness::Sided(SidedThickness {
             bottom: Some(1.0),
             ..Default::default()
@@ -29,7 +29,7 @@ fn set_node_stroke_width_preserves_sided_edges() {
         dash_pattern: None,
         dash_offset: None,
         fill: None,
-    });
+    }));
 
     assert!(s.apply(EditorCommand::SetNodeStrokeWidth {
         node_id: id("n1"),
@@ -57,7 +57,7 @@ fn commit_property_edit_writes_one_stroke_edge() {
     let PenNode::Rectangle(r) = node else {
         panic!("rectangle");
     };
-    r.container.stroke = Some(PenStroke {
+    r.container.stroke = Some(PenStroke::from(jian_ops_schema::style::PenStrokeBody {
         thickness: StrokeThickness::Uniform(1.0),
         align: None,
         join: None,
@@ -65,7 +65,7 @@ fn commit_property_edit_writes_one_stroke_edge() {
         dash_pattern: None,
         dash_offset: None,
         fill: None,
-    });
+    }));
 
     s.set_single_selection(id("n1"));
     s.editor_ui.stroke_edit_mode = Some(crate::PaddingEditMode::Individual);
@@ -92,7 +92,7 @@ fn commit_property_edit_single_stroke_mode_writes_all_edges() {
     let PenNode::Rectangle(r) = node else {
         panic!("rectangle");
     };
-    r.container.stroke = Some(PenStroke {
+    r.container.stroke = Some(PenStroke::from(jian_ops_schema::style::PenStrokeBody {
         thickness: StrokeThickness::Uniform(1.0),
         align: None,
         join: None,
@@ -100,7 +100,7 @@ fn commit_property_edit_single_stroke_mode_writes_all_edges() {
         dash_pattern: None,
         dash_offset: None,
         fill: None,
-    });
+    }));
 
     s.set_single_selection(id("n1"));
     assert!(s.commit_property_edit(crate::PropertyFocus::StrokeTopWidth, 3.0));

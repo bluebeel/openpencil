@@ -75,7 +75,7 @@ pub(super) fn resolve_svg_stroke(
     if width <= 0.0 {
         return None;
     }
-    Some(PenStroke {
+    Some(PenStroke::from(jian_ops_schema::style::PenStrokeBody {
         thickness: StrokeThickness::Uniform(width),
         align: None,
         join: None,
@@ -83,7 +83,7 @@ pub(super) fn resolve_svg_stroke(
         dash_pattern: None,
         dash_offset: None,
         fill: Some(vec![solid_fill(&hex)]),
-    })
+    }))
 }
 
 pub(super) fn solid_fill(hex: &str) -> PenFill {

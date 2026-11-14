@@ -173,7 +173,7 @@ pub(super) fn map_stroke(style: &ComputedStyle, context: &mut MapCtx<'_>) -> Opt
             None
         }
     };
-    Some(PenStroke {
+    Some(PenStroke::from(jian_ops_schema::style::PenStrokeBody {
         thickness,
         // CSS borders occupy the inside edge of the border box. Jian strokes
         // are centered by default, so make the inward alignment explicit.
@@ -183,7 +183,7 @@ pub(super) fn map_stroke(style: &ComputedStyle, context: &mut MapCtx<'_>) -> Opt
         dash_pattern,
         dash_offset: None,
         fill: Some(vec![solid_fill(color, None)]),
-    })
+    }))
 }
 
 pub(super) fn map_corner_radius(

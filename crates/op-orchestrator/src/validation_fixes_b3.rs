@@ -416,7 +416,7 @@ fn build_path_node(
     //   if (icon.style === 'stroke') { stroke = ...; fill = [] }
     //   else { fill = [solid(color)] }
     // Without icon resolution we default to stroke style.
-    let stroke = Some(PenStroke {
+    let stroke = Some(PenStroke::from(jian_ops_schema::style::PenStrokeBody {
         thickness: StrokeThickness::Uniform(2.0),
         align: None,
         join: None,
@@ -424,7 +424,7 @@ fn build_path_node(
         dash_pattern: None,
         dash_offset: None,
         fill: Some(solid_fill_from_hex(&color)),
-    });
+    }));
 
     let (state, bindings, events) = parse_interactivity(obj);
 

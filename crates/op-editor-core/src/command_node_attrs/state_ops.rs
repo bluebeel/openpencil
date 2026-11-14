@@ -179,7 +179,7 @@ impl EditorState {
             match slot {
                 Some(stroke) => set_stroke_width_preserving_sides(stroke, width),
                 none @ None => {
-                    *none = Some(PenStroke {
+                    *none = Some(PenStroke::from(jian_ops_schema::style::PenStrokeBody {
                         thickness: StrokeThickness::Uniform(f64::from(width)),
                         align: None,
                         join: None,
@@ -187,7 +187,7 @@ impl EditorState {
                         dash_pattern: None,
                         dash_offset: None,
                         fill: None,
-                    });
+                    }));
                 }
             }
         }
@@ -233,7 +233,7 @@ impl EditorState {
         match slot {
             Some(stroke) => set_stroke_side_width(stroke, side, width),
             none @ None => {
-                *none = Some(PenStroke {
+                *none = Some(PenStroke::from(jian_ops_schema::style::PenStrokeBody {
                     thickness: sided_stroke_thickness(widths),
                     align: None,
                     join: None,
@@ -241,7 +241,7 @@ impl EditorState {
                     dash_pattern: None,
                     dash_offset: None,
                     fill: None,
-                });
+                }));
             }
         }
         true

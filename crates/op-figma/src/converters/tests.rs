@@ -379,7 +379,7 @@ fn icon_stroke_thickness_scales_for_small_icons() {
     match node {
         PenNode::Path(p) => {
             let stroke = p.stroke.expect("stroke present");
-            match stroke.thickness {
+            match &stroke.thickness {
                 jian_ops_schema::style::StrokeThickness::Uniform(t) => {
                     assert!(
                         (t - 0.75).abs() < 0.001,

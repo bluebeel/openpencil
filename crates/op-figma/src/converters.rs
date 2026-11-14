@@ -707,19 +707,21 @@ fn build_icon_path_node(
     let style = icon.style.unwrap_or(IconStyle::Stroke);
     let mapped_stroke = map_figma_stroke(figma);
     let mut stroke = match style {
-        IconStyle::Stroke => Some(mapped_stroke.unwrap_or_else(|| PenStroke {
-            thickness: StrokeThickness::Uniform(1.5),
-            align: None,
-            join: Some(StrokeJoin::Round),
-            cap: Some(StrokeCap::Round),
-            dash_pattern: None,
-            dash_offset: None,
-            fill: Some(vec![PenFill::Solid(SolidFillBody {
-                color: fig_fill_color(figma).unwrap_or_else(|| "#000000".to_string()),
-                explain: None,
-                opacity: None,
-                blend_mode: None,
-            })]),
+        IconStyle::Stroke => Some(mapped_stroke.unwrap_or_else(|| {
+            PenStroke::from(jian_ops_schema::style::PenStrokeBody {
+                thickness: StrokeThickness::Uniform(1.5),
+                align: None,
+                join: Some(StrokeJoin::Round),
+                cap: Some(StrokeCap::Round),
+                dash_pattern: None,
+                dash_offset: None,
+                fill: Some(vec![PenFill::Solid(SolidFillBody {
+                    color: fig_fill_color(figma).unwrap_or_else(|| "#000000".to_string()),
+                    explain: None,
+                    opacity: None,
+                    blend_mode: None,
+                })]),
+            })
         })),
         IconStyle::Fill => mapped_stroke,
     };

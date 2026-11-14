@@ -26,7 +26,7 @@ fn styled_state() -> crate::EditorState {
     let mut bg = rect("n2", "Card background", 0.0, 0.0, 240.0, 120.0);
     if let PenNode::Rectangle(r) = &mut bg {
         r.container.fill = Some(vec![solid_fill("#ffffff")]);
-        r.container.stroke = Some(PenStroke {
+        r.container.stroke = Some(PenStroke::from(jian_ops_schema::style::PenStrokeBody {
             thickness: StrokeThickness::Uniform(2.0),
             align: None,
             join: None,
@@ -34,7 +34,7 @@ fn styled_state() -> crate::EditorState {
             dash_pattern: None,
             dash_offset: None,
             fill: Some(vec![solid_fill("#222222")]),
-        });
+        }));
         r.container.corner_radius = Some(CornerRadius::Uniform(8.0));
         r.container.padding = Some(Padding::LtrB([4.0, 8.0, 4.0, 8.0]));
         r.container.gap = Some(NumberOrExpression::Number(12.0));

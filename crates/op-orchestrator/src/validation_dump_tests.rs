@@ -346,7 +346,7 @@ fn dump_stroke() {
             ..Default::default()
         },
         container: ContainerProps {
-            stroke: Some(PenStroke {
+            stroke: Some(PenStroke::from(jian_ops_schema::style::PenStrokeBody {
                 thickness: StrokeThickness::Uniform(2.0),
                 align: None,
                 join: None,
@@ -359,7 +359,7 @@ fn dump_stroke() {
                     opacity: None,
                     blend_mode: None,
                 })]),
-            }),
+            })),
             ..Default::default()
         },
         children: None,

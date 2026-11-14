@@ -302,7 +302,7 @@ pub fn map_figma_stroke(node: &FigValue) -> Option<PenStroke> {
         .filter(|d| !d.is_empty())
         .map(|d| d.iter().filter_map(|v| v.as_f64()).collect());
 
-    Some(PenStroke {
+    Some(PenStroke::from(jian_ops_schema::style::PenStrokeBody {
         thickness,
         align: map_stroke_align(node.get_str("strokeAlign")),
         join: map_stroke_join(node.get_str("strokeJoin")),
@@ -311,7 +311,7 @@ pub fn map_figma_stroke(node: &FigValue) -> Option<PenStroke> {
         dash_offset: None,
         // `mapFigmaFills` re-applies the visible filter — harmless.
         fill: map_figma_fills(Some(stroke_paints)),
-    })
+    }))
 }
 
 fn map_stroke_align(v: Option<&str>) -> Option<StrokeAlign> {

@@ -143,14 +143,16 @@ pub fn set_primary_stroke_hex(node: &mut PenNode, hex: &str) -> bool {
     let Some(slot) = node_stroke_mut(node) else {
         return false;
     };
-    let stroke = slot.get_or_insert_with(|| PenStroke {
-        thickness: StrokeThickness::Uniform(1.0),
-        align: None,
-        join: None,
-        cap: None,
-        dash_pattern: None,
-        dash_offset: None,
-        fill: None,
+    let stroke = slot.get_or_insert_with(|| {
+        PenStroke::from(jian_ops_schema::style::PenStrokeBody {
+            thickness: StrokeThickness::Uniform(1.0),
+            align: None,
+            join: None,
+            cap: None,
+            dash_pattern: None,
+            dash_offset: None,
+            fill: None,
+        })
     });
     let fills = stroke.fill.get_or_insert_with(Vec::new);
     if let Some(body) = fills.iter_mut().find_map(|f| match f {
