@@ -6,6 +6,8 @@ use std::{collections::BTreeMap, mem};
 mod header;
 mod header_map;
 mod patch;
+mod targets;
+pub(crate) use targets::TargetSpec;
 mod token_probe;
 use header::{HeaderPatch, PendingHeader};
 pub(crate) use patch::Scope;
@@ -50,6 +52,8 @@ const _: fn(&EditorSnapshot) = |EditorSnapshot {
 pub(crate) struct PendingScopedSnapshot {
     metadata: ScopedEditorSnapshot,
     forests: Vec<CapturedForest>,
+    targets: Vec<targets::TargetCheckpoint>,
+    targeted: bool,
     header: Option<PendingHeader>,
 }
 #[derive(Debug)]
@@ -69,6 +73,33 @@ impl PendingScopedSnapshot {
             .as_ref()
             .is_none_or(|header| header.matches(doc))
     }
+    #[cfg(test)]
+    pub(crate) fn target_checkpoint_counts(&self) -> (usize, usize) {
+        targets::checkpoint_counts(&self.targets)
+    }
+    pub(crate) fn is_targeted(&self) -> bool {
+        self.targeted
+    }
+    pub(crate) fn matches_target_specs(&self, specs: &[TargetSpec]) -> bool {
+        targets::matches_specs(&self.targets, specs)
+    }
+    pub(crate) fn matches_targets(&self, state: &EditorState) -> bool {
+        targets::matches(state, &self.targets)
+    }
+    pub(crate) fn capture_targets(
+        state: &EditorState,
+        scopes: Vec<Scope>,
+        capture_header: bool,
+        specs: Vec<TargetSpec>,
+    ) -> Result<Self, ScopedHistoryError> {
+        Ok(Self {
+            metadata: ScopedEditorSnapshot::auxiliary(state, scopes),
+            forests: Vec::new(),
+            targets: targets::capture(state, specs)?,
+            targeted: true,
+            header: capture_header.then(|| PendingHeader::capture(&state.doc)),
+        })
+    }
     pub(crate) fn revision(&self) -> u64 {
         self.metadata.revision
     }
@@ -82,6 +113,7 @@ impl PendingScopedSnapshot {
                 }
             }
         }
+        targets::restore(state, std::mem::take(&mut self.targets))?;
         if let Some(header) = self.header.take() {
             header.restore(&mut state.doc);
         }
@@ -110,6 +142,8 @@ impl PendingScopedSnapshot {
         Self {
             metadata: ScopedEditorSnapshot::auxiliary(state, scopes),
             forests,
+            targets: Vec::new(),
+            targeted: false,
             header: capture_header.then(|| PendingHeader::capture(&state.doc)),
         }
     }
@@ -141,6 +175,9 @@ impl PendingScopedSnapshot {
                 &mut self.metadata.patches,
             );
         }
+        self.metadata
+            .patches
+            .extend(targets::compact(state, self.targets)?);
         self.metadata.header = self.header.map(|header| header.compact(&state.doc));
         self.metadata.patches.shrink_to_fit();
         self.metadata.page_headers.shrink_to_fit();

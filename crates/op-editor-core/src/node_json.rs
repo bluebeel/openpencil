@@ -47,3 +47,11 @@ pub fn map_subtree_json(
 #[cfg(test)]
 #[path = "node_json_tests.rs"]
 mod tests;
+
+#[path = "node_json_header.rs"]
+mod header;
+pub(crate) use header::map_header_json_in_place;
+
+#[path = "node_geometry_patch.rs"]
+mod geometry;
+pub(crate) use geometry::apply as apply_numeric_geometry_patch;

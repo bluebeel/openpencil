@@ -1,6 +1,36 @@
 //! One undo boundary around a host command and its synchronous design repairs.
 
-use op_editor_core::{EditorCommand, EditorState};
+use super::write_repairs::RepairPlan;
+use op_editor_core::{CommandEditCapture, CommandEditError, EditorCommand, EditorState};
+
+/// Keep the repair proof and capture together: ordinary calls can capture only
+/// exact targets, while an actual generation repair retains the broad contract.
+pub(crate) struct PreparedCommandEdit {
+    capture: CommandEditCapture,
+    repairs: Option<RepairPlan>,
+}
+impl PreparedCommandEdit {
+    pub(crate) fn abort(self, state: &mut EditorState) -> Result<(), CommandEditError> {
+        state.abort_command_edit(self.capture)
+    }
+}
+
+pub(crate) fn begin_command_capture(
+    state: &EditorState,
+    command: &EditorCommand,
+    repair: bool,
+) -> PreparedCommandEdit {
+    let repairs = RepairPlan::capture(state, command, repair);
+    let capture = if repairs.is_empty() {
+        state.begin_command_edit_without_document_repairs(command)
+    } else {
+        state.begin_command_edit(command)
+    };
+    PreparedCommandEdit {
+        capture,
+        repairs: Some(repairs),
+    }
+}
 
 pub(crate) fn apply_command_with_undo(
     state: &mut EditorState,
@@ -20,49 +50,54 @@ pub(crate) fn apply_command_with_undo_report(
     command: EditorCommand,
     repair: bool,
 ) -> CommandApplyReport {
-    apply_command_impl(state, command, repair, None)
-}
-
-pub(crate) fn apply_command_with_undo_captured(
-    state: &mut EditorState,
-    command: EditorCommand,
-    repair: bool,
-    capture: &op_editor_core::LocalEditCapture,
-) -> bool {
-    apply_command_impl(state, command, repair, Some(capture)).applied
+    // Individual view commands never needed a document checkpoint. A UI-only
+    // Batch still uses the scoped path for its atomic rollback boundary.
+    if !command.may_change_document() && !matches!(command, EditorCommand::Batch { .. }) {
+        let before = state.document_revision();
+        let plan = RepairPlan::capture(state, &command, repair);
+        let mut layout_repaired = false;
+        let applied = state.apply_undoable_then(command, |state| {
+            layout_repaired = plan.apply(state, before);
+        });
+        return CommandApplyReport {
+            applied,
+            layout_repaired,
+        };
+    }
+    let mut capture = begin_command_capture(state, &command, repair);
+    apply_prepared(state, command, &mut capture)
 }
 
 pub(crate) fn apply_command_with_command_capture(
     state: &mut EditorState,
     command: EditorCommand,
-    repair: bool,
-    capture: &mut op_editor_core::CommandEditCapture,
+    capture: &mut PreparedCommandEdit,
 ) -> bool {
-    let before = state.document_revision();
-    let plan = super::write_repairs::RepairPlan::capture(state, &command, repair);
-    state.apply_command_edit_then(command, capture, |state| {
-        plan.apply(state, before);
-    })
+    apply_prepared(state, command, capture).applied
 }
 
-fn apply_command_impl(
+fn apply_prepared(
     state: &mut EditorState,
     command: EditorCommand,
-    repair: bool,
-    capture: Option<&op_editor_core::LocalEditCapture>,
+    capture: &mut PreparedCommandEdit,
 ) -> CommandApplyReport {
+    let Some(plan) = capture.repairs.take() else {
+        return CommandApplyReport {
+            applied: false,
+            layout_repaired: false,
+        };
+    };
     let before = state.document_revision();
-    let plan = super::write_repairs::RepairPlan::capture(state, &command, repair);
     let mut layout_repaired = false;
-    let maintain = |state: &mut EditorState| {
+    let applied = state.apply_command_edit_then(command, &mut capture.capture, |state| {
         layout_repaired = plan.apply(state, before);
-    };
-    let applied = match capture {
-        Some(capture) => state.apply_undoable_captured_then(command, capture, maintain),
-        None => state.apply_undoable_then(command, maintain),
-    };
+    });
     CommandApplyReport {
         applied,
         layout_repaired,
     }
 }
+
+#[cfg(test)]
+#[path = "command_capture_host_tests.rs"]
+mod tests;

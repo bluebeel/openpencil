@@ -180,6 +180,7 @@ mod stdio_dispatch;
 pub(crate) mod write_repairs;
 pub(crate) use command_apply::{
     apply_command_with_command_capture, apply_command_with_undo, apply_command_with_undo_report,
+    begin_command_capture,
 };
 use stdio_dispatch::process_message_with_auto_finalize;
 

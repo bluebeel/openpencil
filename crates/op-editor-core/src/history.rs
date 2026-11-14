@@ -18,7 +18,7 @@ use std::sync::Arc;
 mod entry;
 mod scoped;
 pub use entry::HistoryEntry;
-pub(crate) use scoped::{contains_header_token, PendingScopedSnapshot, Scope};
+pub(crate) use scoped::{contains_header_token, PendingScopedSnapshot, Scope, TargetSpec};
 pub use scoped::{ScopedEditorSnapshot, ScopedHistoryError};
 
 /// Document-dependent comparison state. Camera and other view-only state stay

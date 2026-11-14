@@ -7,6 +7,8 @@ use crate::{
 use std::{mem, sync::Arc};
 #[path = "command_scope.rs"]
 mod command_scope;
+#[path = "target_plan.rs"]
+mod target_plan;
 
 #[derive(Debug)]
 pub struct CommandEditCapture {
@@ -17,14 +19,25 @@ enum CaptureKind {
     Full(LocalEditCapture),
     Refused { generation: u64 },
     Scoped(ScopedCapture),
+    History(HistoryCapture),
 }
 #[derive(Debug)]
 struct ScopedCapture {
+    targeted: bool,
     generation: u64,
     revision: u64,
     pending: Option<PendingScopedSnapshot>,
     completed: Option<Arc<ScopedEditorSnapshot>>,
     history: History,
+    active_theme: BTreeMap<String, String>,
+}
+#[derive(Debug)]
+struct HistoryCapture {
+    generation: u64,
+    revision: u64,
+    undo: bool,
+    history: History,
+    completed: Option<Arc<ScopedEditorSnapshot>>,
     active_theme: BTreeMap<String, String>,
 }
 #[derive(Debug)]
@@ -43,7 +56,14 @@ impl std::fmt::Display for CommandEditError {
 impl std::error::Error for CommandEditError {}
 impl CommandEditCapture {
     pub fn is_scoped(&self) -> bool {
-        matches!(self.kind, CaptureKind::Scoped(_))
+        matches!(self.kind, CaptureKind::Scoped(_) | CaptureKind::History(_))
+    }
+    pub fn is_target_only(&self) -> bool {
+        match &self.kind {
+            CaptureKind::Scoped(captured) => captured.targeted,
+            CaptureKind::History(_) | CaptureKind::Refused { .. } => true,
+            CaptureKind::Full(_) => false,
+        }
     }
 }
 impl EditorState {
@@ -56,6 +76,7 @@ impl EditorState {
     pub fn begin_command_edit(&self, command: &EditorCommand) -> CommandEditCapture {
         let kind = match command_scope::classify(self, command) {
             command_scope::Classification::Scoped(plan) => CaptureKind::Scoped(ScopedCapture {
+                targeted: false,
                 generation: self.document_generation,
                 revision: self.revision,
                 pending: Some(PendingScopedSnapshot::capture(
@@ -74,6 +95,66 @@ impl EditorState {
         };
         CommandEditCapture { kind }
     }
+    /// Trusted host variant: the synchronous maintenance callback must not
+    /// mutate canonical document content. Existing begin_command_edit keeps
+    /// its broader page-local callback contract. Unsupported/dynamic commands
+    /// deliberately retain that complete fallback.
+    pub fn begin_command_edit_without_document_repairs(
+        &self,
+        command: &EditorCommand,
+    ) -> CommandEditCapture {
+        self.try_begin_command_edit_without_document_repairs(command)
+            .unwrap_or_else(|| self.begin_command_edit(command))
+    }
+    /// Query this bounded capture path without allocating a legacy page/full
+    /// fallback. None means the caller must use its separate ordinary path.
+    pub fn try_begin_command_edit_without_document_repairs(
+        &self,
+        command: &EditorCommand,
+    ) -> Option<CommandEditCapture> {
+        let plan = match command_scope::classify(self, command) {
+            command_scope::Classification::Scoped(plan) => plan,
+            command_scope::Classification::Refused => {
+                return Some(CommandEditCapture {
+                    kind: CaptureKind::Refused {
+                        generation: self.document_generation,
+                    },
+                })
+            }
+            command_scope::Classification::Full => return None,
+        };
+        if matches!(command, EditorCommand::Undo | EditorCommand::Redo) {
+            return Some(CommandEditCapture {
+                kind: CaptureKind::History(HistoryCapture {
+                    generation: self.document_generation,
+                    revision: self.revision,
+                    undo: matches!(command, EditorCommand::Undo),
+                    history: self.history.clone(),
+                    completed: None,
+                    active_theme: self.ui.variables.active_theme.clone(),
+                }),
+            });
+        }
+        let Some(specs) = target_plan::plan(self, command) else {
+            return None;
+        };
+        let Ok(pending) =
+            PendingScopedSnapshot::capture_targets(self, plan.forests, plan.header, specs)
+        else {
+            return None;
+        };
+        Some(CommandEditCapture {
+            kind: CaptureKind::Scoped(ScopedCapture {
+                targeted: true,
+                generation: self.document_generation,
+                revision: self.revision,
+                pending: Some(pending),
+                completed: None,
+                history: self.history.clone(),
+                active_theme: self.ui.variables.active_theme.clone(),
+            }),
+        })
+    }
     /// Apply against the matching fresh capture. This is the opt-in trusted
     /// counterpart of apply_undoable_captured_then; legacy constructors and
     /// arbitrary closure APIs retain complete snapshot semantics.
@@ -86,6 +167,9 @@ impl EditorState {
         match &mut capture.kind {
             CaptureKind::Refused { .. } => false,
             CaptureKind::Full(full) => self.apply_undoable_captured_then(command, full, maintain),
+            CaptureKind::History(captured) => {
+                self.apply_history_capture(command, captured, maintain)
+            }
             CaptureKind::Scoped(captured) => {
                 if captured.generation != self.document_generation
                     || captured.revision != self.revision
@@ -101,6 +185,14 @@ impl EditorState {
                 if plan.forests != captured.pending.as_ref().unwrap().scopes()
                     || plan.header != captured.pending.as_ref().unwrap().captures_header()
                     || !captured.pending.as_ref().unwrap().matches_header(&self.doc)
+                {
+                    return false;
+                }
+                let pending = captured.pending.as_ref().unwrap();
+                if pending.is_targeted()
+                    && (target_plan::plan(self, &command)
+                        .is_none_or(|specs| !pending.matches_target_specs(&specs))
+                        || !pending.matches_targets(self))
                 {
                     return false;
                 }
@@ -163,6 +255,46 @@ impl EditorState {
             }
         }
     }
+    fn apply_history_capture(
+        &mut self,
+        command: EditorCommand,
+        captured: &mut HistoryCapture,
+        maintain: impl FnOnce(&mut Self),
+    ) -> bool {
+        if captured.generation != self.document_generation
+            || captured.revision != self.revision
+            || captured.completed.is_some()
+            || (self.history.past != captured.history.past
+                || self.history.future != captured.history.future)
+            || !matches!(
+                (&command, captured.undo),
+                (EditorCommand::Undo, true) | (EditorCommand::Redo, false)
+            )
+        {
+            return false;
+        }
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let applied = self.apply(command);
+            if applied {
+                maintain(self);
+            }
+            applied
+        }));
+        if self.history.past != captured.history.past
+            || self.history.future != captured.history.future
+        {
+            let reverse = if captured.undo {
+                self.history.future.back()
+            } else {
+                self.history.past.back()
+            };
+            captured.completed = reverse.and_then(HistoryEntry::scoped_snapshot).cloned();
+        }
+        match result {
+            Ok(applied) => applied,
+            Err(panic) => std::panic::resume_unwind(panic),
+        }
+    }
     /// Restore document, history and derived UI after external persistence
     /// rejects a trusted command. Clipboard remains the host's moved rollback
     /// responsibility, matching abort_local_edit.
@@ -175,6 +307,22 @@ impl EditorState {
                 .ensure_local_edit_generation(generation)
                 .map_err(CommandEditError::Full),
             CaptureKind::Full(full) => self.abort_local_edit(full).map_err(CommandEditError::Full),
+            CaptureKind::History(captured) => {
+                self.ensure_local_edit_generation(captured.generation)
+                    .map_err(CommandEditError::Full)?;
+                self.history = captured.history;
+                if let Some(snapshot) = captured.completed {
+                    self.editor_ui.clear_document_derived();
+                    Arc::unwrap_or_clone(snapshot)
+                        .exchange(self)
+                        .map_err(CommandEditError::Scoped)?;
+                    self.clear_document_drafts(captured.active_theme);
+                    self.codegen.reset_for_document_replacement();
+                    self.instance_write_virtual_anchor = None;
+                    jian_ops_schema::image_thumbs::activate_for_document(&self.doc);
+                }
+                Ok(())
+            }
             CaptureKind::Scoped(captured) => {
                 self.ensure_local_edit_generation(captured.generation)
                     .map_err(CommandEditError::Full)?;
@@ -198,3 +346,7 @@ impl EditorState {
 #[cfg(test)]
 #[path = "command_capture_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "target_capture_tests.rs"]
+mod target_tests;

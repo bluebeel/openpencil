@@ -104,7 +104,11 @@ pub(super) fn apply_copy_overrides(node: &mut PenNode, overrides_json: Option<&s
             }
         }
     };
-    let result = if overrides.contains_key("children") {
+    if !overrides.contains_key("children") && !overrides.contains_key("type") {
+        return crate::node_json::map_header_json_in_place(node, |value| merge(value, true))
+            .is_ok();
+    }
+    let result = if overrides.contains_key("children") || overrides.contains_key("type") {
         serde_json::to_value(&*node).and_then(|mut value| {
             merge(&mut value, true);
             serde_json::from_value::<PenNode>(value)

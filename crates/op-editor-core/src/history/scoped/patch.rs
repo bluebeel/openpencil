@@ -128,7 +128,7 @@ pub(super) fn roots<'a>(
         }
     }
 }
-fn roots_mut<'a>(
+pub(super) fn roots_mut<'a>(
     doc: &'a mut PenDocument,
     scope: &Scope,
 ) -> Result<&'a mut Vec<PenNode>, ScopedHistoryError> {
@@ -147,7 +147,7 @@ fn roots_mut<'a>(
         }
     }
 }
-fn node<'a>(nodes: &'a [PenNode], path: &[usize]) -> Option<&'a PenNode> {
+pub(super) fn node<'a>(nodes: &'a [PenNode], path: &[usize]) -> Option<&'a PenNode> {
     let (first, rest) = path.split_first()?;
     let mut found = nodes.get(*first)?;
     for index in rest {
@@ -155,7 +155,7 @@ fn node<'a>(nodes: &'a [PenNode], path: &[usize]) -> Option<&'a PenNode> {
     }
     Some(found)
 }
-fn node_mut<'a>(nodes: &'a mut [PenNode], path: &[usize]) -> Option<&'a mut PenNode> {
+pub(super) fn node_mut<'a>(nodes: &'a mut [PenNode], path: &[usize]) -> Option<&'a mut PenNode> {
     let (first, rest) = path.split_first()?;
     let mut found = nodes.get_mut(*first)?;
     for index in rest {
@@ -198,7 +198,7 @@ fn child_list_mut<'a>(
     // absent children or search through a compatibility mutator.
     node_mut(roots, parent).unwrap().children_mut().unwrap()
 }
-fn children_slot(node: &mut PenNode) -> Option<&mut Option<Vec<PenNode>>> {
+pub(super) fn children_slot(node: &mut PenNode) -> Option<&mut Option<Vec<PenNode>>> {
     match node {
         PenNode::Frame(n) => Some(&mut n.children),
         PenNode::Group(n) => Some(&mut n.children),

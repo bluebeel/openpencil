@@ -1,6 +1,6 @@
 //! Audited forest/header classification; unknown global operations stay Full.
 use crate::{history::Scope, EditorCommand as C, EditorState};
-fn scope(state: &EditorState, index: usize) -> Scope {
+pub(super) fn scope(state: &EditorState, index: usize) -> Scope {
     match state.doc.pages.as_ref().filter(|pages| !pages.is_empty()) {
         Some(pages) => {
             let index = index.min(pages.len() - 1);
@@ -12,7 +12,7 @@ fn scope(state: &EditorState, index: usize) -> Scope {
         None => Scope::Root,
     }
 }
-fn page_index(state: &EditorState, raw: Option<&str>, active: usize) -> Option<usize> {
+pub(super) fn page_index(state: &EditorState, raw: Option<&str>, active: usize) -> Option<usize> {
     let Some(raw) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
         return Some(active.min(state.page_count().saturating_sub(1)));
     };

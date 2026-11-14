@@ -40,7 +40,10 @@ pub(super) fn process_message_with_auto_finalize(
                 let revision_before = state.document_revision();
                 let metadata_before =
                     (!agent_owned).then(|| op_pen_loader::EditorMeta::from_state(state));
-                let capture = cmd.may_change_document().then(|| state.begin_local_edit());
+                let repair = !annotation_only && super::write_repairs::generated_tool(tool);
+                let mut capture = cmd
+                    .may_change_document()
+                    .then(|| super::begin_command_capture(state, cmd, repair));
                 let page_ui_before = (!agent_owned
                     && !cmd.may_change_document()
                     && matches!(
@@ -52,18 +55,11 @@ pub(super) fn process_message_with_auto_finalize(
                 // aside permits exact failure recovery without a deep clone.
                 let clipboard_before = matches!(cmd, EditorCommand::CutSelected)
                     .then(|| std::mem::take(&mut state.clipboard));
-                let applied = match capture.as_ref() {
-                    Some(capture) => super::command_apply::apply_command_with_undo_captured(
-                        state,
-                        cmd.clone(),
-                        !annotation_only && super::write_repairs::generated_tool(tool),
-                        capture,
-                    ),
-                    None => apply_command_with_undo(
-                        state,
-                        cmd.clone(),
-                        !annotation_only && super::write_repairs::generated_tool(tool),
-                    ),
+                let applied = match capture.as_mut() {
+                    Some(capture) => {
+                        super::apply_command_with_command_capture(state, cmd.clone(), capture)
+                    }
+                    None => apply_command_with_undo(state, cmd.clone(), repair),
                 };
                 if !applied {
                     if let Some(clipboard) = clipboard_before {
@@ -79,7 +75,7 @@ pub(super) fn process_message_with_auto_finalize(
                 if document_changed || metadata_changed {
                     if let Err(e) = save_editor_state(state, path) {
                         let rollback = if let Some(capture) = capture {
-                            state.abort_local_edit(capture)
+                            capture.abort(state)
                         } else {
                             if let Some(metadata) = metadata_before {
                                 op_pen_loader::apply_editor_meta(state, metadata);

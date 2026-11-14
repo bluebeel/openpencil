@@ -52,17 +52,13 @@ fn apply_command(
         ));
     };
     let revision = editor.document_revision();
-    let mut capture = editor.begin_command_edit(command);
+    let mut capture = mcp_serve::begin_command_capture(editor, command, repair);
     // Cut replaces its clipboard; move the old value aside instead of cloning
     // a potentially large tree. The checkpoint deliberately excludes it.
     let clipboard = matches!(command, EditorCommand::CutSelected)
         .then(|| std::mem::take(&mut editor.clipboard));
-    let applied = mcp_serve::apply_command_with_command_capture(
-        editor,
-        command.clone(),
-        repair,
-        &mut capture,
-    );
+    let applied =
+        mcp_serve::apply_command_with_command_capture(editor, command.clone(), &mut capture);
     if !applied {
         if let Some(clipboard) = clipboard {
             editor.clipboard = clipboard;
@@ -71,7 +67,7 @@ fn apply_command(
     }
     if editor.document_revision() != revision {
         if let Err(source) = crate::doc_io::save_to_path_compact(editor, path) {
-            let rollback = editor.abort_command_edit(capture).err();
+            let rollback = capture.abort(editor).err();
             if let Some(clipboard) = clipboard {
                 editor.clipboard = clipboard;
             }

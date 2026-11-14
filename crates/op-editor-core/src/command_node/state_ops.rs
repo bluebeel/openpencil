@@ -154,6 +154,22 @@ impl EditorState {
         else {
             return false;
         };
+        if !patch.contains_key("children") && !patch.contains_key("type") {
+            let Some(current) = walkers::find_node_mut(self.active_children_mut(), node_id) else {
+                return false;
+            };
+            if crate::node_json::apply_numeric_geometry_patch(current, &patch) {
+                return true;
+            }
+            return crate::node_json::map_header_json_in_place(current, |value| {
+                if let Some(object) = value.as_object_mut() {
+                    for (key, value) in &patch {
+                        object.insert(key.clone(), value.clone());
+                    }
+                }
+            })
+            .is_ok();
+        }
         let Some(current) = walkers::find_node(self.active_children(), node_id) else {
             return false;
         };

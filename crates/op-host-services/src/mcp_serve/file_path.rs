@@ -5,6 +5,7 @@
 //! primary document path, but when a tool call supplies a different
 //! `filePath`, dispatch against that file for this call only.
 
+use op_editor_core::EditorCommand;
 use std::path::{Path, PathBuf};
 
 use super::agent_context::{default_agent_contexts, with_agent_context, AgentContexts};
@@ -198,11 +199,33 @@ pub(crate) fn process_message_for_file_path_arg_with_contexts(
                                     state.ui.active_page_index,
                                     state.editor_ui.preserve_authored_geometry,
                                 );
-                                if !super::apply_command_with_undo(
-                                    state,
-                                    cmd.clone(),
-                                    super::write_repairs::generated_tool(tool),
-                                ) {
+                                let repair = super::write_repairs::generated_tool(tool);
+                                let mut capture = cmd
+                                    .may_change_document()
+                                    .then(|| super::begin_command_capture(state, cmd, repair));
+                                let page_ui_before = (!cmd.may_change_document()
+                                    && matches!(
+                                        cmd,
+                                        EditorCommand::SetActivePage { .. }
+                                            | EditorCommand::Batch { .. }
+                                    ))
+                                .then(|| (state.selection.clone(), state.viewport));
+                                let clipboard_before = matches!(cmd, EditorCommand::CutSelected)
+                                    .then(|| std::mem::take(&mut state.clipboard));
+                                let applied = match capture.as_mut() {
+                                    Some(capture) => super::apply_command_with_command_capture(
+                                        state,
+                                        cmd.clone(),
+                                        capture,
+                                    ),
+                                    None => {
+                                        super::apply_command_with_undo(state, cmd.clone(), repair)
+                                    }
+                                };
+                                if !applied {
+                                    if let Some(clipboard) = clipboard_before {
+                                        state.clipboard = clipboard;
+                                    }
                                     return false;
                                 }
                                 let needs_save = state.document_revision() != revision
@@ -220,7 +243,26 @@ pub(crate) fn process_message_for_file_path_arg_with_contexts(
                                     .map_err(|error| McpServeError::Document(error.to_string()))
                                     .and_then(|_| super::save_editor_state(state, lease.path()));
                                 if let Err(error) = saved {
-                                    write_failure = Some(error.to_string());
+                                    let rollback = if let Some(capture) = capture {
+                                        capture.abort(state)
+                                    } else {
+                                        state.ui.active_page_index = meta.0;
+                                        state.editor_ui.preserve_authored_geometry = meta.1;
+                                        if let Some((selection, viewport)) = page_ui_before {
+                                            state.selection = selection;
+                                            state.viewport = viewport;
+                                        }
+                                        Ok(())
+                                    };
+                                    if let Some(clipboard) = clipboard_before {
+                                        state.clipboard = clipboard;
+                                    }
+                                    write_failure = Some(match rollback {
+                                        Ok(()) => error.to_string(),
+                                        Err(rollback) => {
+                                            format!("{error}; rollback failed: {rollback}")
+                                        }
+                                    });
                                     invalidate = true;
                                     return false;
                                 }

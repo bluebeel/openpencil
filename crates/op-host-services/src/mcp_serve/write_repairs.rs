@@ -22,6 +22,9 @@ pub(super) struct RepairPlan {
     explicit: Vec<(usize, String)>,
 }
 impl RepairPlan {
+    pub(super) fn is_empty(&self) -> bool {
+        self.insertions.is_empty() && self.explicit.is_empty()
+    }
     pub(super) fn capture(state: &EditorState, command: &C, enabled: bool) -> Self {
         let mut plan = Self::default();
         if enabled
