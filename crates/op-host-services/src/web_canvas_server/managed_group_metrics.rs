@@ -85,7 +85,7 @@ impl Metrics {
             },
             "lastSizingError":match self.last_size_error.load(Ordering::Relaxed) {1=>"capacity",2=>"serialization",_=>"none"},
             "queueCallsLimit":128,"queueAccountedBytesLimit":134217728,
-            "cohortCallsLimit":32,"cohortCaptureForecastLimit":2147483648
+            "cohortCallsLimit":32,"cohortCaptureForecastLimit":2147483648_u64
         })
     }
 }
