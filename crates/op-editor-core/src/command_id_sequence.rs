@@ -5,9 +5,12 @@ use crate::{EditorCommand as C, EditorState, IdAllocError};
 use std::{
     mem,
     panic::{catch_unwind, resume_unwind, AssertUnwindSafe},
-    sync::OnceLock,
+    sync::{Mutex, OnceLock},
 };
 
+#[path = "command_id_lookup.rs"]
+mod lookup;
+pub(crate) use lookup::Order as LookupOrder;
 type Seed = Result<u64, IdAllocError>;
 
 /// One receipt owned by a locked cohort, never by an agent, revision or file
@@ -19,11 +22,13 @@ type Seed = Result<u64, IdAllocError>;
 pub struct CommandIdSequence {
     owner: Option<(usize, u64)>,
     next: Option<Seed>,
+    lookup: Option<lookup::Index>,
 }
 
 impl CommandIdSequence {
     pub fn invalidate(&mut self) {
         self.next = None;
+        self.lookup = None;
     }
 
     /// The same provenance contract as a trusted command capture: the caller
@@ -53,12 +58,14 @@ impl CommandIdSequence {
         }
         let prior = mem::replace(
             &mut state.command_id_seed,
-            SeedOverride::new(owner.1, self.next),
+            SeedOverride::new(owner.1, self.next, self.lookup.take()),
         );
         let result = catch_unwind(AssertUnwindSafe(|| operation(state)));
-        let observed = mem::replace(&mut state.command_id_seed, prior);
+        let mut observed = mem::replace(&mut state.command_id_seed, prior);
         self.next = None;
+        self.lookup = None;
         if result.is_ok() && observed.valid && state.document_generation() == owner.1 {
+            self.lookup = observed.take_lookup(state);
             if let Some(seed) = observed.next.get().copied() {
                 let runtime = state.runtime_next_id_seed();
                 // A public pre-scope write may have introduced a higher live
@@ -93,6 +100,7 @@ pub(crate) struct SeedOverride {
     valid: bool,
     removes: bool,
     next: OnceLock<Seed>,
+    lookup: Mutex<lookup::Cache>,
 }
 impl Clone for SeedOverride {
     fn clone(&self) -> Self {
@@ -100,7 +108,7 @@ impl Clone for SeedOverride {
     }
 }
 impl SeedOverride {
-    fn new(generation: u64, next: Option<Seed>) -> Self {
+    fn new(generation: u64, next: Option<Seed>, index: Option<lookup::Index>) -> Self {
         let slot = OnceLock::new();
         if let Some(next) = next {
             let _ = slot.set(next);
@@ -111,6 +119,7 @@ impl SeedOverride {
             valid: true,
             removes: false,
             next: slot,
+            lookup: Mutex::new(lookup::Cache::new(index)),
         }
     }
     pub(crate) fn get(&self, state: &EditorState) -> Option<Seed> {
@@ -196,6 +205,7 @@ impl EditorState {
         self.command_id_seed.valid = false;
     }
     pub(crate) fn observe_command_id_sequence(&mut self, command: &C) {
+        self.command_id_seed.observe_lookup(self, command);
         self.command_id_seed.observe(command);
         if self.command_id_seed.entered
             && self.command_id_seed.valid

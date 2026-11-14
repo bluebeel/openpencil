@@ -39,6 +39,36 @@ pub(super) fn remove_path(nodes: &[PenNode], id: &NodeId) -> Option<Vec<usize>> 
     }
     None
 }
+fn indexed_read_path(
+    state: &EditorState,
+    scope: &Scope,
+    roots: &[PenNode],
+    id: &NodeId,
+) -> Option<Vec<usize>> {
+    state
+        .command_lookup_path(
+            scope,
+            id,
+            crate::command_id_scope::sequence::LookupOrder::Preorder,
+        )
+        .unwrap_or_else(|| read_path(roots, id).map(Vec::into_boxed_slice))
+        .map(Vec::from)
+}
+fn indexed_remove_path(
+    state: &EditorState,
+    scope: &Scope,
+    roots: &[PenNode],
+    id: &NodeId,
+) -> Option<Vec<usize>> {
+    state
+        .command_lookup_path(
+            scope,
+            id,
+            crate::command_id_scope::sequence::LookupOrder::SiblingFirst,
+        )
+        .unwrap_or_else(|| remove_path(roots, id).map(Vec::into_boxed_slice))
+        .map(Vec::from)
+}
 pub(super) fn authored<'a>(roots: &'a [PenNode], path: &[usize]) -> Option<&'a PenNode> {
     let mut nodes = roots;
     let mut result = None;
@@ -72,7 +102,7 @@ pub(super) fn plan(state: &EditorState, command: &C, active: usize) -> Option<Ta
         Scope::Page { index, .. } => &state.doc.pages.as_ref()?[*index].children,
     };
     if let C::DeleteNode { node_id, .. } = command {
-        let mut path = remove_path(roots, node_id)?;
+        let mut path = indexed_remove_path(state, &scope, roots, node_id)?;
         let source = authored(roots, &path)?;
         let mut forecast = structural_payload_bound(source)?;
         let index = path.pop()?;
@@ -117,7 +147,7 @@ pub(super) fn plan(state: &EditorState, command: &C, active: usize) -> Option<Ta
             overrides_json,
             ..
         } => {
-            let source = authored(roots, &read_path(roots, node_id)?)?;
+            let source = authored(roots, &indexed_read_path(state, &scope, roots, node_id)?)?;
             forecast = structural_payload_bound(source)?;
             if let Some(raw) = overrides_json {
                 if raw.len() > 64 * 1024 {
@@ -140,9 +170,11 @@ pub(super) fn plan(state: &EditorState, command: &C, active: usize) -> Option<Ta
     let (path, index) = if !parent.is_real() {
         (Vec::new(), roots.len())
     } else {
-        let path = read_path(roots, parent)?;
+        let path = indexed_read_path(state, &scope, roots, parent)?;
         // CopyNode ultimately inserts with the sibling-first tree helper.
-        if matches!(command, C::CopyNode { .. }) && remove_path(roots, parent)? != path {
+        if matches!(command, C::CopyNode { .. })
+            && indexed_remove_path(state, &scope, roots, parent)? != path
+        {
             return None;
         }
         let node = authored(roots, &path)?;
@@ -244,8 +276,8 @@ pub(super) fn append_destination(
         Scope::Page { index, .. } => &state.doc.pages.as_ref()?.get(*index)?.children,
     };
     let (path, index) = if parent.is_real() {
-        let path = read_path(roots, parent)?;
-        if remove_path(roots, parent)? != path {
+        let path = indexed_read_path(state, &scope, roots, parent)?;
+        if indexed_remove_path(state, &scope, roots, parent)? != path {
             return None;
         }
         let node = authored(roots, &path)?;

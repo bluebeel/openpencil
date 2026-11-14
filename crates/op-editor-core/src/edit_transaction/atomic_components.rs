@@ -152,18 +152,7 @@ fn copy_preserves_catalog(
             return false;
         }
     }
-    let roots = match &spec.scope {
-        Scope::Root => state.doc.children.as_slice(),
-        Scope::Page { index, id } => {
-            let Some(page) = state.doc.pages.as_ref().and_then(|pages| pages.get(*index)) else {
-                return false;
-            };
-            if page.id != *id {
-                return false;
-            }
-            page.children.as_slice()
-        }
-    };
-    crate::walkers::find_node(roots, id)
+    state
+        .command_find_node(&spec.scope, id)
         .is_some_and(|node| no_definitions(std::slice::from_ref(node)))
 }

@@ -152,6 +152,19 @@ impl CommandEditCapture {
     }
 }
 impl EditorState {
+    pub(crate) fn command_lookup_scope(
+        &self,
+        raw: Option<&str>,
+        active: usize,
+    ) -> Option<crate::history::Scope> {
+        Some(command_scope::scope(
+            self,
+            command_scope::page_index(self, raw, active)?,
+        ))
+    }
+    pub(crate) fn command_lookup_active_scope(&self) -> crate::history::Scope {
+        command_scope::scope(self, self.ui.active_page_index)
+    }
     /// Forecast the bounded affected structural payload before any owned
     /// rollback/history clone. None keeps the caller's ordinary isolated path.
     pub fn forecast_structural_command_edit(&self, command: &EditorCommand) -> Option<usize> {

@@ -170,6 +170,14 @@ impl EditorState {
         if !node_id.is_real() {
             return false;
         }
+        let scope = self.command_lookup_active_scope();
+        if let Some(path) = self.command_lookup_path(
+            &scope,
+            node_id,
+            crate::command_id_scope::sequence::LookupOrder::SiblingFirst,
+        ) {
+            return path.is_some_and(|path| self.command_remove_at(&scope, &path).is_some());
+        }
         walkers::remove_from_children(self.active_children_mut(), node_id)
     }
 
@@ -233,15 +241,26 @@ impl EditorState {
         if !node_id.is_real() {
             return Ok(false);
         }
+        let scope = self.command_lookup_active_scope();
+        let destination = target_parent
+            .is_real()
+            .then(|| {
+                self.command_lookup_path(
+                    &scope,
+                    target_parent,
+                    crate::command_id_scope::sequence::LookupOrder::SiblingFirst,
+                )
+            })
+            .flatten()
+            .flatten();
         // Validate and retain the borrowed source until clone preparation is
         // complete, avoiding a second whole-page search for the same node.
         let mut clone = {
-            let children = self.active_children();
-            let Some(src) = walkers::find_node(children, node_id) else {
+            let Some(src) = self.command_find_node(&scope, node_id) else {
                 return Ok(false);
             };
             if target_parent.is_real() {
-                let Some(target) = walkers::find_node(children, target_parent) else {
+                let Some(target) = self.command_find_node(&scope, target_parent) else {
                     return Ok(false);
                 };
                 // Same rule as MoveNode: childless container, still a container.
@@ -254,6 +273,12 @@ impl EditorState {
         };
         if !apply_copy_overrides(&mut clone, overrides_json) {
             return Ok(false);
+        }
+        if let Some(path) = destination {
+            clone = match self.command_append_at(&scope, &path, clone) {
+                Ok(()) => return Ok(true),
+                Err(node) => node,
+            };
         }
         let children = self.active_children_mut();
         Ok(insert_into_parent_or_root(children, target_parent, clone, None).is_ok())
