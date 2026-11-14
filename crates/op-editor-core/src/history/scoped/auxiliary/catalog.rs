@@ -222,7 +222,7 @@ impl Patch {
                 )?;
             }
             let bytes = crate::history_snapshot::command_capture_value_bytes(
-                &old.component.root,
+                old.component.root.as_ref(),
                 limit.checked_sub(total)?,
             )
             .ok()?;
