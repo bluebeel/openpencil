@@ -99,6 +99,14 @@ async def monitor(process, report, limit):
                 return
         await asyncio.sleep(.05)
 
+    # Catch short spikes between samples. This high-water mark includes any
+    # earlier child cases in the generator, so it is a conservative bound.
+    maximum = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
+    report["kernelChildMaxRssBytes"] = int(maximum if sys.platform == "darwin" else maximum * 1024)
+    report["kernelMaxRssScope"] = "largest reaped child, including earlier cases in this generator"
+    if report["kernelChildMaxRssBytes"] > limit:
+        report["memoryBudgetExceeded"] = True
+
 
 def phase(name):
     global CURRENT_PHASE

@@ -183,11 +183,14 @@ async def run_case(args, count, baseline):
                 await asyncio.wait_for(process.wait(), 5)
             report["serverExitCode"] = process.returncode
         if sampler: await sampler
+        report["correctness"] = report.get("correctness", False) and report.get("serverExitCode") == 0 and not report.get("memoryBudgetExceeded", False)
         log.close()
         after_cpu = resource.getrusage(resource.RUSAGE_CHILDREN)
         report["serviceCpuSeconds"] = after_cpu.ru_utime + after_cpu.ru_stime - before_cpu.ru_utime - before_cpu.ru_stime
         report["totalWallSeconds"] = time.perf_counter() - started
         (output / "report.json").write_text(json.dumps(report, indent=2) + "\n")
+    if not report.get("correctness"):
+        raise RuntimeError("query case failed (including sampled or kernel high-water memory limits); see report")
     return report
 
 

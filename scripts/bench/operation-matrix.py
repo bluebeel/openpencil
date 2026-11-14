@@ -276,6 +276,7 @@ async def matrix(args):
             report["serverExitCode"] = process.returncode
         if sampler:
             await sampler
+        report["correctness"] = report.get("correctness", False) and report.get("serverExitCode") == 0 and not report.get("memoryBudgetExceeded", False)
         stderr.close()
         child_end = resource.getrusage(resource.RUSAGE_CHILDREN)
         report["serviceCpuSeconds"] = child_end.ru_utime + child_end.ru_stime - child_start.ru_utime - child_start.ru_stime
@@ -287,6 +288,9 @@ async def matrix(args):
             for label, samples in report["operationSamples"].items()}
         (output / "report.json").write_text(json.dumps(report, indent=2) + "\n")
         print(json.dumps(report), flush=True)
+
+    if not report.get("correctness"):
+        raise RuntimeError("operation matrix failed (including memory limits); see report")
 
 
 def main():
