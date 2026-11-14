@@ -312,6 +312,10 @@ fn dispatch_inner<S: Read + Write>(
         super::changefeed::http::serve(stream, req, ctx, cors_origin)?;
         return Ok(false);
     }
+    if req.method == "GET" && req.path == "/api/mcp/document" {
+        super::document_snapshot::serve(stream, ctx, cors_origin)?;
+        return Ok(false);
+    }
     // SSE live-update stream: the browser shell subscribes and re-syncs whenever
     // the document version advances. Subscribe BEFORE reading the current
     // version so no broadcast is missed (a duplicate is harmless — versions are

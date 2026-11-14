@@ -74,6 +74,7 @@ pub struct WebCanvasState {
     pub(crate) recovery: crate::document_recovery::DocumentRecovery,
     /// Bounded shared committed deltas; no subscriber owns a document snapshot.
     changefeed: changefeed::Feed,
+    bootstrap_snapshot: document_snapshot::Cache,
     /// MCP agent UI contexts are isolated per daemon/account, never across tenants.
     pub(crate) agent_contexts: Arc<crate::mcp_serve::agent_context::AgentContexts>,
     /// Immutable deployment policy for browser-supplied credentials. Public
@@ -159,6 +160,7 @@ impl WebCanvasState {
             editor,
             recovery: Default::default(),
             changefeed: Default::default(),
+            bootstrap_snapshot: Default::default(),
             agent_contexts: Arc::new(crate::mcp_serve::agent_context::AgentContexts::default()),
             credential_persistence,
             current_path,
@@ -479,6 +481,7 @@ where
 /// - anything else → 404 (the JSON-RPC `/mcp` path + SSE are handled by the
 ///   caller's connection loop, not here).
 mod document_rest;
+mod document_snapshot;
 pub use document_rest::handle_web_canvas_request;
 
 /// The daemon's canonical unknown-route reply.

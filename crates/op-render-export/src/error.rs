@@ -45,6 +45,11 @@ pub enum ExportError {
         max_admitted: usize,
     },
     SharedWorkBusy,
+    WorkAdmissionCancelled,
+    WorkAdmissionQueueFull {
+        max_queued: usize,
+    },
+    SceneBuildUnavailable,
     RenderWorkerStart {
         message: String,
     },
@@ -142,6 +147,9 @@ impl fmt::Display for ExportError {
             ExportError::SharedWorkBusy => f.write_str(
                 "shared raster/conversion capacity is busy; retry later"
             ),
+            ExportError::WorkAdmissionCancelled => f.write_str("render/conversion admission was cancelled"),
+            ExportError::WorkAdmissionQueueFull { max_queued } => write!(f,"render/conversion admission queue is full ({max_queued} pending requests)"),
+            ExportError::SceneBuildUnavailable => f.write_str("the immutable export scene build did not complete; retry the request"),
             ExportError::RenderWorkerStart { message } => {
                 write!(f, "could not start raster renderer: {message}")
             }

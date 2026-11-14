@@ -15,7 +15,8 @@ use op_editor_ui::layout_scene::LayoutScene;
 use crate::{ExportError, RasterFileTarget, RasterFormat, RasterSampling};
 
 use crate::shared_work::{
-    shared_work_gate, SharedWorkGate, SharedWorkLease, MAX_RENDER_ADMISSIONS,
+    shared_work_gate, SharedWorkGate, SharedWorkLease, SharedWorkStats, WorkCancellation,
+    MAX_RENDER_ADMISSIONS,
 };
 
 const MAX_ADMITTED: usize = MAX_RENDER_ADMISSIONS;
@@ -172,24 +173,42 @@ impl SharedRasterWorker {
 
     /// Fail fast before layout derivation, scene cloning, or raster allocation.
     pub fn try_acquire(&self) -> Result<RasterAdmission, ExportError> {
-        self.state
-            .counters
-            .admitted
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
-                (count < MAX_ADMITTED).then_some(count + 1)
-            })
-            .map_err(|_| ExportError::RenderWorkerBusy {
+        if self.state.counters.admitted.load(Ordering::Acquire) >= MAX_ADMITTED {
+            return Err(ExportError::RenderWorkerBusy {
                 max_admitted: MAX_ADMITTED,
-            })?;
+            });
+        }
         let Some(work_lease) = self.state.work_gate.try_render() else {
-            self.state.counters.admitted.fetch_sub(1, Ordering::AcqRel);
             return Err(ExportError::SharedWorkBusy);
         };
-        Ok(RasterAdmission {
+        Ok(self.admit(work_lease))
+    }
+
+    /// FIFO queued admission, without polling or starting a renderer thread.
+    /// Wait only after releasing document locks; derive scene/output work after
+    /// admission. Cancelling the token removes a pending ticket and wakes the
+    /// next eligible waiter. Once granted, the lease releases only on Drop.
+    pub fn acquire_queued(
+        &self,
+        cancellation: &WorkCancellation,
+    ) -> Result<RasterAdmission, ExportError> {
+        check_consumer_reentry()?;
+        let lease = self.state.work_gate.acquire_render(cancellation)?;
+        Ok(self.admit(lease))
+    }
+    fn admit(&self, work_lease: SharedWorkLease) -> RasterAdmission {
+        // Every worker admission first owns one of this gate's two units.
+        // Counted-but-unleased transient reservations cannot reject FIFO work.
+        let previous = self.state.counters.admitted.fetch_add(1, Ordering::AcqRel);
+        debug_assert!(previous < MAX_ADMITTED);
+        RasterAdmission {
             state: Arc::clone(&self.state),
             submission: Mutex::new(()),
             _work_lease: work_lease,
-        })
+        }
+    }
+    pub fn queue_stats(&self) -> SharedWorkStats {
+        self.state.work_gate.stats()
     }
 
     pub fn stats(&self) -> RasterWorkerStats {
