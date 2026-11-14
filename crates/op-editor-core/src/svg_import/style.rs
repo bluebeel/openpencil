@@ -7,7 +7,7 @@ use super::*;
 /// `stroke-width` (inline `style="..."` takes precedence over the
 /// matching attribute, matching `extractStyleOrAttr` in TS).
 pub(super) fn merge_style_ctx(parent: &StyleCtx, attrs: &[(String, String)]) -> StyleCtx {
-    let value = |name| extract_style_or_attr(attrs, name);
+    let value = |name: &str| extract_style_or_attr(attrs, name);
     let number = |name: &str, default: f64| {
         value(name)
             .as_deref()

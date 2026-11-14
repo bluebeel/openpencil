@@ -111,7 +111,7 @@ pub(super) fn element_to_node_ctx(
         node.base_mut().opacity = svg_node_opacity(&el.attrs);
         if let Some(mode) = extract_style_or_attr(&el.attrs, "mix-blend-mode") {
             node.base_mut().blend_mode =
-                serde_json::from_value(serde_json::Value::String(mode.replace('-', '_'))).ok();
+                serde_json::from_value(serde_json::Value::String(mode.replace('-', "_"))).ok();
         }
     }
     if extract_style_or_attr(&el.attrs, "visibility").as_deref() == Some("hidden") {
