@@ -23,6 +23,10 @@ pub fn replace_node_in_children(
         }
     }
     for child in children.iter_mut() {
+        // Searching is not an insertion: preserve absent child vectors.
+        if child.children().is_none() {
+            continue;
+        }
         if let Some(grand) = child.children_mut() {
             if replace_node_in_children(grand, target, replacement) {
                 return true;
@@ -66,6 +70,10 @@ fn insert_into_parent(
     }
     let mut carry = node;
     for child in children.iter_mut() {
+        // Searching is not an insertion: preserve absent child vectors.
+        if child.children().is_none() {
+            continue;
+        }
         if let Some(grand) = child.children_mut() {
             match insert_into_parent(grand, parent, carry, index) {
                 Ok(()) => return Ok(()),

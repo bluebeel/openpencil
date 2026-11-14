@@ -84,6 +84,10 @@ pub fn remove_from_children(children: &mut Vec<PenNode>, target: &NodeId) -> boo
         return true;
     }
     for child in children.iter_mut() {
+        // Searching is not an insertion: preserve absent child vectors.
+        if child.children().is_none() {
+            continue;
+        }
         if let Some(grand) = child.children_mut() {
             if remove_from_children(grand, target) {
                 return true;
@@ -101,6 +105,10 @@ pub fn extract_node(children: &mut Vec<PenNode>, target: &NodeId) -> Option<PenN
         return Some(children.remove(idx));
     }
     for child in children.iter_mut() {
+        // Searching is not an insertion: preserve absent child vectors.
+        if child.children().is_none() {
+            continue;
+        }
         if let Some(grand) = child.children_mut() {
             if let Some(extracted) = extract_node(grand, target) {
                 return Some(extracted);
@@ -125,6 +133,10 @@ pub fn insert_before_in_children(
     }
     let mut carry = node;
     for child in children.iter_mut() {
+        // Searching is not an insertion: preserve absent child vectors.
+        if child.children().is_none() {
+            continue;
+        }
         if let Some(grand) = child.children_mut() {
             match insert_before_in_children(grand, anchor, carry) {
                 Ok(()) => return Ok(()),
@@ -149,6 +161,10 @@ pub fn insert_after_in_children(
     }
     let mut carry = node;
     for child in children.iter_mut() {
+        // Searching is not an insertion: preserve absent child vectors.
+        if child.children().is_none() {
+            continue;
+        }
         if let Some(grand) = child.children_mut() {
             match insert_after_in_children(grand, anchor, carry) {
                 Ok(()) => return Ok(()),
@@ -180,6 +196,10 @@ pub fn append_into(
     }
     let mut carry = node;
     for child in children.iter_mut() {
+        // Searching is not an insertion: preserve absent child vectors.
+        if child.children().is_none() {
+            continue;
+        }
         if let Some(grand) = child.children_mut() {
             match append_into(grand, parent, carry) {
                 Ok(()) => return Ok(()),
@@ -212,6 +232,10 @@ pub fn prepend_into(
     }
     let mut carry = node;
     for child in children.iter_mut() {
+        // Searching is not an insertion: preserve absent child vectors.
+        if child.children().is_none() {
+            continue;
+        }
         if let Some(grand) = child.children_mut() {
             match prepend_into(grand, parent, carry) {
                 Ok(()) => return Ok(()),
@@ -242,6 +266,10 @@ pub fn reorder_in_children(
         }
     }
     for child in children.iter_mut() {
+        // Searching is not an insertion: preserve absent child vectors.
+        if child.children().is_none() {
+            continue;
+        }
         if let Some(grand) = child.children_mut() {
             if reorder_in_children(grand, target, direction) {
                 return true;
@@ -556,3 +584,7 @@ pub fn find_duplicate(children: &[PenNode], seen: &mut HashSet<String>) -> Optio
     }
     None
 }
+
+#[cfg(test)]
+#[path = "walkers_presence_tests.rs"]
+mod presence_tests;
