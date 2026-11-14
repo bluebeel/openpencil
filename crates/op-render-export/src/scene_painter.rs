@@ -145,7 +145,9 @@ fn with_prepared_draw<R>(
             }
             let mut paint = |canvas: &Canvas| {
                 let saved = canvas.save();
-                let _restore = OnDrop(Some(|| canvas.restore_to_count(saved)));
+                let _restore = OnDrop(Some(|| {
+                    canvas.restore_to_count(saved);
+                }));
                 op_host_native::raster_sampling::with_scene_export(|| draw(&mut backend, canvas));
             };
             action(&mut paint)
@@ -208,7 +210,9 @@ fn ensure_images_decoded(
             let canvas = surface.canvas();
             canvas.clear(skia_safe::Color::TRANSPARENT);
             let saved = canvas.save();
-            let _restore = OnDrop(Some(|| canvas.restore_to_count(saved)));
+            let _restore = OnDrop(Some(|| {
+                canvas.restore_to_count(saved);
+            }));
             draw(backend, canvas);
         }
         let pending = take_pending_decodes(usize::MAX);
