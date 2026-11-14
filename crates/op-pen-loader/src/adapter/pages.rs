@@ -141,3 +141,21 @@ pub(super) fn compute_layout_with_measure(
 pub fn layout_measure_backend() -> Rc<dyn MeasureBackend> {
     LAYOUT_MEASURE_BACKEND.with(Rc::clone)
 }
+
+/// Layout the complete source root, then materialize only a prepared query spine.
+/// Sibling layout/fit-content repair remains exact; omitted paint data is unused.
+pub(crate) fn bounded_root_payload(root: &PenNode, spine: &PenNode, preserve: bool) -> NodePayload {
+    let rects = if preserve {
+        crate::authored_geometry::rects_for_roots(std::slice::from_ref(root))
+    } else {
+        let mut rects = BTreeMap::new();
+        compute_layout_with_measure(root, &mut rects, layout_measure_backend());
+        rects
+    };
+    let mut payload = node_to_payload(spine, &rects);
+    mark_root_frame_clips(
+        std::slice::from_ref(spine),
+        std::slice::from_mut(&mut payload),
+    );
+    payload
+}

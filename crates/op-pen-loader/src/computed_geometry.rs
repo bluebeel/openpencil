@@ -129,3 +129,18 @@ fn map_geometry<T>(
 #[cfg(test)]
 #[path = "computed_geometry_tests.rs"]
 mod tests;
+
+#[path = "bounded_geometry.rs"]
+mod bounded_geometry;
+
+/// Geometry for a bounded raw-parent query. Ancestors form a navigation spine;
+/// only the parent and its descendants have complete aggregate geometry.
+/// Unsupported scopes retain the complete existing builder.
+pub fn editor_state_to_page_parent_geometry(
+    state: &EditorState,
+    page: usize,
+    parent: &str,
+) -> Vec<ComputedGeometry> {
+    bounded_geometry::try_geometry(state, page, parent)
+        .unwrap_or_else(|| editor_state_to_page_item_geometry(state, page, Some(parent)))
+}

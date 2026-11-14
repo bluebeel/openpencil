@@ -196,3 +196,91 @@ fn fresh_factories_observe_unmarked_public_mutations_while_trusted_cache_is_expl
         snapshot_layout_snapshot_cached_for_call(&state, &args).call(&args)
     );
 }
+
+#[test]
+fn bounded_parent_zero_depth_keeps_full_response_for_flex_refs_tokens_and_text_centering() {
+    for preserve in [false, true] {
+        let mut state = fixture();
+        state.ui.active_page_index = 1;
+        state.editor_ui.preserve_authored_geometry = preserve;
+        let legacy = snapshot_layout_snapshot(&state);
+        for parent in [
+            "root",
+            "measure",
+            "row",
+            "instance",
+            "instance__master-inner",
+            "missing",
+        ] {
+            let args = arguments(json!({"pageId":"p", "parentId":parent, "maxDepth":0}));
+            assert_eq!(
+                snapshot_layout_snapshot_for_call(&state, &args).call(&args),
+                legacy.call(&args),
+                "{parent}, preserve={preserve}"
+            );
+            assert_eq!(
+                snapshot_layout_snapshot_cached_for_call(&state, &args).call(&args),
+                legacy.call(&args),
+                "cached {parent}, preserve={preserve}"
+            );
+        }
+    }
+}
+
+#[test]
+fn bounded_parent_retains_only_spine_and_target_while_full_sibling_layout_still_matches() {
+    let mut siblings = vec![
+        json!({"id":"target","type":"frame","width":"fill_container","height":20,"layout":"vertical","alignItems":"center",
+        "children":[{"id":"leaf","type":"text","content":"AV ffi","width":"fit_content","height":"fit_content"}]}),
+    ];
+    siblings.extend(
+        (0..1500).map(|i| json!({"id":format!("s{i}"),"type":"rectangle","width":1,"height":2})),
+    );
+    let doc = json!({"version":"1.0.0","children":[{"id":"root","type":"frame",
+        "x":41.25,"y":12.5,"width":5000,"height":100,"layout":"horizontal","gap":1,
+        "rotation":23,"children":siblings}]});
+    let state =
+        EditorState::from_document(jian_ops_schema::load_str(&doc.to_string()).unwrap().value);
+    let args = arguments(json!({"parentId":"target", "maxDepth":0}));
+    assert_eq!(
+        snapshot_layout_snapshot_for_call(&state, &args).call(&args),
+        snapshot_layout_snapshot(&state).call(&args)
+    );
+    fn ids(nodes: &[ComputedGeometry], out: &mut Vec<String>) {
+        for node in nodes {
+            out.push(node.id.clone());
+            ids(&node.children, out);
+        }
+    }
+    let focused = op_pen_loader::editor_state_to_page_parent_geometry(&state, 0, "target");
+    let mut found = Vec::new();
+    ids(&focused, &mut found);
+    assert_eq!(found, ["root", "target", "leaf"]);
+    let complete = op_pen_loader::editor_state_to_page_item_geometry(&state, 0, Some("target"));
+    assert_eq!(complete[0].children.len(), 1501);
+}
+
+#[test]
+fn bounded_parent_fallback_preserves_duplicate_virtual_workspace_and_widget_contracts() {
+    let value = json!({"version":"1.0.0","children":[
+        {"id":"root","type":"frame","width":400,"height":200,"children":[
+            {"id":"same","type":"frame","children":[{"id":"a","type":"rectangle","width":3,"height":4}]},
+            {"id":"same","type":"frame","children":[{"id":"b","type":"rectangle","width":5,"height":6}]},
+            {"id":"tabs","type":"tabs","width":100,"height":80,"children":[
+                {"id":"panel","type":"frame","width":50,"height":40,"children":[
+                    {"id":"inside","type":"rectangle","width":7,"height":8}]}]}]}]});
+    for workspace in [false, true] {
+        let mut state = EditorState::from_document(
+            jian_ops_schema::load_str(&value.to_string()).unwrap().value,
+        );
+        state.editor_ui.workspace.visible = workspace;
+        for parent in ["same", "panel", "unknown", "virtual__child"] {
+            let args = arguments(json!({"parentId":parent,"maxDepth":0}));
+            assert_eq!(
+                snapshot_layout_snapshot_for_call(&state, &args).call(&args),
+                snapshot_layout_snapshot(&state).call(&args),
+                "{parent}, workspace={workspace}"
+            );
+        }
+    }
+}

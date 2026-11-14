@@ -153,3 +153,21 @@ fn shared_lru_has_global_entry_and_byte_bounds() {
         "oldest evicted"
     );
 }
+
+#[test]
+fn bounded_parent_cache_never_aliases_complete_root_or_another_parent() {
+    let s = state();
+    let complete = editor_state_to_page_item_geometry_cached(&s, 0, Some("child"));
+    let child = editor_state_to_page_parent_geometry_cached(&s, 0, "child");
+    assert!(!Arc::ptr_eq(&complete, &child));
+    let parent = editor_state_to_page_parent_geometry_cached(&s, 0, "a");
+    assert!(!Arc::ptr_eq(&child, &parent));
+    assert!(Arc::ptr_eq(
+        &child,
+        &editor_state_to_page_parent_geometry_cached(&s, 0, "child")
+    ));
+    assert!(Arc::ptr_eq(
+        &complete,
+        &editor_state_to_page_item_geometry_cached(&s, 0, Some("a"))
+    ));
+}

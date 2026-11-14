@@ -16,6 +16,7 @@ struct Key {
     revision: u64,
     page: usize,
     scope: (usize, usize),
+    parent_query: Option<String>,
     preserve: bool,
     workspace: bool,
     preview: bool,
@@ -54,6 +55,7 @@ impl Key {
             revision: state.document_revision(),
             page,
             scope: (roots.as_ptr() as usize, roots.len()),
+            parent_query: None,
             preserve: state.editor_ui.preserve_authored_geometry,
             workspace: state.editor_ui.workspace.visible,
             preview: state.editor_ui.preview.mode,
@@ -69,6 +71,7 @@ impl Key {
             && self.revision == other.revision
             && self.page == other.page
             && self.scope == other.scope
+            && self.parent_query == other.parent_query
             && self.preserve == other.preserve
             && self.workspace == other.workspace
             && self.preview == other.preview
@@ -78,7 +81,8 @@ impl Key {
             && self.components == other.components
     }
     fn bytes(&self) -> usize {
-        size_of::<Self>() + 32 + self.components.capacity() * size_of::<(String,usize)>()
+        size_of::<Self>() + 32 + self.parent_query.as_ref().map_or(0, String::capacity)
+            + self.components.capacity() * size_of::<(String,usize)>()
             + self.components.iter().map(|(id,_)| id.capacity()).sum::<usize>()
             // Conservatively charge BTree node capacity, including sparse leaves.
             + self.theme.iter().map(|(k,v)| 1024+k.capacity()+v.capacity()).sum::<usize>()
@@ -212,3 +216,21 @@ pub fn editor_state_to_page_item_geometry_cached(
 #[cfg(test)]
 #[path = "geometry_cache_tests.rs"]
 mod tests;
+
+/// Separate cache identity: a parent-only spine must never satisfy a full-root query.
+pub fn editor_state_to_page_parent_geometry_cached(
+    state: &EditorState,
+    page: usize,
+    parent: &str,
+) -> Arc<Vec<ComputedGeometry>> {
+    let key = (parent.len() <= 4096)
+        .then(|| Key::new(state, page, Some(parent), crate::current_font_generation()))
+        .flatten()
+        .map(|mut key| {
+            key.parent_query = Some(parent.to_owned());
+            key
+        });
+    get_or_compute(shared_store(), key, || {
+        crate::computed_geometry::editor_state_to_page_parent_geometry(state, page, parent)
+    })
+}

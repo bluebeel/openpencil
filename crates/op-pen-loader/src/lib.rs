@@ -24,6 +24,7 @@ mod authored_geometry;
 mod computed_geometry;
 mod geometry_cache;
 pub use geometry_cache::editor_state_to_page_item_geometry_cached;
+pub use geometry_cache::editor_state_to_page_parent_geometry_cached;
 mod editor_meta;
 mod editor_meta_error;
 mod editor_meta_family;
@@ -34,7 +35,9 @@ mod effects;
 mod full_content_snapshot;
 mod initial_text_snapshot;
 mod item_scene;
-pub use computed_geometry::{editor_state_to_page_item_geometry, ComputedGeometry};
+pub use computed_geometry::{
+    editor_state_to_page_item_geometry, editor_state_to_page_parent_geometry, ComputedGeometry,
+};
 #[cfg(test)]
 mod item_scene_tests;
 mod layout_repair;

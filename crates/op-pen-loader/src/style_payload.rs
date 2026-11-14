@@ -603,7 +603,7 @@ mod color_tests {
 
     fn stop(offset: f32, color: &str) -> GradientStop {
         GradientStop {
-            offset,
+            offset: f64::from(offset),
             color: color.to_string(),
         }
     }

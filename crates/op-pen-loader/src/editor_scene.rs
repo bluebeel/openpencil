@@ -243,6 +243,28 @@ pub(crate) fn roots_to_page_payload(
     paged: bool,
     full_content: bool,
 ) -> crate::payload::PagePayload {
+    let prepared = prepared_page_roots(state, roots, page, paged, full_content);
+    let payload = crate::adapter::pen_roots_to_page_payload(
+        &page.id,
+        &page.name,
+        prepared.as_ref(),
+        page_index,
+        state.editor_ui.preserve_authored_geometry,
+    );
+    // Every payload field is owned/shared; release expanded canonical roots
+    // before a second representation is allocated by the caller.
+    drop(prepared);
+    payload
+}
+
+/// Shared exact ref/token/table/presentation preparation for bounded geometry.
+pub(crate) fn prepared_page_roots<'a>(
+    state: &op_editor_core::EditorState,
+    roots: &'a [jian_ops_schema::node::PenNode],
+    page: &ScenePage,
+    paged: bool,
+    full_content: bool,
+) -> std::borrow::Cow<'a, [jian_ops_schema::node::PenNode]> {
     let page_id = state.doc.pages.as_ref().map(|_| page.id.as_str());
     let mut prepared = std::borrow::Cow::Borrowed(roots);
     if op_editor_core::ref_resolve::roots_have_refs(prepared.as_ref()) {
@@ -279,17 +301,7 @@ pub(crate) fn roots_to_page_payload(
         prepared = std::borrow::Cow::Owned(nodes);
     }
     prepared = roots_with_presentation(state, prepared, page_id, full_content);
-    let payload = crate::adapter::pen_roots_to_page_payload(
-        &page.id,
-        &page.name,
-        prepared.as_ref(),
-        page_index,
-        state.editor_ui.preserve_authored_geometry,
-    );
-    // Every payload field is owned/shared; release expanded canonical roots
-    // before a second representation is allocated by the caller.
-    drop(prepared);
-    payload
+    prepared
 }
 
 fn roots_need_presentation(roots: &[jian_ops_schema::node::PenNode]) -> bool {

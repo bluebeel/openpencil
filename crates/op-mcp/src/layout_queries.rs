@@ -56,7 +56,19 @@ fn prepare_layout(
         })
     })?;
     let parent = arg_alias(args, &["parentId", "parent_id", "parent"]);
-    let roots = geometry(state, page.index, parent, cached);
+    let roots = if depth == 0 {
+        match parent {
+            Some(parent) if cached => op_pen_loader::editor_state_to_page_parent_geometry_cached(
+                state, page.index, parent,
+            ),
+            Some(parent) => std::sync::Arc::new(
+                op_pen_loader::editor_state_to_page_parent_geometry(state, page.index, parent),
+            ),
+            None => geometry(state, page.index, None, cached),
+        }
+    } else {
+        geometry(state, page.index, parent, cached)
+    };
     let records = limited_records(&roots, page.roots, parent, depth);
     drop(roots);
     Ok(snapshot_layout_outcome(
