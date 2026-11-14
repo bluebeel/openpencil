@@ -92,9 +92,19 @@ impl Capture {
         // paint arrays or text. Reuse the sensitivity buffer across siblings.
         if node.children().is_none_or(|c| c.is_empty()) {
             if let Some(old) = anchor {
-                if old.children().is_none_or(|c| c.is_empty()) && old.metadata == *node {
-                    super::sensitivity::write(node, &mut self.scratch);
-                    if old.sensitivity.as_ref() == self.scratch {
+                if old.children().is_none_or(|c| c.is_empty()) {
+                    let same = match super::exact::geometry_matches(&old.metadata, node) {
+                        Some(equal) => equal,
+                        None => {
+                            if old.metadata == *node {
+                                super::sensitivity::write(node, &mut self.scratch);
+                                old.sensitivity.as_ref() == self.scratch
+                            } else {
+                                false
+                            }
+                        }
+                    };
+                    if same {
                         return old.clone();
                     }
                 }

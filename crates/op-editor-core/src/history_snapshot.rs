@@ -20,6 +20,7 @@ use std::sync::Arc;
 
 mod components;
 mod edges;
+mod exact;
 mod node;
 mod node_wire;
 mod sensitivity;
@@ -364,3 +365,6 @@ mod recursive_tests;
 #[cfg(test)]
 #[path = "history_snapshot/edge_tests.rs"]
 mod edge_tests;
+
+#[cfg(test)]
+mod exact_tests;
