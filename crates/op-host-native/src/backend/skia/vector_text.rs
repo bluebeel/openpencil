@@ -12,6 +12,8 @@ use skia_safe::{
 mod curve;
 #[path = "vector_text_reuse.rs"]
 mod reuse;
+#[path = "vector_text_stencil.rs"]
+mod stencil;
 #[path = "vector_text_units.rs"]
 mod units;
 pub(super) use units::MetadataCache;
@@ -107,7 +109,37 @@ fn draw_path(canvas: &Canvas, path: &Path, paint: &Paint) -> bool {
     if path.is_empty() {
         return true;
     }
-    if jian_skia::raster_sampling::is_point_sampling() {
+    let point = jian_skia::raster_sampling::is_point_sampling();
+    let grid = if point {
+        0
+    } else if super::sampled_clip::is_four_sample_pass() {
+        1
+    } else {
+        2
+    };
+    // Line-only geometry keeps its established scanline edge behavior. The
+    // implicit path specifically replaces subdivided quadratic glyph curves.
+    if paint.style() == skia_safe::PaintStyle::Fill
+        && path
+            .iter()
+            .any(|record| record.verb() == skia_safe::PathVerb::Quad)
+    {
+        let matrix = canvas.local_to_device_as_3x3();
+        if let Some(clip) = canvas.device_clip_bounds() {
+            if let Some((shader, bounds)) = stencil::coverage(path, &matrix, clip, grid) {
+                let mut source = paint.clone();
+                if point {
+                    jian_skia::raster_sampling::configure_final_src_over(&mut source);
+                }
+                let saved = canvas.save();
+                canvas.clip_shader(shader, skia_safe::ClipOp::Intersect);
+                canvas.draw_rect(bounds, &source);
+                canvas.restore_to_count(saved);
+                return true;
+            }
+        }
+    }
+    if point {
         let mut point_paint = paint.clone();
         jian_skia::raster_sampling::configure_final_src_over(&mut point_paint);
         let matrix = canvas.local_to_device_as_3x3();
