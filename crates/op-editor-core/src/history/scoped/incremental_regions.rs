@@ -44,7 +44,10 @@ impl PendingRegions {
         specs: &[TargetSpec],
     ) -> Result<(), ScopedHistoryError> {
         let roots = patch::roots(&state.doc, &self.scope)?;
-        for spec in specs.iter().filter(|spec| spec.scope == self.scope) {
+        for spec in specs {
+            if spec.scope != self.scope {
+                continue;
+            }
             if let Some(index) = spec.path.first() {
                 let root = roots
                     .get(*index)

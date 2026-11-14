@@ -2,7 +2,7 @@
 //! No new exchange/actor/rebase/retention format is introduced by live batches.
 use super::*;
 
-pub(super) fn compact_incremental_roots(
+pub(in crate::history::scoped) fn compact_incremental_roots(
     scope: Scope,
     order: Vec<String>,
     mut old: HashMap<String, PenNode>,
