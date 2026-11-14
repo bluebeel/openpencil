@@ -212,3 +212,78 @@ fn triangular_frame_offsets_are_invariant_under_rotation_reflection_and_scale() 
         );
     }
 }
+
+#[test]
+fn interior_partition_matches_the_original_analytic_draw_exactly() {
+    use jian_skia::triangular_shadow::{self, RoundedShadowDraw};
+    for (angle, scale) in [
+        (0.0, (1.0, 1.0)),
+        (30.0, (1.5, 0.75)),
+        (-30.0, (-1.0, 1.0)),
+        (15.0, (0.1, 0.1)),
+        (0.0, (3.0, 3.0)),
+    ] {
+        for alpha in [0.0, 0.05, 0.1, 0.35, 1.0] {
+            for inner in [false, true] {
+                for transparent in [false, true] {
+                    let shape = skia_safe::Rect::from_xywh(20.0, 20.0, 64.0, 80.0);
+                    let color =
+                        skia_safe::Color4f::new(190.0 / 255.0, 41.0 / 255.0, 77.0 / 255.0, alpha);
+                    let mut expected = surface();
+                    let mut actual = surface();
+                    for (image, optimized) in [(&mut expected, false), (&mut actual, true)] {
+                        let canvas = image.canvas();
+                        if transparent {
+                            canvas.clear(skia_safe::Color::TRANSPARENT);
+                        } else {
+                            canvas.clear(skia_safe::Color::from_rgb(11, 37, 83));
+                        }
+                        canvas.translate((64.125, 64.375));
+                        canvas.rotate(angle, None);
+                        canvas.scale(scale);
+                        canvas.translate((-52.0, -60.0));
+                        // Include inherited fractional coverage; the partition
+                        // must neither square it nor drop its partial alpha.
+                        sampled_clip::clip_rrect(
+                            canvas,
+                            &skia_safe::RRect::new_rect_xy(
+                                skia_safe::Rect::from_xywh(30.25, 24.75, 60.0, 80.0),
+                                9.0,
+                                9.0,
+                            ),
+                        );
+                        let draw_bounds = shape.with_outset((8.0, 8.0));
+                        if optimized {
+                            let saved = canvas.save_count();
+                            assert!(triangular_shadow::draw(
+                                canvas,
+                                &RoundedShadowDraw {
+                                    bounds: shape,
+                                    radius: 5.0,
+                                    blur: 8.0,
+                                    color,
+                                    inner,
+                                    draw_bounds,
+                                }
+                            ));
+                            assert_eq!(canvas.save_count(), saved);
+                        } else {
+                            let mut paint = skia_safe::Paint::default();
+                            paint.set_shader(
+                                triangular_shadow::shader(shape, 5.0, 8.0, color, inner).unwrap(),
+                            );
+                            jian_skia::raster_sampling::configure_framebuffer_blend(&mut paint)
+                                .unwrap();
+                            canvas.draw_rect(draw_bounds, &paint);
+                        }
+                    }
+                    assert_eq!(
+                        bytes(&mut actual),
+                        bytes(&mut expected),
+                        "angle{angle} alpha{alpha} inner{inner} transparent{transparent}"
+                    );
+                }
+            }
+        }
+    }
+}

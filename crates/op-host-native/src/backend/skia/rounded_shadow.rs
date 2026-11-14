@@ -36,25 +36,6 @@ impl NativeBackend {
         let corner = corner
             .max(0.0)
             .min(bounds.width().min(bounds.height()) * 0.5);
-        let shader = jian_skia::triangular_shadow::shader(
-            bounds,
-            corner,
-            shadow.blur,
-            jian_color_to_color4f(shadow.color),
-            shadow.inner,
-        );
-        let Some(shader) = shader else {
-            jian_skia::raster_sampling::mark_unsupported("triangular shadow shader unavailable");
-            return false;
-        };
-        let mut paint = Paint::default();
-        paint.set_shader(shader);
-        if jian_skia::raster_sampling::configure_framebuffer_blend(&mut paint).is_err() {
-            jian_skia::raster_sampling::mark_unsupported(
-                "triangular shadow framebuffer blend unavailable",
-            );
-            return false;
-        }
         let saved = canvas.save();
         let draw_bounds = if shadow.inner {
             let mask = RRect::new_rect_xy(to_sk_rect(rect), radius, radius);
@@ -63,9 +44,24 @@ impl NativeBackend {
         } else {
             bounds.with_outset((shadow.blur.max(0.0), shadow.blur.max(0.0)))
         };
-        canvas.draw_rect(draw_bounds, &paint);
+        let drawn = jian_skia::triangular_shadow::draw(
+            canvas,
+            &jian_skia::triangular_shadow::RoundedShadowDraw {
+                bounds,
+                radius: corner,
+                blur: shadow.blur,
+                color: jian_color_to_color4f(shadow.color),
+                inner: shadow.inner,
+                draw_bounds,
+            },
+        );
         canvas.restore_to_count(saved);
-        true
+        if !drawn {
+            jian_skia::raster_sampling::mark_unsupported(
+                "triangular shadow shader or framebuffer blend unavailable",
+            );
+        }
+        drawn
     }
 }
 
