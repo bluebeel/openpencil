@@ -195,7 +195,7 @@ fn prepare_path(path: &Path, cancellation: &CancellationToken) -> PrepareResult 
         .and_then(|s| s.to_str())
         .unwrap_or("Figma Import");
     let prepared =
-        op_figma::prepare_fig_binary(&bytes, file_name, op_figma::FigLayoutMode::Preserve)
+        op_figma::prepare_fig_binary_owned(bytes, file_name, op_figma::FigLayoutMode::Preserve)
             .map_err(|e| FigmaImportError::ParseFig(e.to_string()))?;
     if cancellation.is_cancelled() {
         return Err(FigmaImportError::Cancelled);

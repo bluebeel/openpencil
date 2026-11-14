@@ -651,9 +651,9 @@ pub(super) fn serve_one_online<S: Read + Write>(
     }
     // The lease outlives the dispatch (including a minutes-long SSE stream),
     // so the tenant these borrows point at cannot be evicted underneath them.
-    dispatch(
+    dispatch_owned(
         stream,
-        &req,
+        req,
         &ConnCtx {
             state: lease.state(),
             authority: &lease.tenant().authority,

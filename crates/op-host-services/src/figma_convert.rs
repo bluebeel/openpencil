@@ -3,6 +3,7 @@
 //! boots the returned document JSON through the normal open-document push.
 
 use base64::Engine;
+use std::borrow::Cow;
 
 use crate::figma_convert_error::FigmaConvertError;
 
@@ -11,9 +12,10 @@ type Result<T> = std::result::Result<T, FigmaConvertError>;
 
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct ConvertRequest {
+struct ConvertRequest<'a> {
     name: String,
-    bytes_b64: String,
+    #[serde(borrow)]
+    bytes_b64: Cow<'a, str>,
 }
 
 fn decode_b64(s: &str) -> Result<Vec<u8>> {
@@ -35,18 +37,34 @@ fn base64_encode(bytes: &[u8]) -> String {
 }
 
 pub(crate) fn convert_fig_json(body: &str) -> Result<String> {
+    let (name, bytes) = decode_request(body)?;
+    convert_decoded(name, bytes)
+}
+
+/// Release the HTTP JSON/base64 allocation before building the Figma tree.
+pub(crate) fn convert_fig_json_owned(body: String) -> Result<String> {
+    let (name, bytes) = decode_request(&body)?;
+    drop(body);
+    convert_decoded(name, bytes)
+}
+
+fn decode_request(body: &str) -> Result<(String, Vec<u8>)> {
     let req: ConvertRequest =
         serde_json::from_str(body).map_err(|e| FigmaConvertError::BadRequest {
             detail: e.to_string(),
         })?;
     let bytes = decode_b64(&req.bytes_b64)?;
-    // `op_figma` is not owned by this pass; its `Debug` rendering is what the
-    // pre-conversion `{e:?}` emitted, so it is carried verbatim.
-    let import = op_figma::parse_fig_binary(&bytes, &req.name, op_figma::FigLayoutMode::Preserve)
-        .map_err(|e| FigmaConvertError::Parse {
-        name: req.name.clone(),
-        detail: format!("{e:?}"),
-    })?;
+    Ok((req.name, bytes))
+}
+
+fn convert_decoded(name: String, bytes: Vec<u8>) -> Result<String> {
+    let import =
+        op_figma::prepare_fig_binary_owned(bytes, &name, op_figma::FigLayoutMode::Preserve)
+            .and_then(|prepared| prepared.into_all_pages_with_images(None))
+            .map_err(|e| FigmaConvertError::Parse {
+                name,
+                detail: format!("{e:?}"),
+            })?;
     let thumbnails = jian_ops_schema::image_thumbs::capture_snapshot();
     let mut response = Vec::new();
     response.extend_from_slice(br#"{"ok":true,"doc":"#);
@@ -99,5 +117,24 @@ mod tests {
         let not_fig = base64_encode(b"plain text, not fig-kiwi");
         let body = format!(r#"{{"name":"a.fig","bytesB64":"{not_fig}"}}"#);
         assert!(convert_fig_json(&body).is_err());
+    }
+
+    #[test]
+    fn base64_borrows_normal_json_and_accepts_escaped_payloads() {
+        let raw = r#"{"name":"a.fig","bytesB64":"/w=="}"#;
+        let request: ConvertRequest = serde_json::from_str(raw).unwrap();
+        assert!(matches!(request.bytes_b64, Cow::Borrowed(_)));
+        assert_eq!(decode_request(raw).unwrap(), ("a.fig".into(), vec![255]));
+        let escaped = r#"{"name":"a.fig","bytesB64":"\/w=="}"#;
+        assert_eq!(
+            decode_request(escaped).unwrap(),
+            ("a.fig".into(), vec![255])
+        );
+        for body in ["not json", raw, escaped] {
+            assert_eq!(
+                convert_fig_json(body).unwrap_err().to_string(),
+                convert_fig_json_owned(body.into()).unwrap_err().to_string()
+            );
+        }
     }
 }

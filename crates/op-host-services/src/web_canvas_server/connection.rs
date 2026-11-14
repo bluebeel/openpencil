@@ -85,9 +85,9 @@ pub(super) fn serve_one_with_authority<S: Read + Write>(
     authority: &ConnAuthority,
 ) -> Result<bool> {
     let req = crate::mcp_serve::read_http_request(stream)?;
-    dispatch(
+    dispatch_owned(
         stream,
-        &req,
+        req,
         &ConnCtx {
             state,
             authority,
@@ -105,10 +105,15 @@ pub(super) fn serve_one_with_authority<S: Read + Write>(
 /// Split from the read so the online accept loop can resolve the identity —
 /// and therefore the tenant this ctx points at — from the request headers
 /// before anything is dispatched.
-pub(super) fn dispatch<S: Read + Write>(
+#[path = "connection_conversion.rs"]
+mod conversion;
+pub(super) use conversion::{dispatch, dispatch_owned};
+
+fn dispatch_inner<S: Read + Write>(
     stream: &mut S,
     req: &crate::mcp_serve::HttpRequest,
     ctx: &ConnCtx<'_>,
+    conversion_body: Option<String>,
 ) -> Result<bool> {
     let state = ctx.state;
     let hub = ctx.hub;
@@ -329,7 +334,11 @@ pub(super) fn dispatch<S: Read + Write>(
         return Ok(false);
     }
     if req.method == "POST" && req.path == "/api/figma/convert" {
-        let (status, body) = match crate::figma_convert::convert_fig_json(&req.body) {
+        let converted = match conversion_body {
+            Some(body) => crate::figma_convert::convert_fig_json_owned(body),
+            None => crate::figma_convert::convert_fig_json(&req.body),
+        };
+        let (status, body) = match converted {
             Ok(body) => ("200 OK", body),
             Err(error) => (
                 "400 Bad Request",
