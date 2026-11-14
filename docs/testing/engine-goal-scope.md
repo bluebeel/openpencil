@@ -47,6 +47,13 @@ fidelity; target SSIM 1.0 and exact RGBA identity, not rounded similarity.
 2. Benchmark cold/warm operations in an optimized build; record median/tail
    latency, CPU, throughput, queue delay, RSS and physical footprint. Report
    logical client count separately from active request concurrency.
+   The real-file matrix must include the complete OpenBridge and MUI documents
+   at 1, 10, 100 and 1,000 agents. Record logical clients and active in-flight
+   requests independently; a 32-request window does not prove 1,000 simultaneous
+   operations. Inventory every operation family above and mark implemented,
+   benchmarked, missing transport, unsupported, rejected or unmeasured cases.
+   Report CPU/RAM and correctness per operation, including cold/warm behavior;
+   synthetic workloads and selected-frame exports cannot replace this evidence.
 3. Exercise single/multiple files, large/deep documents, sustained edits,
    resource pressure, cancellation and failure/recovery. Retain no-loss, ID,
    transaction, clipboard and persisted-state invariants.

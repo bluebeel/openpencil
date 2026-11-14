@@ -5,6 +5,11 @@ service. External model/agent processes are excluded; the load generator is
 included in the aggregate memory measurement. Each client sends sequential
 MCP batches, and a bounded request window provides backpressure.
 
+Coverage is [explicitly incomplete](operation-coverage.md): existing concurrency
+runs use generated documents and a 32-request window. The complete real-file
+operation matrix is in progress; selected-frame memory results do not establish
+a full OpenBridge/MUI memory bound.
+
 The latest [batched checkpoint](engine-checkpoint-11.md) combines copy and
 component-inheritance fixes, cheaper exact history capture, ID validation and
 ligature/spacing parity before one build. MUI Native SSIM rises to 0.999695;
