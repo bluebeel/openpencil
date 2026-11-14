@@ -70,11 +70,15 @@ pub(super) fn convert_preserved_list(
     for (line, content, marker) in planned? {
         let mut sliced = figma.clone();
         let mut data = text.clone();
-        data.set("characters", FigValue::Str(content));
+        data.set("characters", FigValue::Str(content.into()));
         if let Some(ids) = text.get_array("characterStyleIDs") {
             data.set(
                 "characterStyleIDs",
-                FigValue::Array(ids[line.first.min(ids.len())..line.end.min(ids.len())].to_vec()),
+                FigValue::Array(
+                    ids[line.first.min(ids.len())..line.end.min(ids.len())]
+                        .to_vec()
+                        .into(),
+                ),
             );
         }
         sliced.set("textData", data);

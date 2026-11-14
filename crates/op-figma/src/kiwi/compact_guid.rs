@@ -76,10 +76,13 @@ impl FigValue {
     /// Rare mutable field access restores an ordinary object before borrowing.
     pub(super) fn materialize_guid(&mut self) {
         if let Self::Guid(session, local) = self {
-            *self = Self::Object(vec![
-                ("sessionID".into(), Self::Uint(*session)),
-                ("localID".into(), Self::Uint(*local)),
-            ]);
+            *self = Self::Object(
+                vec![
+                    ("sessionID".into(), Self::Uint(*session)),
+                    ("localID".into(), Self::Uint(*local)),
+                ]
+                .into(),
+            );
         }
     }
 }
@@ -95,6 +98,9 @@ impl PartialEq for FigValue {
             return left == right;
         }
         if let (Some(left), Some(right)) = (self.small_float_parts(), other.small_float_parts()) {
+            return left == right;
+        }
+        if let (Some(left), Some(right)) = (self.as_str(), other.as_str()) {
             return left == right;
         }
         match (self, other) {

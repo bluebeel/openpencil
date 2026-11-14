@@ -66,7 +66,7 @@ fn object(values: [f32; 6], reverse: bool) -> FigValue {
     if reverse {
         fields.reverse();
     }
-    FigValue::Object(fields)
+    FigValue::Object(fields.into())
 }
 
 #[test]
@@ -111,7 +111,7 @@ fn compact_affine_requires_six_unique_native_float_fields_without_extensions() {
 #[test]
 fn compact_affine_mutations_keep_float_updates_inline_and_materialize_other_changes() {
     let values = [1.25, -0.25, 16.5, 0.125, 0.875, -12.25];
-    let mut affine = FigValue::Affine(values);
+    let mut affine = FigValue::Affine(Box::new(values));
     affine.set("m02", FigValue::Float(-0.0));
     assert!(matches!(affine, FigValue::Affine(_)));
     assert_eq!(
@@ -122,11 +122,11 @@ fn compact_affine_mutations_keep_float_updates_inline_and_materialize_other_chan
     *affine.get_mut("m12").unwrap() = FigValue::Float(7.0);
     assert!(matches!(affine, FigValue::Object(_)));
     assert_eq!(affine.get_f64("m00"), Some(1.25));
-    let mut affine = FigValue::Affine(values);
+    let mut affine = FigValue::Affine(Box::new(values));
     affine.set("extension", FigValue::Str("retained".into()));
     assert_eq!(affine.get_str("extension"), Some("retained"));
     assert_eq!(affine.get_f64("m11"), Some(0.875));
-    let mut affine = FigValue::Affine(values);
+    let mut affine = FigValue::Affine(Box::new(values));
     affine.set("m00", FigValue::Uint(9));
     assert!(matches!(affine.get("m00"), Some(FigValue::Uint(9))));
     assert_eq!(affine.get_f64("m12"), Some(-12.25));
@@ -136,25 +136,31 @@ fn compact_affine_mutations_keep_float_updates_inline_and_materialize_other_chan
 fn compact_affine_value_equality_normalizes_order_but_preserves_float_contracts() {
     let values = [1.25, -0.25, 16.5, 0.125, 0.875, -12.25];
     let (compact, ordinary, reversed) = (
-        FigValue::Affine(values),
+        FigValue::Affine(Box::new(values)),
         object(values, false),
         object(values, true),
     );
     assert_eq!(compact, ordinary);
     assert_eq!(ordinary, reversed);
     assert_eq!(compact, reversed);
-    let zero = FigValue::Affine([0.0; 6]);
+    let zero = FigValue::Affine(Box::new([0.0; 6]));
     let mut minus = [0.0; 6];
     minus[0] = -0.0;
-    assert_eq!(zero, FigValue::Affine(minus));
+    assert_eq!(zero, FigValue::Affine(Box::new(minus)));
     assert_eq!(
-        FigValue::Affine(minus).get_f64("m00").unwrap().to_bits(),
+        FigValue::Affine(Box::new(minus))
+            .get_f64("m00")
+            .unwrap()
+            .to_bits(),
         (-0.0f64).to_bits()
     );
     let mut nan = values;
     nan[0] = f32::from_bits(0x7fc01234);
-    assert_ne!(FigValue::Affine(nan), FigValue::Affine(nan));
-    assert_ne!(FigValue::Affine(nan), object(nan, false));
+    assert_ne!(
+        FigValue::Affine(Box::new(nan)),
+        FigValue::Affine(Box::new(nan))
+    );
+    assert_ne!(FigValue::Affine(Box::new(nan)), object(nan, false));
 }
 
 #[test]

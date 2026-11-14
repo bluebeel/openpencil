@@ -182,7 +182,7 @@ fn convert_vector_preserves_numeric_sibling_mask_marker() {
     pairs.push(("mask".into(), FigValue::Uint(1)));
     pairs.push((
         "fillPaints".into(),
-        FigValue::Array(vec![solid_paint(1.0, 1.0, 1.0)]),
+        FigValue::Array(vec![solid_paint(1.0, 1.0, 1.0)].into()),
     ));
 
     let mut ctx = fresh_ctx();
@@ -209,7 +209,7 @@ fn convert_vector_does_not_claim_luminance_mask_support() {
     pairs.push(("maskType".into(), FigValue::Str("LUMINANCE".into())));
     pairs.push((
         "fillPaints".into(),
-        FigValue::Array(vec![solid_paint(1.0, 1.0, 1.0)]),
+        FigValue::Array(vec![solid_paint(1.0, 1.0, 1.0)].into()),
     ));
 
     let mut ctx = fresh_ctx();
@@ -236,7 +236,7 @@ fn convert_vector_does_not_claim_translucent_alpha_mask_support() {
     pairs.push(("opacity".into(), FigValue::Float(0.5)));
     pairs.push((
         "fillPaints".into(),
-        FigValue::Array(vec![solid_paint(1.0, 1.0, 1.0)]),
+        FigValue::Array(vec![solid_paint(1.0, 1.0, 1.0)].into()),
     ));
 
     let mut ctx = fresh_ctx();
@@ -274,7 +274,7 @@ fn degenerate_commands_blob_imports_as_invisible_path() {
     };
     pairs.push((
         "fillGeometry".into(),
-        FigValue::Array(vec![obj(vec![("commandsBlob", FigValue::Uint(0))])]),
+        FigValue::Array(vec![obj(vec![("commandsBlob", FigValue::Uint(0))])].into()),
     ));
     let mut ctx = fresh_ctx();
     ctx.blobs = vec![BlobOrString::Bytes(vec![0; 4])];
@@ -320,10 +320,13 @@ fn odd_fill_geometry_sets_evenodd_path_fill_rule() {
     };
     pairs.push((
         "fillGeometry".into(),
-        FigValue::Array(vec![obj(vec![
-            ("commandsBlob", FigValue::Uint(0)),
-            ("windingRule", FigValue::Str("ODD".into())),
-        ])]),
+        FigValue::Array(
+            vec![obj(vec![
+                ("commandsBlob", FigValue::Uint(0)),
+                ("windingRule", FigValue::Str("ODD".into())),
+            ])]
+            .into(),
+        ),
     ));
     let mut blob = vec![0x01];
     blob.extend_from_slice(&0.0f32.to_le_bytes());
@@ -407,17 +410,20 @@ fn icon_fill_style_emits_fill_no_stroke() {
         if let FigValue::Object(pairs) = &mut t.figma {
             pairs.push((
                 "fillPaints".into(),
-                FigValue::Array(vec![obj(vec![
-                    ("type", FigValue::Str("SOLID".into())),
-                    (
-                        "color",
-                        obj(vec![
-                            ("r", FigValue::Float(0.0)),
-                            ("g", FigValue::Float(0.0)),
-                            ("b", FigValue::Float(0.0)),
-                        ]),
-                    ),
-                ])]),
+                FigValue::Array(
+                    vec![obj(vec![
+                        ("type", FigValue::Str("SOLID".into())),
+                        (
+                            "color",
+                            obj(vec![
+                                ("r", FigValue::Float(0.0)),
+                                ("g", FigValue::Float(0.0)),
+                                ("b", FigValue::Float(0.0)),
+                            ]),
+                        ),
+                    ])]
+                    .into(),
+                ),
             ));
         }
         t

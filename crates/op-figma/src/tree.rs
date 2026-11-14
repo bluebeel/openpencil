@@ -273,14 +273,14 @@ mod tests {
     fn node(local: u32, ty: &str, parent: Option<u32>, position: &str) -> FigValue {
         let mut pairs = vec![
             ("guid", guid(0, local)),
-            ("type", FigValue::Str(ty.to_string())),
+            ("type", FigValue::Str(ty.to_string().into())),
         ];
         if let Some(p) = parent {
             pairs.push((
                 "parentIndex",
                 obj(vec![
                     ("guid", guid(0, p)),
-                    ("position", FigValue::Str(position.to_string())),
+                    ("position", FigValue::Str(position.to_string().into())),
                 ]),
             ));
         }

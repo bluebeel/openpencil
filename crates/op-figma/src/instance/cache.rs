@@ -120,6 +120,9 @@ fn fig_value_equal(left: &FigValue, right: &FigValue) -> bool {
     {
         return lk == rk && lv.iter().zip(rv).all(|(a, b)| a.to_bits() == b.to_bits());
     }
+    if let (Some(left), Some(right)) = (left.as_str(), right.as_str()) {
+        return left == right;
+    }
     match (left, right) {
         (FigValue::Null, FigValue::Null) => true,
         (FigValue::Bool(a), FigValue::Bool(b)) => a == b,
@@ -145,7 +148,7 @@ fn fig_value_equal(left: &FigValue, right: &FigValue) -> bool {
 
 fn hash_fig_values<H: Hasher>(values: &[FigValue], state: &mut H) {
     values.len().hash(state);
-    for value in values {
+    for value in values.iter() {
         hash_fig_value(value, state);
     }
 }
@@ -153,7 +156,7 @@ fn hash_fig_values<H: Hasher>(values: &[FigValue], state: &mut H) {
 fn hash_fig_value<H: Hasher>(value: &FigValue, state: &mut H) {
     if let Some(values) = value.affine_parts() {
         "Affine".hash(state);
-        for value in values {
+        for value in values.iter() {
             value.to_bits().hash(state);
         }
         return;
@@ -165,14 +168,20 @@ fn hash_fig_value<H: Hasher>(value: &FigValue, state: &mut H) {
     }
     if let Some((kind, values)) = value.small_float_parts() {
         kind.hash(state);
-        for value in values {
+        for value in values.iter() {
             value.to_bits().hash(state);
         }
+        return;
+    }
+    if let Some(text) = value.as_str() {
+        "string".hash(state);
+        text.hash(state);
         return;
     }
     std::mem::discriminant(value).hash(state);
     match value {
         FigValue::Vec2(_) | FigValue::Color(_) => unreachable!("normalized before hashing"),
+        FigValue::Symbol(_) => unreachable!(),
         FigValue::Null => {}
         FigValue::Bool(value) => value.hash(state),
         FigValue::Int(value) => value.hash(state),
@@ -181,7 +190,7 @@ fn hash_fig_value<H: Hasher>(value: &FigValue, state: &mut H) {
         FigValue::Uint64(value) => value.hash(state),
         FigValue::Guid(session, local) => (session, local).hash(state),
         FigValue::Affine(values) => {
-            for value in values {
+            for value in values.iter() {
                 value.to_bits().hash(state);
             }
         }
@@ -210,9 +219,13 @@ fn fig_value_bytes(value: &FigValue) -> usize {
 fn fig_value_owned_bytes(value: &FigValue) -> usize {
     match value {
         FigValue::Vec2(value) => value.retained_bytes(),
-        FigValue::Color(value) => value.retained_bytes(),
-        FigValue::Str(value) => value.capacity(),
-        FigValue::Bytes(value) => value.capacity(),
+        FigValue::Color(value) => {
+            crate::kiwi::storage::boxed_color_bytes() + value.retained_bytes()
+        }
+        FigValue::Affine(_) => crate::kiwi::storage::boxed_affine_bytes(),
+        FigValue::Symbol(value) => value.retained_bytes(),
+        FigValue::Str(value) => crate::kiwi::storage::text_capacity(value),
+        FigValue::Bytes(value) => crate::kiwi::storage::bytes_capacity(value),
         FigValue::TextEvidence(value) => value.retained_bytes(),
         FigValue::TextLayout(value) => value.retained_bytes(),
         FigValue::Array(values) => {
@@ -398,23 +411,41 @@ mod tests {
     use super::*;
 
     #[test]
-    fn ledger_counts_spare_capacities_and_conservatively_charges_shared_keys() {
+    fn enum_symbol_and_owned_string_share_exact_cache_equality_and_hash() {
+        let owned = FigValue::Str("FUTURE_MODE".into());
+        let symbol = FigValue::Symbol("FUTURE_MODE".into());
+        assert!(fig_value_equal(&owned, &symbol));
+        let (mut left, mut right) = (
+            std::collections::hash_map::DefaultHasher::new(),
+            std::collections::hash_map::DefaultHasher::new(),
+        );
+        hash_fig_value(&owned, &mut left);
+        hash_fig_value(&symbol, &mut right);
+        assert_eq!(left.finish(), right.finish());
+        assert!(!fig_value_equal(&owned, &FigValue::Symbol("OTHER".into())));
+    }
+
+    #[test]
+    fn ledger_counts_exact_backing_spare_outer_capacity_and_shared_keys() {
         let mut text = String::with_capacity(256);
         text.push('x');
-        let text_capacity = text.capacity();
+        let text_capacity = text.len();
         let mut fields = Vec::with_capacity(128);
-        fields.push((crate::kiwi::FigKey::from("field"), FigValue::Str(text)));
+        fields.push((
+            crate::kiwi::FigKey::from("field"),
+            FigValue::Str(text.into()),
+        ));
         let expected = std::mem::size_of::<FigValue>()
-            + fields.capacity() * std::mem::size_of::<(crate::kiwi::FigKey, FigValue)>()
+            + fields.len() * std::mem::size_of::<(crate::kiwi::FigKey, FigValue)>()
             + fields[0].0.retained_bytes()
             + text_capacity;
-        let value = FigValue::Object(fields);
+        let value = FigValue::Object(fields.into());
         assert_eq!(fig_value_bytes(&value), expected);
         let mut array = Vec::with_capacity(64);
         array.push(FigValue::Bool(true));
-        let array_capacity = array.capacity();
+        let array_capacity = array.len();
         assert_eq!(
-            fig_value_bytes(&FigValue::Array(array)),
+            fig_value_bytes(&FigValue::Array(array.into())),
             (array_capacity + 1) * std::mem::size_of::<FigValue>()
         );
         let mut overrides = Vec::with_capacity(32);
@@ -467,7 +498,7 @@ mod tests {
                 vec!["x", "y"],
             ),
             (
-                FigValue::Color(FloatRecord::new(values)),
+                FigValue::Color(Box::new(FloatRecord::new(values))),
                 vec!["r", "g", "b", "a"],
             ),
         ];
@@ -506,7 +537,7 @@ mod tests {
         use std::collections::hash_map::DefaultHasher;
         let names = ["m00", "m01", "m02", "m10", "m11", "m12"];
         let values = [1.0, -0.0, f32::from_bits(0x7fc01234), 0.0, 1.0, 2.0];
-        let compact = FigValue::Affine(values);
+        let compact = FigValue::Affine(Box::new(values));
         let fields = names
             .into_iter()
             .zip(values)
@@ -524,10 +555,16 @@ mod tests {
         }
         let mut positive = values;
         positive[1] = 0.0;
-        assert!(!fig_value_equal(&compact, &FigValue::Affine(positive)));
+        assert!(!fig_value_equal(
+            &compact,
+            &FigValue::Affine(Box::new(positive))
+        ));
         let mut other_nan = values;
         other_nan[2] = f32::from_bits(0x7fc05678);
-        assert!(!fig_value_equal(&compact, &FigValue::Affine(other_nan)));
+        assert!(!fig_value_equal(
+            &compact,
+            &FigValue::Affine(Box::new(other_nan))
+        ));
     }
 
     #[test]
@@ -578,14 +615,14 @@ mod tests {
             "guidPath",
             obj(vec![(
                 "guids",
-                FigValue::Array(vec![guid(session_id, local_id)]),
+                FigValue::Array(vec![guid(session_id, local_id)].into()),
             )]),
         )])
     }
 
     fn override_value(session_id: u32, local_id: u32, name: &str) -> FigValue {
         let mut value = path(session_id, local_id);
-        value.set("name", FigValue::Str(name.to_string()));
+        value.set("name", FigValue::Str(name.to_string().into()));
         value
     }
 

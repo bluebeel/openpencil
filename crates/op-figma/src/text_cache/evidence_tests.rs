@@ -179,6 +179,6 @@ fn glyph_count_does_not_increase_retained_summary_or_figvalue_size() {
     assert!(std::mem::size_of::<TextEvidence>() <= 256);
     assert_eq!(
         std::mem::size_of::<FigValue>(),
-        std::mem::size_of::<Vec<FigValue>>() + std::mem::size_of::<usize>()
+        std::mem::size_of::<Box<[FigValue]>>() + std::mem::size_of::<usize>()
     );
 }

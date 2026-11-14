@@ -15,7 +15,7 @@ impl Decoder<'_, '_> {
         };
         let kind = self.schema.definitions[definition].kind;
         if kind == DefKind::Enum {
-            return self.decode_enum(definition);
+            return self.decode_enum(definition, DecodeScope::Full);
         }
         let mut evidence = TextEvidence::default();
         let mut next_struct_field = 0;
@@ -47,13 +47,16 @@ impl Decoder<'_, '_> {
         if nested {
             let mut fields = Vec::with_capacity(2);
             if let Some(characters) = &evidence.characters {
-                fields.push(("characters".into(), FigValue::Str(characters.clone())));
+                fields.push((
+                    "characters".into(),
+                    FigValue::Str(characters.clone().into()),
+                ));
             }
             fields.push((
                 NESTED_EVIDENCE.into(),
                 FigValue::TextEvidence(Box::new(evidence)),
             ));
-            Ok(FigValue::Object(fields))
+            Ok(FigValue::Object(fields.into()))
         } else {
             Ok(FigValue::TextEvidence(Box::new(evidence)))
         }

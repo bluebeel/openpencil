@@ -20,10 +20,13 @@ fn visibility_layer(id: u32, visible: bool) -> FigValue {
         ("visible", FigValue::Bool(visible)),
         (
             "componentPropRefs",
-            FigValue::Array(vec![obj(vec![
-                ("defID", guid(90)),
-                ("componentPropNodeField", FigValue::Str("VISIBLE".into())),
-            ])]),
+            FigValue::Array(
+                vec![obj(vec![
+                    ("defID", guid(90)),
+                    ("componentPropNodeField", FigValue::Str("VISIBLE".into())),
+                ])]
+                .into(),
+            ),
         ),
     ])
 }
@@ -44,12 +47,15 @@ fn instance(assignments: Vec<FigValue>, overrides: Vec<FigValue>) -> FigValue {
     obj(vec![
         ("guid", guid(100)),
         ("type", FigValue::Str("INSTANCE".into())),
-        ("componentPropAssignments", FigValue::Array(assignments)),
+        (
+            "componentPropAssignments",
+            FigValue::Array(assignments.into()),
+        ),
         (
             "symbolData",
             obj(vec![
                 ("symbolID", guid(1)),
-                ("symbolOverrides", FigValue::Array(overrides)),
+                ("symbolOverrides", FigValue::Array(overrides.into())),
             ]),
         ),
     ])
@@ -75,10 +81,7 @@ fn no_effective_assignments_preserve_missing_and_opaque_legacy_override_data() {
         ("visible", FigValue::Bool(false)),
         (
             "opaqueLegacyData",
-            FigValue::Array(vec![obj(vec![(
-                "unknownField",
-                FigValue::Str("keep".into()),
-            )])]),
+            FigValue::Array(vec![obj(vec![("unknownField", FigValue::Str("keep".into()))])].into()),
         ),
     ]);
     let mut nodes = vec![
@@ -138,7 +141,7 @@ fn instance_assignment_overrides_inherited_assignment_and_master_visibility() {
         let mut inst = instance(vec![assignment(visible, false)], vec![]);
         inst.get_mut("symbolData").unwrap().set(
             "componentPropAssignments",
-            FigValue::Array(vec![assignment(!visible, true)]),
+            FigValue::Array(vec![assignment(!visible, true)].into()),
         );
         // Unassigned masters retain their authored visibility.
         let original = layer.clone();
@@ -163,7 +166,7 @@ fn nested_assignment_routes_keep_the_instance_prefix_and_explicit_leaf_override(
         ("guidPath", path_value(vec![guid(7)])),
         (
             "componentPropAssignments",
-            FigValue::Array(vec![assignment(false, false)]),
+            FigValue::Array(vec![assignment(false, false)].into()),
         ),
     ]);
     let leaf = obj(vec![
@@ -197,7 +200,7 @@ fn self_referenced_boolean_false_is_not_lost_to_an_authored_true() {
     let mut layer = visibility_layer(2, true);
     layer.set(
         "componentPropAssignments",
-        FigValue::Array(vec![assignment(false, false)]),
+        FigValue::Array(vec![assignment(false, false)].into()),
     );
     let mut nodes = vec![layer];
     resolve_component_property_swaps(&mut nodes);

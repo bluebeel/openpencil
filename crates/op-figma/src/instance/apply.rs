@@ -74,8 +74,8 @@ pub(super) fn strip_first_guid(entry: &FigValue) -> Option<FigValue> {
     }
     let mut copy = entry.clone();
     let rest: Vec<FigValue> = guids[1..].to_vec();
-    let mut path = FigValue::Object(Vec::new());
-    path.set("guids", FigValue::Array(rest));
+    let mut path = FigValue::Object(Vec::new().into());
+    path.set("guids", FigValue::Array(rest.into()));
     copy.set("guidPath", path);
     Some(copy)
 }
@@ -336,8 +336,8 @@ pub(super) fn apply_to_node(
             let mut symbol_data = figma
                 .get("symbolData")
                 .cloned()
-                .unwrap_or(FigValue::Object(Vec::new()));
-            symbol_data.set("symbolOverrides", FigValue::Array(merged));
+                .unwrap_or(FigValue::Object(Vec::new().into()));
+            symbol_data.set("symbolOverrides", FigValue::Array(merged.into()));
             figma.set("symbolData", symbol_data);
         }
         if let Some(nested) = nested_d {
@@ -346,7 +346,7 @@ pub(super) fn apply_to_node(
                 .map(|a| a.to_vec())
                 .unwrap_or_default();
             let merged = merge_entry_lists(existing, nested, true);
-            figma.set("derivedSymbolData", FigValue::Array(merged));
+            figma.set("derivedSymbolData", FigValue::Array(merged.into()));
         }
     }
 

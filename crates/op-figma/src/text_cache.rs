@@ -97,33 +97,35 @@ mod tests {
             ("characters", FigValue::Str("Updated".into())),
             (
                 "glyphs",
-                FigValue::Array(vec![object(vec![("fontSize", FigValue::Float(16.0))])]),
+                FigValue::Array(vec![object(vec![("fontSize", FigValue::Float(16.0))])].into()),
             ),
             (
                 "fontMetaData",
-                FigValue::Array(vec![object(vec![(
-                    "family",
-                    FigValue::Str("Inter".into()),
-                )])]),
+                FigValue::Array(
+                    vec![object(vec![("family", FigValue::Str("Inter".into()))])].into(),
+                ),
             ),
         ]);
         let marker = object(vec![(
             "glyphs",
-            FigValue::Array(vec![object(vec![("fontSize", FigValue::Float(12.0))])]),
+            FigValue::Array(vec![object(vec![("fontSize", FigValue::Float(12.0))])].into()),
         )]);
         let mut changes = vec![object(vec![
             ("derivedTextData", marker.clone()),
             ("legacyDerivedTextData", marker.clone()),
             (
                 "derivedSymbolData",
-                FigValue::Array(vec![
-                    object(vec![
-                        ("size", object(vec![("x", FigValue::Float(10.0))])),
-                        ("derivedTextData", with_characters),
-                        ("legacyDerivedTextData", marker.clone()),
-                    ]),
-                    object(vec![("derivedTextData", marker)]),
-                ]),
+                FigValue::Array(
+                    vec![
+                        object(vec![
+                            ("size", object(vec![("x", FigValue::Float(10.0))])),
+                            ("derivedTextData", with_characters),
+                            ("legacyDerivedTextData", marker.clone()),
+                        ]),
+                        object(vec![("derivedTextData", marker)]),
+                    ]
+                    .into(),
+                ),
             ),
         ])];
 
@@ -183,10 +185,10 @@ mod tests {
                         ("characters", FigValue::Str("List".into())),
                         (
                             "lines",
-                            FigValue::Array(vec![object(vec![(
-                                "lineType",
-                                FigValue::Str(line_type.into()),
-                            )])]),
+                            FigValue::Array(
+                                vec![object(vec![("lineType", FigValue::Str(line_type.into()))])]
+                                    .into(),
+                            ),
                         ),
                     ]),
                 ),

@@ -11,8 +11,8 @@ fn thin_key_layout_preserves_value_size_and_thread_sharing() {
     assert_eq!(std::mem::size_of::<FigKey>(), std::mem::size_of::<usize>());
     #[cfg(target_pointer_width = "64")]
     {
-        assert_eq!(std::mem::size_of::<FigValue>(), 32);
-        assert_eq!(std::mem::size_of::<(FigKey, FigValue)>(), 40);
+        assert_eq!(std::mem::size_of::<FigValue>(), 24);
+        assert_eq!(std::mem::size_of::<(FigKey, FigValue)>(), 32);
     }
 }
 
@@ -63,7 +63,7 @@ fn clones_share_owned_key_storage_without_borrowing_the_input() {
 fn generated_object_fields_keep_lookup_mutation_and_clone_semantics() {
     let name = format!("field-{}", 123);
     let key = FigKey::from(name.as_str());
-    let mut value = FigValue::Object(vec![(key, FigValue::Float(1.0))]);
+    let mut value = FigValue::Object(vec![(key, FigValue::Float(1.0))].into());
     drop(name);
     assert_eq!(value.get_f64("field-123"), Some(1.0));
     value.set("field-123", FigValue::Float(2.0));

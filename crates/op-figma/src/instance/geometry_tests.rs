@@ -6,7 +6,7 @@ use super::*;
 #[test]
 fn geometry_derived_endpoint_stays_round_while_unresolved_siblings_scale() {
     for geometry_key in ["fillGeometry", "strokeGeometry"] {
-        let geometry = FigValue::Array(vec![obj(vec![("commandsBlob", FigValue::Uint(1))])]);
+        let geometry = FigValue::Array(vec![obj(vec![("commandsBlob", FigValue::Uint(1))])].into());
         let mut children = Vec::new();
         for id in [11, 12, 13] {
             let mut child = leaf("endpoint", 1, id);
@@ -27,7 +27,7 @@ fn geometry_derived_endpoint_stays_round_while_unresolved_siblings_scale() {
             ov_with(vec![guid(1, 11)], vec![(geometry_key, geometry)]),
             ov_with(
                 vec![guid(1, 12)],
-                vec![(geometry_key, FigValue::Array(Vec::new()))],
+                vec![(geometry_key, FigValue::Array(Vec::new().into()))],
             ),
         ];
         let converted = apply_instance_overrides(

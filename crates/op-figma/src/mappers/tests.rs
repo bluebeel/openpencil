@@ -67,10 +67,13 @@ fn normal_and_unsupported_paint_blends_keep_source_over_default() {
 #[test]
 fn paint_blend_is_carried_by_solid_gradient_and_image_fills() {
     let stops = || {
-        FigValue::Array(vec![obj(vec![
-            ("position", FigValue::Float(0.0)),
-            ("color", color_obj(0.0, 0.0, 0.0)),
-        ])])
+        FigValue::Array(
+            vec![obj(vec![
+                ("position", FigValue::Float(0.0)),
+                ("color", color_obj(0.0, 0.0, 0.0)),
+            ])]
+            .into(),
+        )
     };
     let paints = [
         obj(vec![
@@ -87,7 +90,7 @@ fn paint_blend_is_carried_by_solid_gradient_and_image_fills() {
             ("type", FigValue::Str("IMAGE".into())),
             (
                 "image",
-                obj(vec![("hash", FigValue::Bytes(vec![0xab, 0xcd]))]),
+                obj(vec![("hash", FigValue::Bytes(vec![0xab, 0xcd].into()))]),
             ),
             ("blendMode", FigValue::Str("OVERLAY".into())),
         ]),
@@ -132,10 +135,13 @@ fn linear_gradient_angle_from_transform() {
         ("type", FigValue::Str("GRADIENT_LINEAR".into())),
         (
             "stops",
-            FigValue::Array(vec![obj(vec![
-                ("position", FigValue::Float(0.0)),
-                ("color", color_obj(0.0, 0.0, 0.0)),
-            ])]),
+            FigValue::Array(
+                vec![obj(vec![
+                    ("position", FigValue::Float(0.0)),
+                    ("color", color_obj(0.0, 0.0, 0.0)),
+                ])]
+                .into(),
+            ),
         ),
         ("transform", transform),
     ])];
@@ -151,7 +157,7 @@ fn image_fill_hash_url() {
         ("type", FigValue::Str("IMAGE".into())),
         (
             "image",
-            obj(vec![("hash", FigValue::Bytes(vec![0xab, 0xcd]))]),
+            obj(vec![("hash", FigValue::Bytes(vec![0xab, 0xcd].into()))]),
         ),
         ("imageScaleMode", FigValue::Str("FIT".into())),
     ])];
@@ -172,11 +178,11 @@ fn image_fill_preserves_thumbnail_hash_and_nearest_sampling() {
         ("type", FigValue::Str("IMAGE".into())),
         (
             "image",
-            obj(vec![("hash", FigValue::Bytes(vec![0xab, 0xcd]))]),
+            obj(vec![("hash", FigValue::Bytes(vec![0xab, 0xcd].into()))]),
         ),
         (
             "imageThumbnail",
-            obj(vec![("hash", FigValue::Bytes(vec![0x12, 0xef]))]),
+            obj(vec![("hash", FigValue::Bytes(vec![0x12, 0xef].into()))]),
         ),
     ]);
     let Some(PenFill::Image(image)) = map_single_fill(&paint) else {
@@ -194,7 +200,7 @@ fn image_fill_maps_crop_and_tile_scale_modes() {
             ("type", FigValue::Str("IMAGE".into())),
             (
                 "image",
-                obj(vec![("hash", FigValue::Bytes(vec![0xab, 0xcd]))]),
+                obj(vec![("hash", FigValue::Bytes(vec![0xab, 0xcd].into()))]),
             ),
             ("imageScaleMode", FigValue::Str(figma_mode.into())),
         ])];
@@ -211,7 +217,7 @@ fn image_fill_maps_transformed_stretch_to_crop_and_preserves_transform() {
         ("type", FigValue::Str("IMAGE".into())),
         (
             "image",
-            obj(vec![("hash", FigValue::Bytes(vec![0xab, 0xcd]))]),
+            obj(vec![("hash", FigValue::Bytes(vec![0xab, 0xcd].into()))]),
         ),
         ("imageScaleMode", FigValue::Str("STRETCH".into())),
         (
@@ -254,7 +260,7 @@ fn image_fill_keeps_untransformed_stretch_mode() {
             ("type", FigValue::Str("IMAGE".into())),
             (
                 "image",
-                obj(vec![("hash", FigValue::Bytes(vec![0xab, 0xcd]))]),
+                obj(vec![("hash", FigValue::Bytes(vec![0xab, 0xcd].into()))]),
             ),
             ("imageScaleMode", FigValue::Str("STRETCH".into())),
         ];
@@ -279,7 +285,7 @@ fn image_fill_maps_positive_tile_scale_only_for_tile_mode() {
             ("type", FigValue::Str("IMAGE".into())),
             (
                 "image",
-                obj(vec![("hash", FigValue::Bytes(vec![0xab, 0xcd]))]),
+                obj(vec![("hash", FigValue::Bytes(vec![0xab, 0xcd].into()))]),
             ),
             ("imageScaleMode", FigValue::Str(mode.into())),
         ];
@@ -308,7 +314,7 @@ fn image_fill_maps_current_filter_to_slider_units() {
         ("type", FigValue::Str("IMAGE".into())),
         (
             "image",
-            obj(vec![("hash", FigValue::Bytes(vec![0xab, 0xcd]))]),
+            obj(vec![("hash", FigValue::Bytes(vec![0xab, 0xcd].into()))]),
         ),
         (
             "paintFilter",
@@ -341,7 +347,7 @@ fn image_filter_falls_back_per_channel_to_legacy_adjustments() {
         ("type", FigValue::Str("IMAGE".into())),
         (
             "image",
-            obj(vec![("hash", FigValue::Bytes(vec![0xab, 0xcd]))]),
+            obj(vec![("hash", FigValue::Bytes(vec![0xab, 0xcd].into()))]),
         ),
         ("paintFilter", obj(vec![("exposure", FigValue::Float(0.2))])),
         (
@@ -369,10 +375,13 @@ fn stroke_uniform_thickness() {
     let node = obj(vec![
         (
             "strokePaints",
-            FigValue::Array(vec![obj(vec![
-                ("type", FigValue::Str("SOLID".into())),
-                ("color", color_obj(0.0, 0.0, 0.0)),
-            ])]),
+            FigValue::Array(
+                vec![obj(vec![
+                    ("type", FigValue::Str("SOLID".into())),
+                    ("color", color_obj(0.0, 0.0, 0.0)),
+                ])]
+                .into(),
+            ),
         ),
         ("strokeWeight", FigValue::Float(2.5)),
         ("strokeAlign", FigValue::Str("INSIDE".into())),
@@ -388,10 +397,13 @@ fn stroke_per_side_thickness() {
     let node = obj(vec![
         (
             "strokePaints",
-            FigValue::Array(vec![obj(vec![
-                ("type", FigValue::Str("SOLID".into())),
-                ("color", color_obj(0.0, 0.0, 0.0)),
-            ])]),
+            FigValue::Array(
+                vec![obj(vec![
+                    ("type", FigValue::Str("SOLID".into())),
+                    ("color", color_obj(0.0, 0.0, 0.0)),
+                ])]
+                .into(),
+            ),
         ),
         ("borderStrokeWeightsIndependent", FigValue::Bool(true)),
         ("borderTopWeight", FigValue::Float(1.0)),

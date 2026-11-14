@@ -20,10 +20,13 @@ fn owner(id: u32, parent: Option<u32>, field: &str) -> FigValue {
         ("guid", guid(id)),
         (
             "componentPropRefs",
-            FigValue::Array(vec![obj(vec![
-                ("defID", guid(777)),
-                ("componentPropNodeField", FigValue::Str(field.into())),
-            ])]),
+            FigValue::Array(
+                vec![obj(vec![
+                    ("defID", guid(777)),
+                    ("componentPropNodeField", FigValue::Str(field.into())),
+                ])]
+                .into(),
+            ),
         ),
     ]);
     if let Some(parent) = parent {
@@ -46,12 +49,12 @@ fn instance(target: u32, field: &str) -> FigValue {
             "symbolData",
             obj(vec![
                 ("symbolID", guid(target)),
-                ("symbolOverrides", FigValue::Array(vec![])),
+                ("symbolOverrides", FigValue::Array(vec![].into())),
             ]),
         ),
         (
             "componentPropAssignments",
-            FigValue::Array(vec![assignment(field)]),
+            FigValue::Array(vec![assignment(field)].into()),
         ),
     ])
 }
@@ -106,13 +109,16 @@ fn component_scope_nested_override_resolves_selected_inner_master() {
                     ("symbolID", guid(1)),
                     (
                         "symbolOverrides",
-                        FigValue::Array(vec![obj(vec![
-                            ("guidPath", path_value(vec![guid(200)])),
-                            (
-                                "componentPropAssignments",
-                                FigValue::Array(vec![assignment(field)]),
-                            ),
-                        ])]),
+                        FigValue::Array(
+                            vec![obj(vec![
+                                ("guidPath", path_value(vec![guid(200)])),
+                                (
+                                    "componentPropAssignments",
+                                    FigValue::Array(vec![assignment(field)].into()),
+                                ),
+                            ])]
+                            .into(),
+                        ),
                     ),
                 ]),
             ),

@@ -42,10 +42,13 @@ fn text_layer(id: u32) -> FigValue {
         ("textCase", FigValue::Str("UPPER".into())),
         (
             "componentPropRefs",
-            FigValue::Array(vec![object(vec![
-                ("defID", guid(90)),
-                ("componentPropNodeField", FigValue::Str("TEXT_DATA".into())),
-            ])]),
+            FigValue::Array(
+                vec![object(vec![
+                    ("defID", guid(90)),
+                    ("componentPropNodeField", FigValue::Str("TEXT_DATA".into())),
+                ])]
+                .into(),
+            ),
         ),
     ])
 }
@@ -53,12 +56,15 @@ fn instance(assignments: Vec<FigValue>, overrides: Vec<FigValue>) -> FigValue {
     object(vec![
         ("guid", guid(100)),
         ("type", FigValue::Str("INSTANCE".into())),
-        ("componentPropAssignments", FigValue::Array(assignments)),
+        (
+            "componentPropAssignments",
+            FigValue::Array(assignments.into()),
+        ),
         (
             "symbolData",
             object(vec![
                 ("symbolID", guid(1)),
-                ("symbolOverrides", FigValue::Array(overrides)),
+                ("symbolOverrides", FigValue::Array(overrides.into())),
             ]),
         ),
     ])
@@ -75,14 +81,17 @@ fn component_text_assignment_replaces_master_label_and_preserves_styled_runs() {
     let mut value = text("Preview");
     value.set(
         "characterStyleIDs",
-        FigValue::Array(vec![FigValue::Uint(3); 7]),
+        FigValue::Array(vec![FigValue::Uint(3); 7].into()),
     );
     value.set(
         "styleOverrideTable",
-        FigValue::Array(vec![object(vec![
-            ("styleID", FigValue::Uint(3)),
-            ("textDecoration", FigValue::Str("UNDERLINE".into())),
-        ])]),
+        FigValue::Array(
+            vec![object(vec![
+                ("styleID", FigValue::Uint(3)),
+                ("textDecoration", FigValue::Str("UNDERLINE".into())),
+            ])]
+            .into(),
+        ),
     );
     let layer = text_layer(2);
     let master = TreeNode {
@@ -148,13 +157,13 @@ fn nested_component_text_routes_keep_prefix_and_instance_assignment_priority() {
         ("guidPath", path_value(vec![guid(7)])),
         (
             "componentPropAssignments",
-            FigValue::Array(vec![assignment(text("Nested"), false)]),
+            FigValue::Array(vec![assignment(text("Nested"), false)].into()),
         ),
     ]);
     let mut inst = instance(vec![assignment(text("Local"), false)], vec![nested]);
     inst.get_mut("symbolData").unwrap().set(
         "componentPropAssignments",
-        FigValue::Array(vec![assignment(text("Inherited"), true)]),
+        FigValue::Array(vec![assignment(text("Inherited"), true)].into()),
     );
     let mut nodes = vec![text_layer(2), inst];
     resolve_component_property_swaps(&mut nodes);
@@ -209,7 +218,7 @@ fn text_assignments_target_only_the_known_master_variant_and_nested_instance() {
         ("guidPath", path_value(vec![guid(7)])),
         (
             "componentPropAssignments",
-            FigValue::Array(vec![assignment(text("Nested"), false)]),
+            FigValue::Array(vec![assignment(text("Nested"), false)].into()),
         ),
     ]);
     let mut nodes = vec![

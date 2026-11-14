@@ -54,26 +54,32 @@ fn collection() -> FigValue {
         ("type", FigValue::Str("VARIABLE_SET".into())),
         (
             "variableSetModes",
-            FigValue::Array(vec![
-                obj(vec![
-                    ("id", guid(31)),
-                    ("sortPosition", FigValue::Str("&".into())),
-                ]),
-                obj(vec![
-                    ("id", guid(30)),
-                    ("sortPosition", FigValue::Str("%".into())),
-                ]),
-            ]),
+            FigValue::Array(
+                vec![
+                    obj(vec![
+                        ("id", guid(31)),
+                        ("sortPosition", FigValue::Str("&".into())),
+                    ]),
+                    obj(vec![
+                        ("id", guid(30)),
+                        ("sortPosition", FigValue::Str("%".into())),
+                    ]),
+                ]
+                .into(),
+            ),
         ),
     ])
 }
 fn modes(mode: u32) -> FigValue {
     obj(vec![(
         "entries",
-        FigValue::Array(vec![obj(vec![
-            ("variableSetID", obj(vec![("guid", guid(20))])),
-            ("variableModeID", guid(mode)),
-        ])]),
+        FigValue::Array(
+            vec![obj(vec![
+                ("variableSetID", obj(vec![("guid", guid(20))])),
+                ("variableModeID", guid(mode)),
+            ])]
+            .into(),
+        ),
     )])
 }
 fn paint(id: u32) -> FigValue {
@@ -88,7 +94,7 @@ fn layer(id: u32, bound: u32, parent: Option<u32>, mode: Option<u32>) -> FigValu
     let mut node = obj(vec![
         ("guid", guid(id)),
         ("type", FigValue::Str("FRAME".into())),
-        ("fillPaints", FigValue::Array(vec![paint(bound)])),
+        ("fillPaints", FigValue::Array(vec![paint(bound)].into())),
     ]);
     if let Some(parent) = parent {
         node.set("parentIndex", obj(vec![("guid", guid(parent))]));
@@ -194,26 +200,35 @@ fn gradient_stops_and_effects_keep_inline_variable_alpha() {
     let mut node = layer(100, 10, None, None);
     node.set(
         "fillPaints",
-        FigValue::Array(vec![obj(vec![
-            ("type", FigValue::Str("GRADIENT_LINEAR".into())),
-            ("opacity", FigValue::Float(0.4)),
-            (
-                "stops",
-                FigValue::Array(vec![obj(vec![
-                    ("position", FigValue::Float(0.0)),
-                    ("color", color(0.0, 1.0, 0.0, 1.0)),
-                    ("colorVar", alias(10)),
-                ])]),
-            ),
-        ])]),
+        FigValue::Array(
+            vec![obj(vec![
+                ("type", FigValue::Str("GRADIENT_LINEAR".into())),
+                ("opacity", FigValue::Float(0.4)),
+                (
+                    "stops",
+                    FigValue::Array(
+                        vec![obj(vec![
+                            ("position", FigValue::Float(0.0)),
+                            ("color", color(0.0, 1.0, 0.0, 1.0)),
+                            ("colorVar", alias(10)),
+                        ])]
+                        .into(),
+                    ),
+                ),
+            ])]
+            .into(),
+        ),
     );
     node.set(
         "effects",
-        FigValue::Array(vec![obj(vec![
-            ("type", FigValue::Str("DROP_SHADOW".into())),
-            ("color", color(0.0, 1.0, 0.0, 1.0)),
-            ("colorVar", alias(10)),
-        ])]),
+        FigValue::Array(
+            vec![obj(vec![
+                ("type", FigValue::Str("DROP_SHADOW".into())),
+                ("color", color(0.0, 1.0, 0.0, 1.0)),
+                ("colorVar", alias(10)),
+            ])]
+            .into(),
+        ),
     );
     nodes.push(node);
     resolve_color_variables(&mut nodes);
@@ -237,7 +252,10 @@ fn unbound_and_unresolved_solid_paints_retain_the_original_encoding() {
         ("opacity", FigValue::Float(0.6)),
     ]);
     let mut node = layer(100, 999, None, None);
-    node.set("fillPaints", FigValue::Array(vec![unbound, paint(999)]));
+    node.set(
+        "fillPaints",
+        FigValue::Array(vec![unbound, paint(999)].into()),
+    );
     let original = node.clone();
     nodes.push(node);
     resolve_color_variables(&mut nodes);
@@ -283,13 +301,22 @@ fn nested_instance_override_and_gradient_stop_bindings_resolve_in_node_mode() {
         "symbolData",
         obj(vec![(
             "symbolOverrides",
-            FigValue::Array(vec![obj(vec![
-                ("strokePaints", FigValue::Array(vec![paint(10)])),
-                (
-                    "fillPaints",
-                    FigValue::Array(vec![obj(vec![("stops", FigValue::Array(vec![paint(10)]))])]),
-                ),
-            ])]),
+            FigValue::Array(
+                vec![obj(vec![
+                    ("strokePaints", FigValue::Array(vec![paint(10)].into())),
+                    (
+                        "fillPaints",
+                        FigValue::Array(
+                            vec![obj(vec![(
+                                "stops",
+                                FigValue::Array(vec![paint(10)].into()),
+                            )])]
+                            .into(),
+                        ),
+                    ),
+                ])]
+                .into(),
+            ),
         )]),
     );
     nodes.push(node);
@@ -321,10 +348,13 @@ fn shared_master_cached_paints_survive_different_instance_placement_modes() {
             ("symbolID", guid(200)),
             (
                 "symbolOverrides",
-                FigValue::Array(vec![obj(vec![(
-                    "fillPaints",
-                    FigValue::Array(vec![paint(10)]),
-                )])]),
+                FigValue::Array(
+                    vec![obj(vec![(
+                        "fillPaints",
+                        FigValue::Array(vec![paint(10)].into()),
+                    )])]
+                    .into(),
+                ),
             ),
         ]),
     );

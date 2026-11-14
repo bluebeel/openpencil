@@ -95,7 +95,7 @@ impl PathIndex {
 
     pub(super) fn apply(
         &mut self,
-        overrides: &mut Vec<FigValue>,
+        overrides: &mut crate::kiwi::storage::Values<FigValue>,
         key: Option<PathKey>,
         path: Vec<FigValue>,
         field: &str,
@@ -108,9 +108,12 @@ impl PathIndex {
             }
             state.first = Some(overrides.len());
         }
-        overrides.push(FigValue::Object(vec![
-            ("guidPath".into(), path_value(path)),
-            (field.into(), target),
-        ]));
+        overrides.push(FigValue::Object(
+            vec![
+                ("guidPath".into(), path_value(path)),
+                (field.into(), target),
+            ]
+            .into(),
+        ));
     }
 }

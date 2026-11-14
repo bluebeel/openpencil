@@ -89,11 +89,11 @@ fn vector_path_from_fill_geometry() {
     let node = obj(vec![
         (
             "fillPaints",
-            FigValue::Array(vec![obj(vec![("type", FigValue::Str("SOLID".into()))])]),
+            FigValue::Array(vec![obj(vec![("type", FigValue::Str("SOLID".into()))])].into()),
         ),
         (
             "fillGeometry",
-            FigValue::Array(vec![obj(vec![("commandsBlob", FigValue::Uint(0))])]),
+            FigValue::Array(vec![obj(vec![("commandsBlob", FigValue::Uint(0))])].into()),
         ),
     ]);
     let blobs = [BlobOrString::Bytes(blob)];
@@ -133,11 +133,11 @@ fn fill_geometry_winding_rule_is_exposed_on_decode_result() {
         let node = obj(vec![
             (
                 "fillPaints",
-                FigValue::Array(vec![obj(vec![("type", FigValue::Str("SOLID".into()))])]),
+                FigValue::Array(vec![obj(vec![("type", FigValue::Str("SOLID".into()))])].into()),
             ),
             (
                 "fillGeometry",
-                FigValue::Array(vec![geometry(winding_rule)]),
+                FigValue::Array(vec![geometry(winding_rule)].into()),
             ),
         ]);
         let decoded = decode_figma_vector_path(&node, &[BlobOrString::Bytes(blob.clone())])
@@ -156,17 +156,20 @@ fn stroke_geometry_winding_rule_is_exposed_when_stroke_outline_is_selected() {
     push_f32(&mut blob, 8.0);
     push_f32(&mut blob, 0.0);
     let node = obj(vec![
-        ("fillPaints", FigValue::Array(Vec::new())),
+        ("fillPaints", FigValue::Array(Vec::new().into())),
         (
             "strokePaints",
-            FigValue::Array(vec![obj(vec![("type", FigValue::Str("SOLID".into()))])]),
+            FigValue::Array(vec![obj(vec![("type", FigValue::Str("SOLID".into()))])].into()),
         ),
         (
             "strokeGeometry",
-            FigValue::Array(vec![obj(vec![
-                ("commandsBlob", FigValue::Uint(0)),
-                ("windingRule", FigValue::Str("ODD".into())),
-            ])]),
+            FigValue::Array(
+                vec![obj(vec![
+                    ("commandsBlob", FigValue::Uint(0)),
+                    ("windingRule", FigValue::Str("ODD".into())),
+                ])]
+                .into(),
+            ),
         ),
     ]);
 

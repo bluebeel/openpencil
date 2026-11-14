@@ -62,11 +62,11 @@ fn cached_text(family: &str, tracking: f32) -> FigValue {
         ("glyphs", FigValue::Array(glyphs)),
         (
             "fontMetaData",
-            FigValue::Array(vec![object(vec![("key", font(family))])]),
+            FigValue::Array(vec![object(vec![("key", font(family))])].into()),
         ),
         (
             "baselines",
-            FigValue::Array(vec![object(vec![("lineHeight", number(24.0))])]),
+            FigValue::Array(vec![object(vec![("lineHeight", number(24.0))])].into()),
         ),
     ])
 }
@@ -141,7 +141,7 @@ fn linked_text_style_preserves_explicit_instance_fields() {
         "symbolData",
         object(vec![(
             "symbolOverrides",
-            FigValue::Array(vec![node("Linked Font", -1.0)]),
+            FigValue::Array(vec![node("Linked Font", -1.0)].into()),
         )]),
     )]);
     let mut changes = vec![linked_style(), instance];
@@ -272,11 +272,14 @@ fn linked_line_height_uses_auto_height_geometry_when_cache_stores_natural_metric
 #[test]
 fn linked_opentype_salt_is_inherited_without_replacing_explicit_feature_arrays() {
     let mut style = linked_style();
-    style.set("toggledOnOTFeatures", FigValue::Array(vec![string("SALT")]));
+    style.set(
+        "toggledOnOTFeatures",
+        FigValue::Array(vec![string("SALT")].into()),
+    );
     for explicit in [false, true] {
         let mut local = node("Local Font", 0.0);
         if explicit {
-            local.set("toggledOnOTFeatures", FigValue::Array(vec![]));
+            local.set("toggledOnOTFeatures", FigValue::Array(vec![].into()));
         }
         let mut changes = vec![style.clone(), local];
         resolve_style_references(&mut changes);

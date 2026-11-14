@@ -345,18 +345,21 @@ mod tests {
     }
 
     fn solid(r: f32, g: f32, b: f32) -> FigValue {
-        FigValue::Array(vec![obj(vec![
-            ("type", FigValue::Str("SOLID".into())),
-            (
-                "color",
-                obj(vec![
-                    ("r", FigValue::Float(r)),
-                    ("g", FigValue::Float(g)),
-                    ("b", FigValue::Float(b)),
-                    ("a", FigValue::Float(1.0)),
-                ]),
-            ),
-        ])])
+        FigValue::Array(
+            vec![obj(vec![
+                ("type", FigValue::Str("SOLID".into())),
+                (
+                    "color",
+                    obj(vec![
+                        ("r", FigValue::Float(r)),
+                        ("g", FigValue::Float(g)),
+                        ("b", FigValue::Float(b)),
+                        ("a", FigValue::Float(1.0)),
+                    ]),
+                ),
+            ])]
+            .into(),
+        )
     }
 
     fn guid(session_id: u32, local_id: u32) -> FigValue {
@@ -498,7 +501,7 @@ mod tests {
                 "symbolData",
                 obj(vec![(
                     "symbolOverrides",
-                    FigValue::Array(vec![explicit_override]),
+                    FigValue::Array(vec![explicit_override].into()),
                 )]),
             ),
         ]);
@@ -539,7 +542,7 @@ mod tests {
                 "symbolData",
                 obj(vec![(
                     "symbolOverrides",
-                    FigValue::Array(vec![text_only_override]),
+                    FigValue::Array(vec![text_only_override].into()),
                 )]),
             ),
         ]);
@@ -584,7 +587,7 @@ mod tests {
                 "symbolData",
                 obj(vec![(
                     "symbolOverrides",
-                    FigValue::Array(vec![explicit_fill_override]),
+                    FigValue::Array(vec![explicit_fill_override].into()),
                 )]),
             ),
         ]);

@@ -16,13 +16,22 @@ fn old_layout_block() -> TreeNode {
             ("type", FigValue::Str("INSTANCE".into())),
             ("guid", guid(1, 10)),
             ("size", size(32.0, 32.0)),
-            ("fillPaints", FigValue::Array(vec![paint("old-fill")])),
-            ("strokePaints", FigValue::Array(vec![paint("old-stroke")])),
+            (
+                "fillPaints",
+                FigValue::Array(vec![paint("old-fill")].into()),
+            ),
+            (
+                "strokePaints",
+                FigValue::Array(vec![paint("old-stroke")].into()),
+            ),
             ("strokeWeight", FigValue::Float(1.0)),
             ("strokeJoin", FigValue::Str("MITER".into())),
-            ("dashPattern", FigValue::Array(vec![FigValue::Float(2.0)])),
+            (
+                "dashPattern",
+                FigValue::Array(vec![FigValue::Float(2.0)].into()),
+            ),
             ("cornerSmoothing", FigValue::Float(0.25)),
-            ("effects", FigValue::Array(vec![paint("old-effect")])),
+            ("effects", FigValue::Array(vec![paint("old-effect")].into())),
             ("opacity", FigValue::Float(0.5)),
             ("blendMode", FigValue::Str("MULTIPLY".into())),
             ("stackCounterAlignItems", FigValue::Str("CENTER".into())),
@@ -66,15 +75,21 @@ fn component_swap_clears_unoverridden_layout_block_style() {
 fn component_swap_inherits_target_base_and_container_style() {
     let swapped = apply_swap(vec![]);
     let target = obj(vec![
-        ("fillPaints", FigValue::Array(vec![paint("target-fill")])),
-        ("effects", FigValue::Array(vec![paint("target-effect")])),
+        (
+            "fillPaints",
+            FigValue::Array(vec![paint("target-fill")].into()),
+        ),
+        (
+            "effects",
+            FigValue::Array(vec![paint("target-effect")].into()),
+        ),
         ("opacity", FigValue::Float(0.75)),
         ("blendMode", FigValue::Str("SCREEN".into())),
         ("cornerSmoothing", FigValue::Float(0.5)),
         ("strokeJoin", FigValue::Str("ROUND".into())),
         (
             "dashPattern",
-            FigValue::Array(vec![FigValue::Float(3.0), FigValue::Float(1.0)]),
+            FigValue::Array(vec![FigValue::Float(3.0), FigValue::Float(1.0)].into()),
         ),
     ]);
 
@@ -117,7 +132,7 @@ fn redundant_same_symbol_override_keeps_legacy_resolved_style() {
 fn component_swap_preserves_fill_explicit_in_same_override() {
     let swapped = apply_swap(vec![(
         "fillPaints",
-        FigValue::Array(vec![paint("new-fill")]),
+        FigValue::Array(vec![paint("new-fill")].into()),
     )]);
 
     let label = swapped
@@ -138,16 +153,19 @@ fn support_row_outer_derived_geometry_overrides_nested_defaults() {
             ("guid", guid(1, 20)),
             (
                 "derivedSymbolData",
-                FigValue::Array(vec![
-                    derived_with(
-                        vec![guid(2, 30)],
-                        vec![
-                            ("size", size(648.004, 45.0)),
-                            ("authoredMarker", FigValue::Str("keep".into())),
-                        ],
-                    ),
-                    derived_with(vec![guid(2, 31)], vec![("size", size(600.004, 45.0))]),
-                ]),
+                FigValue::Array(
+                    vec![
+                        derived_with(
+                            vec![guid(2, 30)],
+                            vec![
+                                ("size", size(648.004, 45.0)),
+                                ("authoredMarker", FigValue::Str("keep".into())),
+                            ],
+                        ),
+                        derived_with(vec![guid(2, 31)], vec![("size", size(600.004, 45.0))]),
+                    ]
+                    .into(),
+                ),
             ),
         ]),
         children: vec![],

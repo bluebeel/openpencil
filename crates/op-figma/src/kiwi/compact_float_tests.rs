@@ -77,12 +77,12 @@ fn ordinary(kind: FloatKind, values: [f32; 4], reverse: bool) -> FigValue {
     if reverse {
         fields.reverse();
     }
-    FigValue::Object(fields)
+    FigValue::Object(fields.into())
 }
 
 #[test]
 fn packed_vectors_and_colors_preserve_full_decoding_lookup_and_schema_order() {
-    assert_eq!(std::mem::size_of::<FigValue>(), 32);
+    assert_eq!(std::mem::size_of::<FigValue>(), 24);
     for kind in [FloatKind::Vector, FloatKind::Color] {
         for reverse in [false, true] {
             let schema = schema(kind, reverse);
@@ -153,7 +153,7 @@ fn scalar_views_are_lazy_and_invalidated_by_inline_mutation() {
     // never allocates another scalar read view.
     assert_eq!(value.clone(), value);
     assert_eq!(record.retained_bytes(), 2 * std::mem::size_of::<FigValue>());
-    let numeric_only = FigValue::Color(FloatRecord::new([0.1, 0.2, 0.3, 0.4]));
+    let numeric_only = FigValue::Color(Box::new(FloatRecord::new([0.1, 0.2, 0.3, 0.4])));
     assert!(numeric_only.get_f64("a").is_some());
     let FigValue::Color(record) = numeric_only else {
         unreachable!()
@@ -255,7 +255,7 @@ fn packed_float_wire_depth_projection_and_special_values_match_generic_contracts
 fn packed_float_views_preserve_send_sync_and_concurrent_shared_reads() {
     fn assert_send_sync<T: Send + Sync>() {}
     assert_send_sync::<FigValue>();
-    let value = FigValue::Color(FloatRecord::new([0.25, 0.5, 0.75, 1.0]));
+    let value = FigValue::Color(Box::new(FloatRecord::new([0.25, 0.5, 0.75, 1.0])));
     let barrier = std::sync::Barrier::new(16);
     std::thread::scope(|scope| {
         for _ in 0..16 {

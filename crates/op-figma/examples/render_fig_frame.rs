@@ -14,7 +14,7 @@ use cli::Arguments;
 use error::{IoOperation, RenderFigError};
 use jian_ops_schema::node::PenNode;
 use op_editor_core::PenNodeExt;
-use op_figma::{prepare_fig_binary_with_observer, FigImportPhase, FigLayoutMode};
+use op_figma::{prepare_fig_binary_owned_with_observer, FigImportPhase, FigLayoutMode};
 use op_host_services::export::{
     export_node_raster_with_margin, export_node_raster_with_viewport,
     export_node_raster_with_viewport_and_sampling, node_bounds, RasterFormat, RasterSampling,
@@ -81,14 +81,13 @@ fn run() -> Result<serde_json::Value, RenderFigError> {
         import_phases
             .push(serde_json::json!({"phase":import_phase.as_str(),"elapsedMs":elapsed_ms}));
     };
-    let prepared = prepare_fig_binary_with_observer(
-        &bytes,
+    let prepared = prepare_fig_binary_owned_with_observer(
+        bytes,
         "Figma node export",
         FigLayoutMode::Preserve,
         &mut import_observer,
     )
     .map_err(RenderFigError::Prepare)?;
-    drop(bytes);
     let prepare_ms = started.elapsed().as_secs_f64() * 1000.0;
     stage("prepared", Some(prepare_ms));
     let pages: Vec<_> = prepared

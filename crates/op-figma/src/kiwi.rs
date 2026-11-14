@@ -19,6 +19,9 @@ mod compact_float;
 pub use compact_float::FloatRecord;
 #[path = "kiwi/compact_guid.rs"]
 mod compact_guid;
+pub(crate) mod storage;
+mod value;
+pub use value::FigValue;
 #[path = "kiwi/import_projection.rs"]
 mod import_projection;
 #[path = "kiwi/text_evidence.rs"]
@@ -313,149 +316,6 @@ pub fn decode_binary_schema(bytes: &[u8]) -> Result<Schema, KiwiError> {
 
 // ── FigValue ──────────────────────────────────────────────────────
 
-/// Dynamically-typed decoded value — the Rust equivalent of the
-/// untyped `any` tree the TS parser works with.
-#[derive(Debug, Clone)]
-pub enum FigValue {
-    /// Absent / unresolved (e.g. an unknown enum ordinal).
-    Null,
-    Bool(bool),
-    Int(i32),
-    Uint(u32),
-    Int64(i64),
-    Uint64(u64),
-    /// Import-only exact GUID struct; numeric access avoids a tiny heap object.
-    Guid(u32, u32),
-    /// Import-only exact 2×3 float transform, retaining all six authored values.
-    Affine([f32; 6]),
-    /// Import-only exact float structs, preserving borrowed scalar lookups.
-    Vec2(FloatRecord<2>),
-    Color(FloatRecord<4>),
-    Float(f32),
-    Str(String),
-    Bytes(Vec<u8>),
-    Array(Vec<FigValue>),
-    /// Insertion-ordered key/value pairs (Kiwi struct/message). Keys decoded
-    /// from the schema share their owned storage across object instances.
-    Object(Vec<(FigKey, FigValue)>),
-    /// Import-only, constant-space proof for linked text styles. Removed after
-    /// style resolution; generic decoding never produces this variant.
-    TextEvidence(Box<crate::text_cache::evidence::TextEvidence>),
-    /// Compact authored line geometry retained only for Preserve-mode lists.
-    TextLayout(Box<crate::text_cache::layout::SavedTextLayout>),
-}
-
-impl FigValue {
-    /// Field lookup on an object value; `None` for non-objects, absent
-    /// keys, or keys explicitly decoded to [`FigValue::Null`].
-    pub fn get(&self, key: &str) -> Option<&FigValue> {
-        match self {
-            FigValue::Vec2(_) | FigValue::Color(_) => self.small_float_get(key),
-            FigValue::Object(pairs) => pairs
-                .iter()
-                .find(|(k, _)| k.as_ref() == key)
-                .map(|(_, v)| v)
-                .filter(|v| !matches!(v, FigValue::Null)),
-            _ => None,
-        }
-    }
-
-    /// Mutable field lookup on an object value. Explicit `Null`
-    /// remains absent, matching [`get`](Self::get).
-    pub fn get_mut(&mut self, key: &str) -> Option<&mut FigValue> {
-        self.materialize_compact();
-        match self {
-            FigValue::Object(pairs) => pairs
-                .iter_mut()
-                .find(|(name, _)| name.as_ref() == key)
-                .map(|(_, value)| value)
-                .filter(|value| !matches!(value, FigValue::Null)),
-            _ => None,
-        }
-    }
-
-    /// Numeric coercion across every integer/float variant.
-    pub fn as_f64(&self) -> Option<f64> {
-        match self {
-            FigValue::Int(v) => Some(*v as f64),
-            FigValue::Uint(v) => Some(*v as f64),
-            FigValue::Int64(v) => Some(*v as f64),
-            FigValue::Uint64(v) => Some(*v as f64),
-            FigValue::Float(v) => Some(*v as f64),
-            FigValue::Bool(b) => Some(if *b { 1.0 } else { 0.0 }),
-            _ => None,
-        }
-    }
-
-    pub fn as_str(&self) -> Option<&str> {
-        match self {
-            FigValue::Str(s) => Some(s),
-            _ => None,
-        }
-    }
-
-    pub fn as_bool(&self) -> Option<bool> {
-        match self {
-            FigValue::Bool(b) => Some(*b),
-            _ => None,
-        }
-    }
-
-    pub fn as_array(&self) -> Option<&[FigValue]> {
-        match self {
-            FigValue::Array(v) => Some(v),
-            _ => None,
-        }
-    }
-
-    pub fn as_bytes(&self) -> Option<&[u8]> {
-        match self {
-            FigValue::Bytes(b) => Some(b),
-            _ => None,
-        }
-    }
-
-    pub fn is_object(&self) -> bool {
-        matches!(
-            self,
-            FigValue::Object(_)
-                | FigValue::Guid(_, _)
-                | FigValue::Affine(_)
-                | FigValue::Vec2(_)
-                | FigValue::Color(_)
-        )
-    }
-
-    /// Numeric field read (`obj.key` coerced to f64).
-    pub fn get_f64(&self, key: &str) -> Option<f64> {
-        self.compact_number(key)
-            .or_else(|| self.get(key).and_then(|v| v.as_f64()))
-    }
-
-    /// String field read.
-    pub fn get_str(&self, key: &str) -> Option<&str> {
-        self.get(key).and_then(|v| v.as_str())
-    }
-
-    /// Boolean field read.
-    pub fn get_bool(&self, key: &str) -> Option<bool> {
-        self.get(key).and_then(|v| v.as_bool())
-    }
-
-    /// Array field read.
-    pub fn get_array(&self, key: &str) -> Option<&[FigValue]> {
-        self.get(key).and_then(|v| v.as_array())
-    }
-
-    /// Mutable array field read.
-    pub fn get_array_mut(&mut self, key: &str) -> Option<&mut Vec<FigValue>> {
-        match self.get_mut(key)? {
-            FigValue::Array(values) => Some(values),
-            _ => None,
-        }
-    }
-}
-
 // ── Dynamic decoder ───────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -585,7 +445,7 @@ impl<'a, 'b> Decoder<'a, 'b> {
             && matches!(resolved, ResolvedType::Definition(index) if self.schema.definitions[index].kind != DefKind::Enum)
         {
             self.skip_field(resolved, false, depth.saturating_sub(1))?;
-            return Ok(FigValue::Object(Vec::new()));
+            return Ok(FigValue::Object(Vec::new().into()));
         }
         match resolved {
             ResolvedType::Native(NativeType::Bool) => Ok(FigValue::Bool(self.bb.read_byte()? != 0)),
@@ -597,7 +457,9 @@ impl<'a, 'b> Decoder<'a, 'b> {
             ResolvedType::Native(NativeType::Float) => {
                 Ok(FigValue::Float(self.bb.read_var_float()?))
             }
-            ResolvedType::Native(NativeType::String) => Ok(FigValue::Str(self.bb.read_string()?)),
+            ResolvedType::Native(NativeType::String) => {
+                Ok(FigValue::Str(self.bb.read_string()?.into()))
+            }
             ResolvedType::Native(NativeType::Int64) => {
                 Ok(FigValue::Int64(self.bb.read_var_int64()?))
             }
@@ -605,7 +467,7 @@ impl<'a, 'b> Decoder<'a, 'b> {
                 Ok(FigValue::Uint64(self.bb.read_var_uint64()?))
             }
             ResolvedType::Definition(def_index) => match self.schema.definitions[def_index].kind {
-                DefKind::Enum => self.decode_enum(def_index),
+                DefKind::Enum => self.decode_enum(def_index, scope),
                 DefKind::Struct => self.decode_struct(def_index, depth, scope),
                 DefKind::Message => self.decode_message_def(def_index, depth, scope),
             },
@@ -623,7 +485,7 @@ impl<'a, 'b> Decoder<'a, 'b> {
     ) -> Result<FigValue, KiwiError> {
         if is_array {
             if resolved == ResolvedType::Native(NativeType::Byte) {
-                return Ok(FigValue::Bytes(self.bb.read_byte_array()?));
+                return Ok(FigValue::Bytes(self.bb.read_byte_array()?.into()));
             }
             let n = self.bb.read_var_uint()?;
             // A real array cannot have more elements than there are
@@ -637,22 +499,26 @@ impl<'a, 'b> Decoder<'a, 'b> {
             for _ in 0..n {
                 items.push(self.decode_type(resolved, depth + 1, scope)?);
             }
-            Ok(FigValue::Array(items))
+            Ok(FigValue::Array(items.into()))
         } else {
             self.decode_type(resolved, depth + 1, scope)
         }
     }
 
     /// Enum: a single varuint resolved to its field name.
-    fn decode_enum(&mut self, def_index: usize) -> Result<FigValue, KiwiError> {
+    fn decode_enum(&mut self, def_index: usize, scope: DecodeScope) -> Result<FigValue, KiwiError> {
         let v = self.bb.read_var_uint()?;
         Ok(self.field_by_value[def_index]
             .get(&v)
             .map(|field_index| {
+                if !matches!(scope, DecodeScope::Full) {
+                    return FigValue::Symbol(self.object_keys[def_index][*field_index].clone());
+                }
                 FigValue::Str(
                     self.schema.definitions[def_index].fields[*field_index]
                         .name
-                        .clone(),
+                        .clone()
+                        .into(),
                 )
             })
             .unwrap_or(FigValue::Null))
@@ -688,7 +554,7 @@ impl<'a, 'b> Decoder<'a, 'b> {
                 self.skip_field(resolved, is_array, depth)?;
             }
         }
-        Ok(FigValue::Object(pairs))
+        Ok(FigValue::Object(pairs.into()))
     }
 
     /// Message: id-prefixed fields, terminated by id `0`.
@@ -708,7 +574,7 @@ impl<'a, 'b> Decoder<'a, 'b> {
         loop {
             let field_id = self.bb.read_var_uint()?;
             if field_id == 0 {
-                return Ok(FigValue::Object(pairs));
+                return Ok(FigValue::Object(pairs.into()));
             }
             let field_index = self.field_by_value[def_index]
                 .get(&field_id)

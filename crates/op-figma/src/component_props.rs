@@ -128,7 +128,7 @@ fn guid_path(value: &FigValue) -> Option<&[FigValue]> {
 }
 
 fn path_value(guids: Vec<FigValue>) -> FigValue {
-    FigValue::Object(vec![("guids".into(), FigValue::Array(guids))])
+    FigValue::Object(vec![("guids".into(), FigValue::Array(guids.into()))].into())
 }
 
 #[cfg(test)]
@@ -269,7 +269,7 @@ fn normalize_node(
         return;
     };
     if symbol_data.get_array("symbolOverrides").is_none() {
-        symbol_data.set("symbolOverrides", FigValue::Array(Vec::new()));
+        symbol_data.set("symbolOverrides", FigValue::Array(Vec::new().into()));
     }
     let Some(FigValue::Array(overrides)) = symbol_data.get_mut("symbolOverrides") else {
         return;
@@ -327,13 +327,16 @@ mod tests {
             ("guid", guid(owner.0, owner.1)),
             (
                 "componentPropRefs",
-                FigValue::Array(vec![obj(vec![
-                    ("defID", guid(def.0, def.1)),
-                    (
-                        "componentPropNodeField",
-                        FigValue::Str("OVERRIDDEN_SYMBOL_ID".into()),
-                    ),
-                ])]),
+                FigValue::Array(
+                    vec![obj(vec![
+                        ("defID", guid(def.0, def.1)),
+                        (
+                            "componentPropNodeField",
+                            FigValue::Str("OVERRIDDEN_SYMBOL_ID".into()),
+                        ),
+                    ])]
+                    .into(),
+                ),
             ),
         ])
     }
@@ -348,16 +351,22 @@ mod tests {
                     "symbolData",
                     obj(vec![(
                         "symbolOverrides",
-                        FigValue::Array(vec![obj(vec![
-                            ("guidPath", path_value(vec![guid(7, 70)])),
-                            (
-                                "componentPropAssignments",
-                                FigValue::Array(vec![obj(vec![
-                                    ("defID", guid(90, 1)),
-                                    ("value", obj(vec![("guidValue", guid(44, 440))])),
-                                ])]),
-                            ),
-                        ])]),
+                        FigValue::Array(
+                            vec![obj(vec![
+                                ("guidPath", path_value(vec![guid(7, 70)])),
+                                (
+                                    "componentPropAssignments",
+                                    FigValue::Array(
+                                        vec![obj(vec![
+                                            ("defID", guid(90, 1)),
+                                            ("value", obj(vec![("guidValue", guid(44, 440))])),
+                                        ])]
+                                        .into(),
+                                    ),
+                                ),
+                            ])]
+                            .into(),
+                        ),
                     )]),
                 ),
             ]),
@@ -388,16 +397,19 @@ mod tests {
                 ("overriddenSymbolID", guid(1, 10)),
                 (
                     "componentPropAssignments",
-                    FigValue::Array(vec![obj(vec![
-                        ("defID", guid(90, 1)),
-                        (
-                            "varValue",
-                            obj(vec![(
-                                "value",
-                                obj(vec![("symbolIdValue", obj(vec![("guid", guid(2, 20))]))]),
-                            )]),
-                        ),
-                    ])]),
+                    FigValue::Array(
+                        vec![obj(vec![
+                            ("defID", guid(90, 1)),
+                            (
+                                "varValue",
+                                obj(vec![(
+                                    "value",
+                                    obj(vec![("symbolIdValue", obj(vec![("guid", guid(2, 20))]))]),
+                                )]),
+                            ),
+                        ])]
+                        .into(),
+                    ),
                 ),
             ]),
         ];

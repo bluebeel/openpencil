@@ -495,7 +495,7 @@ fn unused_consumption_maps_keep_presence_without_retaining_their_graph() {
     let node = first_node(&projected);
     assert_eq!(
         node.get("parameterConsumptionMap"),
-        Some(&FigValue::Object(Vec::new()))
+        Some(&FigValue::Object(Vec::new().into()))
     );
     assert!(
         node.get("variableConsumptionMap").is_none(),
@@ -513,7 +513,7 @@ fn unused_consumption_maps_keep_presence_without_retaining_their_graph() {
         .unwrap()[0];
     assert_eq!(
         nested.get("variableConsumptionMap"),
-        Some(&FigValue::Object(Vec::new()))
+        Some(&FigValue::Object(Vec::new().into()))
     );
     assert!(nested.get("parameterConsumptionMap").is_none());
     let FigValue::Object(fields) = node else {

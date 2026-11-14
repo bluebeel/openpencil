@@ -121,26 +121,38 @@ fn compact_guid_mutation_materializes_without_losing_either_coordinate() {
 #[test]
 fn compact_guid_equality_is_transitive_across_generic_and_compact_values() {
     let compact = FigValue::Guid(1, 2);
-    let ordinary = FigValue::Object(vec![
-        ("sessionID".into(), FigValue::Uint(1)),
-        ("localID".into(), FigValue::Uint(2)),
-    ]);
-    let reversed = FigValue::Object(vec![
-        ("localID".into(), FigValue::Uint(2)),
-        ("sessionID".into(), FigValue::Uint(1)),
-    ]);
+    let ordinary = FigValue::Object(
+        vec![
+            ("sessionID".into(), FigValue::Uint(1)),
+            ("localID".into(), FigValue::Uint(2)),
+        ]
+        .into(),
+    );
+    let reversed = FigValue::Object(
+        vec![
+            ("localID".into(), FigValue::Uint(2)),
+            ("sessionID".into(), FigValue::Uint(1)),
+        ]
+        .into(),
+    );
     assert_eq!(compact, ordinary);
     assert_eq!(ordinary, reversed);
     assert_eq!(compact, reversed);
     assert_ne!(compact, FigValue::Guid(2, 1));
-    let other = FigValue::Object(vec![
-        ("x".into(), FigValue::Uint(1)),
-        ("y".into(), FigValue::Uint(2)),
-    ]);
-    let other_reversed = FigValue::Object(vec![
-        ("y".into(), FigValue::Uint(2)),
-        ("x".into(), FigValue::Uint(1)),
-    ]);
+    let other = FigValue::Object(
+        vec![
+            ("x".into(), FigValue::Uint(1)),
+            ("y".into(), FigValue::Uint(2)),
+        ]
+        .into(),
+    );
+    let other_reversed = FigValue::Object(
+        vec![
+            ("y".into(), FigValue::Uint(2)),
+            ("x".into(), FigValue::Uint(1)),
+        ]
+        .into(),
+    );
     assert_ne!(
         other, other_reversed,
         "non-GUID ordered-object semantics stay unchanged"
@@ -169,5 +181,5 @@ fn compact_guid_retains_wire_validation_and_depth_ceiling() {
 #[test]
 fn compact_guid_does_not_expand_the_dynamic_value_enum() {
     #[cfg(target_pointer_width = "64")]
-    assert_eq!(std::mem::size_of::<FigValue>(), 32);
+    assert_eq!(std::mem::size_of::<FigValue>(), 24);
 }

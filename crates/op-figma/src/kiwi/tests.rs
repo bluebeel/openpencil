@@ -292,10 +292,16 @@ fn truncated_buffer_errors() {
 
 #[test]
 fn mutable_object_and_array_lookups_update_in_place() {
-    let mut value = FigValue::Object(vec![
-        ("items".into(), FigValue::Array(vec![FigValue::Uint(1)])),
-        ("missing".into(), FigValue::Null),
-    ]);
+    let mut value = FigValue::Object(
+        vec![
+            (
+                "items".into(),
+                FigValue::Array(vec![FigValue::Uint(1)].into()),
+            ),
+            ("missing".into(), FigValue::Null),
+        ]
+        .into(),
+    );
 
     value
         .get_array_mut("items")

@@ -81,11 +81,11 @@ fn derived_instance_scales_geometry_and_visual_metrics_into_40px_frame() {
             ("strokeWeight", FigValue::Float(0.9)),
             (
                 "fillPaints",
-                FigValue::Array(vec![solid_paint(1.0, 0.95, 0.85)]),
+                FigValue::Array(vec![solid_paint(1.0, 0.95, 0.85)].into()),
             ),
             (
                 "strokePaints",
-                FigValue::Array(vec![solid_paint(1.0, 0.8, 0.45)]),
+                FigValue::Array(vec![solid_paint(1.0, 0.8, 0.45)].into()),
             ),
             (
                 "vectorData",
@@ -116,7 +116,7 @@ fn derived_instance_scales_geometry_and_visual_metrics_into_40px_frame() {
             ("borderLeftWeight", FigValue::Float(12.0)),
             (
                 "strokePaints",
-                FigValue::Array(vec![solid_paint(0.0, 0.0, 0.0)]),
+                FigValue::Array(vec![solid_paint(0.0, 0.0, 0.0)].into()),
             ),
         ]),
         children: vec![],
@@ -130,11 +130,11 @@ fn derived_instance_scales_geometry_and_visual_metrics_into_40px_frame() {
             ("transform", transform(90.0, 0.0)),
             (
                 "fillPaints",
-                FigValue::Array(vec![solid_paint(1.0, 0.0, 0.0)]),
+                FigValue::Array(vec![solid_paint(1.0, 0.0, 0.0)].into()),
             ),
             (
                 "fillGeometry",
-                FigValue::Array(vec![obj(vec![("commandsBlob", FigValue::Uint(1))])]),
+                FigValue::Array(vec![obj(vec![("commandsBlob", FigValue::Uint(1))])].into()),
             ),
         ]),
         children: vec![],
@@ -165,13 +165,16 @@ fn derived_instance_scales_geometry_and_visual_metrics_into_40px_frame() {
                 "textData",
                 obj(vec![
                     ("characters", FigValue::Str("A".into())),
-                    ("characterStyleIDs", FigValue::Array(vec![FigValue::Int(1)])),
+                    (
+                        "characterStyleIDs",
+                        FigValue::Array(vec![FigValue::Int(1)].into()),
+                    ),
                     (
                         "styleOverrideTable",
-                        FigValue::Array(vec![
-                            obj(vec![]),
-                            obj(vec![("fontSize", FigValue::Float(12.0))]),
-                        ]),
+                        FigValue::Array(
+                            vec![obj(vec![]), obj(vec![("fontSize", FigValue::Float(12.0))])]
+                                .into(),
+                        ),
                     ),
                 ]),
             ),
@@ -198,10 +201,16 @@ fn derived_instance_scales_geometry_and_visual_metrics_into_40px_frame() {
             // path that previously skipped the instance-size scale.
             (
                 "derivedSymbolData",
-                FigValue::Array(vec![obj(vec![(
-                    "guidPath",
-                    obj(vec![("guids", FigValue::Array(vec![guid(238, 1665)]))]),
-                )])]),
+                FigValue::Array(
+                    vec![obj(vec![(
+                        "guidPath",
+                        obj(vec![(
+                            "guids",
+                            FigValue::Array(vec![guid(238, 1665)].into()),
+                        )]),
+                    )])]
+                    .into(),
+                ),
             ),
             ("uniformScaleFactor", FigValue::Float(1.0 / 3.0)),
         ]),

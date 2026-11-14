@@ -269,7 +269,7 @@ mod tests {
         for map in [
             Some(obj(vec![(
                 "entries",
-                FigValue::Array(vec![FigValue::Bool(true)]),
+                FigValue::Array(vec![FigValue::Bool(true)].into()),
             )])),
             Some(obj(vec![])),
             None,

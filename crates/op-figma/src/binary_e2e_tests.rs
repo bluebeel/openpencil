@@ -16,21 +16,32 @@ fn unused_consumption_map_markers_preserve_converted_document_and_warnings() {
     let schema = decode_binary_schema(&build_schema()).unwrap();
     let mut root = decode_message(&schema, &build_data()).unwrap();
     let mut full = root.get_array_mut("nodeChanges").unwrap().clone();
-    let full_map = FigValue::Object(vec![(
-        "entries".into(),
-        FigValue::Array(vec![FigValue::Object(vec![(
-            "unused".into(),
-            FigValue::Str("binding bookkeeping".into()),
-        )])]),
-    )]);
+    let full_map = FigValue::Object(
+        vec![(
+            "entries".into(),
+            FigValue::Array(
+                vec![FigValue::Object(
+                    vec![("unused".into(), FigValue::Str("binding bookkeeping".into()))].into(),
+                )]
+                .into(),
+            ),
+        )]
+        .into(),
+    );
     for node in &mut full {
         node.set("parameterConsumptionMap", full_map.clone());
         node.set("variableConsumptionMap", full_map.clone());
     }
     let mut projected = full.clone();
     for node in &mut projected {
-        node.set("parameterConsumptionMap", FigValue::Object(Vec::new()));
-        node.set("variableConsumptionMap", FigValue::Object(Vec::new()));
+        node.set(
+            "parameterConsumptionMap",
+            FigValue::Object(Vec::new().into()),
+        );
+        node.set(
+            "variableConsumptionMap",
+            FigValue::Object(Vec::new().into()),
+        );
     }
     let convert = |node_changes| {
         crate::node_mapper::figma_to_pen_document(
@@ -44,8 +55,8 @@ fn unused_consumption_map_markers_preserve_converted_document_and_warnings() {
             FigLayoutMode::Preserve,
         )
     };
-    let full = convert(full);
-    let projected = convert(projected);
+    let full = convert(full.to_vec());
+    let projected = convert(projected.to_vec());
     assert_eq!(
         serde_json::to_value(projected.document).unwrap(),
         serde_json::to_value(full.document).unwrap()
@@ -430,4 +441,37 @@ fn document_serializes_to_canonical_json() {
     let json = serde_json::to_string(&import.document).expect("serializes");
     assert!(json.contains("\"Page 1\""));
     assert!(json.contains("\"Box\""));
+}
+
+#[test]
+fn owned_source_preserves_bare_zip_pages_phases_and_canonical_output() {
+    use crate::{prepare_fig_binary_owned, prepare_fig_binary_owned_with_observer};
+    let bare = build_fig(&build_schema(), &build_data());
+    for source in [bare.clone(), wrap_in_zip(&bare)] {
+        let (mut borrowed_phases, mut owned_phases) = (Vec::new(), Vec::new());
+        let borrowed =
+            prepare_fig_binary_with_observer(&source, "Owned", FigLayoutMode::Preserve, &mut |p| {
+                borrowed_phases.push(p)
+            })
+            .unwrap();
+        let owned = prepare_fig_binary_owned_with_observer(
+            source,
+            "Owned",
+            FigLayoutMode::Preserve,
+            &mut |p| owned_phases.push(p),
+        )
+        .unwrap();
+        assert_eq!(borrowed.pages(), owned.pages());
+        assert_eq!(borrowed_phases, owned_phases);
+        let (borrowed, owned) = (borrowed.into_page(0).unwrap(), owned.into_page(0).unwrap());
+        assert_eq!(
+            serde_json::to_vec(&borrowed.document).unwrap(),
+            serde_json::to_vec(&owned.document).unwrap()
+        );
+        assert_eq!(borrowed.warnings, owned.warnings);
+    }
+    assert!(matches!(
+        prepare_fig_binary_owned(b"unknown".to_vec(), "Bad", FigLayoutMode::Preserve),
+        Err(FigParseError::UnknownFormat)
+    ));
 }

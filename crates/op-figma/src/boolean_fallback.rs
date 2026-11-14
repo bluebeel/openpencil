@@ -403,9 +403,9 @@ fn apply_shape_result_paint(
 fn inherit_result_paint(parent: &FigValue, child: &mut FigValue) {
     for key in ["fillPaints", "strokePaints"] {
         let paints = parent.get_array(key).unwrap_or_default().to_vec();
-        child.set(key, FigValue::Array(paints));
+        child.set(key, FigValue::Array(paints.into()));
     }
-    child.set("backgroundPaints", FigValue::Array(Vec::new()));
+    child.set("backgroundPaints", FigValue::Array(Vec::new().into()));
     for key in STROKE_STYLE_KEYS {
         if let Some(value) = parent.get(key) {
             child.set(key, value.clone());
@@ -460,7 +460,7 @@ mod tests {
                 ("symbolID", guid(1, 10)),
                 (
                     "symbolOverrides",
-                    FigValue::Array(vec![obj(vec![("overriddenSymbolID", guid(2, 20))])]),
+                    FigValue::Array(vec![obj(vec![("overriddenSymbolID", guid(2, 20))])].into()),
                 ),
             ]),
         )]);
@@ -468,10 +468,9 @@ mod tests {
 
         let modern = instance(vec![(
             "componentPropAssignments",
-            FigValue::Array(vec![obj(vec![(
-                "value",
-                obj(vec![("guidValue", guid(3, 30))]),
-            )])]),
+            FigValue::Array(
+                vec![obj(vec![("value", obj(vec![("guidValue", guid(3, 30))]))])].into(),
+            ),
         )]);
         assert!(has_real_component_swap(&modern));
 

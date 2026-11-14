@@ -112,7 +112,7 @@ impl FloatKind {
     fn value(self, values: [f32; 4]) -> FigValue {
         match self {
             Self::Vector => FigValue::Vec2(FloatRecord::new([values[0], values[1]])),
-            Self::Color => FigValue::Color(FloatRecord::new(values)),
+            Self::Color => FigValue::Color(FloatRecord::new(values).into()),
         }
     }
 }

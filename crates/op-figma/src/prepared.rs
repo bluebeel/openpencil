@@ -5,7 +5,8 @@
 
 use crate::common::FigLayoutMode;
 use crate::figma_types::{
-    parse_fig_file, parse_fig_file_with_observer, BlobOrString, FigmaDecodedFile,
+    parse_fig_file, parse_fig_file_owned_with_observer, parse_fig_file_with_observer, BlobOrString,
+    FigmaDecodedFile,
 };
 use crate::image_resolver::{resolve_image_blobs_owned_with, ImageTransform};
 use crate::node_mapper::{
@@ -57,6 +58,36 @@ pub fn prepare_fig_binary_with_observer(
         return Err(FigParseError::UnknownFormat);
     }
     let decoded = parse_fig_file_with_observer(bytes, observer)
+        .map_err(|error| FigParseError::Binary(error.to_string()))?;
+    Ok(PreparedFig::from_decoded_with_observer(
+        decoded,
+        file_name,
+        layout_mode,
+        observer,
+    ))
+}
+
+/// Consume the compressed source so it can be released before tree decoding.
+/// The borrowed preparation API remains available for reusable input buffers.
+pub fn prepare_fig_binary_owned(
+    bytes: Vec<u8>,
+    file_name: &str,
+    layout_mode: FigLayoutMode,
+) -> Result<PreparedFig, FigParseError> {
+    prepare_fig_binary_owned_with_observer(bytes, file_name, layout_mode, &mut |_| {})
+}
+
+/// Owned preparation with the same typed phase notifications as the borrowed API.
+pub fn prepare_fig_binary_owned_with_observer(
+    bytes: Vec<u8>,
+    file_name: &str,
+    layout_mode: FigLayoutMode,
+    observer: &mut dyn FnMut(FigImportPhase),
+) -> Result<PreparedFig, FigParseError> {
+    if detect_kind(&bytes) != FigFileKind::Binary {
+        return Err(FigParseError::UnknownFormat);
+    }
+    let decoded = parse_fig_file_owned_with_observer(bytes, observer)
         .map_err(|error| FigParseError::Binary(error.to_string()))?;
     Ok(PreparedFig::from_decoded_with_observer(
         decoded,
@@ -253,15 +284,15 @@ mod tests {
     fn node(local_id: u32, node_type: &str, name: &str, parent: Option<u32>) -> FigValue {
         let mut fields = vec![
             ("guid", guid(local_id)),
-            ("type", FigValue::Str(node_type.to_string())),
-            ("name", FigValue::Str(name.to_string())),
+            ("type", FigValue::Str(node_type.to_string().into())),
+            ("name", FigValue::Str(name.to_string().into())),
         ];
         if let Some(parent) = parent {
             fields.push((
                 "parentIndex",
                 object(vec![
                     ("guid", guid(parent)),
-                    ("position", FigValue::Str(format!("{local_id:04}"))),
+                    ("position", FigValue::Str(format!("{local_id:04}").into())),
                 ]),
             ));
         }

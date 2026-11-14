@@ -4,7 +4,7 @@
 //! this module adds the geometric primitive structs worth typing and
 //! the `parseFigFile` pipeline that ties the container + Kiwi layers.
 
-use crate::container::{fig_to_binary_parts, ContainerError};
+use crate::container::{fig_to_binary_parts, ContainerError, FigBinaryParts};
 use crate::kiwi::{decode_binary_schema, decode_import_message, FigValue, KiwiError};
 use crate::progress::FigImportPhase;
 use std::collections::HashMap;
@@ -164,7 +164,7 @@ fn extract_decoded_root(raw: FigValue) -> Option<(Vec<FigValue>, Vec<BlobOrStrin
     for (name, value) in pairs {
         match (name.as_ref(), value) {
             ("nodeChanges", FigValue::Array(items)) if !items.is_empty() => {
-                node_changes = Some(items);
+                node_changes = Some(items.into());
             }
             ("blobs", FigValue::Array(items)) => {
                 blobs = items
@@ -176,12 +176,14 @@ fn extract_decoded_root(raw: FigValue) -> Option<(Vec<FigValue>, Vec<BlobOrStrin
                                 (key.as_ref() == "bytes")
                                     .then_some(value)
                                     .and_then(|value| match value {
-                                        FigValue::Bytes(bytes) => Some(BlobOrString::Bytes(bytes)),
+                                        FigValue::Bytes(bytes) => {
+                                            Some(BlobOrString::Bytes(bytes.into()))
+                                        }
                                         _ => None,
                                     })
                             })
                             .unwrap_or_else(|| BlobOrString::Bytes(Vec::new())),
-                        FigValue::Str(value) => BlobOrString::Str(value),
+                        FigValue::Str(value) => BlobOrString::Str(value.into()),
                         _ => BlobOrString::Bytes(Vec::new()),
                     })
                     .collect();
@@ -193,7 +195,7 @@ fn extract_decoded_root(raw: FigValue) -> Option<(Vec<FigValue>, Vec<BlobOrStrin
                         .map(|node| node.get("guid").is_some())
                         .unwrap_or(false) =>
             {
-                fallback_node_changes = Some(items);
+                fallback_node_changes = Some(items.into());
             }
             _ => {}
         }
@@ -217,6 +219,23 @@ pub(crate) fn parse_fig_file_with_observer(
 ) -> Result<FigmaDecodedFile, FigFileError> {
     observer(FigImportPhase::Container);
     let container = fig_to_binary_parts(bytes).map_err(FigFileError::Container)?;
+    decode_binary_parts(container, observer)
+}
+
+pub(crate) fn parse_fig_file_owned_with_observer(
+    bytes: Vec<u8>,
+    observer: &mut dyn FnMut(FigImportPhase),
+) -> Result<FigmaDecodedFile, FigFileError> {
+    observer(FigImportPhase::Container);
+    let container = fig_to_binary_parts(&bytes).map_err(FigFileError::Container)?;
+    drop(bytes);
+    decode_binary_parts(container, observer)
+}
+
+fn decode_binary_parts(
+    container: FigBinaryParts,
+    observer: &mut dyn FnMut(FigImportPhase),
+) -> Result<FigmaDecodedFile, FigFileError> {
     if container.parts.len() < 2 {
         return Err(FigFileError::TooFewParts(container.parts.len()));
     }
@@ -282,18 +301,24 @@ mod tests {
         let raw = obj(vec![
             (
                 "nodeChanges",
-                FigValue::Array(vec![obj(vec![(
-                    "guid",
-                    obj(vec![("sessionID", FigValue::Uint(0))]),
-                )])]),
+                FigValue::Array(
+                    vec![obj(vec![(
+                        "guid",
+                        obj(vec![("sessionID", FigValue::Uint(0))]),
+                    )])]
+                    .into(),
+                ),
             ),
             (
                 "blobs",
-                FigValue::Array(vec![
-                    obj(vec![("bytes", FigValue::Bytes(vec![1, 2, 3]))]),
-                    FigValue::Str("inline".into()),
-                    FigValue::Int(0),
-                ]),
+                FigValue::Array(
+                    vec![
+                        obj(vec![("bytes", FigValue::Bytes(vec![1, 2, 3].into()))]),
+                        FigValue::Str("inline".into()),
+                        FigValue::Int(0),
+                    ]
+                    .into(),
+                ),
             ),
         ]);
         let (_, blobs) = extract_decoded_root(raw).expect("root extracts");
@@ -307,10 +332,13 @@ mod tests {
     fn find_node_changes_falls_back_to_guid_array() {
         let raw = obj(vec![(
             "someOtherKey",
-            FigValue::Array(vec![obj(vec![(
-                "guid",
-                obj(vec![("sessionID", FigValue::Uint(0))]),
-            )])]),
+            FigValue::Array(
+                vec![obj(vec![(
+                    "guid",
+                    obj(vec![("sessionID", FigValue::Uint(0))]),
+                )])]
+                .into(),
+            ),
         )]);
         let (nc, _) = extract_decoded_root(raw).expect("fallback finds the guid array");
         assert_eq!(nc.len(), 1);

@@ -56,30 +56,36 @@ fn fixture() -> FigValue {
                 ("characters", FigValue::Str(characters.into())),
                 (
                     "characterStyleIDs",
-                    FigValue::Array(vec![FigValue::Uint(7); 19]),
+                    FigValue::Array(vec![FigValue::Uint(7); 19].into()),
                 ),
                 (
                     "styleOverrideTable",
-                    FigValue::Array(vec![obj(vec![
-                        ("styleID", FigValue::Uint(7)),
-                        ("textDecoration", FigValue::Str("UNDERLINE".into())),
-                    ])]),
+                    FigValue::Array(
+                        vec![obj(vec![
+                            ("styleID", FigValue::Uint(7)),
+                            ("textDecoration", FigValue::Str("UNDERLINE".into())),
+                        ])]
+                        .into(),
+                    ),
                 ),
                 (
                     "lines",
-                    FigValue::Array(vec![
-                        obj(vec![("lineType", FigValue::Str("PLAIN".into()))]),
-                        obj(vec![
-                            ("lineType", FigValue::Str("UNORDERED_LIST".into())),
-                            ("indentationLevel", FigValue::Uint(1)),
-                        ]),
-                    ]),
+                    FigValue::Array(
+                        vec![
+                            obj(vec![("lineType", FigValue::Str("PLAIN".into()))]),
+                            obj(vec![
+                                ("lineType", FigValue::Str("UNORDERED_LIST".into())),
+                                ("indentationLevel", FigValue::Uint(1)),
+                            ]),
+                        ]
+                        .into(),
+                    ),
                 ),
             ]),
         ),
         (
             "fillPaints",
-            FigValue::Array(vec![solid_paint(0.0, 0.0, 0.0)]),
+            FigValue::Array(vec![solid_paint(0.0, 0.0, 0.0)].into()),
         ),
         (
             PRESERVED_TEXT_LAYOUT,

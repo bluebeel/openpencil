@@ -75,7 +75,7 @@ impl Decoder<'_, '_> {
         for index in order {
             values[index as usize] = self.bb.read_var_float()?;
         }
-        Ok(Some(FigValue::Affine(values)))
+        Ok(Some(FigValue::Affine(values.into())))
     }
 }
 
@@ -96,7 +96,11 @@ impl FigValue {
 
     pub(crate) fn affine_parts(&self) -> Option<[f32; 6]> {
         match self {
-            Self::Affine(values) => Some(*values),
+            Self::Affine(values) => {
+                let mut copy = [0.0; 6];
+                copy.copy_from_slice(&values[..]);
+                Some(copy)
+            }
             Self::Object(fields) if fields.len() == 6 => {
                 let mut values = [0.0; 6];
                 let mut seen = 0u8;

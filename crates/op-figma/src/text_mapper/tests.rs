@@ -80,7 +80,7 @@ fn opentype_features_keep_salt_and_off_precedence_with_normalized_tags() {
     assert_eq!(map_figma_text_props(&node).font_kerning, Some(false));
     node.set(
         "toggledOffOTFeatures",
-        FigValue::Array(vec![FigValue::Str("SALT".into())]),
+        FigValue::Array(vec![FigValue::Str("SALT".into())].into()),
     );
     assert_eq!(
         map_figma_text_props(&node)
@@ -89,8 +89,8 @@ fn opentype_features_keep_salt_and_off_precedence_with_normalized_tags() {
             .get("salt"),
         Some(&0)
     );
-    node.set("toggledOnOTFeatures", FigValue::Array(vec![]));
-    node.set("toggledOffOTFeatures", FigValue::Array(vec![]));
+    node.set("toggledOnOTFeatures", FigValue::Array(vec![].into()));
+    node.set("toggledOffOTFeatures", FigValue::Array(vec![].into()));
     assert_eq!(
         map_figma_text_props(&node).font_features,
         Some(BTreeMap::new())
@@ -204,22 +204,28 @@ fn styled_segments_built_from_style_runs() {
             ("characters", FigValue::Str("abcd".into())),
             (
                 "characterStyleIDs",
-                FigValue::Array(vec![
-                    FigValue::Int(0),
-                    FigValue::Int(0),
-                    FigValue::Int(1),
-                    FigValue::Int(1),
-                ]),
+                FigValue::Array(
+                    vec![
+                        FigValue::Int(0),
+                        FigValue::Int(0),
+                        FigValue::Int(1),
+                        FigValue::Int(1),
+                    ]
+                    .into(),
+                ),
             ),
             (
                 "styleOverrideTable",
-                FigValue::Array(vec![
-                    obj(vec![]),
-                    obj(vec![(
-                        "fontName",
-                        obj(vec![("style", FigValue::Str("Bold".into()))]),
-                    )]),
-                ]),
+                FigValue::Array(
+                    vec![
+                        obj(vec![]),
+                        obj(vec![(
+                            "fontName",
+                            obj(vec![("style", FigValue::Str("Bold".into()))]),
+                        )]),
+                    ]
+                    .into(),
+                ),
             ),
         ]),
     )]);
@@ -241,11 +247,11 @@ fn text_with_run_override(override_style: FigValue) -> TextContent {
             ("characters", FigValue::Str("ab".into())),
             (
                 "characterStyleIDs",
-                FigValue::Array(vec![FigValue::Int(0), FigValue::Int(1)]),
+                FigValue::Array(vec![FigValue::Int(0), FigValue::Int(1)].into()),
             ),
             (
                 "styleOverrideTable",
-                FigValue::Array(vec![obj(vec![]), override_style]),
+                FigValue::Array(vec![obj(vec![]), override_style].into()),
             ),
         ]),
     )]);
@@ -299,18 +305,21 @@ fn sparse_style_ids_select_text_colors_by_declared_id() {
             ("styleID", FigValue::Int(id)),
             (
                 "fillPaints",
-                FigValue::Array(vec![obj(vec![
-                    ("type", FigValue::Str("SOLID".into())),
-                    (
-                        "color",
-                        obj(vec![
-                            ("r", FigValue::Float(1.0)),
-                            ("g", FigValue::Float(green_blue)),
-                            ("b", FigValue::Float(green_blue)),
-                            ("a", FigValue::Float(1.0)),
-                        ]),
-                    ),
-                ])]),
+                FigValue::Array(
+                    vec![obj(vec![
+                        ("type", FigValue::Str("SOLID".into())),
+                        (
+                            "color",
+                            obj(vec![
+                                ("r", FigValue::Float(1.0)),
+                                ("g", FigValue::Float(green_blue)),
+                                ("b", FigValue::Float(green_blue)),
+                                ("a", FigValue::Float(1.0)),
+                            ]),
+                        ),
+                    ])]
+                    .into(),
+                ),
             ),
         ])
     };
@@ -324,7 +333,7 @@ fn sparse_style_ids_select_text_colors_by_declared_id() {
             ),
             (
                 "styleOverrideTable",
-                FigValue::Array(vec![style(10, 1.0), style(9, 0.0)]),
+                FigValue::Array(vec![style(10, 1.0), style(9, 0.0)].into()),
             ),
         ]),
     )]);
