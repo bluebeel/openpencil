@@ -77,7 +77,7 @@ pub(crate) fn execute_copy(binding: &str, args: &str, ctx: &mut ProgramCtx) -> R
     // source ids, so they must NOT enter the alias table — `remap`'s
     // first-wins entry never fires because the source ids already
     // resolve directly in the sim tree.
-    let map = ctx.remap(&mut nodes)?;
+    let map = ctx.remap_copied_nodes(&mut nodes)?;
     let clone_id = map
         .first()
         .map(|(_, new)| new.clone())

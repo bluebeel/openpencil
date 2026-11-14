@@ -105,8 +105,6 @@ pub(super) fn serve_one_with_authority<S: Read + Write>(
 /// Dispatch parsed requests after the online loop has resolved their identity.
 #[path = "connection_conversion.rs"]
 mod conversion;
-#[cfg(test)]
-pub(super) use conversion::dispatch;
 pub(super) use conversion::dispatch_owned;
 
 fn dispatch_inner<S: Read + Write>(

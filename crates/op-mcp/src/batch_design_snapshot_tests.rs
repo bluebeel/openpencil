@@ -132,7 +132,7 @@ fn batch_snapshot_script_inserts_expand_once_without_editor_snapshot() {
         tool.call(&args),
         "random script result is cached, never reevaluated"
     );
-    assert_eq!(first, tool.call_uncached(prepared));
+    assert_eq!(first, tool.call_uncached(prepared, None));
     let changed = self::args("script", "throw new Error('must not execute');");
     let ToolOutcome::Err(code, message) = tool.call(&changed) else {
         panic!("request mismatch")

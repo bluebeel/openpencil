@@ -58,6 +58,16 @@ impl McpTool for BatchDesign {
         "batch_design"
     }
     fn call(&self, args: &BTreeMap<String, String>) -> ToolOutcome {
+        self.call_with_state(args, None)
+    }
+}
+
+impl BatchDesign {
+    fn call_with_state(
+        &self,
+        args: &BTreeMap<String, String>,
+        program_state: Option<&EditorState>,
+    ) -> ToolOutcome {
         if let Some(prepared) = &self.prepared {
             if args != &prepared.original {
                 return ToolOutcome::Err(
@@ -66,16 +76,20 @@ impl McpTool for BatchDesign {
                 );
             }
             return match &prepared.expanded {
-                Ok(args) => self.call_uncached(args),
+                Ok(args) => self.call_uncached(args, program_state),
                 Err(outcome) => outcome.clone(),
             };
         }
-        self.call_uncached(args)
+        self.call_uncached(args, program_state)
     }
 }
 
 impl BatchDesign {
-    fn call_uncached(&self, args: &BTreeMap<String, String>) -> ToolOutcome {
+    fn call_uncached(
+        &self,
+        args: &BTreeMap<String, String>,
+        program_state: Option<&EditorState>,
+    ) -> ToolOutcome {
         // `script` must be gated BEFORE the `operations` shortcut below —
         // otherwise a caller that (invalidly) sends both `script` and
         // `operations` would silently run the `operations` path instead of
@@ -85,7 +99,7 @@ impl BatchDesign {
         // `operations` program.
         if let Some(result) = expand_script_arg(args) {
             return match result {
-                Ok(forwarded) => self.call_uncached(&forwarded),
+                Ok(forwarded) => self.call_uncached(&forwarded, program_state),
                 Err(outcome) => outcome,
             };
         }
@@ -114,7 +128,7 @@ impl BatchDesign {
             // its target slot. The flat direct parser has no parent geometry,
             // so route even a single G through the program simulator.
             Ok(ParsedOperations::Direct(_)) if is_direct_image_operation(operations) => {
-                self.run_program(operations, args)
+                self.run_program(operations, args, program_state)
             }
             // Other single direct ops keep the flat command-per-op shape.
             Ok(ParsedOperations::Direct(_)) => dispatch_batch_design(args, None),
@@ -123,7 +137,7 @@ impl BatchDesign {
             // default (any failing line rolls back the whole batch);
             // internal callers may opt into TS best-effort via
             // `_line_policy` (see `batch_program.rs` module docs).
-            Err(_) => self.run_program(operations, args),
+            Err(_) => self.run_program(operations, args, program_state),
         }
     }
 }
@@ -140,11 +154,29 @@ pub fn batch_design_snapshot_for_call(
     state: &EditorState,
     args: &BTreeMap<String, String>,
 ) -> BatchDesign {
+    scoped_snapshot(state, args, true)
+}
+
+/// Compute a complete command while borrowing the original editor. The mixed
+/// program still owns its isolated simulator; no intermediate editor copy is
+/// kept just to pass that simulator its input.
+pub(crate) fn outcome_for_call(
+    state: &EditorState,
+    args: &BTreeMap<String, String>,
+) -> ToolOutcome {
+    scoped_snapshot(state, args, false).call_with_state(args, Some(state))
+}
+
+fn scoped_snapshot(
+    state: &EditorState,
+    args: &BTreeMap<String, String>,
+    retain_program: bool,
+) -> BatchDesign {
     // Expand in one short-lived sandbox before choosing the snapshot. Only
     // ordinary owned arguments/errors survive; no VM survives into apply.
     if let Some(expanded) = expand_script_arg(args) {
         let mut tool = match &expanded {
-            Ok(args) => batch_design_snapshot_for_call(state, args),
+            Ok(args) => scoped_snapshot(state, args, retain_program),
             Err(_) => snapshot(state, false, false),
         };
         tool.prepared = Some(PreparedArguments {
@@ -164,7 +196,7 @@ pub fn batch_design_snapshot_for_call(
         Ok(ParsedOperations::Direct(_)) if !is_direct_image_operation(operations) => {
             snapshot(state, false, false)
         }
-        _ => snapshot(state, true, false),
+        _ => snapshot(state, retain_program, false),
     }
 }
 
@@ -210,8 +242,13 @@ fn snapshot(state: &EditorState, program: bool, insert: bool) -> BatchDesign {
 }
 
 impl BatchDesign {
-    fn run_program(&self, operations: &str, args: &BTreeMap<String, String>) -> ToolOutcome {
-        match &self.state {
+    fn run_program(
+        &self,
+        operations: &str,
+        args: &BTreeMap<String, String>,
+        program_state: Option<&EditorState>,
+    ) -> ToolOutcome {
+        match program_state.or(self.state.as_ref()) {
             Some(state) => super::batch_program::run_batch_design_program(state, operations, args),
             None => ToolOutcome::Err(
                 ToolErrorCode::ToolFailed,

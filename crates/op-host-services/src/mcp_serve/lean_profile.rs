@@ -164,10 +164,10 @@ pub(super) fn lean_registry(
         registry.register(Box::new(get_guidelines_snapshot()));
     }
     if wants("batch_design") {
-        registry.register(Box::new(match arguments {
-            Some(args) => op_mcp::batch_design_snapshot_for_call(doc, args),
-            None => batch_design_snapshot(doc),
-        }));
+        match arguments {
+            Some(args) => registry.register(op_mcp::prepare_batch_design_call(doc, args)),
+            None => registry.register(Box::new(batch_design_snapshot(doc))),
+        }
     }
     if wants("snapshot_layout") {
         registry.register(Box::new(match arguments {

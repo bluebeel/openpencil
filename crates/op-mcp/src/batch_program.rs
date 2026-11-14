@@ -105,7 +105,7 @@ pub(crate) fn run_batch_design_program(
         .unwrap_or(false);
     let lines = split_operations(operations);
     let mut ctx = ProgramCtx {
-        sim: snapshot.clone(),
+        sim: snapshot.clone_for_command_simulation(),
         page_id: page_id.clone(),
         bindings: BTreeMap::new(),
         alias: BTreeMap::new(),
@@ -343,6 +343,21 @@ impl ProgramCtx {
     /// the (authored → final) map. Authored ids are recorded into the
     /// alias table so slash paths keep resolving TS-style.
     pub(crate) fn remap(&mut self, nodes: &mut [PenNode]) -> Result<Vec<(String, String)>> {
+        let map = self.remap_copied_nodes(nodes)?;
+        for (old, new) in &map {
+            if !old.starts_with("__op_tmp_") {
+                self.alias.entry(old.clone()).or_insert_with(|| new.clone());
+            }
+        }
+        Ok(map)
+    }
+
+    /// Copies start from live source ids. Allocating new ids must not redirect
+    /// later references to that source (or its children) into the copy.
+    pub(crate) fn remap_copied_nodes(
+        &mut self,
+        nodes: &mut [PenNode],
+    ) -> Result<Vec<(String, String)>> {
         let mut seed = self
             .sim
             .next_node_id_seed()
@@ -352,11 +367,6 @@ impl ProgramCtx {
         let map = remap_subtree_ids_mapping(nodes, &mut seed, &mut taken)
             .ok_or(ProgramError::IdSpaceExhausted)?;
         self.id_high_water = seed;
-        for (old, new) in &map {
-            if !old.starts_with("__op_tmp_") {
-                self.alias.entry(old.clone()).or_insert_with(|| new.clone());
-            }
-        }
         Ok(map)
     }
 }

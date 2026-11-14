@@ -268,13 +268,12 @@ pub(super) fn rebuild_registry(
     register_tool!("move_node", move_node_snapshot());
     register_tool!("copy_node", copy_node_snapshot());
     register_tool!("replace_node", replace_node_snapshot());
-    register_tool!(
-        "batch_design",
+    if should_register(requested_tool, "batch_design") {
         match arguments {
-            Some(args) => op_mcp::batch_design_snapshot_for_call(doc, args),
-            None => batch_design_snapshot(doc),
+            Some(args) => r.register(op_mcp::prepare_batch_design_call(doc, args)),
+            None => r.register(Box::new(batch_design_snapshot(doc))),
         }
-    );
+    }
     register_tool!(
         "create_generator",
         op_mcp::generator_tools::create_generator_snapshot(doc)

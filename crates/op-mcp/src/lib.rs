@@ -26,6 +26,7 @@ mod batch_design_dsl_error;
 mod batch_design_normalize;
 #[cfg(test)]
 mod batch_design_ops_tests;
+mod batch_design_prepared;
 #[cfg(test)]
 mod batch_design_ref_tests;
 pub mod batch_design_result;
@@ -206,6 +207,7 @@ pub use op_editor_core::{
 pub use batch_design::{
     design_content_snapshot, design_skeleton_snapshot, DesignContent, DesignSkeleton,
 };
+pub use batch_design_prepared::prepare_batch_design_call;
 pub use batch_design_result::{batch_design_snapshot, batch_design_snapshot_for_call, BatchDesign};
 pub use batch_get::{batch_get_snapshot, batch_get_snapshot_for_call, BatchGet};
 pub use batch_program_objects::parse_program_objects;
