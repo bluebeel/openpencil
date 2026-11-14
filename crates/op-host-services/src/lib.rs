@@ -88,6 +88,8 @@ mod export_share_sanitize;
 mod export_share_template;
 mod figma_convert;
 mod figma_convert_error;
+#[cfg(test)]
+mod float_roundtrip_tests;
 pub mod generator_run_route;
 mod headless_fonts;
 pub mod hosted_models;
