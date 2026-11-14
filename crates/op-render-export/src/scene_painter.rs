@@ -50,6 +50,15 @@ pub fn with_batch_preparation<R>(action: impl FnOnce() -> R) -> R {
     NativeBackend::with_export_text_reuse(action)
 }
 
+/// Private product jobs alone can prove scene/node immutability for resource
+/// plans. Public raw canvas callbacks retain complete fresh preparation.
+pub(crate) fn with_immutable_scene<R>(
+    scene: &std::sync::Arc<op_editor_ui::layout_scene::LayoutScene>,
+    action: impl FnOnce() -> R,
+) -> R {
+    image_preparation::with_scene(scene, action)
+}
+
 /// Called on the shared worker itself: the non-Send backend stays on this
 /// thread for every subsequent job, just like synchronous canvas painting.
 pub(crate) fn initialize_backend() {

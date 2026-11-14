@@ -159,7 +159,7 @@ impl<'a> SvgNodeBatch<'a> {
     /// Only the current SVG and its inherited metadata are temporary; source
     /// subtrees and mask resources remain borrowed until this batch is dropped.
     pub fn serialize(&self, node_id: &str, scale: f32) -> Result<String, SvgExportError> {
-        self.serialize_reusing(node_id, scale, &mut Vec::new())
+        self.serialize_reusing(node_id, scale, &mut Vec::new(), &mut None)
     }
 
     /// Keep one depth-sized workspace and one SVG output at a time. A false
@@ -171,8 +171,9 @@ impl<'a> SvgNodeBatch<'a> {
         mut consume: impl FnMut(&str, Result<String, SvgExportError>) -> bool,
     ) {
         let mut effects = Vec::new();
+        let mut previous = None;
         for id in ids {
-            let result = self.serialize_reusing(id, scale, &mut effects);
+            let result = self.serialize_reusing(id, scale, &mut effects, &mut previous);
             if !consume(id, result) {
                 break;
             }
@@ -184,19 +185,23 @@ impl<'a> SvgNodeBatch<'a> {
         node_id: &str,
         scale: f32,
         effects: &mut Vec<AncestorEffect<'a>>,
+        previous: &mut Option<Option<usize>>,
     ) -> Result<String, SvgExportError> {
         let target = self
             .targets
             .get(node_id)
             .ok_or_else(|| SvgExportError::NodeNotFound(node_id.to_owned()))?;
-        let mut head = target.context_head;
-        effects.clear();
-        while let Some(index) = head {
-            let link = &self.contexts[index];
-            effects.push(link.effect.clone());
-            head = link.parent;
+        if *previous != Some(target.context_head) {
+            let mut head = target.context_head;
+            effects.clear();
+            while let Some(index) = head {
+                let link = &self.contexts[index];
+                effects.push(link.effect.clone());
+                head = link.parent;
+            }
+            effects.reverse();
+            *previous = Some(target.context_head);
         }
-        effects.reverse();
         let bounds = (*target.bounds.get_or_init(|| {
             super::node_context_bounds(target.node, target.ancestor_xform, effects)
         }))

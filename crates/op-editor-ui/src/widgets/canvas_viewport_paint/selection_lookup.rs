@@ -239,12 +239,19 @@ impl<'a> SceneSelectionCursor<'a> {
         id: &str,
     ) -> Option<&'view SceneSelection<'a>> {
         let target = batch.targets.get(id)?;
+        let initialized = self.selection.is_some();
         let selection = self.selection.get_or_insert_with(|| SceneSelection {
             node: target.node,
             contexts: Vec::new(),
             visible: target.visible,
             bounds: Arc::clone(&target.bounds),
         });
+        // Bounds are allocated privately once per immutable batch target.
+        // Their live Arc identity proves this is that exact target/context,
+        // including across repeated IDs; no address/revision-only cache key.
+        if initialized && Arc::ptr_eq(&selection.bounds, &target.bounds) {
+            return Some(selection);
+        }
         selection.node = target.node;
         selection.visible = target.visible;
         selection.bounds = Arc::clone(&target.bounds);

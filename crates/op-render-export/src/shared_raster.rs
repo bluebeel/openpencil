@@ -138,21 +138,30 @@ impl SharedRasterWorker {
                     }
                     match job {
                         Job::Raster(job) => {
-                            let result = render_job(&job);
+                            let result =
+                                crate::scene_painter::with_immutable_scene(&job.scene, || {
+                                    render_job(&job)
+                                });
                             worker_counters.completed.fetch_add(1, Ordering::Relaxed);
                             let _ = job.reply.send(result);
                         }
                         Job::Nodes(job) => {
-                            render_node_batch_job(job);
+                            let scene = Arc::clone(&job.scene);
+                            crate::scene_painter::with_immutable_scene(&scene, || {
+                                render_node_batch_job(job)
+                            });
                             worker_counters.completed.fetch_add(1, Ordering::Relaxed);
                         }
                         Job::Files(job) => {
-                            let results = crate::export_scene_files(
-                                &job.scene,
-                                &job.targets,
-                                job.format,
-                                job.scale,
-                            );
+                            let results =
+                                crate::scene_painter::with_immutable_scene(&job.scene, || {
+                                    crate::export_scene_files(
+                                        &job.scene,
+                                        &job.targets,
+                                        job.format,
+                                        job.scale,
+                                    )
+                                });
                             worker_counters.completed.fetch_add(1, Ordering::Relaxed);
                             let _ = job.reply.send(results);
                         }

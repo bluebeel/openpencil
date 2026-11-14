@@ -577,8 +577,10 @@ fn text_decoration_attr(n: &SceneNode) -> &'static str {
     }
 }
 
-fn xml_escape(text: &str) -> String {
-    op_util::xml_escape::escape_xml(text)
+#[path = "svg_export/escaped.rs"]
+mod escaped;
+fn xml_escape(text: &str) -> escaped::Escaped<'_> {
+    escaped::Escaped(text)
 }
 
 fn fill_stroke_attrs(n: &SceneNode) -> String {
