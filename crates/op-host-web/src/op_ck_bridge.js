@@ -21,6 +21,33 @@ function copyBytes(u8) {
   return u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength);
 }
 
+function affineShadowMatrix(matrix) {
+  if (matrix?.length !== 9) return false;
+  for (let index = 0; index < 9; index += 1) {
+    if (!Number.isFinite(matrix[index])) return false;
+  }
+  return matrix[6] === 0 && matrix[7] === 0 && matrix[8] === 1;
+}
+
+// CanvasKit uses row-major 3x3 matrices. Shadow displacement is a vector in
+// the frame's initial logical canvas basis, so translations never participate.
+export function opCkShadowOffsetInLocalSpace(x, y, current, basis) {
+  const unchanged = () => Float32Array.of(x, y);
+  if (!affineShadowMatrix(current) || !affineShadowMatrix(basis)) return unchanged();
+  const [a, b, , c, d] = current;
+  if (a === basis[0] && b === basis[1] && c === basis[3] && d === basis[4]) {
+    return unchanged();
+  }
+  const determinant = a * d - b * c;
+  if (!Number.isFinite(determinant) || determinant === 0) return unchanged();
+  const deviceX = basis[0] * x + basis[1] * y;
+  const deviceY = basis[3] * x + basis[4] * y;
+  const localX = Math.fround((d * deviceX - b * deviceY) / determinant);
+  const localY = Math.fround((a * deviceY - c * deviceX) / determinant);
+  return Number.isFinite(localX) && Number.isFinite(localY)
+    ? Float32Array.of(localX, localY) : unchanged();
+}
+
 let createWebImageCaches = null;
 
 const TEXT_SCALE_STEPS_PER_OCTAVE = 4;
@@ -314,6 +341,7 @@ export async function opCkInit(canvasId) {
   let surface = CK.MakeWebGLCanvasSurface(canvasId);
   if (!surface) throw new Error('CanvasKit: MakeWebGLCanvasSurface returned null');
   let canvas = surface.getCanvas();
+  let shadowBasis = Float32Array.from(canvas.getTotalMatrix());
   const el = document.getElementById(canvasId);
   const runtimeEffects = opCkCreateRuntimeEffectCache(CK);
 
@@ -1134,6 +1162,13 @@ export async function opCkInit(canvasId) {
       while (canvas.getSaveCount() > 1) canvas.restore();
       canvas.save();
     },
+    captureShadowBasis() {
+      // Rust calls this after applying DPR, before any scene/node transform.
+      shadowBasis = Float32Array.from(canvas.getTotalMatrix());
+    },
+    shadowOffsetInLocalSpace(x, y) {
+      return opCkShadowOffsetInLocalSpace(x, y, canvas.getTotalMatrix(), shadowBasis);
+    },
     endFrame() {
       while (canvas.getSaveCount() > 1) canvas.restore();
       surface.flush();
@@ -1917,6 +1952,7 @@ export async function opCkInit(canvasId) {
       try { surface.delete(); } catch (e) {}
       surface = CK.MakeWebGLCanvasSurface(canvasId);
       canvas = surface.getCanvas();
+      shadowBasis = Float32Array.from(canvas.getTotalMatrix());
     },
     // Set the device-pixel-ratio used to supersample the offscreen text raster.
     // Called from Rust on mount + every display resize so glyph bitmaps stay

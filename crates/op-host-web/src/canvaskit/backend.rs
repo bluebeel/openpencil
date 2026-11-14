@@ -35,6 +35,7 @@ impl RenderBackend for CanvasKitBackend {
         if (self.dpr - 1.0).abs() > f32::EPSILON {
             self.ck.scale(self.dpr, self.dpr);
         }
+        self.ck.capture_shadow_basis();
     }
     fn end_frame(&mut self) {
         self.ck.end_frame();
@@ -42,6 +43,13 @@ impl RenderBackend for CanvasKitBackend {
 
     fn fill_rect(&mut self, rect: Rect, color: Color) {
         ops::fill_rect(&self.ck, rect, color);
+    }
+    fn shadow_offset_in_local_space(&self, offset: Point2D) -> Point2D {
+        let local = self.ck.shadow_offset_in_local_space(offset.x, offset.y);
+        match local.as_slice() {
+            [x, y] if x.is_finite() && y.is_finite() => Point2D::new(*x, *y),
+            _ => offset,
+        }
     }
     fn stroke_rect(&mut self, rect: Rect, color: Color, width: f32) {
         ops::stroke_rect(&self.ck, rect, color, width);

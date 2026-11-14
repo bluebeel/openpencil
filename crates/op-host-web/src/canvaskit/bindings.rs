@@ -25,6 +25,10 @@ extern "C" {
     pub type OpCk;
     #[wasm_bindgen(method, js_name = beginFrame)]
     pub(super) fn begin_frame(this: &OpCk);
+    #[wasm_bindgen(method, js_name = captureShadowBasis)]
+    pub(super) fn capture_shadow_basis(this: &OpCk);
+    #[wasm_bindgen(method, js_name = shadowOffsetInLocalSpace)]
+    pub(super) fn shadow_offset_in_local_space(this: &OpCk, x: f32, y: f32) -> Vec<f32>;
     #[wasm_bindgen(method, js_name = endFrame)]
     pub(super) fn end_frame(this: &OpCk);
     #[wasm_bindgen(method)]
