@@ -1,5 +1,5 @@
 //! One locked file, many exact actor transactions, one final atomic save.
-use super::{budget, metadata_command, quota, Groups, Reply, ReplyValue, Request, MAX_REPLY};
+use super::{audited_command, budget, quota, Groups, Reply, ReplyValue, Request, MAX_REPLY};
 use crate::{
     document_recovery::DocumentRecovery,
     mcp_serve::{self, resident_documents::FileStamp, McpServeError},
@@ -7,6 +7,8 @@ use crate::{
 use op_editor_core::{CommandEditCapture, EditorState};
 use std::{path::Path, sync::atomic::Ordering};
 
+#[path = "resident_group_apply.rs"]
+mod apply;
 struct Pending {
     request: usize,
     capture: CommandEditCapture,
@@ -24,6 +26,7 @@ pub(super) struct Transaction<'s, 'q> {
     pending: Vec<Pending>,
     replies: Vec<Option<Reply>>,
     last_changed: Option<usize>,
+    live_selection: Option<op_editor_core::SelectionState>,
     changed: usize,
     fatal: Option<String>,
     persisted: bool,
@@ -52,6 +55,7 @@ impl<'s, 'q> Transaction<'s, 'q> {
             pending: Vec::with_capacity(requests.len()),
             replies: (0..requests.len()).map(|_| None).collect(),
             last_changed: None,
+            live_selection: None,
             changed: 0,
             fatal: None,
             persisted: false,
@@ -90,6 +94,36 @@ impl<'s, 'q> Transaction<'s, 'q> {
             self.fatal = Some(reason);
             return;
         }
+        if self.live_selection.is_none()
+            && op_mcp::parse_tool_call(&request.line)
+                .is_some_and(|call| mcp_serve::cohort_coverage::structural_tool(&call.tool))
+        {
+            let before_selection_budget = self.budget;
+            let selection = &self.editor.selection;
+            let bytes = selection
+                .set
+                .len()
+                .saturating_mul(std::mem::size_of::<op_editor_core::NodeId>())
+                .saturating_add(
+                    selection
+                        .set
+                        .iter()
+                        .map(|id| id.as_str().len())
+                        .sum::<usize>(),
+                )
+                .saturating_add(selection.anchor.as_str().len())
+                .saturating_add(std::mem::size_of::<op_editor_core::SelectionState>());
+            if selection.set.len() > 16_384
+                || bytes > 2 * 1024 * 1024
+                || self.budget.reserve_live_selection(bytes).is_err()
+                || !self.capture_quota.grow_to(self.budget.used())
+            {
+                self.budget = before_selection_budget;
+                self.replies[index] = Some(request.reply(ReplyValue::Isolated));
+                return;
+            }
+            self.live_selection = Some(selection.clone());
+        }
         let before_budget = self.budget;
         let budget = &mut self.budget;
         let capture_quota = &mut self.capture_quota;
@@ -115,7 +149,7 @@ impl<'s, 'q> Transaction<'s, 'q> {
                     &request.line,
                     request.profile,
                     true,
-                    |_, editor, command| {
+                    |tool, editor, command| {
                         command_count += 1;
                         if command_count != 1 {
                             failure = Some(
@@ -123,53 +157,43 @@ impl<'s, 'q> Transaction<'s, 'q> {
                             );
                             return false;
                         }
-                        if !metadata_command(command) {
+                        if !audited_command(command)
+                            || !mcp_serve::cohort_coverage::repair_free(editor, tool, command)
+                        {
                             isolated = true;
                             return false;
                         }
                         let before = editor.document_revision();
                         let attempt =
                             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                                editor.try_apply_captured_metadata(
-                                    command.clone(),
+                                apply::apply(
+                                    editor,
+                                    command,
+                                    request.line.len(),
+                                    budget,
+                                    capture_quota,
+                                    metrics,
                                     &mut capture,
-                                    |state, target| {
-                                        if budget
-                                            .reserve_metadata_target(
-                                                state,
-                                                command,
-                                                request.line.len(),
-                                                target,
-                                            )
-                                            .is_err()
-                                            || !capture_quota.grow_to(budget.forecast().projected)
-                                        {
-                                            metrics
-                                                .capture_refusals
-                                                .fetch_add(1, Ordering::Relaxed);
-                                            return false;
-                                        }
-                                        true
-                                    },
                                 )
                             }));
                         match attempt {
-                            Ok(Some(ok)) => {
+                            Ok(apply::Outcome::Applied(ok)) => {
                                 applied = ok;
                                 changed = editor.document_revision() != before;
                                 if !ok && changed {
                                     failure = Some(
-                                        "resident grouped setter refused after mutation".to_owned(),
+                                        "resident grouped command refused after mutation"
+                                            .to_owned(),
                                     );
                                 }
                                 ok
                             }
-                            Ok(None) => {
+                            Ok(apply::Outcome::Isolated) => {
                                 isolated = true;
                                 false
                             }
                             Err(_) => {
-                                failure = Some("resident grouped setter panicked".to_owned());
+                                failure = Some("resident grouped command panicked".to_owned());
                                 false
                             }
                         }
@@ -182,7 +206,7 @@ impl<'s, 'q> Transaction<'s, 'q> {
                     .is_some_and(|response| response.len() > MAX_REPLY);
                 isolated |= oversized;
                 // No deferred external effects are admitted here. A rejected
-                // or unrepresentable metadata call can fall back only after
+                // or unrepresentable bounded call can fall back only after
                 // its exact capture has demonstrably restored all local state.
                 if !applied || isolated || failure.is_some() || result.is_err() {
                     if let Some(checkpoint) = capture.take() {
@@ -234,7 +258,7 @@ impl<'s, 'q> Transaction<'s, 'q> {
         if applied {
             self.pending.push(Pending {
                 request: index,
-                capture: capture.expect("applied metadata capture"),
+                capture: capture.expect("applied bounded capture"),
             });
         }
         if changed {
@@ -257,7 +281,11 @@ impl<'s, 'q> Transaction<'s, 'q> {
                 .rolled_back
                 .fetch_add(1, Ordering::Relaxed);
         }
-        if !clean {
+        if clean {
+            if let Some(selection) = self.live_selection.take() {
+                self.editor.selection = selection;
+            }
+        } else {
             self.fence.trip();
         }
         clean

@@ -39,7 +39,7 @@ pub(super) fn remove_path(nodes: &[PenNode], id: &NodeId) -> Option<Vec<usize>> 
     }
     None
 }
-fn authored<'a>(roots: &'a [PenNode], path: &[usize]) -> Option<&'a PenNode> {
+pub(super) fn authored<'a>(roots: &'a [PenNode], path: &[usize]) -> Option<&'a PenNode> {
     let mut nodes = roots;
     let mut result = None;
     for index in path {
@@ -52,7 +52,12 @@ fn authored<'a>(roots: &'a [PenNode], path: &[usize]) -> Option<&'a PenNode> {
     }
     result
 }
+#[path = "target_insert_plan.rs"]
+mod rich;
 pub(super) fn plan(state: &EditorState, command: &C, active: usize) -> Option<TargetSpec> {
+    if let Some(plan) = rich::plan(state, command, active) {
+        return Some(plan);
+    }
     let raw = match command {
         C::InsertNode { page_id, .. }
         | C::DeleteNode { page_id, .. }

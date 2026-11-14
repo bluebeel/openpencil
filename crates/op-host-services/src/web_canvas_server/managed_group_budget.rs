@@ -174,6 +174,9 @@ fn target<'a>(state: &'a EditorState, command: &C) -> Option<&'a PenNode> {
         | C::SetEllipseArc { node_id, .. }
         | C::AddNodeEffect { node_id, .. }
         | C::RemoveNodeEffect { node_id, .. }
+        | C::SetEffectParam { node_id, .. }
+        | C::SetEffectColor { node_id, .. }
+        | C::SetNodeLayoutProp { node_id, .. }
         | C::SetNodeStrokeSideWidth { node_id, .. } => (node_id, None),
         _ => return None,
     };
@@ -203,6 +206,9 @@ fn target<'a>(state: &'a EditorState, command: &C) -> Option<&'a PenNode> {
 impl Budget {
     pub(crate) fn forecast(&self) -> Forecast {
         self.last
+    }
+    pub(crate) fn used(&self) -> usize {
+        self.used
     }
     fn size_error(&mut self, error: CaptureSizeError) -> usize {
         match error {
@@ -283,6 +289,11 @@ impl Budget {
         } else if matches!(
             command,
             C::InsertNode { .. }
+                | C::BatchInsert { .. }
+                | C::InsertSubtree { .. }
+                | C::InsertAuthoredSubtree { .. }
+                | C::InsertAuthoredSubtreePreservingRoots { .. }
+                | C::Batch { .. }
                 | C::DeleteNode { .. }
                 | C::CopyNode { .. }
                 | C::DuplicateSelected { .. }

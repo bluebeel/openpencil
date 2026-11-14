@@ -55,7 +55,13 @@ fn collect(
     }
     if matches!(
         command,
-        C::InsertNode { .. } | C::DeleteNode { .. } | C::CopyNode { .. }
+        C::InsertNode { .. }
+            | C::DeleteNode { .. }
+            | C::CopyNode { .. }
+            | C::BatchInsert { .. }
+            | C::InsertSubtree { .. }
+            | C::InsertAuthoredSubtree { .. }
+            | C::InsertAuthoredSubtreePreservingRoots { .. }
     ) {
         if in_batch {
             return None;
@@ -191,6 +197,9 @@ fn find_path(nodes: &[PenNode], id: &NodeId, path: &mut Vec<usize>) -> Option<Ve
 }
 
 pub(super) fn structural_bound(state: &EditorState, command: &C) -> Option<usize> {
+    if matches!(command, C::Batch { .. }) {
+        return batch_bound(state, command);
+    }
     if matches!(command, C::NudgeSelected { .. } | C::AlignSelected { .. }) {
         return selection::plan(state, command, state.ui.active_page_index).map(|(_, bytes)| bytes);
     }
@@ -238,4 +247,53 @@ pub(super) fn metadata_target<'a>(
         nodes = nodes.get(*at)?.children()?;
     }
     nodes.get(*last)
+}
+
+/// Only pre-existing metadata targets have stable paths across every child.
+/// Structural/dynamic/header batches keep their ordinary isolated transaction.
+fn batch_bound(state: &EditorState, command: &C) -> Option<usize> {
+    let command_scope::Classification::Scoped(classified) = command_scope::classify(state, command)
+    else {
+        return None;
+    };
+    if classified.header {
+        return None;
+    }
+    let targets = plan(state, command)?;
+    let limit = crate::history_snapshot::COMMAND_CAPTURE_ALLOWANCE;
+    let mut bytes = 64 * 1024usize;
+    for spec in targets {
+        if spec.subtree || spec.splice.is_some() || spec.topology.is_some() {
+            return None;
+        }
+        let mut nodes = match &spec.scope {
+            Scope::Root => state.doc.children.as_slice(),
+            Scope::Page { index, .. } => state.doc.pages.as_ref()?.get(*index)?.children.as_slice(),
+        };
+        let (last, parents) = spec.path.split_last()?;
+        for at in parents {
+            nodes = nodes.get(*at)?.children()?;
+        }
+        let node = nodes.get(*last)?;
+        bytes = bytes.checked_add(
+            crate::history_snapshot::command_capture_node_bytes(
+                node,
+                true,
+                limit.checked_sub(bytes)?,
+            )
+            .ok()?,
+        )?;
+        bytes = bytes.checked_add(
+            spec.path
+                .len()
+                .checked_mul(std::mem::size_of::<usize>() * 4)?,
+        )?;
+        if let Scope::Page { id, .. } = &spec.scope {
+            bytes = bytes.checked_add(id.len().checked_mul(8)?)?;
+        }
+        if bytes > limit {
+            return None;
+        }
+    }
+    Some(bytes)
 }

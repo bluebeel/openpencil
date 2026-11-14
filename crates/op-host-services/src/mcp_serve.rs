@@ -624,6 +624,7 @@ mod doc_sync;
 pub use doc_sync::*;
 
 pub(crate) mod agent_context;
+pub(crate) mod cohort_coverage;
 pub(crate) mod export_stream;
 pub(crate) mod file_ownership;
 pub(crate) mod http_export;
