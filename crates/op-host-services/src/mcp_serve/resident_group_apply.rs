@@ -38,7 +38,7 @@ pub(super) fn apply(
         return result.map_or(Outcome::Isolated, Outcome::Applied);
     }
     if let Some(result) =
-        super::super::cohort_generation::apply(editor, command, tool, capture, |state, extra| {
+        crate::mcp_serve::cohort_generation::apply(editor, command, tool, capture, |state, extra| {
             let ok = budget
                 .reserve_generated(state, command, input, extra)
                 .is_ok();
@@ -46,8 +46,8 @@ pub(super) fn apply(
         })
     {
         return match result {
-            super::super::cohort_generation::Outcome::Applied(ok) => Outcome::Applied(ok),
-            super::super::cohort_generation::Outcome::Isolated => Outcome::Isolated,
+            crate::mcp_serve::cohort_generation::Outcome::Applied(ok) => Outcome::Applied(ok),
+            crate::mcp_serve::cohort_generation::Outcome::Isolated => Outcome::Isolated,
         };
     }
     let mut attempted = false;

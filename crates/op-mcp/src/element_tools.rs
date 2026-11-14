@@ -169,9 +169,19 @@ pub fn element_tool_schema(component_name: &str, component_id: &str) -> String {
 }
 
 fn canonical_element_tool_schema(tool: &str, component_name: &str) -> String {
-    format!(
-        r#"{{"name":"{tool}","description":"Insert a {component_name} from the built-in UIKit onto the active page. Optional x/y doc-px floats place the top-left; defaults to (0, 0).","inputSchema":{{"type":"object","properties":{{"x":{{"type":"string","description":"top-left doc-px (float)"}},"y":{{"type":"string","description":"top-left doc-px (float)"}}}}}}}}"#
-    )
+    serde_json::json!({
+        "name": tool,
+        "description": format!(
+            "Insert a {component_name} from the built-in UIKit onto the active page. Optional x/y doc-px floats place the top-left; defaults to (0, 0)."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "x": {"type": "string", "description": "top-left doc-px (float)"},
+                "y": {"type": "string", "description": "top-left doc-px (float)"}
+            }
+        }
+    }).to_string()
 }
 
 /// JSON-encoded schemas for every element tool the live state has —

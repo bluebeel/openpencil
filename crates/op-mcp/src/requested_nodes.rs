@@ -17,8 +17,36 @@ pub(super) fn find<'a, S: AsRef<str>>(roots: &'a [PenNode], ids: &[S]) -> Vec<&'
     find_multiple(roots, ids, &mut || {})
 }
 
+/// First matches across ordered document forests. Keep one unresolved-ID set
+/// across pages and stop as soon as all targets have their first match.
+pub(super) fn find_in_forests<'a, S: AsRef<str>>(
+    forests: impl IntoIterator<Item = &'a [PenNode]>,
+    ids: &[S],
+) -> Vec<&'a PenNode> {
+    if ids.len() == 1 {
+        let Some(id) = NodeId::new_opt(ids[0].as_ref()) else {
+            return Vec::new();
+        };
+        for roots in forests {
+            if let Some(node) = find_node(roots, &id) {
+                return vec![node];
+            }
+        }
+        return Vec::new();
+    }
+    find_multiple_forests(forests, ids, &mut || {})
+}
+
 fn find_multiple<'a, S: AsRef<str>>(
     roots: &'a [PenNode],
+    ids: &[S],
+    visited: &mut impl FnMut(),
+) -> Vec<&'a PenNode> {
+    find_multiple_forests(std::iter::once(roots), ids, visited)
+}
+
+fn find_multiple_forests<'a, S: AsRef<str>>(
+    forests: impl IntoIterator<Item = &'a [PenNode]>,
     ids: &[S],
     visited: &mut impl FnMut(),
 ) -> Vec<&'a PenNode> {
@@ -29,7 +57,12 @@ fn find_multiple<'a, S: AsRef<str>>(
         .filter(|id| !id.is_empty())
         .collect();
     let mut found = HashMap::with_capacity(wanted.len());
-    visit(roots, &mut wanted, &mut found, visited);
+    for roots in forests {
+        if wanted.is_empty() {
+            break;
+        }
+        visit(roots, &mut wanted, &mut found, visited);
+    }
     ids.iter()
         .filter_map(|id| found.get(id.as_ref()).copied())
         .collect()

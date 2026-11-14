@@ -181,12 +181,13 @@ impl ExportContext<'_> {
 
     fn find_requested<S: AsRef<str>>(&self, ids: &[S]) -> Vec<Option<&PenNode>> {
         let mut found = HashMap::new();
-        for (_, roots) in self.pages() {
-            for node in super::requested_nodes::find(roots, ids) {
-                // The old per-ID lookup stops at the first matching page/DFS
-                // node; duplicate authored IDs must not change that rule.
-                found.entry(node.id_str()).or_insert(node);
-            }
+        for node in super::requested_nodes::find_in_forests(
+            self.pages().into_iter().map(|(_, roots)| roots),
+            ids,
+        ) {
+            // Ordered forests preserve first-page/DFS identity and requested
+            // duplicates without rescanning later pages for resolved targets.
+            found.entry(node.id_str()).or_insert(node);
         }
         ids.iter()
             .map(|id| found.get(id.as_ref()).copied())
