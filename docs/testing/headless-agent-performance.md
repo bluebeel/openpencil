@@ -5,7 +5,12 @@ service. External model/agent processes are excluded; the load generator is
 included in the aggregate memory measurement. Each client sends sequential
 MCP batches, and a bounded request window provides backpressure.
 
-The latest [batched checkpoint](engine-checkpoint-9.md) integrates recursive undo
+The latest [batched checkpoint](engine-checkpoint-10.md) reduces multi-file,
+undo, program and shadow CPU costs while retaining all 12 checkpoint-9 PNGs.
+It fixes advertised kit-tool dispatch and repeated-copy references, and records
+strict 1 GB workload gates plus a 1,000-agent-ID idle sample. Single-file
+insertion remains a CPU optimization target.
+The [previous checkpoint](engine-checkpoint-9.md) integrates recursive undo
 sharing, failed-save recovery, indexed imports and rounded-shadow profiles.
 Cold OpenBridge exports now fit below 1 GB in the measured suite; standalone
 undo, contexts, bulk exports and operation gates pass. Undo and shadow CPU
