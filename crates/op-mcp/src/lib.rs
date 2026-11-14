@@ -467,6 +467,11 @@ pub enum ToolOutcome {
 pub trait McpTool: Send + Sync {
     fn name(&self) -> &str;
     fn call(&self, args: &BTreeMap<String, String>) -> ToolOutcome;
+    /// Consume a request-local tool, allowing prepared replies to move rather
+    /// than copy. Reusable registries retain the ordinary borrowed call path.
+    fn call_once(self: Box<Self>, args: &BTreeMap<String, String>) -> ToolOutcome {
+        self.call(args)
+    }
 }
 
 /// Registry — owned by the MCP server. v1 is a plain map; a future
@@ -492,56 +497,9 @@ impl ToolRegistry {
                 message: format!("unknown tool: {}", call.tool),
             };
         };
-        match tool.call(&call.arguments) {
-            ToolOutcome::Ok(result) => ToolResponse::Ok {
-                id: call.id,
-                result,
-                command: None,
-                json: None,
-                image: None,
-            },
-            ToolOutcome::OkWithCommand(result, command) => ToolResponse::Ok {
-                id: call.id,
-                result,
-                command: Some(command),
-                json: None,
-                image: None,
-            },
-            ToolOutcome::OkJson(json) => ToolResponse::Ok {
-                id: call.id,
-                result: BTreeMap::new(),
-                command: None,
-                json: Some(json),
-                image: None,
-            },
-            ToolOutcome::OkJsonWithCommand(json, command) => ToolResponse::Ok {
-                id: call.id,
-                result: BTreeMap::new(),
-                command: Some(command),
-                json: Some(json),
-                image: None,
-            },
-            ToolOutcome::OkImageContent {
-                image_base64,
-                mime_type,
-                metadata_json,
-            } => ToolResponse::Ok {
-                id: call.id,
-                result: BTreeMap::new(),
-                command: None,
-                json: metadata_json,
-                image: Some(Box::new(ImageContent {
-                    data: image_base64,
-                    mime_type,
-                })),
-            },
-            ToolOutcome::Err(code, message) => ToolResponse::Err {
-                id: call.id,
-                code,
-                message,
-            },
-        }
+        owned_dispatch::into_response(call.id, tool.call(&call.arguments))
     }
+
     pub fn names(&self) -> Vec<&str> {
         self.tools.keys().map(String::as_str).collect()
     }
@@ -657,3 +615,6 @@ where
         writer.flush()?;
     }
 }
+
+#[path = "owned_dispatch.rs"]
+mod owned_dispatch;

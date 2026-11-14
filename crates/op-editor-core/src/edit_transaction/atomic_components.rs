@@ -48,6 +48,14 @@ pub(super) fn preserves(state: &EditorState, command: &C, targets: Option<&[Targ
         | C::InsertAuthoredSubtreePreservingRoots { nodes, .. } => {
             no_definitions(nodes) && removed_preserve_catalog(state, spec)
         }
+        C::CopyNode {
+            node_id,
+            overrides_json,
+            ..
+        } => {
+            splice.remove == 0
+                && copy_preserves_catalog(state, spec, node_id, overrides_json.as_deref())
+        }
         C::DeleteNode { .. } => removed_preserve_catalog(state, spec),
         _ => false,
     }
@@ -121,4 +129,41 @@ fn removed_preserve_catalog(state: &EditorState, spec: &TargetSpec) -> bool {
         }
     }
     true
+}
+
+// CopyNode keeps all cloned ids fresh, but authored children/type/reusable
+// overrides could introduce new definitions and must retain the full catalog.
+fn copy_preserves_catalog(
+    state: &EditorState,
+    spec: &TargetSpec,
+    id: &crate::NodeId,
+    overrides: Option<&str>,
+) -> bool {
+    if let Some(raw) = overrides {
+        let Ok(serde_json::Value::Object(fields)) = serde_json::from_str(raw) else {
+            return false;
+        };
+        if fields.contains_key("children")
+            || fields.contains_key("type")
+            || fields
+                .get("reusable")
+                .is_some_and(|value| !value.is_null() && value != &serde_json::Value::Bool(false))
+        {
+            return false;
+        }
+    }
+    let roots = match &spec.scope {
+        Scope::Root => state.doc.children.as_slice(),
+        Scope::Page { index, id } => {
+            let Some(page) = state.doc.pages.as_ref().and_then(|pages| pages.get(*index)) else {
+                return false;
+            };
+            if page.id != *id {
+                return false;
+            }
+            page.children.as_slice()
+        }
+    };
+    crate::walkers::find_node(roots, id)
+        .is_some_and(|node| no_definitions(std::slice::from_ref(node)))
 }

@@ -200,7 +200,7 @@ pub(super) fn complete_response(response: &str) -> Result<Option<String>, McpSer
     let _executing = Executing(id);
     let mut registry = ToolRegistry::default();
     registry.register(Box::new(OwnedTool(pending.tool)));
-    let result = registry.dispatch(pending.call);
+    let result = registry.dispatch_once(pending.call);
     if matches!(
         &result,
         ToolResponse::Ok {

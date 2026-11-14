@@ -156,6 +156,13 @@ where
             }
         }
     }
+    if let Some(call) = call {
+        return Ok(Some(super::owned_dispatch::process(
+            registry,
+            call,
+            |tool_name, cmd| apply(tool_name, state, AuthorityAction::Command(cmd)),
+        )));
+    }
     process_tool_message_with_registry(&registry, line, |tool_name, cmd| {
         apply(tool_name, state, AuthorityAction::Command(cmd))
     })

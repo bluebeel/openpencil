@@ -18,26 +18,46 @@ pub fn escape_json(s: &str) -> String {
 /// included.
 pub fn escape_json_quoted(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
-    out.push('"');
-    push_escaped(&mut out, s);
-    out.push('"');
+    push_json_quoted(&mut out, s);
     out
 }
 
-fn push_escaped(out: &mut String, s: &str) {
-    for c in s.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if (c as u32) < 0x20 => {
-                out.push_str(&format!("\\u{:04x}", c as u32));
+/// Append a complete JSON string literal to an existing output buffer.
+pub fn push_json_quoted(out: &mut String, s: &str) {
+    out.push('"');
+    push_escaped(out, s);
+    out.push('"');
+}
+
+/// Append canonical JSON string contents without surrounding quotes.
+pub fn push_escaped(out: &mut String, s: &str) {
+    // Every special byte is ASCII and therefore a UTF-8 boundary. Copy long
+    // ordinary spans (including all Unicode) at once, avoiding per-character
+    // UTF-8 decoding and pushes for base64 images and large JSON replies.
+    let mut start = 0;
+    for (at, byte) in s.bytes().enumerate() {
+        let escape = match byte {
+            b'"' => "\\\"",
+            b'\\' => "\\\\",
+            b'\n' => "\\n",
+            b'\r' => "\\r",
+            b'\t' => "\\t",
+            byte if byte < 0x20 => {
+                out.push_str(&s[start..at]);
+                const HEX: &[u8; 16] = b"0123456789abcdef";
+                out.push_str("\\u00");
+                out.push(HEX[(byte >> 4) as usize] as char);
+                out.push(HEX[(byte & 15) as usize] as char);
+                start = at + 1;
+                continue;
             }
-            c => out.push(c),
-        }
+            _ => continue,
+        };
+        out.push_str(&s[start..at]);
+        out.push_str(escape);
+        start = at + 1;
     }
+    out.push_str(&s[start..]);
 }
 
 #[cfg(test)]

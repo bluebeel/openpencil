@@ -192,7 +192,7 @@ where
                     Some(&call.arguments),
                 );
                 let outcome =
-                    outcome(registry.dispatch(call), read).map_err(|error| error.at(index))?;
+                    outcome(registry.dispatch_once(call), read).map_err(|error| error.at(index))?;
                 if let Some(key) = key {
                     read_cache.insert(key, outcome.0.clone());
                 }

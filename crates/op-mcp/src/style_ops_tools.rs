@@ -34,6 +34,13 @@ impl McpTool for SearchAllUniqueProperties {
     fn name(&self) -> &str {
         "search_all_unique_properties"
     }
+    fn call_once(mut self: Box<Self>, args: &BTreeMap<String, String>) -> ToolOutcome {
+        match self.prepared.take() {
+            Some(outcome) => outcome,
+            None => self.call(args),
+        }
+    }
+
     fn call(&self, args: &BTreeMap<String, String>) -> ToolOutcome {
         if let Some(outcome) = &self.prepared {
             return outcome.clone();
@@ -49,6 +56,13 @@ impl McpTool for ReplaceAllMatchingProperties {
     fn name(&self) -> &str {
         "replace_all_matching_properties"
     }
+    fn call_once(mut self: Box<Self>, args: &BTreeMap<String, String>) -> ToolOutcome {
+        match self.prepared.take() {
+            Some(outcome) => outcome,
+            None => self.call(args),
+        }
+    }
+
     fn call(&self, args: &BTreeMap<String, String>) -> ToolOutcome {
         if let Some(outcome) = &self.prepared {
             return outcome.clone();

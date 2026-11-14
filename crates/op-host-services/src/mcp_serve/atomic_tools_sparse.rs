@@ -124,7 +124,7 @@ fn collect(
         profile,
         Some(&call.arguments),
     );
-    let (result, command) = super::outcome(registry.dispatch(call), false)?;
+    let (result, command) = super::outcome(registry.dispatch_once(call), false)?;
     let command =
         command.ok_or_else(|| BatchError::argument("authoring tool must return a command"))?;
     Ok((result, super::flatten(command)?))

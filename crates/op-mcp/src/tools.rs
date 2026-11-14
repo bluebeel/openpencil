@@ -233,6 +233,9 @@ impl McpTool for PreparedSelection {
     fn name(&self) -> &str {
         "get_selection"
     }
+    fn call_once(self: Box<Self>, _: &BTreeMap<String, String>) -> ToolOutcome {
+        self.outcome
+    }
     fn call(&self, _args: &BTreeMap<String, String>) -> ToolOutcome {
         self.outcome.clone()
     }

@@ -695,3 +695,5 @@ mod tests;
 mod undo_dispatch_tests;
 #[cfg(test)]
 mod wire_tests;
+
+mod owned_dispatch;

@@ -93,6 +93,13 @@ impl McpTool for CodegenExport {
         "codegen_export"
     }
 
+    fn call_once(mut self: Box<Self>, args: &BTreeMap<String, String>) -> ToolOutcome {
+        match self.prepared.take() {
+            Some(outcome) => outcome,
+            None => self.call(args),
+        }
+    }
+
     fn call(&self, args: &BTreeMap<String, String>) -> ToolOutcome {
         if let Some(outcome) = &self.prepared {
             return outcome.clone();

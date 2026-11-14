@@ -231,7 +231,7 @@ fn prepare_inner(
                     Some(&call.arguments),
                 );
                 let outcome =
-                    outcome(registry.dispatch(call), read_step).map_err(|e| e.at(index))?;
+                    outcome(registry.dispatch_once(call), read_step).map_err(|e| e.at(index))?;
                 if let Some(key) = cache_key {
                     read_cache.insert(key, outcome.0.clone());
                 }
