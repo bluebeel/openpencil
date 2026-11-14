@@ -3,6 +3,7 @@
 mod shader;
 #[cfg(test)]
 mod tests;
+mod varyings;
 
 use super::{
     contain_rect,
@@ -114,11 +115,12 @@ pub(super) fn draw(
         options.corner_radius.max(0.0),
         options.corner_radius.max(0.0),
     );
-    let Some(shader) = shader::make_with_rotation(
+    let Some(shader) = shader::make_with_vertex_uv(
         canvas,
         &image,
         &local.local,
         local.rotation_uv,
+        options.transform.or(local.rotation_uv),
         &shape,
         if point { 0.0 } else { grid },
     ) else {

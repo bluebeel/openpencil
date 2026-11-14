@@ -110,18 +110,26 @@ half4 main(float2 p) {
 
 const MAX_DIRECT_DIMENSION: i32 = 32768;
 
-// Exactly two programs per render thread. A uniform branch did not improve
+// Four fixed programs per render thread. A uniform branch did not improve
 // measured CPU sampling throughput, so select the program at construction.
-fn make_effect(small: bool) -> Option<RuntimeEffect> {
+fn make_effect(small: bool, vertex: bool) -> Option<RuntimeEffect> {
+    let source_body = if vertex {
+        SOURCE.replacen("float4 sampleBytes", &format!("{}\nfloat4 sampleBytes", include_str!("varyings.sksl")), 1)
+            .replacen("float4 color = float4(image.eval(nearestTexel(uv)));", "uv = vertexUv(p, offset, uv);\n    float4 color = float4(image.eval(nearestTexel(uv)));", 1)
+    } else {
+        SOURCE.to_owned()
+    };
     let source = format!(
-        "const bool directAddress = {};\n{SOURCE}",
+        "const bool directAddress = {};\n{source_body}",
         if small { "true" } else { "false" }
     );
     RuntimeEffect::make_for_shader(&source, None).ok()
 }
 thread_local! {
-    static EFFECT: Option<RuntimeEffect> = make_effect(false);
-    static SMALL_EFFECT: Option<RuntimeEffect> = make_effect(true);
+    static EFFECT: Option<RuntimeEffect> = make_effect(false, false);
+    static SMALL_EFFECT: Option<RuntimeEffect> = make_effect(true, false);
+    static VERTEX_EFFECT: Option<RuntimeEffect> = make_effect(false, true);
+    static SMALL_VERTEX_EFFECT: Option<RuntimeEffect> = make_effect(true, true);
 }
 
 #[cfg(test)]
@@ -135,11 +143,24 @@ pub(super) fn make(
     make_with_rotation(canvas, image, local, None, shape, grid)
 }
 
+#[cfg(test)]
 pub(super) fn make_with_rotation(
     canvas: &Canvas,
     image: &Image,
     local: &Matrix,
     rotation_uv: Option<[f32; 6]>,
+    shape: &RRect,
+    grid: f32,
+) -> Option<Shader> {
+    make_with_vertex_uv(canvas, image, local, rotation_uv, None, shape, grid)
+}
+
+pub(super) fn make_with_vertex_uv(
+    canvas: &Canvas,
+    image: &Image,
+    local: &Matrix,
+    rotation_uv: Option<[f32; 6]>,
+    vertex_uv: Option<[f32; 6]>,
     shape: &RRect,
     grid: f32,
 ) -> Option<Shader> {
@@ -166,6 +187,7 @@ pub(super) fn make_with_rotation(
         uv.scale_y() / h,
         uv.translate_y() / h,
     ]);
+    let vertex = vertex_uv.and_then(|uv| super::varyings::uniforms(&device, *rect, uv, grid));
     let uniforms = [
         rect.left,
         rect.top,
@@ -194,25 +216,46 @@ pub(super) fn make_with_rotation(
         if rotation_uv.is_some() { 1.0 } else { 0.0 },
         grid,
     ];
-    let bytes: Vec<u8> = uniforms.iter().flat_map(|v| v.to_ne_bytes()).collect();
-    let effect = if image.width() <= MAX_DIRECT_DIMENSION && image.height() <= MAX_DIRECT_DIMENSION
-    {
-        &SMALL_EFFECT
-    } else {
-        &EFFECT
-    };
-    effect.with(|effect| {
+    let bytes: Vec<u8> = uniforms
+        .iter()
+        .chain(vertex.as_ref().into_iter().flat_map(|v| v.iter()))
+        .flat_map(|v| v.to_ne_bytes())
+        .collect();
+    let build = |effect: &Option<RuntimeEffect>| {
         let effect = effect.as_ref()?;
         if effect.uniform_size() != bytes.len() {
             return None;
         }
         effect.make_shader(Data::new_copy(&bytes), &[ChildPtr::Shader(child)], None)
-    })
+    };
+    let small = image.width() <= MAX_DIRECT_DIMENSION && image.height() <= MAX_DIRECT_DIMENSION;
+    let result = match (small, vertex.is_some()) {
+        (true, true) => SMALL_VERTEX_EFFECT.with(build),
+        (false, true) => VERTEX_EFFECT.with(build),
+        (true, false) => SMALL_EFFECT.with(build),
+        (false, false) => EFFECT.with(build),
+    };
+    if result.is_none() && vertex.is_some() {
+        make_with_vertex_uv(canvas, image, local, rotation_uv, None, shape, grid)
+    } else {
+        result
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn vertex_programs_compile_with_exact_uniform_layout() {
+        for small in [false, true] {
+            let effect = make_effect(small, true).expect("vertex interpolation program");
+            assert_eq!(
+                effect.uniform_size(),
+                (26 + super::super::varyings::FLOATS) * 4
+            );
+        }
+    }
 
     fn constant_uv_pixel(width: i32, u: f32) -> skia_safe::Color {
         let pixels: Vec<u8> = (0..width)
@@ -498,7 +541,7 @@ mod tests {
             let side = 1.0 / zoom;
             let local = Matrix::scale((side / 4.0, side / 4.0));
             let shape = RRect::new_rect_xy(skia_safe::Rect::from_wh(side, side), 0.0, 0.0);
-            let effect = make_effect(false);
+            let effect = make_effect(false, false);
             assert!(effect.is_some(), "{effect:?}");
             let shader = make(canvas, &image, &local, &shape, 2.0).unwrap();
             let mut paint = skia_safe::Paint::default();
