@@ -94,3 +94,19 @@ Next priorities are an exact bounded history transaction for ordinary edits,
 the unrelated empty-child mutation, durable-write throughput and remaining
 renderer mismatches. All remaining operation/large-file/concurrency/fidelity
 acceptance requirements above remain active; no goal completion is claimed.
+
+## Checkpoint 14 continuation
+
+[Checkpoint 14](engine-checkpoint-14.md) records 207 focused passes and one
+consolidated product build. All four MUI logical-client counts retain exact final
+fields/bits; one-client service RSS falls to 154.6 MB and matched service CPU
+falls 47–56%. The matrix still caps active requests at 32 and global mutations
+at 64. Five additional hierarchy/alignment workflows pass at one client only.
+
+OpenBridge's additional service-plus-renderer control completes 20 acknowledged
+mutations within 940.4 MB RSS, but fails canonical preservation. Numeric source
+precision, unrelated repair heuristics and explicit-null presence are the next
+correctness fixes. The strict aggregate case remains a failed resource stop.
+All eight selected text-heavy reference comparisons improve; their cold render
+wall duration increases. Repeated text work and remaining exact pixel errors
+remain active, alongside every unfinished acceptance requirement above.

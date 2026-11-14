@@ -127,3 +127,26 @@ nodes but its first update reaches 1,022.5 MB in the largest process. Maximum ac
 requests remains 32; 64 mutation requests is the global per-case budget. These
 results do not cover all 27 families or 1,000 writers. The 10-client failure is real
 None-to-Some(empty) mutation, not numeric drift or a relaxed comparison.
+
+## Checkpoint-14 real-file outcomes
+
+[Checkpoint 14](engine-checkpoint-14.md) fixes the MUI 10-client child-presence
+failure. All four MUI cases now retain exact full-document fields/arrays/f64 bits.
+Service peak RSS is 154.6/179.7/214.7/218.3 MB; matched service CPU falls
+54.4/56.0/54.8/46.9%. Participation remains 20/64/64/64 mutations and
+1/10/64/64 writers, at most 32 active requests. This is not all operations at
+1,000 writers.
+
+The strict aggregate OpenBridge case stops export after 19 saved mutations
+above 1 GB including its generator. A separate service-plus-renderer control
+completes all 16 workflows/20 mutations at 940.4 MB engine RSS, then fails exact
+canonical verification on numeric precision, unsolicited path/stroke repair and
+explicit-null preservation. Neither is a passing full case. Larger Bridge
+client counts remain skipped.
+
+Five additional hierarchy/alignment workflows pass complete-file canonical
+verification on MUI at one client: reparent, reorder, root group/ungroup, nested
+group/ungroup and left/top align. The proposed private package has 32 families
+and 23 implemented workflows, of which variables/themes remain unexecuted.
+The unchanged public 27-family matrix still has 16 implemented workflows.
+The live catalog remains 179 tools; availability is not benchmark coverage.

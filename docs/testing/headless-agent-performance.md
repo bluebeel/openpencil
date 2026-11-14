@@ -171,3 +171,13 @@ This serial matrix covers production move, resize, duplicate, text, shadow,
 component creation/instancing, SVG import, PNG image export, selection,
 copy/paste, viewport changes and undo/redo. Its `svg-export` metric means an
 imported SVG rendered to PNG; vector SVG serialization is separate coverage.
+
+The latest [checkpoint 14](engine-checkpoint-14.md) measures durable operations
+on the complete MUI document at 1/10/100/1,000 logical clients. All retain exact
+final fields and numeric bits, using 154.6/179.7/214.7/218.3 MB service RSS and
+47–56% less service CPU than the matched checkpoint-13 sequences. Only 64
+global mutations and 32 active requests are admitted in the larger cases.
+OpenBridge completes a separate service-plus-renderer sequence at 940.4 MB RSS,
+but final canonical preservation fails and remains an active fix. The earlier
+strict aggregate resource stop is retained separately. These observations do
+not establish all operations, all writers or a universal memory bound.
