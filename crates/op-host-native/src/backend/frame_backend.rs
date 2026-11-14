@@ -16,6 +16,7 @@ pub struct NativeFrameBackend<'a> {
     // `frame_offscreen.rs` can reach the canvas + backend they wrap.
     pub(super) inner: &'a mut NativeBackend,
     pub(super) canvas: &'a skia_safe::Canvas,
+    pub(super) shadow_basis: skia_safe::Matrix,
 }
 
 impl<'a> RenderBackend for NativeFrameBackend<'a> {
@@ -120,6 +121,34 @@ impl<'a> RenderBackend for NativeFrameBackend<'a> {
     fn fill_round_rect_per_corner(&mut self, rect: Rect, radii: [f32; 4], color: Color) {
         self.inner
             .fill_round_rect_per_corner(self.canvas, rect, radii, color);
+    }
+
+    fn shadow_offset_in_local_space(&self, offset: Point2D) -> Point2D {
+        let current = self.canvas.local_to_device_as_3x3();
+        if !current.is_finite()
+            || !self.shadow_basis.is_finite()
+            || current.has_perspective()
+            || self.shadow_basis.has_perspective()
+        {
+            return offset;
+        }
+        if current.scale_x() == self.shadow_basis.scale_x()
+            && current.scale_y() == self.shadow_basis.scale_y()
+            && current.skew_x() == self.shadow_basis.skew_x()
+            && current.skew_y() == self.shadow_basis.skew_y()
+        {
+            return offset;
+        }
+        let Some(inverse) = current.invert() else {
+            return offset;
+        };
+        let device = self.shadow_basis.map_vector((offset.x, offset.y));
+        let local = inverse.map_vector(device);
+        if local.x.is_finite() && local.y.is_finite() {
+            Point2D::new(local.x, local.y)
+        } else {
+            offset
+        }
     }
 
     fn fill_drop_shadow(&mut self, rect: Rect, radius: f32, blur: f32, color: Color) {

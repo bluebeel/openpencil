@@ -225,6 +225,10 @@ impl RenderBackend for BaselineAdjustingBackend<'_> {
             );
     }
 
+    fn shadow_offset_in_local_space(&self, offset: Point2D) -> Point2D {
+        self.inner.shadow_offset_in_local_space(offset)
+    }
+
     fn fill_drop_shadow(&mut self, rect: Rect, radius: f32, blur: f32, color: Color) {
         self.inner.fill_drop_shadow(rect, radius, blur, color);
     }

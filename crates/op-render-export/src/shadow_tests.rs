@@ -99,3 +99,75 @@ fn zero_spread_native_raster_matches_the_previous_backend_primitive() {
     );
     assert_eq!(actual, rgba(&mut expected));
 }
+
+#[test]
+fn rotated_and_reflected_outer_shadows_keep_canvas_axis_offsets() {
+    let backend = op_host_native::NativeBackend::with_dpi(1.0);
+    for degrees in [0.0_f32, -90.0, 90.0, 180.0] {
+        for flip_x in [false, true] {
+            let mut node = card(0.0, 0.0);
+            node.bounds = Rect::xywh(44.0, 48.0, 36.0, 24.0);
+            node.corner_radius = 0.0;
+            node.fill = None;
+            node.rotation = degrees.to_radians();
+            node.flip_x = flip_x;
+            let mut actual = surface();
+            paint_node(actual.canvas(), &node);
+            let mut expected = surface();
+            let canvas = expected.canvas();
+            // Apply displacement before the shape transform: this independent
+            // reference translates the transformed silhouette in canvas axes.
+            canvas.translate((12.0, 0.0));
+            let pivot = skia_safe::Point::new(62.0, 60.0);
+            if flip_x {
+                canvas.translate(pivot);
+                canvas.scale((-1.0, 1.0));
+                canvas.translate((-pivot.x, -pivot.y));
+            }
+            canvas.rotate(degrees, Some(pivot));
+            backend.fill_drop_shadow(canvas, node.bounds, 0.0, 0.0, Color::BLACK);
+            assert_eq!(
+                rgba(&mut actual),
+                rgba(&mut expected),
+                "{degrees}, {flip_x}"
+            );
+        }
+    }
+}
+
+#[test]
+fn rotated_svg_inner_shadows_keep_canvas_axis_offsets() {
+    let mut backend = op_host_native::NativeBackend::with_dpi(1.0);
+    let d = "M0 0H36V24H0Z";
+    for degrees in [-90.0_f32, 0.0, 90.0] {
+        let mut node = SceneNode::leaf("inset", NodeKind::Path);
+        node.bounds = Rect::xywh(44.0, 48.0, 36.0, 24.0);
+        node.svg_path = Some(d.into());
+        node.rotation = degrees.to_radians();
+        node.fill = None;
+        node.effects = vec![Effect::DropShadow(DropShadow {
+            offset_x: 8.0,
+            offset_y: 4.0,
+            blur: 0.0,
+            spread: 0.0,
+            color: Color::BLACK,
+            inner: true,
+        })];
+        let mut actual = surface();
+        paint_node(actual.canvas(), &node);
+        let mut expected = surface();
+        let canvas = expected.canvas();
+        canvas.rotate(degrees, Some(skia_safe::Point::new(62.0, 60.0)));
+        let (sin, cos) = degrees.to_radians().sin_cos();
+        backend.fill_inner_shadow_svg_path(
+            canvas,
+            d,
+            node.bounds,
+            8.0 * cos + 4.0 * sin,
+            -8.0 * sin + 4.0 * cos,
+            0.0,
+            Color::BLACK,
+        );
+        assert_eq!(rgba(&mut actual), rgba(&mut expected), "{degrees}");
+    }
+}

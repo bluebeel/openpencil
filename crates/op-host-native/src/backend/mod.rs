@@ -18,3 +18,6 @@ pub use skia::{
     end_image_paint_diagnostics, enumerate_system_font_families, image_paint_diagnostics_snapshot,
     resolvable_system_font_families, to_jian_rect, ImagePaintDiagnostics, NativeBackend,
 };
+
+#[cfg(test)]
+mod frame_shadow_tests;

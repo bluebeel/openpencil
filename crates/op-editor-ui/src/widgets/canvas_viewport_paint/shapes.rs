@@ -52,10 +52,13 @@ pub(super) fn paint_drop_shadows(
             continue;
         };
         let radius = spread_radius(radius, s.spread * zoom, silhouette);
+        let offset = cx
+            .backend
+            .shadow_offset_in_local_space(Point2D::new(s.offset_x * zoom, s.offset_y * zoom));
         let shadow_rect = Rect {
             origin: Point2D::new(
-                silhouette.origin.x + s.offset_x * zoom,
-                silhouette.origin.y + s.offset_y * zoom,
+                silhouette.origin.x + offset.x,
+                silhouette.origin.y + offset.y,
             ),
             size: silhouette.size,
         };
@@ -254,11 +257,14 @@ pub(crate) fn paint_svg_path_node(
             continue;
         };
         if s.inner {
+            let offset = cx
+                .backend
+                .shadow_offset_in_local_space(Point2D::new(s.offset_x * zoom, s.offset_y * zoom));
             cx.backend.fill_inner_shadow_svg_path_with_fill_rule(
                 d,
                 world_rect,
-                s.offset_x * zoom,
-                s.offset_y * zoom,
+                offset.x,
+                offset.y,
                 s.blur * zoom,
                 s.color,
                 node.even_odd_fill,

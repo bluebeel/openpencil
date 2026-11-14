@@ -34,7 +34,7 @@ pub(super) fn node_composite_layer_bounds(
     transforms: &[OverlayTransform],
 ) -> Rect {
     finish_layer_bounds(
-        subtree_visual_bounds(node, false, hidden_id),
+        subtree_visual_bounds(node, false, hidden_id, inverse_shadow_basis(transforms)),
         viewport_origin,
         zoom,
         cull,
@@ -55,9 +55,12 @@ pub(super) fn sibling_mask_layer_bounds<'a>(
     hidden_id: Option<&str>,
     transforms: &[OverlayTransform],
 ) -> Rect {
-    let mut bounds = subtree_visual_bounds(mask, true, hidden_id);
+    let mut bounds = subtree_visual_bounds(mask, true, hidden_id, inverse_shadow_basis(transforms));
     for node in content {
-        bounds = union_results(bounds, subtree_visual_bounds(node, true, hidden_id));
+        bounds = union_results(
+            bounds,
+            subtree_visual_bounds(node, true, hidden_id, inverse_shadow_basis(transforms)),
+        );
     }
     finish_layer_bounds(bounds, viewport_origin, zoom, cull, transforms)
 }
@@ -83,11 +86,12 @@ pub(super) fn subtree_intersects_cull(
         Ok(cull) => cull,
         Err(()) => return true,
     };
-    let doc_bounds = match subtree_visual_bounds(node, true, hidden_id) {
-        Ok(Some(bounds)) => bounds,
-        Ok(None) => return false,
-        Err(()) => return true,
-    };
+    let doc_bounds =
+        match subtree_visual_bounds(node, true, hidden_id, inverse_shadow_basis(transforms)) {
+            Ok(Some(bounds)) => bounds,
+            Ok(None) => return false,
+            Err(()) => return true,
+        };
     let world_bounds = match doc_to_world_rect(doc_bounds, viewport_origin, zoom)
         .and_then(|bounds| outset_rect(bounds, DEVICE_EDGE_PAD))
     {
@@ -101,18 +105,29 @@ fn subtree_visual_bounds(
     node: &SceneNode,
     apply_root_transform: bool,
     hidden_id: Option<&str>,
+    world_to_parent: glam::Mat2,
 ) -> BoundsResult {
     if node.hidden || hidden_id == Some(node.id.as_str()) {
         return Ok(None);
     }
 
+    let world_to_local = if apply_root_transform
+        && (node.flip_x || node.flip_y || node.rotation.abs() > f32::EPSILON)
+    {
+        inverse_node_basis(node.rotation, node.flip_x, node.flip_y) * world_to_parent
+    } else {
+        world_to_parent
+    };
     let own_bounds = finite_normalized_rect(node.bounds)?;
     let mut visual = own_bounds
         .map(|bounds| stroke_visual_bounds(node, bounds))
         .transpose()?;
 
     for child in &node.children {
-        visual = union_results(Ok(visual), subtree_visual_bounds(child, true, hidden_id))?;
+        visual = union_results(
+            Ok(visual),
+            subtree_visual_bounds(child, true, hidden_id, world_to_local),
+        )?;
     }
 
     // The painter currently casts outer shadows only for shapes whose
@@ -139,8 +154,8 @@ fn subtree_visual_bounds(
                 let Some(silhouette) = spread_rect(own, shadow.spread) else {
                     continue;
                 };
-                let mut shadow_bounds =
-                    translate_rect(silhouette, shadow.offset_x, shadow.offset_y)?;
+                let offset = world_to_local * glam::Vec2::new(shadow.offset_x, shadow.offset_y);
+                let mut shadow_bounds = translate_rect(silhouette, offset.x, offset.y)?;
                 if shadow.blur > 0.0 {
                     shadow_bounds =
                         outset_rect(shadow_bounds, shadow.blur * FILTER_OUTSET_PER_RADIUS)?;
@@ -201,6 +216,24 @@ fn subtree_visual_bounds(
     }
 
     Ok(visual)
+}
+
+// Shadow displacements use canvas axes even under ancestor transforms. Carry
+// only the inverse linear basis; translations do not affect these vectors.
+fn inverse_shadow_basis(transforms: &[OverlayTransform]) -> glam::Mat2 {
+    transforms
+        .iter()
+        .fold(glam::Mat2::IDENTITY, |basis, transform| {
+            inverse_node_basis(transform.rotation, transform.flip_x, transform.flip_y) * basis
+        })
+}
+
+fn inverse_node_basis(rotation: f32, flip_x: bool, flip_y: bool) -> glam::Mat2 {
+    glam::Mat2::from_angle(-rotation)
+        * glam::Mat2::from_diagonal(glam::Vec2::new(
+            if flip_x { -1.0 } else { 1.0 },
+            if flip_y { -1.0 } else { 1.0 },
+        ))
 }
 
 fn stroke_visual_bounds(node: &SceneNode, bounds: Rect) -> Result<Rect, ()> {
@@ -334,12 +367,14 @@ fn transformed_aabb(
     }
     let (sin, cos) = radians.sin_cos();
     let transform = |x: f32, y: f32| {
-        // Match `paint_node_inner`: mirror about the aggregate-bounds pivot,
-        // then rotate about that same pivot. The root blend caller skips this
-        // because its current canvas transform already applies both.
-        let dx = (x - pivot.x) * if flip_x { -1.0 } else { 1.0 };
-        let dy = (y - pivot.y) * if flip_y { -1.0 } else { 1.0 };
-        Point2D::new(pivot.x + dx * cos - dy * sin, pivot.y + dx * sin + dy * cos)
+        // Canvas concatenates flip then rotation as F*R: points rotate first,
+        // then mirror. The root blend caller already installed both.
+        let dx = x - pivot.x;
+        let dy = y - pivot.y;
+        Point2D::new(
+            pivot.x + (dx * cos - dy * sin) * if flip_x { -1.0 } else { 1.0 },
+            pivot.y + (dx * sin + dy * cos) * if flip_y { -1.0 } else { 1.0 },
+        )
     };
     let x2 = rect.origin.x + rect.size.x;
     let y2 = rect.origin.y + rect.size.y;
@@ -388,15 +423,12 @@ fn inverse_transform_rect(mut rect: Rect, transforms: &[OverlayTransform]) -> Re
         }
         let (sin, cos) = transform.rotation.sin_cos();
         let inverse = |x: f32, y: f32| {
-            let dx = x - transform.pivot.x;
-            let dy = y - transform.pivot.y;
-            // Forward order is flip then rotation. Inverse order is the
-            // opposite: rotate back, then apply the self-inverse mirrors.
-            let rx = dx * cos + dy * sin;
-            let ry = -dx * sin + dy * cos;
+            // Undo F*R by mirroring first, then rotating back.
+            let dx = (x - transform.pivot.x) * if transform.flip_x { -1.0 } else { 1.0 };
+            let dy = (y - transform.pivot.y) * if transform.flip_y { -1.0 } else { 1.0 };
             Point2D::new(
-                transform.pivot.x + rx * if transform.flip_x { -1.0 } else { 1.0 },
-                transform.pivot.y + ry * if transform.flip_y { -1.0 } else { 1.0 },
+                transform.pivot.x + dx * cos + dy * sin,
+                transform.pivot.y - dx * sin + dy * cos,
             )
         };
         let x2 = rect.origin.x + rect.size.x;
@@ -572,7 +604,7 @@ mod tests {
     }
 
     #[test]
-    fn descendant_flip_mirrors_offset_shadow_before_parent_layer_bounds() {
+    fn descendant_flip_keeps_canvas_axis_shadow_before_parent_layer_bounds() {
         let mut root = SceneNode::leaf("root", NodeKind::Group);
         root.children = vec![horizontally_flipped_shadow_node("child")];
         assert_eq!(
@@ -584,12 +616,12 @@ mod tests {
                 None,
                 &[],
             ),
-            Rect::xywh(-21.0, -1.0, 32.0, 12.0)
+            Rect::xywh(-1.0, -1.0, 32.0, 12.0)
         );
     }
 
     #[test]
-    fn mask_root_flip_mirrors_offset_shadow_in_mask_layer_bounds() {
+    fn mask_root_flip_keeps_canvas_axis_shadow_in_mask_layer_bounds() {
         let mask = horizontally_flipped_shadow_node("mask");
         assert_eq!(
             sibling_mask_layer_bounds(
@@ -601,7 +633,7 @@ mod tests {
                 None,
                 &[],
             ),
-            Rect::xywh(-21.0, -1.0, 32.0, 12.0)
+            Rect::xywh(-1.0, -1.0, 32.0, 12.0)
         );
     }
 
@@ -666,5 +698,71 @@ mod tests {
             node_composite_layer_bounds(&node, Point2D::ZERO, 1.0, cull, None, &[]),
             cull
         );
+    }
+    #[test]
+    fn combined_flip_rotation_bounds_match_canvas_concatenation_order() {
+        let rect = Rect::xywh(1.0, 2.0, 3.0, 5.0);
+        let rotation = std::f32::consts::FRAC_PI_2;
+        let actual = transformed_aabb(rect, true, false, rotation, Point2D::ZERO).unwrap();
+        for (a, b) in [
+            actual.origin.x,
+            actual.origin.y,
+            actual.size.x,
+            actual.size.y,
+        ]
+        .into_iter()
+        .zip([2.0, 1.0, 5.0, 3.0])
+        {
+            assert!((a - b).abs() < 0.00001);
+        }
+        let inverse = inverse_transform_rect(
+            actual,
+            &[OverlayTransform {
+                rotation,
+                flip_x: true,
+                flip_y: false,
+                pivot: Point2D::ZERO,
+            }],
+        )
+        .unwrap();
+        for (a, b) in [
+            inverse.origin.x,
+            inverse.origin.y,
+            inverse.size.x,
+            inverse.size.y,
+        ]
+        .into_iter()
+        .zip([1.0, 2.0, 3.0, 5.0])
+        {
+            assert!((a - b).abs() < 0.00001);
+        }
+    }
+
+    #[test]
+    fn ancestor_rotation_and_flip_keep_descendant_shadow_on_canvas_x_axis() {
+        let mut root = SceneNode::leaf("root", NodeKind::Group);
+        root.rotation = std::f32::consts::FRAC_PI_2;
+        root.flip_x = true;
+        root.children = vec![horizontally_flipped_shadow_node("child")];
+        let bounds = sibling_mask_layer_bounds(
+            &root,
+            std::iter::empty(),
+            Point2D::ZERO,
+            1.0,
+            Rect::xywh(-100.0, -100.0, 500.0, 500.0),
+            None,
+            &[],
+        );
+        for (a, b) in [
+            bounds.origin.x,
+            bounds.origin.y,
+            bounds.size.x,
+            bounds.size.y,
+        ]
+        .into_iter()
+        .zip([-1.0, -1.0, 32.0, 12.0])
+        {
+            assert!((a - b).abs() < 0.00001);
+        }
     }
 }
