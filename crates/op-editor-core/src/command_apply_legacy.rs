@@ -3,7 +3,7 @@
 use crate::{DocumentIdAllocator, EditorCommand, EditorState};
 
 #[path = "command_allocation_policy.rs"]
-mod allocation_policy;
+pub(super) mod allocation_policy;
 
 /// Private to one top-level InsertNode/BatchInsert. Its initial counter is
 /// above every current node/page id, and these commands introduce only ids

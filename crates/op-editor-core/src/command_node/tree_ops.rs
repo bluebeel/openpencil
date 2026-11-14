@@ -87,16 +87,24 @@ pub(super) fn apply_copy_overrides(node: &mut PenNode, overrides_json: Option<&s
     };
     overrides.remove("id");
 
-    let Ok(mut node_value) = serde_json::to_value(&*node) else {
-        return false;
+    let merge = |value: &mut serde_json::Value, root: bool| {
+        if root {
+            if let Some(object) = value.as_object_mut() {
+                for (key, value) in &overrides {
+                    object.insert(key.clone(), value.clone());
+                }
+            }
+        }
     };
-    let Some(node_object) = node_value.as_object_mut() else {
-        return false;
+    let result = if overrides.contains_key("children") {
+        serde_json::to_value(&*node).and_then(|mut value| {
+            merge(&mut value, true);
+            serde_json::from_value::<PenNode>(value)
+        })
+    } else {
+        crate::map_subtree_json(node, merge)
     };
-    for (key, value) in overrides {
-        node_object.insert(key, value);
-    }
-    let Ok(overridden) = serde_json::from_value::<PenNode>(node_value) else {
+    let Ok(overridden) = result else {
         return false;
     };
     *node = overridden;

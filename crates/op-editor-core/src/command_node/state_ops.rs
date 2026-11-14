@@ -157,16 +157,24 @@ impl EditorState {
         let Some(current) = walkers::find_node(self.active_children(), node_id) else {
             return false;
         };
-        let Ok(mut value) = serde_json::to_value(current) else {
-            return false;
+        let merge = |value: &mut serde_json::Value, root: bool| {
+            if root {
+                if let Some(object) = value.as_object_mut() {
+                    for (key, value) in &patch {
+                        object.insert(key.clone(), value.clone());
+                    }
+                }
+            }
         };
-        let Some(obj) = value.as_object_mut() else {
-            return false;
+        let result = if patch.contains_key("children") {
+            serde_json::to_value(current).and_then(|mut value| {
+                merge(&mut value, true);
+                serde_json::from_value::<PenNode>(value)
+            })
+        } else {
+            crate::map_subtree_json(current, merge)
         };
-        for (key, value) in patch {
-            obj.insert(key, value);
-        }
-        let Ok(replacement) = serde_json::from_value::<PenNode>(value) else {
+        let Ok(replacement) = result else {
             return false;
         };
         if replacement.id_str().is_empty() {

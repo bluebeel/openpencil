@@ -52,6 +52,8 @@ mod image_annotation;
 pub use image_annotation::annotate_image_snapshot;
 mod batch_program;
 mod batch_program_context;
+#[cfg(test)]
+mod batch_program_copy_tests;
 mod batch_program_dialect;
 #[cfg(test)]
 mod batch_program_dialect_corpus;

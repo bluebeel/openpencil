@@ -6,12 +6,12 @@ use super::batch_program_node_parse::NodeParseOptions;
 use super::EditorCommand;
 use jian_ops_schema::node::PenNode;
 use op_editor_core::command_node::remap_subtree_ids_mapping;
-use op_editor_core::EditorState;
+use op_editor_core::CommandSimulation;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub(crate) struct ProgramCtx {
-    pub(crate) sim: EditorState,
+    pub(crate) sim: CommandSimulation,
     pub(crate) page_id: Option<String>,
     /// binding name → final (host-assigned) node id.
     pub(crate) bindings: BTreeMap<String, String>,
@@ -110,7 +110,7 @@ impl ProgramCtx {
     ) -> Result<Vec<(String, String)>> {
         let mut seed = self
             .sim
-            .next_node_id_seed()
+            .next_program_id_seed(self.id_high_water)
             .ok_or(ProgramError::IdSpaceExhausted)?
             .max(self.id_high_water);
         // `seed` is above every current node/page numeric id, and remapping

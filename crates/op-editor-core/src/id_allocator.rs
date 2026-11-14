@@ -41,6 +41,15 @@ pub trait IdAllocator {
         collect_document_ids(document)
     }
 
+    /// Conservative numeric floor for authored-id validation. A scoped adapter
+    /// may reuse this proof only while it exclusively controls document edits.
+    fn authored_id_floor(&mut self, document: &PenDocument) -> Option<u64> {
+        next_sequential_counter(document).ok()
+    }
+
+    /// Account for a successfully inserted authored subtree's numeric ids.
+    fn authored_ids_inserted(&mut self, _largest_numeric: Option<u64>) {}
+
     /// Allocate and reserve one id.
     ///
     /// Existing candidates are skipped. No fallback id is produced when the

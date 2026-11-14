@@ -6,7 +6,7 @@
 
 use crate::EditorCommand as C;
 
-pub(super) fn requires_id_seed(command: &C) -> bool {
+pub(crate) fn requires_id_seed(command: &C) -> bool {
     match command {
         C::Batch { commands } => commands.iter().any(requires_id_seed),
         C::InsertNode { .. }

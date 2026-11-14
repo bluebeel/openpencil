@@ -293,16 +293,10 @@ impl EditorState {
                     false
                 }
             }
-            EditorCommand::InsertAuthoredSubtree {
-                nodes,
-                parent_id,
-                page_id,
-            } => apply_authored_subtree_on_page(self, nodes, &parent_id, page_id.as_deref(), false),
-            EditorCommand::InsertAuthoredSubtreePreservingRoots {
-                nodes,
-                parent_id,
-                page_id,
-            } => apply_authored_subtree_on_page(self, nodes, &parent_id, page_id.as_deref(), true),
+            command @ (EditorCommand::InsertAuthoredSubtree { .. }
+            | EditorCommand::InsertAuthoredSubtreePreservingRoots { .. }) => {
+                apply_authored_subtree_on_page(self, command, allocator)
+            }
             EditorCommand::AdoptSceneTemplate { template_id } => {
                 // A missing document is a corrupt or renamed asset rather
                 // than a user error, and on wasm it can simply not be

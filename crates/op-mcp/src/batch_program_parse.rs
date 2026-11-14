@@ -4,11 +4,23 @@
 //!
 //! Split out of `batch_program.rs` to stay under the 800-line cap.
 
-use regex::Regex;
 use serde_json::Value;
 
 use super::batch_program::Result;
 use super::batch_program_error::ProgramError;
+
+// Each literal has one bounded, thread-safe compiled automaton. Keeping this
+// at the call site avoids both dynamic cache keys and compiling three grammar
+// expressions for every operation in a mixed program.
+macro_rules! regex {
+    ($pattern:literal) => {{
+        static COMPILED: std::sync::LazyLock<::regex::Regex> = std::sync::LazyLock::new(|| {
+            ::regex::Regex::new($pattern).expect("static DSL regex must compile")
+        });
+        &*COMPILED
+    }};
+}
+pub(crate) use regex;
 
 // The node-body -> `PenNode` step lives in `batch_program_node_parse.rs`.
 
@@ -22,7 +34,7 @@ pub(crate) fn parse_json_arg(raw: &str) -> Result<Value> {
     }
     // `(?<=\{|,)\s*(\w+)\s*:` has a lookbehind; the Rust regex crate
     // doesn't support those, so capture + reinsert the brace/comma.
-    let mut normalized = regex(r"([{,])\s*(\w+)\s*:")
+    let mut normalized = regex!(r"([{,])\s*(\w+)\s*:")
         .replace_all(trimmed, "$1 \"$2\":")
         .into_owned();
     normalized = replace_single_quote_delimiters(&normalized);
@@ -31,7 +43,7 @@ pub(crate) fn parse_json_arg(raw: &str) -> Result<Value> {
     // `"k":"700","next":...`. Anchored to a following `"<word>"` so it only
     // fires when the next token looks like a new key (a valid `"a","b"` has the
     // value's own close-quote before the comma and never matches).
-    normalized = regex(r#":\s*"([^"]*),"(\w+)""#)
+    normalized = regex!(r#":\s*"([^"]*),"(\w+)""#)
         .replace_all(&normalized, r#":"${1}","${2}""#)
         .into_owned();
     // Repair a string value missing its OPENING quote — `"width":fill_container"`
@@ -39,7 +51,7 @@ pub(crate) fn parse_json_arg(raw: &str) -> Result<Value> {
     // Anchored: a letter-led bareword that ENDS with a `"` right after a colon
     // (a valid value starts WITH the quote, so `:"x"` never matches; bare
     // `true`/`false`/`null` aren't followed by a `"` so they never match either).
-    normalized = regex(r#":(\s*)([A-Za-z][\w-]*)""#)
+    normalized = regex!(r#":(\s*)([A-Za-z][\w-]*)""#)
         .replace_all(&normalized, r#":${1}"${2}""#)
         .into_owned();
     // Repair a FULLY-unquoted string value — `"width":fill_container_str,` meant
@@ -47,16 +59,16 @@ pub(crate) fn parse_json_arg(raw: &str) -> Result<Value> {
     // a leaked JS variable name). A letter-led bareword between a colon and a
     // `,`/`}`/`]`. Numbers are digit-led (never match); a real quoted value
     // starts with `"` (never matches); `true`/`false`/`null` get re-unquoted next.
-    normalized = regex(r#":(\s*)([A-Za-z][\w-]*)(\s*[,}\]])"#)
+    normalized = regex!(r#":(\s*)([A-Za-z][\w-]*)(\s*[,}\]])"#)
         .replace_all(&normalized, r#":${1}"${2}"${3}"#)
         .into_owned();
-    normalized = regex(r#":(\s*)"(true|false|null)"(\s*[,}\]])"#)
+    normalized = regex!(r#":(\s*)"(true|false|null)"(\s*[,}\]])"#)
         .replace_all(&normalized, r#":${1}${2}${3}"#)
         .into_owned();
-    normalized = regex(r#",\s*""\s*:\s*[^,}\]]+"#)
+    normalized = regex!(r#",\s*""\s*:\s*[^,}\]]+"#)
         .replace_all(&normalized, "")
         .into_owned();
-    normalized = regex(r",(\s*[}\]])")
+    normalized = regex!(r",(\s*[}\]])")
         .replace_all(&normalized, "$1")
         .into_owned();
     // Last resort: a weak model commonly drops the trailing closing brace(s) of a
@@ -162,8 +174,4 @@ fn replace_single_quote_delimiters(s: &str) -> String {
         }
     }
     out
-}
-
-pub(crate) fn regex(pattern: &str) -> Regex {
-    Regex::new(pattern).expect("static DSL regex must compile")
 }

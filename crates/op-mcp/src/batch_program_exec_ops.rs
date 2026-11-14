@@ -40,26 +40,34 @@ pub(crate) fn execute_copy(binding: &str, args: &str, ctx: &mut ProgramCtx) -> R
             "Copy source not found: {source_id}"
         )));
     };
-    let mut cloned_value = serde_json::to_value(source)
-        .map_err(|e| ProgramError::InvalidNode(format!("Copy source unserializable: {e}")))?;
-    // TS `Object.assign(cloned, data)` minus `id` (never overridden)
-    // and `descendants` (a TS no-op — see module docs).
+    // TS Object.assign minus source ids and descendants (both no-ops).
     let overrides = parse_json_arg(data_str)?;
     let Some(overrides) = overrides.as_object() else {
         return Err(ProgramError::Syntax(
             "C() overrides JSON must be an object".into(),
         ));
     };
-    if let Some(obj) = cloned_value.as_object_mut() {
-        for (key, value) in overrides {
-            if key == "id" || key == "descendants" {
-                continue;
+    let apply = |value: &mut serde_json::Value, root: bool| {
+        if root {
+            if let Some(obj) = value.as_object_mut() {
+                for (key, value) in overrides {
+                    if key != "id" && key != "descendants" {
+                        obj.insert(key.clone(), value.clone());
+                    }
+                }
             }
-            obj.insert(key.clone(), value.clone());
         }
+        normalize_node_shape(value);
+    };
+    let mut node = if overrides.contains_key("children") {
+        let mut value = serde_json::to_value(source)
+            .map_err(|e| ProgramError::InvalidNode(format!("Copy source unserializable: {e}")))?;
+        apply(&mut value, true);
+        serde_json::from_value::<PenNode>(value)
+    } else {
+        op_editor_core::map_subtree_json(source, apply)
     }
-    normalize_node_shape(&mut cloned_value);
-    let mut node: PenNode = serde_json::from_value(cloned_value).map_err(|e| {
+    .map_err(|e| {
         ProgramError::InvalidNode(format!("C() overrides produce an invalid node: {e}"))
     })?;
     let parent = resolve_parent_ref(parent_raw, &ctx.bindings);

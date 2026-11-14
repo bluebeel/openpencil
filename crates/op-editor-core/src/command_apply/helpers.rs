@@ -3,7 +3,6 @@
 //! active-page insert shims.
 
 use super::*;
-use jian_ops_schema::node::PenNode;
 
 /// Resolve an `align` action string into an [`AlignAction`].
 pub(super) fn parse_align_action(s: &str) -> Option<AlignAction> {
@@ -81,11 +80,27 @@ pub(super) fn command_page_index(state: &EditorState, page_id: Option<&str>) -> 
 
 pub(super) fn apply_authored_subtree_on_page(
     state: &mut EditorState,
-    nodes: Vec<PenNode>,
-    parent_id: &NodeId,
-    page_id: Option<&str>,
-    preserve_roots: bool,
+    command: EditorCommand,
+    allocator: &mut dyn crate::IdAllocator,
 ) -> bool {
+    let preserve_roots = matches!(
+        command,
+        EditorCommand::InsertAuthoredSubtreePreservingRoots { .. }
+    );
+    let (nodes, parent_id, page_id) = match command {
+        EditorCommand::InsertAuthoredSubtree {
+            nodes,
+            parent_id,
+            page_id,
+        }
+        | EditorCommand::InsertAuthoredSubtreePreservingRoots {
+            nodes,
+            parent_id,
+            page_id,
+        } => (nodes, parent_id, page_id),
+        _ => unreachable!("authored subtree command"),
+    };
+    let page_id = page_id.as_deref();
     let Some(target_page_index) = command_page_index(state, page_id) else {
         return false;
     };
@@ -94,11 +109,12 @@ pub(super) fn apply_authored_subtree_on_page(
         state.ui.active_page_index = target_page_index;
     }
     let snap = state.snapshot_for_undo();
-    let changed = if preserve_roots {
-        state.cmd_insert_authored_subtree_preserving_roots(nodes, parent_id)
-    } else {
-        state.cmd_insert_authored_subtree(nodes, parent_id)
-    };
+    let changed = state.cmd_insert_authored_subtree_with_root_policy(
+        nodes,
+        &parent_id,
+        !preserve_roots,
+        allocator,
+    );
     if changed {
         state.push_undo(snap);
     }

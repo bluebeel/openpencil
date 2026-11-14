@@ -175,8 +175,10 @@ impl EditorState {
         let saved_history = std::mem::take(&mut self.history);
         let was_suspended = std::mem::replace(&mut self.undo_capture_suspended, true);
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut scoped = crate::command_id_scope::ScopedIdAllocator::new(allocator);
             for cmd in commands {
-                let outcome = self.apply_with_allocator(cmd, allocator);
+                scoped.prepare(&cmd);
+                let outcome = self.apply_with_allocator(cmd, &mut scoped);
                 if !matches!(&outcome, Ok(true)) {
                     return outcome;
                 }

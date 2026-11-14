@@ -9,27 +9,12 @@ use crate::walkers;
 use jian_ops_schema::node::PenNode;
 
 impl EditorState {
-    pub(crate) fn cmd_insert_authored_subtree(
-        &mut self,
-        nodes: Vec<PenNode>,
-        parent_id: &NodeId,
-    ) -> bool {
-        self.cmd_insert_authored_subtree_with_root_policy(nodes, parent_id, true)
-    }
-
-    pub(crate) fn cmd_insert_authored_subtree_preserving_roots(
-        &mut self,
-        nodes: Vec<PenNode>,
-        parent_id: &NodeId,
-    ) -> bool {
-        self.cmd_insert_authored_subtree_with_root_policy(nodes, parent_id, false)
-    }
-
-    fn cmd_insert_authored_subtree_with_root_policy(
+    pub(crate) fn cmd_insert_authored_subtree_with_root_policy(
         &mut self,
         nodes: Vec<PenNode>,
         parent_id: &NodeId,
         replace_empty_root: bool,
+        allocator: &mut dyn crate::IdAllocator,
     ) -> bool {
         if nodes.is_empty() {
             return false;
@@ -58,10 +43,15 @@ impl EditorState {
 
         let mut incoming = HashSet::new();
         let mut smallest_numeric = Some(u64::MAX);
-        if !nodes
-            .iter()
-            .all(|node| collect_authored_ids(node, &mut incoming, &mut smallest_numeric))
-        {
+        let mut largest_numeric = None;
+        if !nodes.iter().all(|node| {
+            collect_authored_ids(
+                node,
+                &mut incoming,
+                &mut smallest_numeric,
+                &mut largest_numeric,
+            )
+        }) {
             return false;
         }
         // Fresh sequential ids above the complete current document (including
@@ -69,8 +59,9 @@ impl EditorState {
         // the entire live id set for every program insert. Rich/custom ids keep
         // the exact full collision check, including root-placeholder reuse.
         let provably_fresh = smallest_numeric.is_some_and(|smallest| {
-            crate::id_allocator::next_sequential_counter(&self.doc)
-                .is_ok_and(|next| smallest >= next)
+            allocator
+                .authored_id_floor(&self.doc)
+                .is_some_and(|next| smallest >= next)
         });
         if !provably_fresh {
             let mut live = self.collect_node_ids();
@@ -101,6 +92,7 @@ impl EditorState {
             }
             roots.extend(nodes);
         }
+        allocator.authored_ids_inserted(largest_numeric);
         true
     }
 }
@@ -109,6 +101,7 @@ fn collect_authored_ids(
     node: &PenNode,
     incoming: &mut HashSet<NodeId>,
     smallest_numeric: &mut Option<u64>,
+    largest_numeric: &mut Option<u64>,
 ) -> bool {
     // Every authored node MUST carry a valid (non-empty), doc-unique id — that
     // is the whole point of the authored path (vs `cmd_insert_subtree`, which
@@ -122,13 +115,16 @@ fn collect_authored_ids(
     if !incoming.insert(id) {
         return false;
     }
+    if let Some(number) = walkers::parse_n_id(node.id_str()) {
+        *largest_numeric = Some(largest_numeric.unwrap_or(0).max(number));
+    }
     *smallest_numeric = smallest_numeric
         .and_then(|smallest| walkers::parse_n_id(node.id_str()).map(|number| smallest.min(number)));
     node.children()
         .map(|children| {
-            children
-                .iter()
-                .all(|child| collect_authored_ids(child, incoming, smallest_numeric))
+            children.iter().all(|child| {
+                collect_authored_ids(child, incoming, smallest_numeric, largest_numeric)
+            })
         })
         .unwrap_or(true)
 }

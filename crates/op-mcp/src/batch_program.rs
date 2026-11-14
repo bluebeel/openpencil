@@ -105,7 +105,7 @@ pub(crate) fn run_batch_design_program(
         .unwrap_or(false);
     let lines = split_operations(operations);
     let mut ctx = ProgramCtx {
-        sim: snapshot.clone_for_command_simulation(),
+        sim: op_editor_core::CommandSimulation::new(snapshot.clone_for_command_simulation()),
         page_id: page_id.clone(),
         bindings: BTreeMap::new(),
         alias: BTreeMap::new(),
@@ -277,9 +277,9 @@ fn execute_line(line: &str, ctx: &mut ProgramCtx) -> Result<()> {
     // carry literal newlines inside the arg list):
     //   binding=OP(args)  for I/C/K/R/M/G
     //   OP(args)          for I/C/K/R/G (auto-binding) and U/D/M (call)
-    let assign = regex(r"(?s)^(\w+)\s*=\s*([ICKRMG])\((.+)\)$");
-    let bindless = regex(r"(?s)^([ICKRG])\((.+)\)$");
-    let call = regex(r"(?s)^([UDM])\((.+)\)$");
+    let assign = regex!(r"(?s)^(\w+)\s*=\s*([ICKRMG])\((.+)\)$");
+    let bindless = regex!(r"(?s)^([ICKRG])\((.+)\)$");
+    let call = regex!(r"(?s)^([UDM])\((.+)\)$");
 
     if let Some(c) = assign.captures(line) {
         let binding = c.get(1).map_or("", |m| m.as_str()).to_string();
