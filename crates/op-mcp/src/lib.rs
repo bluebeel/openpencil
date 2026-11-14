@@ -145,7 +145,6 @@ mod open_document_tests;
 pub mod page_tools;
 pub mod parser;
 pub mod read_nodes;
-mod requested_nodes;
 #[cfg(test)]
 mod read_nodes_tests;
 #[cfg(test)]
@@ -154,9 +153,11 @@ mod read_record_tests;
 mod read_snapshot_tests;
 pub mod read_tools;
 pub mod read_tools_extra;
+pub mod reload_document;
 pub mod reparent_tools;
 #[cfg(test)]
 mod replace_node_tests;
+mod requested_nodes;
 pub mod scalar_vars;
 #[cfg(test)]
 mod scalar_vars_tests;
@@ -282,6 +283,7 @@ pub use page_tools::{
 };
 pub use parser::parse_tool_call;
 pub use read_nodes::{read_nodes_snapshot, read_nodes_snapshot_for_call, ReadNodes};
+pub use reload_document::ReloadDocument;
 pub use reparent_tools::{copy_node_snapshot, move_node_snapshot, CopyNode, MoveNode};
 pub use scalar_vars::{
     create_variable_snapshot, delete_variable_snapshot, rename_variable_snapshot,

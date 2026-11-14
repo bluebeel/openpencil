@@ -195,12 +195,16 @@ impl EditorState {
                     return false;
                 }
                 let pending = captured.pending.as_ref().unwrap();
-                if pending.is_targeted()
-                    && (target_plan::plan(self, &command)
-                        .is_none_or(|specs| !pending.matches_target_specs(&specs))
-                        || !pending.matches_targets(self))
-                {
-                    return false;
+                if pending.is_targeted() {
+                    let request_matches = pending
+                        .matches_topology_request(self, &command)
+                        .unwrap_or_else(|| {
+                            target_plan::plan(self, &command)
+                                .is_some_and(|specs| pending.matches_target_specs(&specs))
+                        });
+                    if !request_matches || !pending.matches_targets(self) {
+                        return false;
+                    }
                 }
                 let mut pending = captured.pending.take().unwrap();
                 let undo_redo = matches!(command, EditorCommand::Undo | EditorCommand::Redo);
@@ -209,7 +213,9 @@ impl EditorState {
                     self.undo_capture_suspended = true;
                 }
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    let applied = if let EditorCommand::Batch { commands } = command {
+                    let applied = if let Some(applied) = pending.apply_topology(self) {
+                        applied
+                    } else if let EditorCommand::Batch { commands } = command {
                         let batch = EditorCommand::Batch { commands };
                         let mut allocator =
                             if crate::command_apply_legacy::allocation_policy::requires_id_seed(

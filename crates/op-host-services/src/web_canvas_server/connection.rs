@@ -515,6 +515,23 @@ fn dispatch_inner<S: Read + Write>(
             return Ok(false);
         }
     };
+    // Recovery stays ahead of both the primary fence and alternate-file
+    // routing. It cannot supply a path or replay any failed operation.
+    if let Some(response) = super::connection_recovery::dispatch(ctx, &req.body, mcp_profile) {
+        let response = response?;
+        let status = if response.is_empty() {
+            "202 Accepted"
+        } else {
+            "200 OK"
+        };
+        crate::mcp_serve::write_mcp_http_response_with_origin(
+            stream,
+            status,
+            &response,
+            cors_origin,
+        )?;
+        return Ok(false);
+    }
     // Eligible writes rendezvous before any document mutex wait. Otherwise
     // each arriving writer would queue behind the previous whole-file save.
     if let Some(response) =

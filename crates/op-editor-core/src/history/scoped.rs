@@ -8,9 +8,15 @@ mod header_map;
 mod patch;
 mod splice;
 mod targets;
+mod topology;
+mod topology_move;
+mod topology_parent;
+mod topology_wrap;
 pub(crate) use splice::payload_bound as structural_payload_bound;
 pub(crate) use splice::SpliceSpec;
 pub(crate) use targets::TargetSpec;
+pub(crate) use topology::{TopologyKind, TopologyRequest, TopologySpec};
+pub(crate) use topology_parent::Location as TopologyLocation;
 mod token_probe;
 use header::{HeaderPatch, PendingHeader};
 pub(crate) use patch::Scope;
@@ -85,6 +91,18 @@ impl PendingScopedSnapshot {
     }
     pub(crate) fn matches_target_specs(&self, specs: &[TargetSpec]) -> bool {
         targets::matches_specs(&self.targets, specs)
+    }
+    /// Some means this is the single audited structural transaction. Its
+    /// stored request and direct routes avoid a second full-document lookup.
+    pub(crate) fn matches_topology_request(
+        &self,
+        state: &EditorState,
+        command: &crate::EditorCommand,
+    ) -> Option<bool> {
+        targets::matches_topology_request(state, command, &self.targets)
+    }
+    pub(crate) fn apply_topology(&mut self, state: &mut EditorState) -> Option<bool> {
+        targets::apply_topology(state, &mut self.targets)
     }
     pub(crate) fn matches_targets(&self, state: &EditorState) -> bool {
         targets::matches(state, &self.targets)

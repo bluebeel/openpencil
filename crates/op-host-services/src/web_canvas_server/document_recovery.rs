@@ -7,7 +7,8 @@ pub(in crate::web_canvas_server) fn refusal() -> WebReply {
         status: "503 Service Unavailable",
         body: serde_json::json!({
             "ok":false,"error":"document-recovery-required","message":REQUIRED,
-            "recoveryRoute":"/api/file/reload","replay":false
+            "recoveryRoute":"/api/file/reload",
+            "recoveryTool":"reload_document","recoveryMcpPath":"/mcp","replay":false
         })
         .to_string(),
     }

@@ -7,6 +7,8 @@ use crate::{
 use jian_ops_schema::node::PenNode;
 #[path = "target_splice_plan.rs"]
 mod splice;
+#[path = "target_topology_plan.rs"]
+mod topology;
 
 pub(super) fn plan(state: &EditorState, command: &C) -> Option<Vec<TargetSpec>> {
     if state.instance_write_virtual_anchor.is_some() {
@@ -24,6 +26,16 @@ fn collect(
     out: &mut Vec<TargetSpec>,
     in_batch: bool,
 ) -> Option<()> {
+    if matches!(
+        command,
+        C::MoveNode { .. } | C::ReorderSelected { .. } | C::GroupSelected | C::UngroupSelected
+    ) {
+        if in_batch {
+            return None;
+        }
+        out.push(topology::plan(state, command, *active)?);
+        return Some(());
+    }
     if matches!(
         command,
         C::InsertNode { .. } | C::DeleteNode { .. } | C::CopyNode { .. }
@@ -132,6 +144,7 @@ fn collect(
         path: path.into_boxed_slice(),
         subtree,
         splice: None,
+        topology: None,
     };
     if !out.contains(&spec) {
         out.push(spec);
@@ -161,6 +174,9 @@ fn find_path(nodes: &[PenNode], id: &NodeId, path: &mut Vec<usize>) -> Option<Ve
 pub(super) fn structural_bound(state: &EditorState, command: &C) -> Option<usize> {
     if state.instance_write_virtual_anchor.is_some() {
         return None;
+    }
+    if let Some(spec) = topology::plan(state, command, state.ui.active_page_index) {
+        return spec.topology.map(|spec| spec.forecast);
     }
     splice::plan(state, command, state.ui.active_page_index)?
         .splice

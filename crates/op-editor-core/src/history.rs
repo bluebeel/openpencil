@@ -20,7 +20,7 @@ mod scoped;
 pub use entry::HistoryEntry;
 pub(crate) use scoped::{
     contains_header_token, structural_payload_bound, PendingScopedSnapshot, Scope, SpliceSpec,
-    TargetSpec,
+    TargetSpec, TopologyKind, TopologyLocation, TopologyRequest, TopologySpec,
 };
 pub use scoped::{ScopedEditorSnapshot, ScopedHistoryError};
 

@@ -63,13 +63,25 @@ pub fn render_node_on_page_raster_bytes_with_sampling(
             node_id: node_id.into(),
             page_id: page.id.clone(),
         })?;
+    render_scene_node_raster_bytes_with_sampling(node, format, scale, sampling)
+}
+
+pub fn render_scene_node_raster_bytes_with_sampling(
+    node: &SceneNode,
+    format: RasterFormat,
+    scale: f32,
+    sampling: RasterSampling,
+) -> Result<Vec<u8>, ExportError> {
+    if sampling == RasterSampling::Native {
+        return super::render_scene_node_raster_bytes(node, format, scale);
+    }
     if node.hidden {
         return Err(ExportError::NodeHidden {
-            node_id: node_id.into(),
+            node_id: node.id.clone(),
         });
     }
     let bounds = super::node_bounds(node).ok_or_else(|| ExportError::NodePaintsNothing {
-        node_id: node_id.into(),
+        node_id: node.id.clone(),
     })?;
     render_scene_nodes_raster_bytes(
         std::slice::from_ref(node),

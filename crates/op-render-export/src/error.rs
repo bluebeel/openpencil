@@ -49,6 +49,7 @@ pub enum ExportError {
         message: String,
     },
     RenderWorkerUnavailable,
+    RenderConsumerReentry,
     /// The requested node id is absent from the scene's active page.
     NodeNotFoundOnActivePage {
         node_id: String,
@@ -145,6 +146,7 @@ impl fmt::Display for ExportError {
                 write!(f, "could not start raster renderer: {message}")
             }
             ExportError::RenderWorkerUnavailable => f.write_str("raster renderer is unavailable"),
+            ExportError::RenderConsumerReentry => f.write_str("a raster batch consumer cannot submit nested renderer work"),
             ExportError::NodeNotFoundOnActivePage { node_id } => {
                 write!(f, "node {node_id} not found on the active page")
             }

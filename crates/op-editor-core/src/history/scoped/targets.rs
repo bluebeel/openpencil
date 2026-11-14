@@ -10,23 +10,43 @@ pub(crate) struct TargetSpec {
     pub path: Box<[usize]>,
     pub subtree: bool,
     pub splice: Option<super::SpliceSpec>,
+    pub topology: Option<super::TopologySpec>,
 }
 #[derive(Debug)]
 pub(super) struct TargetCheckpoint {
     spec: TargetSpec,
     old: Option<Arc<SharedNode>>,
     splice: Option<super::splice::PendingSplice>,
+    topology: Option<super::topology::PendingTopology>,
 }
 pub(super) fn capture(
     state: &EditorState,
     specs: Vec<TargetSpec>,
 ) -> Result<Vec<TargetCheckpoint>, ScopedHistoryError> {
-    if specs.len() != 1 && specs.iter().any(|spec| spec.splice.is_some()) {
+    if specs.len() != 1
+        && specs
+            .iter()
+            .any(|spec| spec.splice.is_some() || spec.topology.is_some())
+    {
         return Err(ScopedHistoryError::NodePathChanged);
     }
     specs
         .into_iter()
         .map(|spec| {
+            if let Some(edit) = &spec.topology {
+                let topology = super::topology::PendingTopology::capture(
+                    state,
+                    spec.scope.clone(),
+                    spec.path.clone(),
+                    edit,
+                )?;
+                return Ok(TargetCheckpoint {
+                    spec,
+                    old: None,
+                    splice: None,
+                    topology: Some(topology),
+                });
+            }
             if let Some(edit) = &spec.splice {
                 let splice = super::splice::PendingSplice::capture(
                     state,
@@ -38,6 +58,7 @@ pub(super) fn capture(
                     spec,
                     old: None,
                     splice: Some(splice),
+                    topology: None,
                 });
             }
             let node = patch::node(patch::roots(&state.doc, &spec.scope)?, &spec.path)
@@ -51,6 +72,7 @@ pub(super) fn capture(
                 spec,
                 old: Some(old),
                 splice: None,
+                topology: None,
             })
         })
         .collect()
@@ -67,7 +89,7 @@ pub(super) fn checkpoint_counts(checkpoints: &[TargetCheckpoint]) -> (usize, usi
             .iter()
             .map(|target| {
                 target.old.as_ref().map_or_else(
-                    || target.splice.as_ref().unwrap().counts().1,
+                    || target.splice.as_ref().map_or(0, |splice| splice.counts().1),
                     |old| children(old),
                 )
             })
@@ -83,6 +105,9 @@ pub(super) fn matches_specs(checkpoints: &[TargetCheckpoint], specs: &[TargetSpe
 }
 pub(super) fn matches(state: &EditorState, checkpoints: &[TargetCheckpoint]) -> bool {
     checkpoints.iter().all(|checkpoint| {
+        if let Some(topology) = &checkpoint.topology {
+            return topology.matches(state);
+        }
         if let Some(splice) = &checkpoint.splice {
             return splice.matches(state);
         }
@@ -107,7 +132,7 @@ pub(super) fn restore(
     // All paths are checked before the first write; target IDs may intentionally
     // differ after a whole-node replacement at this same structural slot.
     for checkpoint in &checkpoints {
-        if checkpoint.splice.is_some() {
+        if checkpoint.splice.is_some() || checkpoint.topology.is_some() {
             continue;
         }
         let old = checkpoint.old.as_ref().unwrap();
@@ -124,6 +149,10 @@ pub(super) fn restore(
         }
     }
     for checkpoint in checkpoints {
+        if let Some(topology) = checkpoint.topology {
+            topology.restore(state)?;
+            continue;
+        }
         if let Some(splice) = checkpoint.splice {
             splice.restore(state)?;
             continue;
@@ -148,6 +177,12 @@ pub(super) fn compact(
 ) -> Result<Vec<patch::Patch>, ScopedHistoryError> {
     let mut out = Vec::with_capacity(checkpoints.len());
     for checkpoint in checkpoints {
+        if let Some(topology) = checkpoint.topology {
+            if let Some(patch) = topology.compact(state)? {
+                out.push(patch::Patch::Topology(patch));
+            }
+            continue;
+        }
         if let Some(splice) = checkpoint.splice {
             if let Some(patch) = splice.compact(state)? {
                 out.push(patch::Patch::Splice(patch));
@@ -195,4 +230,33 @@ fn replace_header(current: &mut PenNode, mut header: PenNode) -> Result<(), Scop
     }
     *current = header;
     Ok(())
+}
+
+/// Structural requests capture one command and cannot be mixed with metadata
+/// targets. All paths are checked again before any trusted direct mutation.
+pub(super) fn matches_topology_request(
+    state: &EditorState,
+    command: &crate::EditorCommand,
+    checkpoints: &[TargetCheckpoint],
+) -> Option<bool> {
+    let [checkpoint] = checkpoints else {
+        return None;
+    };
+    checkpoint
+        .spec
+        .topology
+        .as_ref()
+        .map(|spec| spec.request.matches(state, command))
+}
+pub(super) fn apply_topology(
+    state: &mut EditorState,
+    checkpoints: &mut [TargetCheckpoint],
+) -> Option<bool> {
+    let [checkpoint] = checkpoints else {
+        return None;
+    };
+    checkpoint
+        .topology
+        .as_mut()
+        .map(|pending| pending.apply_direct(state))
 }

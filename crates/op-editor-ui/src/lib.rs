@@ -87,3 +87,6 @@ pub(crate) mod agent_indicator_test_support {
         LOCK.lock().unwrap_or_else(|e| e.into_inner())
     }
 }
+
+/// Shared indexed edge/center snapping for native, web and headless hosts.
+pub use jian_scene::snapping;

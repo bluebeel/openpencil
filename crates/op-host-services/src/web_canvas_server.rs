@@ -501,6 +501,7 @@ mod connect_routes;
 mod connection;
 mod connection_authority;
 pub(crate) mod connection_pool;
+mod connection_recovery;
 use connection_authority::ConnAuthority;
 mod connection_ai_routes;
 mod doc_routes;

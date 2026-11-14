@@ -4,6 +4,7 @@
 //! its dedicated thread; no Skia canvas or non-Send NativeBackend crosses the
 //! channel. Raw canvas callbacks remain synchronous on their calling thread.
 
+use std::cell::Cell;
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
     mpsc, Arc, Mutex, OnceLock,
@@ -18,6 +19,25 @@ use crate::shared_work::{
 };
 
 const MAX_ADMITTED: usize = MAX_RENDER_ADMISSIONS;
+
+thread_local! { static CONSUMING_BATCH: Cell<bool> = const { Cell::new(false) }; }
+fn check_consumer_reentry() -> Result<(), ExportError> {
+    if CONSUMING_BATCH.with(Cell::get) {
+        Err(ExportError::RenderConsumerReentry)
+    } else {
+        Ok(())
+    }
+}
+fn consume_batch_item<R>(consume: impl FnOnce() -> R) -> R {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            CONSUMING_BATCH.with(|flag| flag.set(self.0));
+        }
+    }
+    let _restore = Restore(CONSUMING_BATCH.with(|flag| flag.replace(true)));
+    consume()
+}
 
 /// Resolved page/node identity; the scene is shared without a document clone.
 #[derive(Debug, Clone)]
@@ -57,9 +77,19 @@ struct FileJob {
     reply: mpsc::SyncSender<Vec<Result<(), ExportError>>>,
 }
 
+struct NodeBatchJob {
+    scene: Arc<LayoutScene>,
+    node_ids: Vec<String>,
+    format: RasterFormat,
+    scale: f32,
+    reply: mpsc::SyncSender<(usize, Result<Vec<u8>, ExportError>)>,
+    advance: mpsc::Receiver<()>,
+}
+
 enum Job {
     Raster(RasterJob),
     Files(FileJob),
+    Nodes(NodeBatchJob),
 }
 
 struct WorkerState {
@@ -110,6 +140,10 @@ impl SharedRasterWorker {
                             let result = render_job(&job);
                             worker_counters.completed.fetch_add(1, Ordering::Relaxed);
                             let _ = job.reply.send(result);
+                        }
+                        Job::Nodes(job) => {
+                            render_node_batch_job(job);
+                            worker_counters.completed.fetch_add(1, Ordering::Relaxed);
                         }
                         Job::Files(job) => {
                             let results = crate::export_scene_files(
@@ -192,6 +226,7 @@ impl RasterAdmission {
         scale: f32,
         sampling: RasterSampling,
     ) -> Result<Vec<u8>, ExportError> {
+        check_consumer_reentry()?;
         let _submission = self
             .submission
             .lock()
@@ -213,6 +248,56 @@ impl RasterAdmission {
             .map_err(|_| ExportError::RenderWorkerUnavailable)?
     }
 
+    /// Resolve a byte-export batch once on the worker, then hand off only one
+    /// encoded result at a time. The acknowledgment follows consumption, so
+    /// the worker cannot allocate the next output while this one is encoded.
+    /// A panicking/dropped consumer disconnects the acknowledgment channel and
+    /// releases the worker without retaining the remaining output payloads.
+    pub fn render_active_nodes(
+        &self,
+        scene: Arc<LayoutScene>,
+        node_ids: Vec<String>,
+        format: RasterFormat,
+        scale: f32,
+        mut consume: impl FnMut(usize, Result<Vec<u8>, ExportError>),
+    ) -> Result<(), ExportError> {
+        if node_ids.is_empty() {
+            return Ok(());
+        }
+        check_consumer_reentry()?;
+        let _submission = self
+            .submission
+            .lock()
+            .map_err(|_| ExportError::RenderWorkerUnavailable)?;
+        let count = node_ids.len();
+        let (reply, receive) = mpsc::sync_channel(0);
+        let (advance, next) = mpsc::sync_channel(0);
+        self.state
+            .sender
+            .send(Job::Nodes(NodeBatchJob {
+                scene,
+                node_ids,
+                format,
+                scale,
+                reply,
+                advance: next,
+            }))
+            .map_err(|_| ExportError::RenderWorkerUnavailable)?;
+        for expected in 0..count {
+            let (index, result) = receive
+                .recv()
+                .map_err(|_| ExportError::RenderWorkerUnavailable)?;
+            if index != expected {
+                return Err(ExportError::RenderWorkerUnavailable);
+            }
+            consume_batch_item(|| consume(index, result));
+            advance
+                .send(())
+                .map_err(|_| ExportError::RenderWorkerUnavailable)?;
+        }
+        Ok(())
+    }
+
     /// Stream a whole file batch on the same renderer thread as byte exports.
     /// No editor state or encoded file buffers cross the request channel.
     pub fn export_files(
@@ -222,6 +307,7 @@ impl RasterAdmission {
         format: RasterFormat,
         scale: f32,
     ) -> Result<Vec<Result<(), ExportError>>, ExportError> {
+        check_consumer_reentry()?;
         let _submission = self
             .submission
             .lock()
@@ -283,6 +369,26 @@ fn render_job(job: &RasterJob) -> Result<Vec<u8>, ExportError> {
                 job.scale,
                 job.sampling,
             )
+        }
+    }
+}
+
+fn render_node_batch_job(job: NodeBatchJob) {
+    let page = job.scene.active_page();
+    let nodes =
+        page.map(|page| crate::resolve_page_nodes(page, job.node_ids.iter().map(String::as_str)));
+    for (index, id) in job.node_ids.iter().enumerate() {
+        let result = match &nodes {
+            None => Err(ExportError::NoActivePage),
+            Some(nodes) => match nodes.get(id.as_str()) {
+                None => Err(ExportError::NodeNotFoundOnActivePage {
+                    node_id: id.clone(),
+                }),
+                Some(node) => crate::render_scene_node_raster_bytes(node, job.format, job.scale),
+            },
+        };
+        if job.reply.send((index, result)).is_err() || job.advance.recv().is_err() {
+            break;
         }
     }
 }

@@ -688,6 +688,7 @@ mod resident_documents;
 pub(crate) mod schemas;
 pub mod tool_catalog;
 mod tools_list;
+pub(crate) use tools_list::fenced_protocol_response;
 use tools_list::tools_list_response;
 pub mod tool_profile;
 #[cfg(not(feature = "mcp-debug-tools"))]

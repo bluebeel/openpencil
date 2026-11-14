@@ -1,4 +1,4 @@
-//! Coalesced primary Managed saves for audited, admitted nonstructural setters.
+//! Coalesced primary Managed saves for audited bounded property/structural edits.
 //! Every command keeps its own undo entry. Unsupported work never applies here.
 use super::{connection::ConnCtx, ServeMode, WebCanvasState};
 use crate::{mcp_serve, web_canvas_server_error::WebCanvasError};
@@ -144,6 +144,10 @@ fn candidate(line: &str, profile: McpAccessProfile) -> bool {
             | "insert_node"
             | "delete_node"
             | "copy_node"
+            | "move_node"
+            | "reorder_selected"
+            | "group_selected"
+            | "ungroup_selected"
     )
 }
 
@@ -167,7 +171,11 @@ fn audited(command: &C) -> bool {
         | C::SetNodeStrokeSideWidth { .. }
         | C::InsertNode { .. }
         | C::DeleteNode { .. }
-        | C::CopyNode { .. } => true,
+        | C::CopyNode { .. }
+        | C::MoveNode { .. }
+        | C::ReorderSelected { .. }
+        | C::GroupSelected
+        | C::UngroupSelected => true,
         C::PatchNodeData { patch_json, .. } => {
             let Ok(value) = serde_json::from_str::<serde_json::Value>(patch_json) else {
                 return false;
@@ -370,7 +378,13 @@ impl Transaction<'_, '_, '_> {
         let structural = op_mcp::parse_tool_call(&request.line).is_some_and(|call| {
             matches!(
                 call.tool.as_str(),
-                "insert_node" | "delete_node" | "copy_node"
+                "insert_node"
+                    | "delete_node"
+                    | "copy_node"
+                    | "move_node"
+                    | "reorder_selected"
+                    | "group_selected"
+                    | "ungroup_selected"
             )
         });
         if structural && self.live_selection.is_none() {

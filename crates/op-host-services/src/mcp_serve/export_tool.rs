@@ -27,7 +27,6 @@ use op_mcp::{McpTool, ToolErrorCode, ToolOutcome};
 
 use super::raster_snapshot::RasterSnapshot;
 use crate::export::RasterFormat;
-use crate::export_pdf::render_nodes_pdf_bytes;
 
 /// MCP tool struct — stores the layout-resolved scene snapshot derived
 /// at registration time from the live `EditorState`.
@@ -151,8 +150,8 @@ fn render_raster(
         RasterFormat::Webp => "webp",
     };
     let mut files: Vec<serde_json::Value> = Vec::new();
-    for id in node_ids {
-        match scene.render_active_node(id, format, scale) {
+    scene.render_active_nodes(node_ids, format, scale, |id, result| {
+        match result {
             Ok(bytes) => {
                 let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
                 files.push(serde_json::json!({
@@ -171,7 +170,7 @@ fn render_raster(
                 }));
             }
         }
-    }
+    });
     ToolOutcome::OkJson(serde_json::json!({ "files": files }).to_string())
 }
 
@@ -203,11 +202,27 @@ fn render_pdf(scene: &LayoutScene, node_ids: &[String], scale: f32, mode: &str) 
             .collect();
         return ToolOutcome::OkJson(serde_json::json!({"files":files}).to_string());
     };
+    if !matches!(mode, "separate" | "combined") {
+        return ToolOutcome::Err(
+            ToolErrorCode::InvalidArgument,
+            "pdfMode must be separate or combined".into(),
+        );
+    }
+    let resolved = op_render_export::resolve_page_nodes(page, node_ids.iter().map(String::as_str));
     if mode == "separate" {
         let files: Vec<_> = node_ids
             .iter()
             .map(|id| {
-                match crate::export_pdf::render_node_on_page_pdf_bytes_scaled(page, id, scale) {
+                let result = resolved
+                    .get(id.as_str())
+                    .ok_or_else(|| crate::export::ExportError::NodeNotFoundOnPage {
+                        node_id: id.clone(),
+                        page_id: page.id.clone(),
+                    })
+                    .and_then(|node| {
+                        crate::export_pdf::render_scene_node_pdf_bytes_scaled(node, scale)
+                    });
+                match result {
                     Ok(bytes) => serde_json::json!({"nodeId":id,"format":"pdf",
                     "bytes_base64":base64::engine::general_purpose::STANDARD.encode(bytes)}),
                     Err(error) => {
@@ -218,16 +233,10 @@ fn render_pdf(scene: &LayoutScene, node_ids: &[String], scale: f32, mode: &str) 
             .collect();
         return ToolOutcome::OkJson(serde_json::json!({"files":files}).to_string());
     }
-    if mode != "combined" {
-        return ToolOutcome::Err(
-            ToolErrorCode::InvalidArgument,
-            "pdfMode must be separate or combined".into(),
-        );
-    }
     let mut valid = Vec::new();
     let mut errors = Vec::new();
     for id in node_ids {
-        match page.find(id) {
+        match resolved.get(id.as_str()) {
             Some(node) if !node.hidden => valid.push(id.as_str()),
             _ => errors.push(serde_json::json!({"nodeId":id,"format":"pdf",
                 "error":format!("node {id} is missing or hidden on the active page")})),
@@ -236,7 +245,11 @@ fn render_pdf(scene: &LayoutScene, node_ids: &[String], scale: f32, mode: &str) 
     if valid.is_empty() {
         return ToolOutcome::OkJson(serde_json::json!({"files":errors}).to_string());
     }
-    match render_nodes_pdf_bytes(scene, &valid, scale) {
+    let nodes = valid
+        .iter()
+        .filter_map(|id| resolved.get(*id).copied())
+        .collect::<Vec<_>>();
+    match crate::export_pdf::render_resolved_nodes_pdf_bytes(&nodes, scale) {
         Ok(bytes) => {
             let mut files = vec![serde_json::json!({"nodeIds":valid,"format":"pdf",
                 "bytes_base64":base64::engine::general_purpose::STANDARD.encode(bytes)})];

@@ -244,7 +244,13 @@ impl Budget {
         }
         let target = if matches!(
             command,
-            C::InsertNode { .. } | C::DeleteNode { .. } | C::CopyNode { .. }
+            C::InsertNode { .. }
+                | C::DeleteNode { .. }
+                | C::CopyNode { .. }
+                | C::MoveNode { .. }
+                | C::ReorderSelected { .. }
+                | C::GroupSelected
+                | C::UngroupSelected
         ) {
             state
                 .forecast_structural_command_edit(command)

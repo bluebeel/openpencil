@@ -22,7 +22,7 @@ pub(super) fn read_path(nodes: &[PenNode], id: &NodeId) -> Option<Vec<usize>> {
     }
     None
 }
-fn remove_path(nodes: &[PenNode], id: &NodeId) -> Option<Vec<usize>> {
+pub(super) fn remove_path(nodes: &[PenNode], id: &NodeId) -> Option<Vec<usize>> {
     if let Some(index) = nodes.iter().position(|node| node.id_str() == id.as_str()) {
         return Some(vec![index]);
     }
@@ -80,6 +80,7 @@ pub(super) fn plan(state: &EditorState, command: &C, active: usize) -> Option<Ta
                 insert_limit: 0,
                 forecast,
             }),
+            topology: None,
         });
     }
     let mut forecast = 128 * 1024;
@@ -151,5 +152,6 @@ pub(super) fn plan(state: &EditorState, command: &C, active: usize) -> Option<Ta
             insert_limit: 1,
             forecast,
         }),
+        topology: None,
     })
 }

@@ -33,6 +33,8 @@ mod batch_files;
 mod correlated_raster;
 mod editor;
 mod encoding;
+mod node_lookup;
+pub use node_lookup::resolve_page_nodes;
 mod error;
 pub mod pdf;
 mod scene_painter;
@@ -303,9 +305,19 @@ pub fn render_node_on_page_raster_bytes(
             node_id: node_id.to_string(),
             page_id: page.id.clone(),
         })?;
+    render_scene_node_raster_bytes(node, format, scale)
+}
+
+/// Render a borrowed already-resolved subtree without another page lookup.
+pub fn render_scene_node_raster_bytes(
+    node: &SceneNode,
+    format: RasterFormat,
+    scale: f32,
+) -> Result<Vec<u8>, ExportError> {
+    format.ensure_supported()?;
     if node.hidden {
         return Err(ExportError::NodeHidden {
-            node_id: node_id.to_string(),
+            node_id: node.id.clone(),
         });
     }
     let mut acc = BoundsAcc::new();
@@ -313,7 +325,7 @@ pub fn render_node_on_page_raster_bytes(
     let bounds = acc
         .into_rect()
         .ok_or_else(|| ExportError::NodePaintsNothing {
-            node_id: node_id.to_string(),
+            node_id: node.id.clone(),
         })?;
     render_raster_bytes(bounds, format, clamp_scale(scale), MARGIN, |canvas| {
         paint_node(canvas, node);

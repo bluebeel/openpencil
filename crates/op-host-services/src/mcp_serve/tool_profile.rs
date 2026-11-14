@@ -33,7 +33,9 @@ use super::tool_catalog::{self, McpToolCatalog};
 ///
 /// Determined from the tool's own outcome contract: a `Write` tool is one
 /// whose `call` can return `ToolOutcome::OkWithCommand` / `OkJsonWithCommand`,
-/// i.e. one that hands the host an `EditorCommand` to apply.
+/// i.e. one that hands the host an `EditorCommand` to apply. Host-owned
+/// authority operations such as `reload_document` are also writes even though
+/// their replacement is performed directly by the live host.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolAccess {
     Read,
@@ -594,6 +596,11 @@ pub const TOOL_PROFILES: &[ToolProfile] = &[
     ToolProfile::new("paste_clipboard", ToolAccess::Write, ToolSurface::InMemory),
     ToolProfile::new("read_nodes", ToolAccess::Read, ToolSurface::InMemory),
     ToolProfile::new("redo", ToolAccess::Write, ToolSurface::InMemory),
+    ToolProfile::new(
+        "reload_document",
+        ToolAccess::Write,
+        ToolSurface::LocalFilesystem,
+    ),
     ToolProfile::new(
         "remove_node_effect",
         ToolAccess::Write,

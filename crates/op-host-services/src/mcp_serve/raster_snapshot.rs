@@ -133,6 +133,62 @@ impl RasterSnapshot {
         }
     }
 
+    /// One lookup per immutable request, with ordered per-ID handoff. Capacity
+    /// remains held through every consumer callback and no whole-scene copy is
+    /// made. Infrastructure failure is reported for every unconsumed entry.
+    pub fn render_active_nodes(
+        &self,
+        node_ids: &[String],
+        format: RasterFormat,
+        scale: f32,
+        mut consume: impl FnMut(&str, Result<Vec<u8>, ExportError>),
+    ) {
+        if let Err(error) = self.ready() {
+            for id in node_ids {
+                consume(id, Err(error.clone()));
+            }
+            return;
+        }
+        let Some(page) = self.active_page() else {
+            for id in node_ids {
+                consume(id, Err(ExportError::NoActivePage));
+            }
+            return;
+        };
+        if let Some(Ok(admission)) = &self.admission {
+            let mut consumed = 0;
+            let result = admission.render_active_nodes(
+                Arc::clone(&self.scene),
+                node_ids.to_vec(),
+                format,
+                scale,
+                |index, result| {
+                    consume(&node_ids[index], result);
+                    consumed = index + 1;
+                },
+            );
+            if let Err(error) = result {
+                for id in &node_ids[consumed..] {
+                    consume(id, Err(error.clone()));
+                }
+            }
+        } else {
+            let nodes =
+                crate::export::resolve_page_nodes(page, node_ids.iter().map(String::as_str));
+            for id in node_ids {
+                let result = nodes
+                    .get(id.as_str())
+                    .ok_or_else(|| ExportError::NodeNotFoundOnActivePage {
+                        node_id: id.clone(),
+                    })
+                    .and_then(|node| {
+                        crate::export::render_scene_node_raster_bytes(node, format, scale)
+                    });
+                consume(id, result);
+            }
+        }
+    }
+
     pub fn render_active_node(
         &self,
         node_id: &str,

@@ -88,9 +88,17 @@ pub fn render_node_on_page_pdf_bytes_scaled(
             node_id: node_id.to_string(),
             page_id: page.id.clone(),
         })?;
+    render_scene_node_pdf_bytes_scaled(node, scale)
+}
+
+/// Serialize one borrowed resolved subtree; no containing-page search.
+pub fn render_scene_node_pdf_bytes_scaled(
+    node: &SceneNode,
+    scale: f32,
+) -> Result<Vec<u8>, ExportError> {
     if node.hidden {
         return Err(ExportError::NodeHidden {
-            node_id: node_id.to_string(),
+            node_id: node.id.clone(),
         });
     }
     let mut acc = crate::BoundsAcc::new();
@@ -98,7 +106,7 @@ pub fn render_node_on_page_pdf_bytes_scaled(
     let bounds = acc
         .into_rect()
         .ok_or_else(|| ExportError::NodePaintsNothing {
-            node_id: node_id.to_string(),
+            node_id: node.id.clone(),
         })?;
     render_pdf_item(bounds, scale, |canvas| crate::paint_node(canvas, node))
 }
@@ -122,17 +130,30 @@ pub fn render_nodes_pdf_bytes(
     if node_ids.is_empty() {
         return Err(ExportError::NoNodeIdsRequested);
     }
-    // Collect (node, bounds) pairs for requested ids — skip unknowns and
-    // nodes that paint nothing (mirrors export_node_raster's approach).
+    let resolved = crate::resolve_page_nodes(page, node_ids.iter().copied());
+    let nodes = node_ids
+        .iter()
+        .filter_map(|id| resolved.get(*id).copied())
+        .collect::<Vec<_>>();
+    render_resolved_nodes_pdf_bytes(&nodes, scale)
+}
+
+/// Combined PDF from ordered borrowed nodes. Missing-ID policy belongs to the
+/// caller; hidden/unpainted subtrees retain the existing skip behavior.
+pub fn render_resolved_nodes_pdf_bytes(
+    nodes: &[&SceneNode],
+    scale: f32,
+) -> Result<Vec<u8>, ExportError> {
+    if !scale.is_finite() || scale <= 0.0 {
+        return Err(ExportError::NonFiniteOutputSize);
+    }
     let mut pairs = Vec::new();
-    for &id in node_ids {
-        let Some(node) = page.find(id) else { continue };
+    for &node in nodes {
         let mut acc = crate::BoundsAcc::new();
         crate::collect_bounds(node, glam::Affine2::IDENTITY, &mut acc);
-        let Some(bounds) = acc.into_rect() else {
-            continue;
-        };
-        pairs.push((node, bounds));
+        if let Some(bounds) = acc.into_rect() {
+            pairs.push((node, bounds));
+        }
     }
     if pairs.is_empty() {
         return Err(ExportError::NoRequestedNodesPaint);
