@@ -51,7 +51,7 @@ impl NativeBackend {
             let luma = skia_safe::ColorFilter::luma();
             let filter = if linear_rgb {
                 Some(
-                    luma.composed(skia_safe::ColorFilter::srgb_to_linear_gamma())
+                    luma.composed(skia_safe::color_filters::srgb_to_linear_gamma())
                         .expect("Skia linearRGB luminance composition"),
                 )
             } else {
