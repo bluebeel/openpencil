@@ -523,3 +523,39 @@ fn batch_collapse_resets_pre_batch_revision_before_the_bump() {
     assert_eq!(state.document_revision(), saved);
     assert!(!state.is_dirty());
 }
+
+#[test]
+fn shared_save_preserves_motion_and_matches_canonical_wire_bytes() {
+    use jian_ops_schema::motion::MotionPreference;
+
+    for paged in [false, true] {
+        for motion in [
+            None,
+            Some(MotionPreference::Full),
+            Some(MotionPreference::Reduced),
+        ] {
+            let mut doc = empty();
+            doc.motion = motion;
+            doc.responsive = Some(false);
+            doc.name = Some("Authored behavior".into());
+            doc.format_version = Some("1.0".into());
+            doc.children = many_roots(2);
+            if paged {
+                doc.pages = Some(vec![PenPage {
+                    id: "p1".into(),
+                    name: "First".into(),
+                    children: many_roots(3),
+                    background_color: Some("#ffffff".into()),
+                    state: None,
+                    lifecycle: None,
+                }]);
+            }
+            let shared = SharedDoc::capture(&doc, None);
+            assert_eq!(shared.materialize(), doc);
+            assert_eq!(
+                serde_json::to_vec(&shared).unwrap(),
+                serde_json::to_vec(&doc).unwrap()
+            );
+        }
+    }
+}

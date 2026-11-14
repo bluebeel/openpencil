@@ -209,6 +209,7 @@ impl Serialize for SharedDoc {
         serialize_option(&mut map, "logicModules", &doc.logic_modules)?;
         serialize_option(&mut map, "designMd", &doc.design_md)?;
         serialize_option(&mut map, "conversion", &doc.conversion)?;
+        serialize_option(&mut map, "motion", &doc.motion)?;
         map.end()
     }
 }
