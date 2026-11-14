@@ -20,6 +20,7 @@ pub use compact_float::FloatRecord;
 #[path = "kiwi/compact_guid.rs"]
 mod compact_guid;
 pub(crate) mod deferred;
+pub(crate) mod indexed;
 pub(crate) mod storage;
 pub(crate) mod stream;
 mod value;

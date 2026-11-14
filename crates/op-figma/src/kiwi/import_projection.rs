@@ -5,6 +5,8 @@ use super::{Decoder, DefKind, KiwiError, NativeType, ResolvedType, MAX_DEPTH};
 #[derive(Clone, Copy)]
 pub(super) enum DecodeScope {
     Full,
+    IndexNode,
+    IndexSymbol,
     Import,
     Root,
     DirectNode,
@@ -46,13 +48,34 @@ impl DecodeScope {
     pub(super) fn exact_message_capacity(self) -> bool {
         matches!(
             self,
-            Self::Root | Self::Import | Self::DirectNode | Self::Instance
+            Self::Root
+                | Self::Import
+                | Self::DirectNode
+                | Self::Instance
+                | Self::IndexNode
+                | Self::IndexSymbol
         )
     }
 
     pub(super) fn field(self, name: &str) -> Option<Self> {
         use DecodeScope::*;
         match (self, name) {
+            (
+                IndexNode,
+                "guid"
+                | "type"
+                | "phase"
+                | "parentIndex"
+                | "name"
+                | "styleType"
+                | "key"
+                | "componentPropRefs"
+                | "componentPropertyReferences"
+                | "overriddenSymbolID",
+            ) => Some(Import),
+            (IndexNode, "symbolData") => Some(IndexSymbol),
+            (IndexSymbol, "symbolID") => Some(Import),
+            (IndexNode | IndexSymbol, _) => None,
             (Root, "nodeChanges") => Some(DirectNode),
             (Root | Import, _) => Some(Import),
             (DirectNode | Instance, "parameterConsumptionMap" | "variableConsumptionMap") => {

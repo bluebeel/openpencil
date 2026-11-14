@@ -9,6 +9,8 @@ use crate::kiwi::{decode_binary_schema, FigValue, KiwiError};
 use crate::progress::FigImportPhase;
 use std::collections::HashMap;
 
+pub(crate) mod indexed;
+
 /// Figma node identity — `sessionID:localID`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FigGuid {
@@ -206,39 +208,45 @@ pub(crate) fn extract_blob(blob: FigValue) -> BlobOrString {
     }
 }
 
-fn extract_decoded_root(raw: FigValue) -> Option<(Vec<FigValue>, Vec<BlobOrString>)> {
+pub(crate) fn node_change_array_slot(raw: &FigValue) -> Option<usize> {
     let FigValue::Object(pairs) = raw else {
         return None;
     };
-
-    let mut node_changes: Option<Vec<FigValue>> = None;
-    let mut fallback_node_changes: Option<Vec<FigValue>> = None;
-    let mut blobs = Vec::new();
-
-    for (name, value) in pairs {
+    let mut named = None;
+    let mut fallback = None;
+    for (index, (name, value)) in pairs.iter().enumerate() {
         match (name.as_ref(), value) {
-            ("nodeChanges", FigValue::Array(items)) if !items.is_empty() => {
-                node_changes = Some(items.into());
-            }
-            ("blobs", FigValue::Array(items)) => {
-                blobs = items.into_iter().map(extract_blob).collect();
-            }
+            ("nodeChanges", FigValue::Array(items)) if !items.is_empty() => named = Some(index),
+            ("blobs", FigValue::Array(_)) => {}
             (_, FigValue::Array(items))
-                if fallback_node_changes.is_none()
-                    && items
-                        .first()
-                        .map(|node| node.get("guid").is_some())
-                        .unwrap_or(false) =>
+                if fallback.is_none()
+                    && items.first().is_some_and(|node| node.get("guid").is_some()) =>
             {
-                fallback_node_changes = Some(items.into());
+                fallback = Some(index)
             }
             _ => {}
         }
     }
+    named.or(fallback)
+}
 
-    node_changes
-        .or(fallback_node_changes)
-        .map(|nodes| (nodes, blobs))
+pub(crate) fn extract_decoded_root(raw: FigValue) -> Option<(Vec<FigValue>, Vec<BlobOrString>)> {
+    let slot = node_change_array_slot(&raw)?;
+    let FigValue::Object(pairs) = raw else {
+        return None;
+    };
+    let mut nodes = None;
+    let mut blobs = Vec::new();
+    for (index, (name, value)) in pairs.into_iter().enumerate() {
+        if index == slot {
+            if let FigValue::Array(values) = value {
+                nodes = Some(values.into());
+            }
+        } else if let ("blobs", FigValue::Array(items)) = (name.as_ref(), value) {
+            blobs = items.into_iter().map(extract_blob).collect();
+        }
+    }
+    nodes.map(|nodes| (nodes, blobs))
 }
 
 /// Parse a `.fig` file buffer into a [`FigmaDecodedFile`] — the Rust
@@ -257,6 +265,7 @@ pub(crate) fn parse_fig_file_with_observer(
     decode_binary_parts(container, observer, false)
 }
 
+#[cfg(test)]
 pub(crate) fn parse_fig_file_owned_with_observer(
     bytes: Vec<u8>,
     observer: &mut dyn FnMut(FigImportPhase),

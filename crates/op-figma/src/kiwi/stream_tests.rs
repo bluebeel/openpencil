@@ -30,6 +30,21 @@ fn streamed(schema: &Schema, bytes: &[u8]) -> Result<FigValue, KiwiError> {
         bytes.len(),
     )
 }
+fn indexed_hydrated(schema: &Schema, wire: &[u8]) -> Result<FigValue, KiwiError> {
+    let mut decoded = decode_indexed(
+        schema,
+        BufReader::with_capacity(1, Cursor::new(wire)),
+        wire.len(),
+    )?;
+    if let Some(encoded) = decoded.nodes {
+        let nodes = decoded.root.get_array("nodeChanges").unwrap().to_vec();
+        decoded
+            .root
+            .set("nodeChanges", FigValue::Array(encoded.all(nodes).into()));
+    }
+    Ok(decoded.root)
+}
+
 fn fixture() -> (Schema, Vec<u8>) {
     let schema = Schema {
         definitions: vec![
@@ -71,6 +86,7 @@ fn bounded_stream_preserves_unknown_fields_order_duplicates_and_chunk_boundaries
     let (schema, wire) = fixture();
     let eager = decode_import_message(&schema, &wire).unwrap();
     let streamed = streamed(&schema, &wire).unwrap();
+    assert_eq!(indexed_hydrated(&schema, &wire).unwrap(), eager);
     assert_eq!(streamed, eager);
     assert_eq!(streamed.get_f64("rootUnknown"), Some(11.0));
     let nested = &streamed.get_array("nodeChanges").unwrap()[0];
@@ -88,6 +104,7 @@ fn bounded_stream_preserves_unknown_fields_order_duplicates_and_chunk_boundaries
     for end in 0..wire.len() {
         assert!(decode_import_message(&schema, &wire[..end]).is_err());
         assert!(self::streamed(&schema, &wire[..end]).is_err());
+        assert!(indexed_hydrated(&schema, &wire[..end]).is_err());
     }
     let mut trailing = wire.clone();
     trailing.push(99);
@@ -97,6 +114,10 @@ fn bounded_stream_preserves_unknown_fields_order_duplicates_and_chunk_boundaries
     ));
     let mut unknown = wire;
     unknown[0] = 127;
+    assert!(matches!(
+        indexed_hydrated(&schema, &unknown),
+        Err(KiwiError::UnknownField(_))
+    ));
     assert!(matches!(
         self::streamed(&schema, &unknown),
         Err(KiwiError::UnknownField(_))
@@ -143,6 +164,7 @@ fn bounded_stream_preserves_zero_byte_array_validation_through_lazy_subranges() 
     for decoded in [
         decode_import_message(&schema, &wire).unwrap(),
         streamed(&schema, &wire).unwrap(),
+        indexed_hydrated(&schema, &wire).unwrap(),
     ] {
         assert_eq!(
             decoded, full,
@@ -160,6 +182,7 @@ fn bounded_stream_preserves_zero_byte_array_validation_through_lazy_subranges() 
     let invalid = vec![1, 1, 1, 1, 2, 200, 1, 0, 0, 0];
     assert!(decode_import_message(&schema, &invalid).is_err());
     assert!(streamed(&schema, &invalid).is_err());
+    assert!(indexed_hydrated(&schema, &invalid).is_err());
 }
 
 #[test]
@@ -187,10 +210,53 @@ fn bounded_stream_keeps_depth_and_array_length_limits() {
     ));
     assert!(matches!(streamed(&schema, &wire), Err(KiwiError::TooDeep)));
     assert!(matches!(
+        indexed_hydrated(&schema, &wire),
+        Err(KiwiError::TooDeep)
+    ));
+    assert!(matches!(
         streamed(&schema, &[1, 255, 255, 255, 255, 15, 0]),
         Err(KiwiError::OutOfBounds)
     ));
     fn send_sync<T: Send + Sync>() {}
     send_sync::<FigValue>();
     assert_eq!(std::mem::size_of::<FigValue>(), 24);
+}
+
+#[test]
+fn indexed_frames_follow_repeated_field_slots_not_last_wire_event() {
+    let schema = Schema {
+        definitions: vec![
+            definition(
+                "NodeChange",
+                DefKind::Message,
+                vec![
+                    field("name", "string", false, 1),
+                    field("payload", "uint", false, 2),
+                ],
+            ),
+            definition(
+                "Message",
+                DefKind::Message,
+                vec![
+                    field("nodeChanges", "NodeChange", true, 1),
+                    field("nodeChanges", "NodeChange", true, 2),
+                ],
+            ),
+        ],
+    };
+    // Slot 0 is overwritten after slot 1: extraction still selects slot 1.
+    let wire = [
+        1, 1, 1, b'a', 0, 2, 10, 0, 2, 1, 1, b'b', 0, 2, 20, 0, 1, 1, 1, b'c', 0, 2, 30, 0, 0,
+    ];
+    let eager = decode_import_message(&schema, &wire).unwrap();
+    let full = crate::figma_types::extract_decoded_root(eager).unwrap().0;
+    let decoded = decode_indexed(&schema, Cursor::new(&wire), wire.len()).unwrap();
+    let metadata = crate::figma_types::extract_decoded_root(decoded.root)
+        .unwrap()
+        .0;
+    assert!(metadata[0].get("payload").is_none());
+    let hydrated = decoded.nodes.unwrap().all(metadata);
+    assert_eq!(hydrated, full);
+    assert_eq!(hydrated[0].get_str("name"), Some("b"));
+    assert_eq!(hydrated[0].get_f64("payload"), Some(20.0));
 }

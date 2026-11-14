@@ -29,10 +29,14 @@ pub fn guid_to_string(guid: &FigValue) -> Option<String> {
 /// True for a real, user-visible page — a `CANVAS` whose name is not
 /// `Internal Only…` (matches `/^Internal\s+Only/i`).
 pub fn is_user_page(node: &TreeNode) -> bool {
-    if node.figma.get_str("type") != Some("CANVAS") {
+    is_user_page_value(&node.figma)
+}
+
+pub(crate) fn is_user_page_value(node: &FigValue) -> bool {
+    if node.get_str("type") != Some("CANVAS") {
         return false;
     }
-    !is_internal_only(node.figma.get_str("name").unwrap_or(""))
+    !is_internal_only(node.get_str("name").unwrap_or(""))
 }
 
 fn is_internal_only(name: &str) -> bool {

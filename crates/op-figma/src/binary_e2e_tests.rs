@@ -462,7 +462,17 @@ fn owned_source_preserves_bare_zip_pages_phases_and_canonical_output() {
         )
         .unwrap();
         assert_eq!(borrowed.pages(), owned.pages());
-        assert_eq!(borrowed_phases, owned_phases);
+        assert_eq!(
+            owned_phases,
+            [
+                FigImportPhase::Container,
+                FigImportPhase::Schema,
+                FigImportPhase::Decode,
+                FigImportPhase::Extract,
+                FigImportPhase::Prepared
+            ]
+        );
+        assert!(borrowed_phases.contains(&FigImportPhase::BuildTree));
         let (borrowed, owned) = (borrowed.into_page(0).unwrap(), owned.into_page(0).unwrap());
         assert_eq!(
             serde_json::to_vec(&borrowed.document).unwrap(),
@@ -474,4 +484,77 @@ fn owned_source_preserves_bare_zip_pages_phases_and_canonical_output() {
         prepare_fig_binary_owned(b"unknown".to_vec(), "Bad", FigLayoutMode::Preserve),
         Err(FigParseError::UnknownFormat)
     ));
+}
+
+#[test]
+fn indexed_owned_all_pages_retains_eager_conversion_and_strict_errors() {
+    let bare = build_fig(&build_schema(), &build_data());
+    for mode in [FigLayoutMode::Preserve, FigLayoutMode::OpenPencil] {
+        let eager =
+            crate::figma_types::parse_fig_file_owned_with_observer(bare.clone(), &mut |_| {})
+                .unwrap();
+        let expected = crate::node_mapper::figma_all_pages_to_pen_document(eager, "All", mode);
+        let actual = crate::prepare_fig_binary_owned(bare.clone(), "All", mode)
+            .unwrap()
+            .into_all_pages()
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(actual.document).unwrap(),
+            serde_json::to_value(expected.document).unwrap()
+        );
+        assert_eq!(actual.warnings, expected.warnings);
+        assert!(matches!(
+            crate::prepare_fig_binary_owned(bare.clone(), "All", mode)
+                .unwrap()
+                .into_page(99),
+            Err(FigParseError::PageOutOfBounds {
+                index: 99,
+                page_count: 1
+            })
+        ));
+    }
+}
+
+#[test]
+fn indexed_owned_falls_back_for_duplicate_identities_and_alternate_root_arrays() {
+    let mut duplicate = build_data();
+    duplicate[1] = 4;
+    duplicate.pop();
+    let mut writer = W { out: duplicate };
+    encode_node(
+        &mut writer,
+        &NodeSpec {
+            local_id: 3,
+            parent: Some((0, 2, "a")),
+            type_value: 4,
+            name: "Latest box",
+            size: Some((75.0, 25.0)),
+            transform: None,
+        },
+    );
+    writer.var_uint(0);
+    let mut renamed_schema = build_schema();
+    let start = renamed_schema
+        .windows(11)
+        .position(|w| w == b"nodeChanges")
+        .unwrap();
+    renamed_schema.splice(start..start + 11, b"futureNodes".iter().copied());
+    for source in [
+        build_fig(&build_schema(), &writer.out),
+        build_fig(&renamed_schema, &build_data()),
+    ] {
+        let expected = prepare_fig_binary(&source, "Fallback", FigLayoutMode::Preserve).unwrap();
+        let actual =
+            crate::prepare_fig_binary_owned(source, "Fallback", FigLayoutMode::Preserve).unwrap();
+        assert_eq!(actual.pages(), expected.pages());
+        let (expected, actual) = (
+            expected.into_all_pages().unwrap(),
+            actual.into_all_pages().unwrap(),
+        );
+        assert_eq!(
+            serde_json::to_value(actual.document).unwrap(),
+            serde_json::to_value(expected.document).unwrap()
+        );
+        assert_eq!(actual.warnings, expected.warnings);
+    }
 }

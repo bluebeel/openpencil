@@ -1,4 +1,5 @@
 //! Schema-framed import. Retains one exact node/blob wire value at a time.
+use super::indexed::{EncodedNodes, Frame};
 use super::*;
 use std::io::BufRead;
 
@@ -9,6 +10,9 @@ struct Scanner<'a, R> {
     scratch: Vec<u8>,
     packed: bool,
     blobs: Option<Vec<crate::figma_types::BlobOrString>>,
+    indexed: bool,
+    frames: Vec<Frame>,
+    frame_slots: std::collections::BTreeMap<usize, Vec<Frame>>,
 }
 impl<'a, R: BufRead> Scanner<'a, R> {
     fn byte(&mut self, out: &mut Vec<u8>) -> Result<u8, KiwiError> {
@@ -184,11 +188,28 @@ impl<'a, R: BufRead> Scanner<'a, R> {
             compact_floats: self.template.compact_floats.clone(),
             lazy_context: self.template.lazy_context.clone(),
         };
-        let value = decoder.decode_type(kind, depth, scope)?;
+        let indexed = self.indexed && matches!(scope, DecodeScope::DirectNode);
+        let value = decoder.decode_type(
+            kind,
+            depth,
+            if indexed {
+                DecodeScope::IndexNode
+            } else {
+                scope
+            },
+        )?;
         assert_eq!(decoder.bb.remaining(), 0);
         self.template.lazy_context = decoder.lazy_context;
-        bytes.clear();
-        self.scratch = bytes;
+        if indexed {
+            self.frames.push(Frame {
+                bytes: bytes.into_boxed_slice(),
+                kind,
+                trailing: self.left,
+            });
+        } else {
+            bytes.clear();
+            self.scratch = bytes;
+        }
         Ok(value)
     }
     fn decode_field(
@@ -211,12 +232,16 @@ impl<'a, R: BufRead> Scanner<'a, R> {
             self.bytes(count, &mut bytes)?;
             return Ok(FigValue::Bytes(bytes.into()));
         }
+        if self.indexed && matches!(scope, DecodeScope::DirectNode) {
+            self.frames.reserve_exact(count);
+        }
         let mut values = Vec::with_capacity(if blob_array { 0 } else { count });
         let mut packed = Vec::with_capacity(if blob_array { count } else { 0 });
         for _ in 0..count {
             let value = self.decode_value(kind, depth + 1, scope)?;
             if blob_array {
-                packed.push(crate::figma_types::extract_blob(value).packed())
+                let blob = crate::figma_types::extract_blob(value);
+                packed.push(if self.packed { blob.packed() } else { blob })
             } else {
                 values.push(value)
             }
@@ -243,12 +268,13 @@ impl<'a, R: BufRead> Scanner<'a, R> {
                 .ok_or_else(|| KiwiError::BadType(field.type_name.clone()))?;
             let name = self.template.object_keys[definition][index].clone();
             let scope = DecodeScope::Root.field(&name).unwrap();
+            let frame_start = self.frames.len();
             let value = self.decode_field(
                 kind,
                 array,
                 0,
                 scope,
-                self.packed && name.as_ref() == "blobs" && array,
+                (self.packed || self.indexed) && name.as_ref() == "blobs" && array,
             )?;
             let slot = if let Some(slot) = slots[index] {
                 pairs[slot].1 = value;
@@ -259,6 +285,10 @@ impl<'a, R: BufRead> Scanner<'a, R> {
                 pairs.push((name, value));
                 slot
             };
+            if self.indexed && matches!(scope, DecodeScope::DirectNode) {
+                self.frame_slots
+                    .insert(slot, self.frames.split_off(frame_start));
+            }
             if let Some(blobs) = self.blobs.take() {
                 blob_slots.insert(slot, blobs);
             }
@@ -291,7 +321,33 @@ pub(crate) fn decode_with_blobs<R: BufRead>(
     len: usize,
     packed: bool,
 ) -> Result<(FigValue, Option<Vec<crate::figma_types::BlobOrString>>), KiwiError> {
-    let root = schema
+    let decoded = decode_mode(schema, reader, len, packed, false)?;
+    Ok((decoded.root, decoded.blobs))
+}
+
+#[derive(Debug)]
+pub(crate) struct IndexedDecoded {
+    pub root: FigValue,
+    pub blobs: Option<Vec<crate::figma_types::BlobOrString>>,
+    pub nodes: Option<EncodedNodes>,
+}
+
+pub(crate) fn decode_indexed<R: BufRead>(
+    schema: &Schema,
+    reader: R,
+    len: usize,
+) -> Result<IndexedDecoded, KiwiError> {
+    decode_mode(schema, reader, len, false, true)
+}
+
+fn decode_mode<R: BufRead>(
+    schema: &Schema,
+    reader: R,
+    len: usize,
+    packed: bool,
+    indexed: bool,
+) -> Result<IndexedDecoded, KiwiError> {
+    let definition = schema
         .definitions
         .iter()
         .position(|d| d.name == "Message" && d.kind == DefKind::Message)
@@ -310,9 +366,25 @@ pub(crate) fn decode_with_blobs<R: BufRead>(
         scratch: Vec::new(),
         packed,
         blobs: None,
+        indexed,
+        frames: Vec::new(),
+        frame_slots: Default::default(),
     };
-    let root = scanner.root(root)?;
-    Ok((root, scanner.blobs))
+    let root = scanner.root(definition)?;
+    let nodes = if indexed {
+        crate::figma_types::node_change_array_slot(&root)
+            .and_then(|slot| scanner.frame_slots.remove(&slot))
+            .map(|frames| {
+                EncodedNodes::new(frames, deferred::Shared::from_decoder(&scanner.template))
+            })
+    } else {
+        None
+    };
+    Ok(IndexedDecoded {
+        root,
+        blobs: scanner.blobs,
+        nodes,
+    })
 }
 
 #[cfg(test)]

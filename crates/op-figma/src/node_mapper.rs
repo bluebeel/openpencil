@@ -18,6 +18,7 @@ use std::collections::HashMap;
 
 mod dependencies;
 mod owned_page;
+pub(crate) mod source_selection;
 pub(crate) use owned_page::convert_tree_page_owned;
 mod style_references;
 

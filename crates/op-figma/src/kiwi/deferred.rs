@@ -213,15 +213,7 @@ impl Decoder<'_, '_> {
             return Ok(None);
         }
         if self.lazy_context.is_none() {
-            self.lazy_context = Some(Arc::new(Shared {
-                schema: self.schema.clone(),
-                field_types: self.field_types.clone(),
-                field_by_value: self.field_by_value.clone(),
-                object_keys: self.object_keys.clone(),
-                compact_guids: self.compact_guids.clone(),
-                compact_affines: self.compact_affines.clone(),
-                compact_floats: self.compact_floats.clone(),
-            }));
+            self.lazy_context = Some(Shared::from_decoder(self));
         }
         Ok(Some(FigValue::Deferred(Deferred::new(Pending::Wire {
             shared: self.lazy_context.as_ref().unwrap().clone(),
@@ -239,6 +231,43 @@ impl Decoder<'_, '_> {
 }
 
 impl Shared {
+    pub(super) fn from_decoder(decoder: &Decoder<'_, '_>) -> Arc<Self> {
+        Arc::new(Self {
+            schema: decoder.schema.clone(),
+            field_types: decoder.field_types.clone(),
+            field_by_value: decoder.field_by_value.clone(),
+            object_keys: decoder.object_keys.clone(),
+            compact_guids: decoder.compact_guids.clone(),
+            compact_affines: decoder.compact_affines.clone(),
+            compact_floats: decoder.compact_floats.clone(),
+        })
+    }
+    pub(super) fn decode_value(
+        self: &Arc<Self>,
+        raw: &[u8],
+        resolved: ResolvedType,
+        depth: u32,
+        scope: DecodeScope,
+        trailing: usize,
+    ) -> FigValue {
+        let mut decoder = Decoder {
+            schema: &self.schema,
+            bb: ByteBuffer::with_tail(raw, trailing),
+            field_types: self.field_types.clone(),
+            field_by_value: self.field_by_value.clone(),
+            object_keys: self.object_keys.clone(),
+            compact_guids: self.compact_guids.clone(),
+            compact_affines: self.compact_affines.clone(),
+            compact_floats: self.compact_floats.clone(),
+            lazy_context: Some(self.clone()),
+        };
+        let value = decoder
+            .decode_type(resolved, depth, scope)
+            .expect("immutable node frame was validated before indexing");
+        assert_eq!(decoder.bb.remaining(), 0, "validated node frame range");
+        value
+    }
+
     fn retained_bound(&self) -> usize {
         use std::mem::size_of;
         fn vec<T>(v: &Vec<T>) -> usize {

@@ -1,12 +1,11 @@
-//! Two-stage binary Figma import. Preparation performs the expensive
-//! decode, style resolution, and owned tree build once; callers can
-//! inspect lightweight page metadata before consuming the prepared
-//! file into either one page or the full document.
+//! Two-stage binary Figma import. Borrowed preparation resolves the source
+//! eagerly. Owned preparation validates and indexes exact node frames, then
+//! expands source data after page selection. Both expose the same page metadata
+//! and consume their source into one page or the complete document.
 
 use crate::common::FigLayoutMode;
 use crate::figma_types::{
-    parse_fig_file, parse_fig_file_owned_with_observer, parse_fig_file_with_observer, BlobOrString,
-    FigmaDecodedFile,
+    parse_fig_file, parse_fig_file_with_observer, BlobOrString, FigmaDecodedFile,
 };
 use crate::image_resolver::{resolve_image_blobs_owned_with, ImageTransform};
 use crate::node_mapper::{
@@ -18,6 +17,8 @@ use crate::tree::{build_tree_owned, guid_to_string, is_user_page, TreeNode};
 use crate::{detect_kind, FigFileKind, FigImport, FigParseError};
 use std::collections::HashMap;
 
+mod owned;
+
 /// A decoded and indexed `.fig` file awaiting page conversion.
 ///
 /// [`pages`](Self::pages) returns a borrowed metadata slice; it does
@@ -28,6 +29,7 @@ pub struct PreparedFig {
     file_name: String,
     layout_mode: FigLayoutMode,
     tree: Option<TreeNode>,
+    indexed: Option<owned::IndexedPreparation>,
     pages: Vec<FigmaPageInfo>,
     blobs: Vec<BlobOrString>,
     image_files: HashMap<String, Vec<u8>>,
@@ -67,7 +69,7 @@ pub fn prepare_fig_binary_with_observer(
     ))
 }
 
-/// Consume the compressed source so it can be released before tree decoding.
+/// Consume the compressed source and defer complete node expansion until conversion.
 /// The borrowed preparation API remains available for reusable input buffers.
 pub fn prepare_fig_binary_owned(
     bytes: Vec<u8>,
@@ -87,14 +89,7 @@ pub fn prepare_fig_binary_owned_with_observer(
     if detect_kind(&bytes) != FigFileKind::Binary {
         return Err(FigParseError::UnknownFormat);
     }
-    let decoded = parse_fig_file_owned_with_observer(bytes, observer)
-        .map_err(|error| FigParseError::Binary(error.to_string()))?;
-    Ok(PreparedFig::from_decoded_with_observer(
-        decoded,
-        file_name,
-        layout_mode,
-        observer,
-    ))
+    owned::prepare(bytes, file_name, layout_mode, observer)
 }
 
 impl PreparedFig {
@@ -112,10 +107,11 @@ impl PreparedFig {
         layout_mode: FigLayoutMode,
         observer: &mut dyn FnMut(FigImportPhase),
     ) -> Self {
-        observer(FigImportPhase::ResolveStyles);
-        resolve_style_references_with_mode(&mut decoded.node_changes, layout_mode);
-        observer(FigImportPhase::BuildTree);
-        let tree = build_tree_owned(std::mem::take(&mut decoded.node_changes));
+        let tree = owned::resolve_tree(
+            std::mem::take(&mut decoded.node_changes),
+            layout_mode,
+            observer,
+        );
         let pages = tree
             .as_ref()
             .map(|tree| {
@@ -130,6 +126,7 @@ impl PreparedFig {
             file_name: file_name.to_string(),
             layout_mode,
             tree,
+            indexed: None,
             pages,
             blobs: decoded.blobs,
             image_files: decoded.image_files,
@@ -185,10 +182,15 @@ impl PreparedFig {
             file_name,
             layout_mode,
             tree,
+            indexed,
             blobs,
             image_files,
             ..
         } = self;
+        let tree = match indexed {
+            Some(source) => source.into_tree(Some(page_index), layout_mode, observer),
+            None => tree,
+        };
         let tree = tree.expect("prepared file with pages must have a document tree");
         observer(FigImportPhase::ConvertPage);
         let result = crate::node_mapper::convert_tree_page_owned(
@@ -220,10 +222,18 @@ impl PreparedFig {
             file_name,
             layout_mode,
             tree,
-            blobs,
+            indexed,
+            mut blobs,
             image_files,
             ..
         } = self;
+        let tree = match indexed {
+            Some(source) => {
+                blobs = blobs.into_iter().map(BlobOrString::packed).collect();
+                source.into_tree(None, layout_mode, &mut |_| {})
+            }
+            None => tree,
+        };
         let result = match tree {
             Some(tree) => {
                 let result = convert_tree_all_pages(&tree, blobs, &file_name, layout_mode);
