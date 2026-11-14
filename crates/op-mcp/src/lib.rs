@@ -285,7 +285,10 @@ pub use page_tools::{
 pub use parser::parse_tool_call;
 pub use read_nodes::{read_nodes_snapshot, read_nodes_snapshot_for_call, ReadNodes};
 pub use reload_document::ReloadDocument;
-pub use reparent_tools::{copy_node_snapshot, move_node_snapshot, CopyNode, MoveNode};
+pub use reparent_tools::{
+    copy_node_snapshot, copy_node_snapshot_with_authority, move_node_snapshot, CopyNode,
+    CopyNodeWithId, MoveNode,
+};
 pub use scalar_vars::{
     create_variable_snapshot, delete_variable_snapshot, rename_variable_snapshot,
     set_variable_boolean_snapshot, set_variable_number_snapshot, set_variable_string_snapshot,

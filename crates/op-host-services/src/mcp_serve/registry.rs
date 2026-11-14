@@ -352,7 +352,14 @@ pub(super) fn rebuild_registry_with_authority(
     register_tool!("update_node", update_node_snapshot());
     register_tool!("delete_node", delete_node_snapshot());
     register_tool!("move_node", move_node_snapshot());
-    register_tool!("copy_node", copy_node_snapshot());
+    if should_register(requested_tool, "copy_node") {
+        let tool: Box<dyn op_mcp::McpTool> = if trusted_authority && requested_tool.is_some() {
+            Box::new(op_mcp::copy_node_snapshot_with_authority(doc))
+        } else {
+            Box::new(copy_node_snapshot())
+        };
+        r.register(http_export::wrap(tool));
+    }
     register_tool!("replace_node", replace_node_snapshot());
     if should_register(requested_tool, "batch_design") {
         match arguments {
