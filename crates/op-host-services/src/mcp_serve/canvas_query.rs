@@ -296,11 +296,20 @@ fn snapshot_inner(
             .id
             .clone();
         let mut results = Vec::with_capacity(queries.len());
+        let hit_index = (trusted
+            && queries
+                .iter()
+                .any(|query| matches!(query, Query::Point { .. })))
+        .then(|| op_pen_loader::query_hit_index_cached(&scene));
         let mut snap_indexes: HashMap<Option<String>, Arc<SnapIndex>> = HashMap::new();
         for query in queries {
             results.push(match query {
                 Query::Point { x, y, zoom } => {
-                    let path = scene.node_path_at_doc_point(Point2D::new(x, y), zoom);
+                    let point = Point2D::new(x, y);
+                    let path = hit_index.as_ref().map_or_else(
+                        || scene.node_path_at_doc_point(point, zoom),
+                        |index| index.node_path_at_doc_point(&scene, point, zoom),
+                    );
                     json!({"kind":"point", "nodeId":path.as_ref().and_then(|p| p.last()), "path":path})
                 }
                 Query::Rect { x, y, width, height } => {

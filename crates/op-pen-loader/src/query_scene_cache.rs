@@ -2,7 +2,7 @@
 //! Fresh public builders never enter this cache. Only metadata is globally locked;
 //! same-key builds coalesce, unrelated documents build on their calling threads.
 use crate::scene_inputs::SceneInputs;
-use jian_scene::{layout_scene::LayoutScene, snapping::SnapIndex};
+use jian_scene::{layout_scene::LayoutScene, scene_hit_index::SceneHitIndex, snapping::SnapIndex};
 use op_editor_core::EditorState;
 use std::{
     mem::size_of,
@@ -51,10 +51,12 @@ enum Key {
         scene: Weak<LayoutScene>,
         parent: Option<String>,
     },
+    Hit(Weak<LayoutScene>),
 }
 impl Key {
     fn matches(&self, other: &Self) -> bool {
         match (self, other) {
+            (Self::Hit(a), Self::Hit(b)) => Weak::ptr_eq(a, b),
             (Self::Scene(a), Self::Scene(b)) => a.matches(b),
             (
                 Self::Export {
@@ -85,6 +87,7 @@ impl Key {
         match self {
             Self::Scene(input) | Self::Export { input, .. } => input.owner_live(),
             Self::Snap { scene, .. } => scene.strong_count() != 0,
+            Self::Hit(scene) => scene.strong_count() != 0,
         }
     }
     fn stable(&self) -> bool {
@@ -108,6 +111,7 @@ impl Key {
                         + selected.as_ref().map_or(0, String::capacity)
                 }
                 Self::Snap { parent, .. } => parent.as_ref().map_or(0, String::capacity),
+                Self::Hit(_) => 0,
             }
     }
 }
@@ -115,18 +119,21 @@ impl Key {
 enum Value {
     Scene(Arc<LayoutScene>),
     Snap(Option<Arc<SnapIndex>>),
+    Hit(Arc<SceneHitIndex>),
 }
 impl Value {
     fn bytes(&self) -> usize {
         32usize.saturating_add(match self {
             Self::Scene(scene) => storage::scene_bytes(scene),
             Self::Snap(index) => index.as_ref().map_or(0, |index| index.storage_bytes()),
+            Self::Hit(index) => index.storage_bytes(),
         })
     }
     fn weak(&self) -> WeakValue {
         match self {
             Self::Scene(scene) => WeakValue::Scene(Arc::downgrade(scene)),
             Self::Snap(index) => WeakValue::Snap(index.as_ref().map(Arc::downgrade)),
+            Self::Hit(index) => WeakValue::Hit(Arc::downgrade(index)),
         }
     }
 }
@@ -134,11 +141,13 @@ impl Value {
 enum WeakValue {
     Scene(Weak<LayoutScene>),
     Snap(Option<Weak<SnapIndex>>),
+    Hit(Weak<SceneHitIndex>),
 }
 impl WeakValue {
     fn live(&self) -> bool {
         match self {
             Self::Scene(value) => value.strong_count() != 0,
+            Self::Hit(value) => value.strong_count() != 0,
             Self::Snap(value) => value
                 .as_ref()
                 .is_some_and(|value| value.strong_count() != 0),
@@ -446,7 +455,7 @@ pub fn active_query_scene_cached(state: &EditorState) -> Arc<LayoutScene> {
         )))
     }) {
         Value::Scene(scene) => scene,
-        Value::Snap(_) => unreachable!("cache key kind"),
+        Value::Snap(_) | Value::Hit(_) => unreachable!("cache key kind"),
     }
 }
 /// Trusted parent-scoped snap requests share exact scenes under the same
@@ -464,7 +473,7 @@ pub fn active_query_items_scene_cached(state: &EditorState, ids: Vec<String>) ->
     });
     match get_or_build(key, || Value::Scene(Arc::new(policy.build(state)))) {
         Value::Scene(scene) => scene,
-        Value::Snap(_) => unreachable!("scene cache key kind"),
+        Value::Snap(_) | Value::Hit(_) => unreachable!("scene cache key kind"),
     }
 }
 /// Reuse the real editor SnapIndex for this exact immutable scene allocation.
@@ -481,7 +490,17 @@ pub fn query_snap_index_cached(
         Value::Snap(SnapIndex::for_scene(scene, parent).map(Arc::new))
     }) {
         Value::Snap(index) => index,
-        Value::Scene(_) => unreachable!("cache key kind"),
+        Value::Scene(_) | Value::Hit(_) => unreachable!("cache key kind"),
+    }
+}
+/// Share one conservative picking index across concurrent queries of the exact
+/// immutable scene; existing coalescing and retained-capacity bounds apply.
+pub fn query_hit_index_cached(scene: &Arc<LayoutScene>) -> Arc<SceneHitIndex> {
+    match get_or_build(Some(Key::Hit(Arc::downgrade(scene))), || {
+        Value::Hit(Arc::new(SceneHitIndex::new(scene)))
+    }) {
+        Value::Hit(index) => index,
+        Value::Scene(_) | Value::Snap(_) => unreachable!("hit index cache key kind"),
     }
 }
 pub fn query_scene_cache_stats() -> QuerySceneCacheStats {
