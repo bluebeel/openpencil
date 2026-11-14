@@ -318,7 +318,7 @@ pub fn read_http_request<S: std::io::Read>(stream: &mut S) -> Result<HttpRequest
     read_http_request_with_budget(stream, None).map(|(request, _)| request)
 }
 
-pub(crate) use http_body_budget::read_admitted_http_request;
+pub(crate) use http_body_budget::{read_admitted_http_request, BodyLease as HttpBodyLease};
 
 fn read_http_request_with_budget<'a, S: std::io::Read>(
     stream: &mut S,
@@ -626,6 +626,7 @@ pub(crate) mod raster_response;
 mod raster_snapshot;
 mod resident_charge;
 mod resident_documents;
+pub(crate) mod resident_groups;
 pub(crate) mod schemas;
 pub mod tool_catalog;
 mod tools_list;

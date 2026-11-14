@@ -58,6 +58,23 @@ impl<'a> NodeSvgBatch<'a> {
             .map(String::into_bytes)
             .map_err(|e| ExportError::SvgSerialize(e.to_string()))
     }
+    /// Deliver one complete target before serializing the next; context
+    /// allocation and immutable duplicate bounds are reused by this batch.
+    pub fn render_each(
+        &self,
+        ids: &[String],
+        scale: f32,
+        mut consume: impl FnMut(&str, Result<Vec<u8>, ExportError>) -> bool,
+    ) {
+        self.prepared.serialize_each(ids, scale, |id, result| {
+            consume(
+                id,
+                result
+                    .map(String::into_bytes)
+                    .map_err(|error| ExportError::SvgSerialize(error.to_string())),
+            )
+        });
+    }
 }
 
 /// Serialize the scene's active page to an SVG file at `target`.

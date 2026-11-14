@@ -31,14 +31,23 @@ pub fn render_selection_batch_pdf_bytes(
     ids: &[&str],
     scale: f32,
 ) -> Result<Vec<u8>, ExportError> {
+    crate::with_batch_preparation(|| render_batch_inner(batch, ids, scale))
+}
+
+fn render_batch_inner(
+    batch: &SceneSelectionBatch<'_>,
+    ids: &[&str],
+    scale: f32,
+) -> Result<Vec<u8>, ExportError> {
     if !scale.is_finite() || scale <= 0.0 {
         return Err(ExportError::NonFiniteOutputSize);
     }
+    let mut cursor = batch.cursor();
     let pairs = ids
         .iter()
         .filter_map(|id| {
-            let selection = batch.get(id)?;
-            crate::selection_bounds(&selection)
+            let selection = cursor.get(batch, id)?;
+            crate::selection_bounds(selection)
                 .ok()
                 .map(|bounds| (*id, bounds))
         })
@@ -56,7 +65,7 @@ pub fn render_selection_batch_pdf_bytes(
     {
         let mut pdf = skia_safe::pdf::new_document(&mut buffer, None);
         for (id, bounds) in pairs {
-            let Some(selection) = batch.get(id) else {
+            let Some(selection) = cursor.get(batch, id) else {
                 continue;
             };
             let size = skia_safe::Size::new(
@@ -67,7 +76,7 @@ pub fn render_selection_batch_pdf_bytes(
             let canvas = page.canvas();
             canvas.scale((scale, scale));
             canvas.translate((PDF_MARGIN - bounds.origin.x, PDF_MARGIN - bounds.origin.y));
-            crate::scene_painter::paint_selection(canvas, &selection, output_cull(bounds));
+            crate::scene_painter::paint_selection(canvas, selection, output_cull(bounds));
             pdf = page.end_page();
         }
         pdf.close();

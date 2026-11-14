@@ -7,7 +7,6 @@
 
 use crate::pen_node_ext::PenNodeExt;
 use crate::state::EditorState;
-use crate::walkers::find_node_mut;
 use jian_ops_schema::node::{MaskType, PenNode};
 use jian_ops_schema::style::{BlendMode, PenFill};
 
@@ -121,34 +120,22 @@ impl EditorState {
 
     /// Set node compositing without materializing the source-over default.
     pub fn set_selected_node_blend_mode(&mut self, mode: Option<BlendMode>) -> bool {
-        let selected = self.selection.anchor.clone();
-        if !selected.is_real() || !self.is_editable(&selected) {
-            return false;
-        }
-        find_node_mut(self.active_children_mut(), &selected)
-            .is_some_and(|node| set_node_blend_mode(node, mode))
+        self.with_selected_node(|node| set_node_blend_mode(node, mode))
+            .unwrap_or(false)
     }
 
     /// Write canonical mask semantics and remove any legacy `Path.mask`
     /// marker so future reads cannot observe conflicting fields.
     pub fn set_selected_node_mask_type(&mut self, mask_type: Option<MaskType>) -> bool {
-        let selected = self.selection.anchor.clone();
-        if !selected.is_real() || !self.is_editable(&selected) {
-            return false;
-        }
-        find_node_mut(self.active_children_mut(), &selected)
-            .is_some_and(|node| set_node_mask_type(node, mask_type))
+        self.with_selected_node(|node| set_node_mask_type(node, mask_type))
+            .unwrap_or(false)
     }
 
     /// Set one fill's blend mode. `Normal` is stored as absence for old-wire
     /// compatibility; all other fields and fills remain untouched.
     pub fn set_selected_fill_blend_mode(&mut self, index: usize, mode: Option<BlendMode>) -> bool {
-        let selected = self.selection.anchor.clone();
-        if !selected.is_real() || !self.is_editable(&selected) {
-            return false;
-        }
-        find_node_mut(self.active_children_mut(), &selected)
-            .is_some_and(|node| set_fill_blend_mode_at(node, index, mode))
+        self.with_selected_node(|node| set_fill_blend_mode_at(node, index, mode))
+            .unwrap_or(false)
     }
 }
 

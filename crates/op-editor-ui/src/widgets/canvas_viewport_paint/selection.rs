@@ -2,8 +2,8 @@
 
 #[path = "selection_lookup.rs"]
 mod lookup;
-use lookup::Context;
-pub use lookup::{SceneSelection, SceneSelectionBatch};
+use lookup::{Context, MaskBounds};
+pub use lookup::{SceneSelection, SceneSelectionBatch, SceneSelectionCursor};
 
 use super::{
     layer_bounds, mask, paint_node_inner, push_clip_content, Effect, OverlayTransform, PaintCx,
@@ -36,7 +36,7 @@ impl SceneSelection<'_> {
         !self.visible
             || (predicate(self.node)
                 && self.contexts.iter().all(|context| match context {
-                    Context::Mask(node) => predicate(node),
+                    Context::Mask(node, _) => predicate(node),
                     Context::Ancestor(_) => true,
                 }))
     }
@@ -45,6 +45,10 @@ impl SceneSelection<'_> {
     /// effect/transform allocator's same geometry. Clips and masks constrain
     /// this branch; no unselected sibling geometry is included.
     pub fn paint_bounds(&self) -> Option<Rect> {
+        *self.bounds.get_or_init(|| self.compute_paint_bounds())
+    }
+
+    fn compute_paint_bounds(&self) -> Option<Rect> {
         if !self.visible {
             return None;
         }
@@ -65,13 +69,23 @@ impl SceneSelection<'_> {
                         transforms.pop();
                     }
                 }
-                Context::Mask(node) if mask::export_mask_supported(node) => {
-                    bounds = layer_bounds::export_intersection(
-                        bounds,
-                        layer_bounds::export_mask_bounds(node, &transforms)?,
-                    )?;
+                Context::Mask(node, cached) => {
+                    // This retained mask link always has the same immutable
+                    // outer transform prefix, even for different descendants.
+                    let source = cached.get_or_init(|| {
+                        if mask::export_mask_supported(node) {
+                            MaskBounds::Supported(layer_bounds::export_mask_bounds(
+                                node,
+                                &transforms,
+                            ))
+                        } else {
+                            MaskBounds::Unsupported
+                        }
+                    });
+                    if let MaskBounds::Supported(source) = source {
+                        bounds = layer_bounds::export_intersection(bounds, (*source)?)?;
+                    }
                 }
-                Context::Mask(_) => {}
             }
         }
         (bounds.size.x > 0.0 && bounds.size.y > 0.0).then_some(bounds)
@@ -108,7 +122,7 @@ pub fn paint_export_selection(cx: &mut PaintCx<'_>, selection: &SceneSelection<'
     let mut unwind = Vec::with_capacity(selection.contexts.len());
     for context in &selection.contexts {
         match context {
-            Context::Mask(node) => {
+            Context::Mask(node, _) => {
                 let bounds = layer_bounds::export_layer_bounds(cull, &transforms);
                 unwind.push(Unwind::Mask(mask::begin_export_mask(
                     cx, node, &options, bounds,

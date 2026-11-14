@@ -414,22 +414,25 @@ fn render_node_batch_job(job: NodeBatchJob) {
     let page = job.scene.active_page();
     let nodes = page
         .map(|page| crate::SceneSelectionBatch::new(page, job.node_ids.iter().map(String::as_str)));
-    for (index, id) in job.node_ids.iter().enumerate() {
-        let result = match &nodes {
-            None => Err(ExportError::NoActivePage),
-            Some(nodes) => match nodes.get(id.as_str()) {
-                None => Err(ExportError::NodeNotFoundOnActivePage {
-                    node_id: id.clone(),
-                }),
-                Some(selected) => {
-                    crate::render_selected_node_raster_bytes(&selected, job.format, job.scale)
-                }
-            },
-        };
-        if job.reply.send((index, result)).is_err() || job.advance.recv().is_err() {
-            break;
+    let mut cursor = nodes.as_ref().map(|nodes| nodes.cursor());
+    crate::with_batch_preparation(|| {
+        for (index, id) in job.node_ids.iter().enumerate() {
+            let result = match (&nodes, &mut cursor) {
+                (Some(nodes), Some(cursor)) => match cursor.get(nodes, id.as_str()) {
+                    None => Err(ExportError::NodeNotFoundOnActivePage {
+                        node_id: id.clone(),
+                    }),
+                    Some(selected) => {
+                        crate::render_selected_node_raster_bytes(selected, job.format, job.scale)
+                    }
+                },
+                _ => Err(ExportError::NoActivePage),
+            };
+            if job.reply.send((index, result)).is_err() || job.advance.recv().is_err() {
+                break;
+            }
         }
-    }
+    });
 }
 
 #[cfg(test)]

@@ -120,20 +120,23 @@ pub fn serialize_node_on_page_svg(
     SvgNodeBatch::new(page, &[node_id.to_owned()]).serialize(node_id, scale)
 }
 
-fn serialize_node_context(
+fn node_context_bounds(
     node: &SceneNode,
-    node_id: &str,
     ancestor_xform: glam::Affine2,
     ancestor_effects: &[AncestorEffect<'_>],
-    scale: f32,
-) -> Result<String, SvgExportError> {
+) -> Option<Rect> {
     let mut acc = BoundsAcc::new();
     collect_bounds(node, ancestor_xform, &mut acc);
-    let painted_bounds = acc
-        .into_rect()
-        .ok_or_else(|| SvgExportError::NodePaintsNothing(node_id.to_string()))?;
-    let bounds = context::apply_bounds(painted_bounds, ancestor_effects)
-        .ok_or_else(|| SvgExportError::NodePaintsNothing(node_id.to_string()))?;
+    context::apply_bounds(acc.into_rect()?, ancestor_effects)
+}
+
+fn serialize_node_context(
+    node: &SceneNode,
+    ancestor_xform: glam::Affine2,
+    ancestor_effects: &[AncestorEffect<'_>],
+    bounds: Rect,
+    scale: f32,
+) -> Result<String, SvgExportError> {
     serialize_svg(
         std::slice::from_ref(node),
         bounds,

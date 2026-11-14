@@ -1,6 +1,7 @@
 //! Request-scoped SVG targets, resolved by one borrowed preorder walk.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, OnceLock};
 
 use super::{
     context::AncestorEffect,
@@ -13,6 +14,7 @@ struct Target<'a> {
     node: &'a SceneNode,
     ancestor_xform: glam::Affine2,
     context_head: Option<usize>,
+    bounds: OnceLock<Option<super::Rect>>,
 }
 struct ContextLink<'a> {
     effect: AncestorEffect<'a>,
@@ -93,6 +95,7 @@ impl<'a> SvgNodeBatch<'a> {
                         effect: AncestorEffect::Mask {
                             node: mask,
                             parent_xform: ancestor_xform,
+                            bounds: Arc::new(OnceLock::new()),
                         },
                         retained: None,
                     });
@@ -100,8 +103,11 @@ impl<'a> SvgNodeBatch<'a> {
                 frame.mask_installed = true;
             }
             if wanted.remove(node.id.as_str()) {
-                let mut parent = None;
-                for context in &mut active {
+                let retained = active
+                    .iter()
+                    .rposition(|context| context.retained.is_some());
+                let mut parent = retained.and_then(|at| active[at].retained);
+                for context in &mut active[retained.map_or(0, |at| at + 1)..] {
                     let at = if let Some(at) = context.retained {
                         at
                     } else {
@@ -121,6 +127,7 @@ impl<'a> SvgNodeBatch<'a> {
                         node,
                         ancestor_xform,
                         context_head: parent,
+                        bounds: OnceLock::new(),
                     },
                 );
                 if wanted.is_empty() {
@@ -152,18 +159,48 @@ impl<'a> SvgNodeBatch<'a> {
     /// Only the current SVG and its inherited metadata are temporary; source
     /// subtrees and mask resources remain borrowed until this batch is dropped.
     pub fn serialize(&self, node_id: &str, scale: f32) -> Result<String, SvgExportError> {
+        self.serialize_reusing(node_id, scale, &mut Vec::new())
+    }
+
+    /// Keep one depth-sized workspace and one SVG output at a time. A false
+    /// consumer result stops before serializing the next target.
+    pub fn serialize_each(
+        &self,
+        ids: &[String],
+        scale: f32,
+        mut consume: impl FnMut(&str, Result<String, SvgExportError>) -> bool,
+    ) {
+        let mut effects = Vec::new();
+        for id in ids {
+            let result = self.serialize_reusing(id, scale, &mut effects);
+            if !consume(id, result) {
+                break;
+            }
+        }
+    }
+
+    fn serialize_reusing(
+        &self,
+        node_id: &str,
+        scale: f32,
+        effects: &mut Vec<AncestorEffect<'a>>,
+    ) -> Result<String, SvgExportError> {
         let target = self
             .targets
             .get(node_id)
             .ok_or_else(|| SvgExportError::NodeNotFound(node_id.to_owned()))?;
         let mut head = target.context_head;
-        let mut effects = Vec::new();
+        effects.clear();
         while let Some(index) = head {
             let link = &self.contexts[index];
             effects.push(link.effect.clone());
             head = link.parent;
         }
         effects.reverse();
-        serialize_node_context(target.node, node_id, target.ancestor_xform, &effects, scale)
+        let bounds = (*target.bounds.get_or_init(|| {
+            super::node_context_bounds(target.node, target.ancestor_xform, effects)
+        }))
+        .ok_or_else(|| SvgExportError::NodePaintsNothing(node_id.to_owned()))?;
+        serialize_node_context(target.node, target.ancestor_xform, effects, bounds, scale)
     }
 }

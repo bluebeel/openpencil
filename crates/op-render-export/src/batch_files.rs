@@ -30,17 +30,20 @@ pub fn export_scene_files(
     };
     let nodes =
         crate::SceneSelectionBatch::new(page, targets.iter().map(|target| target.node_id.as_str()));
-    targets
-        .iter()
-        .map(|target| {
-            let selected = nodes.get(target.node_id.as_str()).ok_or_else(|| {
-                ExportError::NodeNotFoundOnActivePage {
-                    node_id: target.node_id.clone(),
-                }
-            })?;
-            crate::export_selected_node_raster(&selected, &target.path, format, scale, 0.0)
-        })
-        .collect()
+    let mut cursor = nodes.cursor();
+    crate::with_batch_preparation(|| {
+        targets
+            .iter()
+            .map(|target| {
+                let selected = cursor.get(&nodes, target.node_id.as_str()).ok_or_else(|| {
+                    ExportError::NodeNotFoundOnActivePage {
+                        node_id: target.node_id.clone(),
+                    }
+                })?;
+                crate::export_selected_node_raster(selected, &target.path, format, scale, 0.0)
+            })
+            .collect()
+    })
 }
 
 #[cfg(test)]

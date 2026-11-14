@@ -30,6 +30,7 @@ struct Ready {
     current: SseTick,
     cors_origin: Option<String>,
     tenant: Option<TenantLease>,
+    online: Option<super::online_run_loop::scheduler::ConnectionPermit>,
 }
 
 struct Capture {
@@ -73,6 +74,7 @@ pub(super) fn capture(slot: &Arc<SseSlot>, current: SseTick, cors_origin: Option
             current,
             cors_origin: cors_origin.map(str::to_owned),
             tenant: None,
+            online: None,
         });
         true
     })
@@ -87,6 +89,20 @@ pub(super) fn retain_tenant(lease: TenantLease) {
         if let Some(captured) = scope.as_ref() {
             if let Some(ready) = captured.borrow_mut().as_mut() {
                 ready.tenant = lease.take();
+            }
+        }
+    });
+}
+
+/// Retain only the cheap verified-owner admission across an SSE handoff. The
+/// executing owner slot stays on the worker and is released when it returns.
+pub(super) fn retain_online_admission(permit: super::online_run_loop::scheduler::ConnectionPermit) {
+    let mut permit = Some(permit);
+    CURRENT.with(|scope| {
+        let scope = scope.borrow();
+        if let Some(captured) = scope.as_ref() {
+            if let Some(ready) = captured.borrow_mut().as_mut() {
+                ready.online = permit.take();
             }
         }
     });

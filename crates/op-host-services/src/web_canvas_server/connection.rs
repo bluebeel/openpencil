@@ -406,6 +406,10 @@ fn dispatch_inner<S: Read + Write>(
             if req.method == "GET" && req.path == "/api/mcp/server" {
                 if let Ok(mut body) = serde_json::from_str::<serde_json::Value>(&reply.body) {
                     body["durableGroups"] = ctx.authority.managed_groups.metrics.snapshot();
+                    if !ctx.mode.is_online() {
+                        body["residentDurableGroups"] =
+                            crate::mcp_serve::resident_groups::snapshot();
+                    }
                     reply.body = body.to_string();
                 }
             }
@@ -561,10 +565,10 @@ fn dispatch_inner<S: Read + Write>(
         )?;
         return Ok(false);
     }
-    let current_path = {
+    let (current_path, routing_epoch) = {
         let guard = state.lock().unwrap_or_else(|p| p.into_inner());
         ctx.authority.refresh_route(&guard);
-        guard.current_path.clone()
+        (guard.current_path.clone(), guard.recovery.epoch())
     };
     let document_key = current_path
         .as_ref()
@@ -580,6 +584,8 @@ fn dispatch_inner<S: Read + Write>(
         current_path.as_deref(),
         &document_key,
         mcp_profile,
+        &_agent_admission,
+        routing_epoch,
     )? {
         crate::mcp_serve::write_mcp_http_response_with_origin(
             stream,

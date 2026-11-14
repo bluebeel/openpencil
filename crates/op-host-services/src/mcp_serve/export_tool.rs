@@ -202,12 +202,14 @@ fn render_svg(scene: &LayoutScene, node_ids: &[String], scale: f32) -> ToolOutco
         return ToolOutcome::Err(ToolErrorCode::ToolFailed, "no active page".into());
     };
     let batch = op_render_export::NodeSvgBatch::new(page, node_ids);
-    let files: Vec<_> = node_ids.iter().map(|id| {
-        match batch.render(id, scale) {
+    let mut files = Vec::with_capacity(node_ids.len());
+    batch.render_each(node_ids, scale, |id, result| {
+        files.push(match result {
             Ok(bytes) => serde_json::json!({"nodeId":id,"format":"svg", "bytes_base64":base64::engine::general_purpose::STANDARD.encode(bytes)}),
             Err(error) => serde_json::json!({"nodeId":id,"format":"svg","error":error.to_string()}),
-        }
-    }).collect();
+        });
+        true
+    });
     ToolOutcome::OkJson(serde_json::json!({"files":files}).to_string())
 }
 
@@ -234,17 +236,19 @@ fn render_pdf(scene: &LayoutScene, node_ids: &[String], scale: f32, mode: &str) 
     let resolved =
         op_render_export::SceneSelectionBatch::new(page, node_ids.iter().map(String::as_str));
     if mode == "separate" {
-        let files: Vec<_> = node_ids
+        let mut cursor = resolved.cursor();
+        let files: Vec<_> = op_render_export::with_batch_preparation(|| {
+            node_ids
             .iter()
             .map(|id| {
-                let result = resolved
-                    .get(id.as_str())
+                let result = cursor
+                    .get(&resolved, id.as_str())
                     .ok_or_else(|| crate::export::ExportError::NodeNotFoundOnPage {
                         node_id: id.clone(),
                         page_id: page.id.clone(),
                     })
                     .and_then(|selected| {
-                        crate::export_pdf::render_selected_node_pdf_bytes_scaled(&selected, scale)
+                        crate::export_pdf::render_selected_node_pdf_bytes_scaled(selected, scale)
                     });
                 match result {
                     Ok(bytes) => serde_json::json!({"nodeId":id,"format":"pdf",
@@ -254,13 +258,15 @@ fn render_pdf(scene: &LayoutScene, node_ids: &[String], scale: f32, mode: &str) 
                     }
                 }
             })
-            .collect();
+            .collect()
+        });
         return ToolOutcome::OkJson(serde_json::json!({"files":files}).to_string());
     }
     let mut valid = Vec::new();
     let mut errors = Vec::new();
+    let mut cursor = resolved.cursor();
     for id in node_ids {
-        match resolved.get(id.as_str()) {
+        match cursor.get(&resolved, id.as_str()) {
             Some(selected) if selected.is_visible() => valid.push(id.as_str()),
             _ => errors.push(serde_json::json!({"nodeId":id,"format":"pdf",
                 "error":format!("node {id} is missing or hidden on the active page")})),

@@ -10,7 +10,7 @@ use std::mem::size_of;
 mod retention;
 const LIMIT: usize = COMMAND_CAPTURE_ALLOWANCE;
 #[derive(Default, Clone, Copy)]
-pub(super) struct Forecast {
+pub(crate) struct Forecast {
     pub component_count: usize,
     pub components: usize,
     pub target: usize,
@@ -20,7 +20,7 @@ pub(super) struct Forecast {
     pub error: usize,
 }
 #[derive(Default, Clone, Copy)]
-pub(super) struct Budget {
+pub(crate) struct Budget {
     used: usize,
     components: Option<usize>,
     retained: Option<usize>,
@@ -29,7 +29,7 @@ pub(super) struct Budget {
 }
 #[derive(Clone, Copy)]
 #[repr(usize)]
-pub(super) enum Refusal {
+pub(crate) enum Refusal {
     Workspace,
     Redo,
     DocumentState,
@@ -43,7 +43,7 @@ pub(super) enum Refusal {
     CohortCapacity,
 }
 impl Refusal {
-    pub(super) const ALL: [Self; 11] = [
+    pub(crate) const ALL: [Self; 11] = [
         Self::Workspace,
         Self::Redo,
         Self::DocumentState,
@@ -56,7 +56,7 @@ impl Refusal {
         Self::EvictedHistory,
         Self::CohortCapacity,
     ];
-    pub(super) fn code(self) -> &'static str {
+    pub(crate) fn code(self) -> &'static str {
         match self {
             Self::Workspace => "workspace",
             Self::Redo => "redo",
@@ -200,7 +200,7 @@ fn target<'a>(state: &'a EditorState, command: &C) -> Option<&'a PenNode> {
 }
 
 impl Budget {
-    pub(super) fn forecast(&self) -> Forecast {
+    pub(crate) fn forecast(&self) -> Forecast {
         self.last
     }
     fn size_error(&mut self, error: CaptureSizeError) -> usize {
@@ -215,21 +215,21 @@ impl Budget {
             }
         }
     }
-    pub(super) fn retain_unanchored_components(&mut self) {
+    pub(crate) fn retain_unanchored_components(&mut self) {
         // A successful command that did not advance revision adds no history
         // anchor. Its pending capture may therefore retain another component
         // owner; this headroom was reserved before that capture was created.
         self.used = self.used.saturating_add(self.components.unwrap_or(0));
         debug_assert!(self.used <= LIMIT);
     }
-    pub(super) fn reserve_live_selection(&mut self, bytes: usize) -> Result<(), Refusal> {
+    pub(crate) fn reserve_live_selection(&mut self, bytes: usize) -> Result<(), Refusal> {
         if bytes > LIMIT.saturating_sub(self.used) {
             return Err(Refusal::CohortCapacity);
         }
         self.used += bytes;
         Ok(())
     }
-    pub(super) fn reserve(
+    pub(crate) fn reserve(
         &mut self,
         state: &EditorState,
         command: &C,
@@ -237,7 +237,7 @@ impl Budget {
     ) -> Result<(), Refusal> {
         self.reserve_inner(state, command, input, None)
     }
-    pub(super) fn reserve_metadata_target(
+    pub(crate) fn reserve_metadata_target(
         &mut self,
         state: &EditorState,
         command: &C,
@@ -271,6 +271,10 @@ impl Budget {
                 | C::ReorderSelected { .. }
                 | C::GroupSelected
                 | C::UngroupSelected
+                | C::DeleteSelected
+                | C::ReplacePathsWithSvg(_)
+                | C::NudgeSelected { .. }
+                | C::AlignSelected { .. }
         ) {
             state
                 .forecast_structural_command_edit(command)

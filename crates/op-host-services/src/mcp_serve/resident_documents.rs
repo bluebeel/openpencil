@@ -125,6 +125,8 @@ struct Resident {
 
 struct Slot {
     path: PathBuf,
+    recovery: crate::document_recovery::DocumentRecovery,
+    groups: super::resident_groups::Groups,
     resident: Mutex<Resident>,
     charge: AtomicUsize,
     last_used: AtomicU64,
@@ -210,9 +212,15 @@ impl ResidentDocuments {
                 return Err(self.capacity());
             }
         }
+        let recovery = crate::document_recovery::DocumentRecovery::default();
         let slot = Arc::new(Slot {
             path: path.clone(),
-            resident: Mutex::new(Resident::default()),
+            resident: Mutex::new(Resident {
+                recovery: recovery.clone(),
+                ..Default::default()
+            }),
+            recovery,
+            groups: Default::default(),
             charge: AtomicUsize::new(RESERVATION),
             last_used: AtomicU64::new(tick),
         });
@@ -225,6 +233,14 @@ impl ResidentDocuments {
             max_documents: self.max_documents,
             max_bytes: self.max_bytes,
         }
+    }
+
+    pub(super) fn group_snapshots(&self) -> Vec<serde_json::Value> {
+        let slots = self
+            .slots
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        slots.values().map(|slot| slot.groups.snapshot()).collect()
     }
 
     fn adopt_charge(&self, slot: &Slot, bytes: usize) -> Result<bool, AuthorityError> {
@@ -252,6 +268,13 @@ impl ResidentDocuments {
 impl DocumentLease<'_> {
     pub fn path(&self) -> &Path {
         &self.slot.path
+    }
+
+    pub(super) fn groups(&self) -> &super::resident_groups::Groups {
+        &self.slot.groups
+    }
+    pub(super) fn recovery(&self) -> crate::document_recovery::DocumentRecovery {
+        self.slot.recovery.clone()
     }
 
     pub(super) fn accounting_limit(&self) -> usize {

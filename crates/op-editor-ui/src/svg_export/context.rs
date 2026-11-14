@@ -3,6 +3,7 @@
 use super::transform::AncestorClip;
 use super::*;
 use crate::ImageBlendMode;
+use std::sync::{Arc, OnceLock};
 
 #[derive(Clone)]
 pub(super) enum AncestorEffect<'a> {
@@ -10,6 +11,7 @@ pub(super) enum AncestorEffect<'a> {
     Mask {
         node: &'a SceneNode,
         parent_xform: glam::Affine2,
+        bounds: Arc<OnceLock<Option<Rect>>>,
     },
     Composite {
         opacity: f32,
@@ -40,9 +42,14 @@ pub(super) fn apply_bounds(mut bounds: Rect, effects: &[AncestorEffect<'_>]) -> 
             AncestorEffect::Clip(clip) => {
                 transform::apply_ancestor_clip_bounds(bounds, std::slice::from_ref(clip))?
             }
-            AncestorEffect::Mask { node, parent_xform } => {
-                transform::intersect(bounds, masks::source_bounds(node, *parent_xform)?)?
-            }
+            AncestorEffect::Mask {
+                node,
+                parent_xform,
+                bounds: cached,
+            } => transform::intersect(
+                bounds,
+                (*cached.get_or_init(|| masks::source_bounds(node, *parent_xform)))?,
+            )?,
             AncestorEffect::Composite { .. } => bounds,
         };
     }
@@ -55,7 +62,9 @@ pub(super) fn emit_defs(out: &mut String, effects: &[AncestorEffect<'_>]) {
             AncestorEffect::Clip(clip) => {
                 transform::emit_ancestor_clip_defs(out, std::slice::from_ref(clip))
             }
-            AncestorEffect::Mask { node, parent_xform } => {
+            AncestorEffect::Mask {
+                node, parent_xform, ..
+            } => {
                 // The inherited mask is a sibling, not part of the selected
                 // subtree. Retain its actual paint resources and descendants.
                 emit_node_defs(out, node, false);

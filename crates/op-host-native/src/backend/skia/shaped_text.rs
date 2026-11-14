@@ -15,6 +15,9 @@
 
 use std::rc::Rc;
 
+#[path = "shaped_text_features.rs"]
+mod features;
+
 use jian_skia::FontResolver;
 use op_editor_core::text_script::{base_direction, BaseDirection};
 use skia_safe::{
@@ -259,33 +262,18 @@ impl ShapedText {
         }
         let mut text_style = TextStyle::new();
         text_style.set_font_size(run.font_size);
-        let mut features = run.font_features.cloned().unwrap_or_default();
-        if let Some(kerning) = run.kerning {
-            if !kerning {
-                features.insert("kern".into(), 0);
-            } else {
-                features.entry("kern".into()).or_insert(1);
-            }
-            features.entry("liga".into()).or_insert(0);
-            features.entry("calt".into()).or_insert(0);
-        }
-        for (tag, value) in features {
-            if tag.len() == 4 && tag.is_ascii() {
-                text_style.add_font_feature(&tag, value as i32);
-            }
-        }
+        features::apply(&mut text_style, run.font_features, run.kerning);
         if explicit_shape {
             text_style.set_font_hinting(skia_safe::FontHinting::None);
         }
         text_style.set_color(run.color);
-        let families = font_resolver.font_families_for_shaping(if run.family.is_empty() {
+        let families = font_resolver.font_families_for_shaping_shared(if run.family.is_empty() {
             None
         } else {
             Some(run.family)
         });
-        let family_refs = families.iter().map(String::as_str).collect::<Vec<_>>();
-        if !family_refs.is_empty() {
-            text_style.set_font_families(&family_refs);
+        if !families.is_empty() {
+            text_style.set_font_families(families.as_ref());
         }
         text_style.set_font_style(FontStyle::new(
             Weight::from(i32::from(run.weight)),

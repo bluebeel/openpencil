@@ -7,12 +7,28 @@ pub(super) fn route(
     current_path: Option<&std::path::Path>,
     document_key: &std::path::Path,
     mcp_profile: crate::mcp_serve::tool_profile::McpAccessProfile,
+    admission: &crate::mcp_serve::agent_context::AgentAdmission<'_>,
+    routing_epoch: u64,
 ) -> Result<Option<String>> {
     if mcp_profile.deny_unshareable_tools {
         return Ok(None);
     }
     let state = ctx.state;
     let agent_contexts = &ctx.authority.agent_contexts;
+    let routing_guard = crate::mcp_serve::resident_groups::RoutingGuard::new(
+        &ctx.authority.recovery,
+        routing_epoch,
+    );
+    if let Some(response) = crate::mcp_serve::resident_groups::dispatch(
+        agent_contexts,
+        admission,
+        current_path,
+        line,
+        mcp_profile,
+        routing_guard,
+    ) {
+        return response.map(Some).map_err(Into::into);
+    }
     let mut primary_save_uncertain = false;
     let routed = crate::mcp_serve::file_path::process_live_save_for_file_path_arg(
         current_path,

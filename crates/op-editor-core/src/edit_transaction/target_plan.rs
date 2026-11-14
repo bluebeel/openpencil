@@ -5,6 +5,8 @@ use crate::{
     EditorCommand as C, EditorState, NodeId, PenNodeExt,
 };
 use jian_ops_schema::node::PenNode;
+#[path = "target_selection_plan.rs"]
+mod selection;
 #[path = "target_splice_plan.rs"]
 mod splice;
 #[path = "target_topology_plan.rs"]
@@ -34,6 +36,13 @@ fn collect(
     in_batch: bool,
     numeric_patch: bool,
 ) -> Option<()> {
+    if matches!(command, C::NudgeSelected { .. } | C::AlignSelected { .. }) {
+        if in_batch {
+            return None;
+        }
+        out.extend(selection::plan(state, command, *active)?.0);
+        return Some(());
+    }
     if matches!(
         command,
         C::MoveNode { .. } | C::ReorderSelected { .. } | C::GroupSelected | C::UngroupSelected
@@ -182,6 +191,15 @@ fn find_path(nodes: &[PenNode], id: &NodeId, path: &mut Vec<usize>) -> Option<Ve
 }
 
 pub(super) fn structural_bound(state: &EditorState, command: &C) -> Option<usize> {
+    if matches!(command, C::NudgeSelected { .. } | C::AlignSelected { .. }) {
+        return selection::plan(state, command, state.ui.active_page_index).map(|(_, bytes)| bytes);
+    }
+    if matches!(command, C::DeleteSelected) {
+        return crate::history::deletion_command_bound(state, command);
+    }
+    if matches!(command, C::ReplacePathsWithSvg(_)) {
+        return crate::history::boolean_command_bound(state, command);
+    }
     if matches!(
         command,
         C::DuplicateSelected { .. } | C::PasteClipboard { .. }

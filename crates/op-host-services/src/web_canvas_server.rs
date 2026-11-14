@@ -521,7 +521,7 @@ mod doc_routes;
 mod export_routes;
 mod hub_verifier;
 mod managed_commit;
-mod managed_group_commit;
+pub(crate) mod managed_group_commit;
 pub mod online_policy;
 mod online_run_loop;
 mod origin_guard;

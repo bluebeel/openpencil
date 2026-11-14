@@ -6,7 +6,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-pub(super) struct Limits {
+pub(crate) struct Limits {
     pub calls: usize,
     pub bytes: usize,
     pub group_calls: usize,
@@ -37,20 +37,20 @@ struct Inner<T, R> {
     leader: bool,
 }
 
-pub(super) struct Queue<T, R> {
+pub(crate) struct Queue<T, R> {
     inner: Mutex<Inner<T, R>>,
     collect: Condvar,
     limits: Limits,
 }
 
-pub(super) struct Ticket<'a, T, R> {
+pub(crate) struct Ticket<'a, T, R> {
     queue: &'a Queue<T, R>,
     job: Arc<Job<T, R>>,
     consumed: bool,
 }
 
 impl<T, R> Queue<T, R> {
-    pub(super) fn new(limits: Limits) -> Self {
+    pub(crate) fn new(limits: Limits) -> Self {
         assert!(limits.calls > 0 && limits.group_calls > 0);
         assert!(limits.bytes > 0 && limits.group_bytes > 0);
         Self {
@@ -67,7 +67,7 @@ impl<T, R> Queue<T, R> {
 
     /// A full/oversized queue returns the unexecuted input to its caller.
     /// `charge` includes input allocation and the caller's bounded reply reserve.
-    pub(super) fn submit(
+    pub(crate) fn submit(
         &self,
         input: T,
         body_bytes: usize,
@@ -102,7 +102,7 @@ impl<T, R> Queue<T, R> {
     }
 
     #[cfg(test)]
-    pub(super) fn retained(&self) -> (usize, usize) {
+    pub(crate) fn retained(&self) -> (usize, usize) {
         let inner = self.inner.lock().unwrap_or_else(|p| p.into_inner());
         (inner.retained_calls, inner.retained_bytes)
     }
@@ -112,7 +112,7 @@ impl<T, R> Ticket<'_, T, R> {
     /// Only the oldest waiting caller can lead. The executor receives borrowed
     /// inputs, so panic fallback can answer every claimed request without replay.
     /// It must finish its document commit/rollback before returning or unwinding.
-    pub(super) fn execute(
+    pub(crate) fn execute(
         mut self,
         run: impl FnOnce(&[T]) -> Vec<R>,
         failed: impl Fn(&T) -> R,

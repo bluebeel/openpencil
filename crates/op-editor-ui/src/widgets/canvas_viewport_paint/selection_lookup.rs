@@ -1,12 +1,19 @@
 //! Borrowed first-preorder export identities and shared ancestor/mask prefixes.
 
 use crate::layout_scene::{NodeKind, SceneNode, ScenePage};
+use crate::Rect;
 use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, OnceLock};
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(super) enum Context<'a> {
     Ancestor(&'a SceneNode),
-    Mask(&'a SceneNode),
+    Mask(&'a SceneNode, Arc<OnceLock<MaskBounds>>),
+}
+#[derive(Clone, Copy)]
+pub(super) enum MaskBounds {
+    Unsupported,
+    Supported(Option<Rect>),
 }
 struct Link<'a> {
     context: Context<'a>,
@@ -20,6 +27,7 @@ struct Target<'a> {
     node: &'a SceneNode,
     head: Option<usize>,
     visible: bool,
+    bounds: Arc<OnceLock<Option<Rect>>>,
 }
 
 /// Only immutable scene references and a depth-sized context view are owned.
@@ -28,6 +36,7 @@ pub struct SceneSelection<'a> {
     pub(super) node: &'a SceneNode,
     pub(super) contexts: Vec<Context<'a>>,
     pub(super) visible: bool,
+    pub(super) bounds: Arc<OnceLock<Option<Rect>>>,
 }
 impl<'a> SceneSelection<'a> {
     pub fn node(&self) -> &'a SceneNode {
@@ -121,21 +130,27 @@ impl<'a> SceneSelectionBatch<'a> {
                     .filter(|mask| !mask.hidden)
                 {
                     active.push(Active {
-                        context: Context::Mask(mask),
+                        context: Context::Mask(mask, Arc::new(OnceLock::new())),
                         retained: None,
                     });
                 }
                 frame.mask_installed = true;
             }
             if wanted.remove(node.id.as_str()) {
-                let mut parent = None;
-                for context in &mut active {
+                // A retained active prefix is immutable until popped. Start
+                // at its last link rather than rescan every ancestor for each
+                // sibling target; each new prefix suffix is materialized once.
+                let retained = active
+                    .iter()
+                    .rposition(|context| context.retained.is_some());
+                let mut parent = retained.and_then(|at| active[at].retained);
+                for context in &mut active[retained.map_or(0, |at| at + 1)..] {
                     let at = if let Some(at) = context.retained {
                         at
                     } else {
                         let at = result.links.len();
                         result.links.push(Link {
-                            context: context.context,
+                            context: context.context.clone(),
                             parent,
                         });
                         context.retained = Some(at);
@@ -149,6 +164,7 @@ impl<'a> SceneSelectionBatch<'a> {
                         node,
                         head: parent,
                         visible,
+                        bounds: Arc::new(OnceLock::new()),
                     },
                 );
                 if wanted.is_empty() {
@@ -193,7 +209,7 @@ impl<'a> SceneSelectionBatch<'a> {
         let mut head = target.head;
         while let Some(index) = head {
             let link = &self.links[index];
-            contexts.push(link.context);
+            contexts.push(link.context.clone());
             head = link.parent;
         }
         contexts.reverse();
@@ -201,6 +217,45 @@ impl<'a> SceneSelectionBatch<'a> {
             node: target.node,
             contexts,
             visible: target.visible,
+            bounds: Arc::clone(&target.bounds),
         })
+    }
+    /// Reuse one depth-sized context workspace across ordered exports. The
+    /// legacy get() remains detached from the lifetime of this batch.
+    pub fn cursor(&self) -> SceneSelectionCursor<'a> {
+        SceneSelectionCursor { selection: None }
+    }
+}
+
+/// A single consumer's reusable branch view. Missing IDs leave the allocation
+/// available for the next target; no scene or output payload is cloned.
+pub struct SceneSelectionCursor<'a> {
+    selection: Option<SceneSelection<'a>>,
+}
+impl<'a> SceneSelectionCursor<'a> {
+    pub fn get<'view>(
+        &'view mut self,
+        batch: &SceneSelectionBatch<'a>,
+        id: &str,
+    ) -> Option<&'view SceneSelection<'a>> {
+        let target = batch.targets.get(id)?;
+        let selection = self.selection.get_or_insert_with(|| SceneSelection {
+            node: target.node,
+            contexts: Vec::new(),
+            visible: target.visible,
+            bounds: Arc::clone(&target.bounds),
+        });
+        selection.node = target.node;
+        selection.visible = target.visible;
+        selection.bounds = Arc::clone(&target.bounds);
+        selection.contexts.clear();
+        let mut head = target.head;
+        while let Some(index) = head {
+            let link = &batch.links[index];
+            selection.contexts.push(link.context.clone());
+            head = link.parent;
+        }
+        selection.contexts.reverse();
+        Some(selection)
     }
 }

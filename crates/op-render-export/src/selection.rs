@@ -1,7 +1,9 @@
 //! Context-preserving selected raster exports, shared by all native transports.
 
 use crate::{ExportError, RasterFormat, RasterSampling};
-pub use op_editor_ui::widgets::canvas_viewport_paint::{SceneSelection, SceneSelectionBatch};
+pub use op_editor_ui::widgets::canvas_viewport_paint::{
+    SceneSelection, SceneSelectionBatch, SceneSelectionCursor,
+};
 use op_editor_ui::Rect;
 use std::path::Path;
 

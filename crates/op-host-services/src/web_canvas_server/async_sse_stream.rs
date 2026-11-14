@@ -20,6 +20,7 @@ pub(super) async fn serve(
         current,
         cors_origin,
         tenant: _tenant,
+        online: _online,
     } = ready;
     if !write_frame(
         &mut socket,

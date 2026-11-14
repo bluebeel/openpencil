@@ -14,13 +14,13 @@ use std::sync::atomic::Ordering;
 #[path = "managed_group_apply.rs"]
 mod apply;
 #[path = "managed_group_budget.rs"]
-mod budget;
+pub(crate) mod budget;
 #[path = "managed_group_limits.rs"]
 mod limits;
 #[path = "managed_group_metrics.rs"]
 mod metrics;
 #[path = "managed_group_queue.rs"]
-mod queue;
+pub(crate) mod queue;
 
 const MAX_BODY: usize = 16 * 1024 * 1024;
 const MAX_REPLY: usize = 256 * 1024;
@@ -145,6 +145,10 @@ fn candidate(line: &str, profile: McpAccessProfile) -> bool {
             | "reorder_selected"
             | "group_selected"
             | "ungroup_selected"
+            | "delete_selected"
+            | "boolean_selected"
+            | "nudge_selected"
+            | "align_selected"
     )
 }
 
@@ -174,7 +178,11 @@ fn audited(command: &C) -> bool {
         | C::MoveNode { .. }
         | C::ReorderSelected { .. }
         | C::GroupSelected
-        | C::UngroupSelected => true,
+        | C::UngroupSelected
+        | C::DeleteSelected
+        | C::ReplacePathsWithSvg(_)
+        | C::NudgeSelected { .. }
+        | C::AlignSelected { .. } => true,
         // The strict Core target factory proves header-only shape and Ref
         // ancestry before capture/apply. Keep one authoritative parse there;
         // unknown/new header properties need no second host key whitelist.
@@ -348,6 +356,10 @@ impl Transaction<'_, '_, '_> {
                     | "reorder_selected"
                     | "group_selected"
                     | "ungroup_selected"
+                    | "delete_selected"
+                    | "boolean_selected"
+                    | "nudge_selected"
+                    | "align_selected"
             )
         });
         if structural && self.live_selection.is_none() {

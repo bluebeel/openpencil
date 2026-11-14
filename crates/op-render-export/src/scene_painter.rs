@@ -42,6 +42,14 @@ thread_local! {
         RefCell::new(NativeBackend::with_dpi(1.0));
 }
 
+/// Keep only bounded exact geometry preparation across an ordered export
+/// batch. This holds no canvas/backend borrow, surface, pixel or output buffer;
+/// nested per-target preparation reuses the existing 8 MiB scope and Drop is
+/// panic/cancellation safe. Admission and per-output ACK stay with the caller.
+pub fn with_batch_preparation<R>(action: impl FnOnce() -> R) -> R {
+    NativeBackend::with_export_text_reuse(action)
+}
+
 /// Called on the shared worker itself: the non-Send backend stays on this
 /// thread for every subsequent job, just like synchronous canvas painting.
 pub(crate) fn initialize_backend() {

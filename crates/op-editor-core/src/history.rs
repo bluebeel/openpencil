@@ -23,8 +23,9 @@ pub use actor::{ActorHistoryError, HistoryActor, HistoryTag};
 pub use entry::HistoryEntry;
 pub use retention::{HistoryLimitError, HistoryLimits, HistoryRetentionStatus};
 pub(crate) use scoped::{
-    contains_header_token, structural_payload_bound, PendingScopedSnapshot, Scope, SpliceSpec,
-    TargetSpec, TopologyKind, TopologyLocation, TopologyRequest, TopologySpec,
+    boolean_command_bound, contains_header_token, deletion_command_bound, structural_payload_bound,
+    PendingScopedSnapshot, Scope, SpliceSpec, TargetSpec, TopologyKind, TopologyLocation,
+    TopologyRequest, TopologySpec,
 };
 pub use scoped::{CommittedMetadataApply, ScopedEditorSnapshot, ScopedHistoryError};
 

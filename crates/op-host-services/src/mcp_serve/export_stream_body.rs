@@ -130,8 +130,18 @@ pub(super) fn render<W: Write>(plan: Plan, output: &mut W) -> io::Result<()> {
                 .active_page()
                 .ok_or_else(|| io::Error::other("export stream lost its immutable active page"))?;
             let batch = op_render_export::NodeSvgBatch::new(page, &ids);
-            for id in &ids {
-                text.entry(id, "svg", batch.render(id, scale))?;
+            let mut failed = None;
+            batch.render_each(&ids, scale, |id, result| {
+                match text.entry(id, "svg", result) {
+                    Ok(()) => true,
+                    Err(error) => {
+                        failed = Some(error);
+                        false
+                    }
+                }
+            });
+            if let Some(error) = failed {
+                return Err(error);
             }
         }
         Format::Pdf => {
@@ -140,20 +150,24 @@ pub(super) fn render<W: Write>(plan: Plan, output: &mut W) -> io::Result<()> {
                     page,
                     ids.iter().map(String::as_str),
                 );
-                for id in &ids {
-                    let result = batch
-                        .get(id.as_str())
-                        .ok_or_else(|| ExportError::NodeNotFoundOnPage {
-                            node_id: id.clone(),
-                            page_id: page.id.clone(),
-                        })
-                        .and_then(|selected| {
-                            crate::export_pdf::render_selected_node_pdf_bytes_scaled(
-                                &selected, scale,
-                            )
-                        });
-                    text.entry(id, "pdf", result)?;
-                }
+                let mut cursor = batch.cursor();
+                op_render_export::with_batch_preparation(|| -> io::Result<()> {
+                    for id in &ids {
+                        let result = cursor
+                            .get(&batch, id.as_str())
+                            .ok_or_else(|| ExportError::NodeNotFoundOnPage {
+                                node_id: id.clone(),
+                                page_id: page.id.clone(),
+                            })
+                            .and_then(|selected| {
+                                crate::export_pdf::render_selected_node_pdf_bytes_scaled(
+                                    selected, scale,
+                                )
+                            });
+                        text.entry(id, "pdf", result)?;
+                    }
+                    Ok(())
+                })?;
             } else {
                 for id in &ids {
                     text.entry(id, "pdf", Err(ExportError::NoActivePage))?;

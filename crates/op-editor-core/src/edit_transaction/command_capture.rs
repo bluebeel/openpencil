@@ -174,6 +174,36 @@ impl EditorState {
             }
             command_scope::Classification::Full => return None,
         };
+        if matches!(command, EditorCommand::DeleteSelected) {
+            let pending = PendingScopedSnapshot::capture_deletion(self, plan.forests, command)?;
+            return Some(CommandEditCapture {
+                batch_actor: None,
+                kind: CaptureKind::Scoped(ScopedCapture {
+                    targeted: true,
+                    generation: self.document_generation,
+                    revision: self.revision,
+                    pending: Some(pending),
+                    completed: None,
+                    history: self.history.clone(),
+                    active_theme: self.ui.variables.active_theme.clone(),
+                }),
+            });
+        }
+        if matches!(command, EditorCommand::ReplacePathsWithSvg(_)) {
+            let pending = PendingScopedSnapshot::capture_boolean(self, plan.forests, command)?;
+            return Some(CommandEditCapture {
+                batch_actor: None,
+                kind: CaptureKind::Scoped(ScopedCapture {
+                    targeted: true,
+                    generation: self.document_generation,
+                    revision: self.revision,
+                    pending: Some(pending),
+                    completed: None,
+                    history: self.history.clone(),
+                    active_theme: self.ui.variables.active_theme.clone(),
+                }),
+            });
+        }
         if matches!(
             command,
             EditorCommand::DuplicateSelected { .. } | EditorCommand::PasteClipboard { .. }

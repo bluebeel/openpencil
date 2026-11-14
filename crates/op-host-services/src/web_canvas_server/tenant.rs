@@ -12,10 +12,12 @@
 //! Eviction has to reclaim idle tenants without ever pulling one out from
 //! under a live connection: a request that is mid-flight holds a `&Mutex<..>`
 //! into the tenant, and an SSE stream holds it for minutes. So a connection
-//! takes a [`TenantLease`] for its whole lifetime, and eviction only removes
+//! takes a [`TenantLease`] while executing (and throughout SSE), and eviction only removes
 //! tenants whose lease count is zero. Both the lease increment and the
 //! eviction check happen under the registry lock, so there is no window where
 //! a lease is being taken while its tenant is being removed.
+//! Verified requests waiting in the fair scheduler have no borrowed document
+//! or lease; their owner/ACL is resolved again when a worker executes them.
 //!
 //! ## Why removal is a compare-and-remove
 //!
@@ -62,8 +64,10 @@ pub const MAX_TENANTS_ENV: &str = "OPENPENCIL_ONLINE_MAX_TENANTS";
 /// Idle seconds after which a tenant with no connections is reclaimed.
 pub const IDLE_EVICT_SECS_ENV: &str = "OPENPENCIL_ONLINE_IDLE_EVICT_SECS";
 
-pub const DEFAULT_MAX_CONNS: usize = 256;
-pub const DEFAULT_MAX_CONNS_PER_TENANT: usize = 8;
+pub const DEFAULT_MAX_CONNS: usize = 4096;
+// One thousand subscribers plus one thousand queued/request calls fit without
+// creating one request worker or document copy per connection.
+pub const DEFAULT_MAX_CONNS_PER_TENANT: usize = 2048;
 pub const DEFAULT_MAX_TENANTS: usize = 100;
 pub const DEFAULT_IDLE_EVICT_SECS: u64 = 1800;
 
@@ -453,6 +457,21 @@ impl TenantRegistry {
     /// eviction is invisible to the account beyond the first request's cost.
     pub fn lease_for(&self, identity: &ResolvedIdentity) -> Result<TenantLease, TenantError> {
         self.lease_tenant(&identity.user_id)
+    }
+
+    /// Verified pending calls need no document materialization/eviction lease.
+    /// This grants only a scheduling key; actual dispatch must acquire a fresh
+    /// lease and recheck the live share list so queued calls cannot bypass a revoke.
+    pub(super) fn queued_owner(
+        &self,
+        identity: &ResolvedIdentity,
+        requested_owner: Option<&str>,
+    ) -> Result<String, TenantError> {
+        let owner = requested_owner.unwrap_or(&identity.user_id);
+        if owner != identity.user_id && !self.admits_visitor(owner, &identity.user_id) {
+            return Err(TenantError::NotShared);
+        }
+        Ok(owner.to_owned())
     }
 
     /// Take a lease on `owner_id`'s tenant on behalf of `visitor`.

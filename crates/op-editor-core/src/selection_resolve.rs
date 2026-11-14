@@ -70,20 +70,31 @@ pub fn is_strict_descendant(children: &[PenNode], ancestor: &NodeId, node: &Node
 /// Ancestor chain from the top-level node down to `target`
 /// (inclusive): `[top, …, parent, target]`.
 fn ancestor_path(children: &[PenNode], target: &NodeId) -> Option<Vec<NodeId>> {
-    for child in children {
-        if child.id_str() == target.as_str() {
-            return Some(vec![target.clone()]);
-        }
-        if let Some(grand) = child.children() {
-            if let Some(mut path) = ancestor_path(grand, target) {
-                if let Some(id) = NodeId::new_opt(child.id_str()) {
-                    path.insert(0, id);
+    fn visit<'a>(children: &'a [PenNode], target: &NodeId, path: &mut Vec<&'a str>) -> bool {
+        for child in children {
+            if child.id_str() == target.as_str() {
+                return true;
+            }
+            if let Some(children) = child.children() {
+                path.push(child.id_str());
+                if visit(children, target, path) {
+                    return true;
                 }
-                return Some(path);
+                path.pop();
             }
         }
+        false
     }
-    None
+    let mut path = Vec::new();
+    if !visit(children, target, &mut path) {
+        return None;
+    }
+    let mut result = path
+        .into_iter()
+        .filter_map(NodeId::new_opt)
+        .collect::<Vec<_>>();
+    result.push(target.clone());
+    Some(result)
 }
 
 /// Resolve the primary selection target for callers that only have a
@@ -118,11 +129,29 @@ impl EditorState {
             return;
         };
         let children = self.active_children();
-        let inside = self
+        let selected = self
             .selection
             .set
             .iter()
-            .any(|id| *id == ec || is_strict_descendant(children, &ec, id));
+            .map(NodeId::as_str)
+            .collect::<std::collections::HashSet<_>>();
+        let inside = selected.contains(ec.as_str())
+            || find_node(children, &ec).is_some_and(|ancestor| {
+                let mut pending = vec![ancestor.children().map_or(&[][..], Vec::as_slice).iter()];
+                while let Some(siblings) = pending.last_mut() {
+                    let Some(node) = siblings.next() else {
+                        pending.pop();
+                        continue;
+                    };
+                    if selected.contains(node.id_str()) {
+                        return true;
+                    }
+                    if let Some(children) = node.children() {
+                        pending.push(children.iter());
+                    }
+                }
+                false
+            });
         if !inside {
             self.editor_ui.entered_container = None;
         }

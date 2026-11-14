@@ -60,6 +60,11 @@ impl Index {
         }
         Ok(Self(scopes))
     }
+    pub(super) fn contains(&self, scope: &Scope, id: &str) -> bool {
+        self.0
+            .get(scope)
+            .is_some_and(|nodes| nodes.contains_key(id))
+    }
     pub(super) fn path(&self, scope: &Scope, id: &str) -> Result<Box<[usize]>, ScopedHistoryError> {
         self.0
             .get(scope)

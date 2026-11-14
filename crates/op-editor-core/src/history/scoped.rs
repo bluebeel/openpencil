@@ -5,7 +5,11 @@ use jian_ops_schema::{node::PenNode, page::PenPage};
 use std::{collections::BTreeMap, mem};
 mod actor_claim;
 mod actor_rebase;
+mod boolean;
+mod deletion;
+pub(crate) use deletion::forecast as deletion_command_bound;
 mod clones;
+pub(crate) use boolean::forecast as boolean_command_bound;
 mod forward;
 mod forward_apply;
 mod forward_mutation;
@@ -82,6 +86,8 @@ pub(crate) struct PendingScopedSnapshot {
     targeted: bool,
     header: Option<PendingHeader>,
     clones: Option<clones::PendingClones>,
+    boolean: Option<boolean::PendingBoolean>,
+    deletion: Option<deletion::PendingDeletion>,
 }
 #[derive(Debug)]
 enum CapturedForest {
@@ -126,6 +132,42 @@ impl PendingScopedSnapshot {
             targeted: true,
             header: None,
             clones: Some(clones),
+            boolean: None,
+            deletion: None,
+        })
+    }
+    pub(crate) fn capture_boolean(
+        state: &EditorState,
+        scopes: Vec<Scope>,
+        command: &crate::EditorCommand,
+    ) -> Option<Self> {
+        let boolean = boolean::PendingBoolean::capture(state, command)?;
+        Some(Self {
+            metadata: ScopedEditorSnapshot::auxiliary(state, scopes),
+            forests: Vec::new(),
+            targets: Vec::new(),
+            targeted: true,
+            header: None,
+            clones: None,
+            boolean: Some(boolean),
+            deletion: None,
+        })
+    }
+    pub(crate) fn capture_deletion(
+        state: &EditorState,
+        scopes: Vec<Scope>,
+        command: &crate::EditorCommand,
+    ) -> Option<Self> {
+        let deletion = deletion::PendingDeletion::capture(state, command)?;
+        Some(Self {
+            metadata: ScopedEditorSnapshot::auxiliary(state, scopes),
+            forests: Vec::new(),
+            targets: Vec::new(),
+            targeted: true,
+            header: None,
+            clones: None,
+            boolean: None,
+            deletion: Some(deletion),
         })
     }
     pub(crate) fn matches_topology_request(
@@ -133,9 +175,19 @@ impl PendingScopedSnapshot {
         state: &EditorState,
         command: &crate::EditorCommand,
     ) -> Option<bool> {
-        self.clones
+        self.deletion
             .as_ref()
-            .map(|clones| clones.request_matches(state, command))
+            .map(|deletion| deletion.request_matches(state, command))
+            .or_else(|| {
+                self.boolean
+                    .as_ref()
+                    .map(|boolean| boolean.request_matches(state, command))
+            })
+            .or_else(|| {
+                self.clones
+                    .as_ref()
+                    .map(|clones| clones.request_matches(state, command))
+            })
             .or_else(|| targets::matches_topology_request(state, command, &self.targets))
     }
     pub(crate) fn apply_topology(&mut self, state: &mut EditorState) -> Option<bool> {
@@ -146,9 +198,17 @@ impl PendingScopedSnapshot {
         }
     }
     pub(crate) fn matches_targets(&self, state: &EditorState) -> bool {
-        self.clones
+        self.deletion
             .as_ref()
-            .is_none_or(|clones| clones.matches(state))
+            .is_none_or(|deletion| deletion.matches(state))
+            && self
+                .boolean
+                .as_ref()
+                .is_none_or(|boolean| boolean.matches(state))
+            && self
+                .clones
+                .as_ref()
+                .is_none_or(|clones| clones.matches(state))
             && targets::matches(state, &self.targets)
     }
     pub(crate) fn capture_targets(
@@ -163,6 +223,8 @@ impl PendingScopedSnapshot {
             targets: targets::capture(state, specs)?,
             targeted: true,
             clones: None,
+            boolean: None,
+            deletion: None,
             header: capture_header.then(|| PendingHeader::capture(&state.doc)),
         })
     }
@@ -182,6 +244,12 @@ impl PendingScopedSnapshot {
         targets::restore(state, std::mem::take(&mut self.targets))?;
         if let Some(clones) = self.clones.take() {
             clones.restore(state)?;
+        }
+        if let Some(boolean) = self.boolean.take() {
+            boolean.restore(state)?;
+        }
+        if let Some(deletion) = self.deletion.take() {
+            deletion.restore(state)?;
         }
         if let Some(header) = self.header.take() {
             header.restore(&mut state.doc);
@@ -214,6 +282,8 @@ impl PendingScopedSnapshot {
             targets: Vec::new(),
             targeted: false,
             clones: None,
+            boolean: None,
+            deletion: None,
             header: capture_header.then(|| PendingHeader::capture(&state.doc)),
         }
     }
@@ -259,6 +329,16 @@ impl PendingScopedSnapshot {
         if let Some(clones) = self.clones.take() {
             if let Some(clones) = clones.compact(state)? {
                 self.metadata.patches.push(Patch::Clones(clones));
+            }
+        }
+        if let Some(boolean) = self.boolean.take() {
+            if let Some(patch) = boolean.compact(state)? {
+                self.metadata.patches.push(Patch::Clones(patch));
+            }
+        }
+        if let Some(deletion) = self.deletion.take() {
+            if let Some(patch) = deletion.compact(state)? {
+                self.metadata.patches.push(Patch::Clones(patch));
             }
         }
         self.metadata.header = self.header.map(|header| header.compact(&state.doc));
@@ -337,6 +417,9 @@ impl ScopedEditorSnapshot {
             preserve_authored_geometry: state.editor_ui.preserve_authored_geometry,
             revision: state.revision,
         }
+    }
+    pub(crate) fn has_canonical_changes(&self) -> bool {
+        !self.patches.is_empty() || !self.page_headers.is_empty() || self.header.is_some()
     }
     pub(crate) fn scopes(&self) -> Vec<Scope> {
         self.scopes.clone()

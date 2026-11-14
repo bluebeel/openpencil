@@ -52,7 +52,7 @@ pub use editor::{
     ExportArtifact,
 };
 pub use error::ExportError;
-pub use scene_painter::{paint_node, paint_nodes};
+pub use scene_painter::{paint_node, paint_nodes, with_batch_preparation};
 pub use scene_sampling::*;
 pub use shared_raster::{
     shared_raster_worker, RasterAdmission, RasterWorkerStats, SharedRasterTarget,

@@ -214,8 +214,8 @@ fn a_capacity_refusal_is_a_503_and_says_nothing_about_other_accounts() {
 #[test]
 fn the_default_limits_are_the_documented_ones() {
     let limits = TenantLimits::default();
-    assert_eq!(limits.max_conns, 256);
-    assert_eq!(limits.max_conns_per_tenant, 8);
+    assert_eq!(limits.max_conns, 4096);
+    assert_eq!(limits.max_conns_per_tenant, 2048);
     assert_eq!(limits.max_tenants, 100);
     assert_eq!(limits.idle_evict_secs, 1800);
 }
