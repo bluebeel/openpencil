@@ -1,8 +1,8 @@
 //! Standalone id seeding is independent from document dirtiness.
 //!
 //! This exhaustive match forces new commands to declare their allocation
-//! behavior. Creation/refinement paths keep the original pre-command seed;
-//! existing-node edits never scan ids or fail just because fresh ids ran out.
+//! behavior. Paths that mint ids keep the original pre-command seed; edits
+//! with authored or existing ids do not require an unused allocator counter.
 
 use crate::EditorCommand as C;
 
@@ -15,8 +15,6 @@ pub(super) fn requires_id_seed(command: &C) -> bool {
         | C::ReplaceSubtree { .. }
         | C::BatchInsert { .. }
         | C::InsertSubtree { .. }
-        | C::InsertAuthoredSubtree { .. }
-        | C::InsertAuthoredSubtreePreservingRoots { .. }
         | C::AdoptSceneTemplate { .. }
         | C::RefineDesign { .. }
         | C::UpsertComponent { .. }
@@ -32,6 +30,8 @@ pub(super) fn requires_id_seed(command: &C) -> bool {
         | C::ImportSvg { .. }
         | C::PromoteLegacyWidgets => true,
         C::SetVariableColor { .. }
+        | C::InsertAuthoredSubtree { .. }
+        | C::InsertAuthoredSubtreePreservingRoots { .. }
         | C::SetActiveAxisValue { .. }
         | C::CycleActiveAxisValue { .. }
         | C::UpdateNode { .. }

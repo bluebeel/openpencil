@@ -363,7 +363,9 @@ impl ProgramCtx {
             .next_node_id_seed()
             .ok_or(ProgramError::IdSpaceExhausted)?
             .max(self.id_high_water);
-        let mut taken = self.sim.collect_node_ids();
+        // `seed` is above every current node/page numeric id, and remapping
+        // emits only fresh n{counter} ids. Reserve just this incoming forest.
+        let mut taken = std::collections::HashSet::new();
         let map = remap_subtree_ids_mapping(nodes, &mut seed, &mut taken)
             .ok_or(ProgramError::IdSpaceExhausted)?;
         self.id_high_water = seed;

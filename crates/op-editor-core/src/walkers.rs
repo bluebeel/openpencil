@@ -342,18 +342,24 @@ pub fn deep_clone_with_allocator(
     allocator: &mut dyn IdAllocator,
     taken: &mut HashSet<NodeId>,
 ) -> Result<PenNode, IdAllocError> {
-    let mut clone = node.clone();
+    // Clone metadata once per node; cloning the complete subtree at every
+    // recursive level made a deep chain quadratic in time and peak storage.
+    let mut clone = crate::pen_node_ext::clone_without_children(node);
     let new_id = allocator.allocate(taken)?;
     clone.base_mut().id = new_id.into();
-    if let Some(children) = clone.children_mut() {
+    if let Some(children) = node.children() {
         let fresh: Result<Vec<PenNode>, IdAllocError> = children
             .iter()
             .map(|child| deep_clone_with_allocator(child, allocator, taken))
             .collect();
-        *children = fresh?;
+        *clone.children_mut().expect("source has canonical children") = fresh?;
     }
     Ok(clone)
 }
+
+#[cfg(test)]
+#[path = "walkers_clone_tests.rs"]
+mod clone_tests;
 
 /// Translate the subtree rooted at `node` by `(dx, dy)` document px.
 ///

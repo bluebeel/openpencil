@@ -56,18 +56,32 @@ impl EditorState {
             }
         }
 
-        let mut live = self.collect_node_ids();
-        if let Some(replacement) = replacement.as_ref() {
-            live.remove(crate::command_root_replace::replacement_node_id(
-                replacement,
-            ));
-        }
         let mut incoming = HashSet::new();
+        let mut smallest_numeric = Some(u64::MAX);
         if !nodes
             .iter()
-            .all(|node| collect_authored_ids(node, &live, &mut incoming))
+            .all(|node| collect_authored_ids(node, &mut incoming, &mut smallest_numeric))
         {
             return false;
+        }
+        // Fresh sequential ids above the complete current document (including
+        // page ids) cannot collide. This borrowed scan avoids cloning/hashing
+        // the entire live id set for every program insert. Rich/custom ids keep
+        // the exact full collision check, including root-placeholder reuse.
+        let provably_fresh = smallest_numeric.is_some_and(|smallest| {
+            crate::id_allocator::next_sequential_counter(&self.doc)
+                .is_ok_and(|next| smallest >= next)
+        });
+        if !provably_fresh {
+            let mut live = self.collect_node_ids();
+            if let Some(replacement) = replacement.as_ref() {
+                live.remove(crate::command_root_replace::replacement_node_id(
+                    replacement,
+                ));
+            }
+            if incoming.iter().any(|id| live.contains(id)) {
+                return false;
+            }
         }
 
         if parent_id.is_real() {
@@ -93,8 +107,8 @@ impl EditorState {
 
 fn collect_authored_ids(
     node: &PenNode,
-    live: &HashSet<NodeId>,
     incoming: &mut HashSet<NodeId>,
+    smallest_numeric: &mut Option<u64>,
 ) -> bool {
     // Every authored node MUST carry a valid (non-empty), doc-unique id — that
     // is the whole point of the authored path (vs `cmd_insert_subtree`, which
@@ -105,14 +119,16 @@ fn collect_authored_ids(
     let Some(id) = NodeId::new_opt(node.id_str()) else {
         return false;
     };
-    if live.contains(&id) || !incoming.insert(id) {
+    if !incoming.insert(id) {
         return false;
     }
+    *smallest_numeric = smallest_numeric
+        .and_then(|smallest| walkers::parse_n_id(node.id_str()).map(|number| smallest.min(number)));
     node.children()
         .map(|children| {
             children
                 .iter()
-                .all(|child| collect_authored_ids(child, live, incoming))
+                .all(|child| collect_authored_ids(child, incoming, smallest_numeric))
         })
         .unwrap_or(true)
 }

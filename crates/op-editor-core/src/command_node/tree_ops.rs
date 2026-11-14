@@ -170,8 +170,12 @@ fn remap_collect(
         let new = fresh.as_str().to_string();
         node.base_mut().id = new.clone();
         map.push((old, new));
-        if let Some(children) = node.children_mut() {
-            remap_collect(children, allocator, taken, map)?;
+        // `children_mut` is also an insertion API. Remapping must not turn
+        // absent Ref children (inherit the master) into an empty override.
+        if node.children().is_some() {
+            if let Some(children) = node.children_mut() {
+                remap_collect(children, allocator, taken, map)?;
+            }
         }
     }
     Ok(())

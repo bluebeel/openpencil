@@ -116,3 +116,143 @@ fn insert_authored_subtree_rejects_live_id_collision() {
         Some("Existing")
     );
 }
+
+#[test]
+fn authored_fresh_ids_check_every_page_root_and_incoming_descendant() {
+    let mut document = state_with(vec![rect("n50", "Root", 0.0, 0.0, 4.0, 4.0)]).doc;
+    document.pages = Some(vec![
+        jian_ops_schema::page::PenPage {
+            id: "n900".into(),
+            name: "One".into(),
+            children: vec![rect("n700", "Page child", 0.0, 0.0, 4.0, 4.0)],
+            background_color: None,
+            state: None,
+            lifecycle: None,
+        },
+        jian_ops_schema::page::PenPage {
+            id: "other".into(),
+            name: "Two".into(),
+            children: vec![rect("n800", "Other page", 0.0, 0.0, 4.0, 4.0)],
+            background_color: None,
+            state: None,
+            lifecycle: None,
+        },
+    ]);
+    let original = crate::EditorState::from_document(document);
+    for collision in ["n50", "n700", "n800", "n900"] {
+        let mut state = original.clone();
+        let before = serde_json::to_vec(&state.doc).unwrap();
+        assert!(
+            !state.apply(EditorCommand::InsertAuthoredSubtreePreservingRoots {
+                nodes: vec![frame(
+                    "n901",
+                    "Incoming",
+                    0.0,
+                    0.0,
+                    20.0,
+                    20.0,
+                    vec![rect(collision, "Collision", 0.0, 0.0, 4.0, 4.0)]
+                )],
+                parent_id: NodeId::NONE,
+                page_id: None,
+            }),
+            "{collision}"
+        );
+        assert_eq!(serde_json::to_vec(&state.doc).unwrap(), before);
+        assert!(state.history.past.is_empty());
+    }
+    let mut state = original;
+    assert!(
+        state.apply(EditorCommand::InsertAuthoredSubtreePreservingRoots {
+            nodes: vec![frame(
+                "n901",
+                "Incoming",
+                0.0,
+                0.0,
+                20.0,
+                20.0,
+                vec![rect("n902", "Fresh", 0.0, 0.0, 4.0, 4.0)]
+            )],
+            parent_id: NodeId::NONE,
+            page_id: None,
+        })
+    );
+    assert_eq!(state.active_children().last().unwrap().id_str(), "n901");
+}
+
+#[test]
+fn authored_numeric_proof_keeps_exact_string_identity_and_duplicate_validation() {
+    let mut state = state_with(vec![rect("n0010", "Original", 0.0, 0.0, 4.0, 4.0)]);
+    for id in ["n10", "custom-Ω", "n11"] {
+        assert!(
+            state.apply(EditorCommand::InsertAuthoredSubtreePreservingRoots {
+                nodes: vec![rect(id, "Added", 0.0, 0.0, 4.0, 4.0)],
+                parent_id: NodeId::NONE,
+                page_id: None,
+            })
+        );
+    }
+    let before = serde_json::to_vec(&state.doc).unwrap();
+    for child in ["n20", ""] {
+        let mut descendant = rect("valid", "Invalid descendant", 0.0, 0.0, 4.0, 4.0);
+        descendant.base_mut().id = child.into();
+        assert!(
+            !state.apply(EditorCommand::InsertAuthoredSubtreePreservingRoots {
+                nodes: vec![frame(
+                    "n20",
+                    "Duplicate or empty",
+                    0.0,
+                    0.0,
+                    20.0,
+                    20.0,
+                    vec![descendant]
+                )],
+                parent_id: NodeId::NONE,
+                page_id: None,
+            })
+        );
+        assert_eq!(serde_json::to_vec(&state.doc).unwrap(), before);
+    }
+}
+
+#[test]
+fn authored_inserts_do_not_need_an_available_allocation_counter() {
+    let maximum = format!("n{}", u64::MAX);
+    let mut state = state_with(vec![rect(&maximum, "At max", 0.0, 0.0, 4.0, 4.0)]);
+    let before = serde_json::to_vec(&state.doc).unwrap();
+    assert!(state.apply_undoable(EditorCommand::Batch {
+        commands: vec![
+            EditorCommand::InsertAuthoredSubtreePreservingRoots {
+                nodes: vec![rect("external-id", "Authored", 0.0, 0.0, 4.0, 4.0)],
+                parent_id: NodeId::NONE,
+                page_id: None,
+            },
+            EditorCommand::UpdateNode {
+                node_id: NodeId::new(&maximum),
+                x: Some(12),
+                y: None,
+                width: None,
+                height: None,
+                name: None,
+                fill_hex: None,
+                page_id: None
+            },
+        ]
+    }));
+    let after = serde_json::to_vec(&state.doc).unwrap();
+    assert!(state.apply(EditorCommand::Undo));
+    assert_eq!(serde_json::to_vec(&state.doc).unwrap(), before);
+    assert!(state.apply(EditorCommand::Redo));
+    assert_eq!(serde_json::to_vec(&state.doc).unwrap(), after);
+    assert!(!state.apply(EditorCommand::InsertNode {
+        kind: "rect".into(),
+        name: "Must allocate".into(),
+        x: 0,
+        y: 0,
+        width: 4,
+        height: 4,
+        fill_hex: None,
+        target_parent: NodeId::NONE,
+        page_id: None
+    }));
+}

@@ -36,10 +36,15 @@ async def run(args):
     primary, document = output / "primary.op", output / "large.op"
     primary.write_text('{"version":"1.0.0","children":[]}')
     expected = fixture(args.leaves)
-    expected["children"].append({"type":"frame", "id":"template", "name":"Copy source",
+    template = {"type":"frame", "id":"template", "name":"Copy source",
         "width":64,"height":64,"children":[{"type":"rectangle","id":f"template-{i}",
         "x":(i%8)*8,"y":(i//8)*8,"width":6,"height":6,
-        "fill":[{"type":"solid","color":"#ff6600"}]} for i in range(args.template_leaves)]})
+        "fill":[{"type":"solid","color":"#ff6600"}]} for i in range(args.template_leaves)]}
+    for level in range(args.template_depth):
+        template["id"] = f"template-level-{level}"
+        template = {"type":"frame", "id":"template", "width":64, "height":64,
+                    "children":[template]}
+    expected["children"].append(template)
     document.write_text(json.dumps(expected, separators=(",", ":")))
     expected.pop("editorMeta")
     target = expected["children"][0]["children"][-1]
@@ -50,9 +55,10 @@ async def run(args):
                "--file", str(primary), "--config-root", str(output / "config")]
     report = {"binarySha256": shared.sha(args.binary), "command": command,
               "leafNodes": args.leaves, "rounds": args.rounds, "logicalClients": 1,
-              "copiesPerProgram":args.copies,"nodesPerCopiedSubtree":args.template_leaves+1,
+              "copiesPerProgram":args.copies,"templateDepth":args.template_depth,
+              "nodesPerCopiedSubtree":args.template_leaves+args.template_depth+1,
               "commandsPerProgram":args.copies*3+1,
-              "initialNodes":args.leaves+args.template_leaves+2,
+              "initialNodes":args.leaves+args.template_leaves+args.template_depth+2,
               "maxInflightRequests": 1, "requestRetryPolicy": "none", "samples": {},
               "invariants": {}, "status": "running"}
     log = (output / "server.stderr.log").open("wb")
@@ -161,9 +167,11 @@ def main():
     parser.add_argument("--rounds", type=int, default=10)
     parser.add_argument("--copies", type=int, default=100)
     parser.add_argument("--template-leaves", type=int, default=32)
+    parser.add_argument("--template-depth", type=int, default=0)
     parser.add_argument("--max-bytes", type=int, default=1_000_000_000)
     parser.add_argument("--timeout", type=float, default=180)
     args = parser.parse_args()
+    assert 0 <= args.template_depth <= 32
     assert 1 <= args.copies <= 100 and 1 <= args.template_leaves <= 100
     assert 100 <= args.leaves <= 10000 and 1 <= args.rounds <= 100
     raise SystemExit(0 if asyncio.run(asyncio.wait_for(run(args), args.timeout)) else 1)
