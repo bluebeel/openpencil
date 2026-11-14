@@ -29,7 +29,7 @@ New full-primary calibration adds the following limited evidence:
   startup 3.648 seconds, peak RSS 2.890 GB, sampled physical 2.063 GB and steady
   read/search about 2.26 GB RSS / 1.65 GB physical. No writes or larger client
   counts ran in that diagnostic. Original fixture bytes were unchanged.
-- The current inline `PenNode` is 2,696 bytes. OpenBridge's 414,531 nodes require
+- At checkpoint 11 the inline `PenNode` was 2,696 bytes. OpenBridge's 414,531 nodes require
   1,117,575,576 bytes for these values alone, before strings/assets/vector spare
   capacity. Compact node storage or lazy page ownership is required for 1 GB.
 - The full OpenBridge import preserves 545 warnings, including 137 boolean-shape
@@ -95,12 +95,13 @@ source cap: MUI is 26,682,248 bytes and OpenBridge 205,742,550 bytes. Single-fil
 primary-open measurements and alternate-file refusals therefore require separate
 cases. Do not trim inactive pages or assets to make the full-file matrix pass.
 
-The live primary MCP mutation path currently requires explicit `save_document`
-for disk persistence. The new harness labels live-final-save and explicit
-save-after-each-write workflows separately; the latter uses two RPCs and does
-not establish an atomic durable acknowledgement. Alternate-file authorities
-have separate save-before-ack behavior. Primary atomic durability remains an
-unfinished goal requirement.
+At checkpoint 12 the live primary MCP mutation path required explicit
+`save_document` for disk persistence; its two-RPC durable workflow was not an
+atomic acknowledgement. Checkpoint 13 adds save-before-ack and rollback for
+command writes in bound Managed primary sessions. Alternate-file authorities
+retain their own save-before-ack behavior. Local/Online/unbound sessions and
+separate REST/direct filesystem mutators retain their previous contracts;
+all-route durability, journals and power-loss recovery remain unfinished.
 
 Operation families requiring explicit coverage include drawing/transforms,
 selection/hit testing/snapping, layout/reflow, vector editing/booleans,
@@ -108,3 +109,21 @@ compositing, typography, component/variable dependencies, queries, pan/zoom and
 redraw, image/SVG/raster/PDF interchange, persistence/recovery and collaboration.
 The new real-document harness and tool inventory preserve partial and failed coverage explicitly. Operations
 without a working engine/MCP surface still require implementation.
+
+
+## Checkpoint-13 real-file outcomes
+
+[Checkpoint 13](engine-checkpoint-13.md) compacted optional metadata and streamed
+canonical file loading. Managed bound primary command replies now include atomic
+saving, so live-only checkpoint 12 latency is not a matched baseline.
+
+| Full file, strict aggregate 1 GB | 1 client | 10 clients | 100 clients | 1,000 clients |
+| --- | --- | --- | --- | --- |
+| MUI | Exact fields/bits pass; 20 writes | Failure: 3 unrelated `children:[]` additions; 64 writes | Exact pass;64 writers, other edit families deferred | Exact pass;64 writers, other edit families deferred |
+| OpenBridge | Full open/read/search/UI pass; first move exceeds RSS guard, unconfirmed | Not run after failed write prerequisite | Not run after failed write prerequisite | Not run after failed write prerequisite |
+
+MUI service peak RSS is 381.9/276.1/299.1/303.3 MB. OpenBridge loads all 414,531
+nodes but its first update reaches 1,022.5 MB in the largest process. Maximum active
+requests remains 32; 64 mutation requests is the global per-case budget. These
+results do not cover all 27 families or 1,000 writers. The 10-client failure is real
+None-to-Some(empty) mutation, not numeric drift or a relaxed comparison.

@@ -10,7 +10,13 @@ use generated documents; new full real-file cases add partial results and failur
 Current multi-client cases use at most 32 active requests. Selected-frame memory
 results do not establish a full OpenBridge/MUI memory bound.
 
-The latest [batched checkpoint](engine-checkpoint-12.md) cuts the measured large
+The latest [batched checkpoint](engine-checkpoint-13.md) reduces full MUI service
+RSS to 382 MB, preserves exact f64 values and saves Managed primary commands
+before acknowledgement. It records the first-edit OpenBridge memory failure,
+a 10-client MUI empty-child correctness failure, mixed CPU results and unchanged
+reference PNGs. Higher client counts remain budget-limited rather than all-operation
+passes.
+The [previous batched checkpoint](engine-checkpoint-12.md) cuts the measured large
 copy-program CPU by 86.7%, improves text/image sampling fidelity, adds shared
 heavy-work admission and configurable headless fonts. It also records slower
 context/undo/Park samples and full-file resource/precision failures. The

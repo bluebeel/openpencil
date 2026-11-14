@@ -79,3 +79,18 @@ shared optimized binaries. Use focused checks and small probes during the
 batch. Run the full reference gate once when the combined batch is ready;
 avoid repeating the complete test suites after each small change. Recheck
 earlier results when a new failure, code change or unresolved concern warrants it.
+
+
+## Checkpoint 13 continuation
+
+[Checkpoint 13](engine-checkpoint-13.md) records 122 focused passes and one
+consolidated optimized product build. Full MUI 1/100/1,000 logical-client cases
+retain exact final fields and numeric bits under the strict guard, with 64 global
+mutation requests and at most 32 active. MUI 10 reveals 3 unrelated empty children
+arrays. Full OpenBridge now opens but its first edit exceeds the RSS target.
+All 12 selected reference PNGs/raw RGBA remain exactly checkpoint 12.
+
+Next priorities are an exact bounded history transaction for ordinary edits,
+the unrelated empty-child mutation, durable-write throughput and remaining
+renderer mismatches. All remaining operation/large-file/concurrency/fidelity
+acceptance requirements above remain active; no goal completion is claimed.
