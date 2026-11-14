@@ -89,6 +89,9 @@ impl FigValue {
 
 impl PartialEq for FigValue {
     fn eq(&self, other: &Self) -> bool {
+        if matches!(self, Self::Deferred(_)) || matches!(other, Self::Deferred(_)) {
+            return self.resolved().eq(other.resolved());
+        }
         // Both ordinary GUID field orders normalize too: equality must remain
         // transitive when compact, generic and generated values are mixed.
         if let (Some(left), Some(right)) = (self.guid_parts(), other.guid_parts()) {

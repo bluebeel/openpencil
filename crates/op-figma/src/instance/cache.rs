@@ -107,6 +107,7 @@ fn fig_values_equal(left: &[FigValue], right: &[FigValue]) -> bool {
 }
 
 fn fig_value_equal(left: &FigValue, right: &FigValue) -> bool {
+    let (left, right) = (left.resolved(), right.resolved());
     if let (Some(left), Some(right)) = (left.guid_parts(), right.guid_parts()) {
         return left == right;
     }
@@ -154,6 +155,7 @@ fn hash_fig_values<H: Hasher>(values: &[FigValue], state: &mut H) {
 }
 
 fn hash_fig_value<H: Hasher>(value: &FigValue, state: &mut H) {
+    let value = value.resolved();
     if let Some(values) = value.affine_parts() {
         "Affine".hash(state);
         for value in values.iter() {
@@ -182,6 +184,7 @@ fn hash_fig_value<H: Hasher>(value: &FigValue, state: &mut H) {
     match value {
         FigValue::Vec2(_) | FigValue::Color(_) => unreachable!("normalized before hashing"),
         FigValue::Symbol(_) => unreachable!(),
+        FigValue::Deferred(_) => unreachable!(),
         FigValue::Null => {}
         FigValue::Bool(value) => value.hash(state),
         FigValue::Int(value) => value.hash(state),
@@ -210,7 +213,7 @@ fn hash_fig_value<H: Hasher>(value: &FigValue, state: &mut H) {
     }
 }
 
-fn fig_value_bytes(value: &FigValue) -> usize {
+pub(crate) fn fig_value_bytes(value: &FigValue) -> usize {
     std::mem::size_of::<FigValue>() + fig_value_owned_bytes(value)
 }
 
@@ -218,6 +221,7 @@ fn fig_value_bytes(value: &FigValue) -> usize {
 /// for every occurrence deliberately overcounts sharing and stays conservative.
 fn fig_value_owned_bytes(value: &FigValue) -> usize {
     match value {
+        FigValue::Deferred(value) => value.retained_bound(&fig_value_owned_bytes),
         FigValue::Vec2(value) => value.retained_bytes(),
         FigValue::Color(value) => {
             crate::kiwi::storage::boxed_color_bytes() + value.retained_bytes()

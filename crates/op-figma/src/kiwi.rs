@@ -19,6 +19,7 @@ mod compact_float;
 pub use compact_float::FloatRecord;
 #[path = "kiwi/compact_guid.rs"]
 mod compact_guid;
+pub(crate) mod deferred;
 pub(crate) mod storage;
 mod value;
 pub use value::FigValue;
@@ -337,20 +338,21 @@ enum ResolvedType {
 }
 
 struct Decoder<'a, 'b> {
+    lazy_context: Option<std::sync::Arc<deferred::Shared>>,
     schema: &'a Schema,
     bb: ByteBuffer<'b>,
     /// Resolved field types parallel to `Schema::definitions[*].fields`.
     /// Enum fields have no wire type and therefore store `None`.
-    field_types: Vec<Vec<Option<ResolvedType>>>,
+    field_types: std::sync::Arc<Vec<Vec<Option<ResolvedType>>>>,
     /// Message/enum wire value → field index, parallel to definitions.
-    field_by_value: Vec<HashMap<u32, usize>>,
+    field_by_value: std::sync::Arc<Vec<HashMap<u32, usize>>>,
     /// Object keys parallel to `Schema::definitions[*].fields`. A decoded
     /// struct can occur hundreds of thousands of times, so cloning these
     /// `Arc`s avoids allocating a fresh `String` for every occurrence.
-    object_keys: Vec<Vec<FigKey>>,
-    compact_guids: Vec<Option<bool>>,
-    compact_affines: Vec<Option<[u8; 6]>>,
-    compact_floats: Vec<Option<(compact_float::FloatKind, [u8; 4])>>,
+    object_keys: std::sync::Arc<Vec<Vec<FigKey>>>,
+    compact_guids: std::sync::Arc<Vec<Option<bool>>>,
+    compact_affines: std::sync::Arc<Vec<Option<[u8; 6]>>>,
+    compact_floats: std::sync::Arc<Vec<Option<(compact_float::FloatKind, [u8; 4])>>>,
 }
 
 impl<'a, 'b> Decoder<'a, 'b> {
@@ -410,14 +412,15 @@ impl<'a, 'b> Decoder<'a, 'b> {
         }
 
         Ok(Self {
+            lazy_context: None,
             schema,
             bb: ByteBuffer::new(data),
-            field_types,
-            field_by_value,
-            object_keys,
-            compact_guids: compact_guid::definitions(schema),
-            compact_affines: compact_affine::definitions(schema),
-            compact_floats: compact_float::definitions(schema),
+            field_types: std::sync::Arc::new(field_types),
+            field_by_value: std::sync::Arc::new(field_by_value),
+            object_keys: std::sync::Arc::new(object_keys),
+            compact_guids: std::sync::Arc::new(compact_guid::definitions(schema)),
+            compact_affines: std::sync::Arc::new(compact_affine::definitions(schema)),
+            compact_floats: std::sync::Arc::new(compact_float::definitions(schema)),
         })
     }
 
@@ -596,7 +599,18 @@ impl<'a, 'b> Decoder<'a, 'b> {
                 self.skip_field(resolved, is_array, depth)?;
                 continue;
             };
-            let value = self.decode_field(resolved, is_array, depth, child_scope)?;
+            let deferred = if matches!(scope, DecodeScope::DirectNode)
+                && field_name.as_ref() == "derivedSymbolData"
+                && is_array
+            {
+                self.defer_component_field(resolved, is_array, depth, child_scope)?
+            } else {
+                None
+            };
+            let value = match deferred {
+                Some(value) => value,
+                None => self.decode_field(resolved, is_array, depth, child_scope)?,
+            };
             // A repeated id overwrites — matches the JS `result.x = …`.
             if let Some(slot) = pair_slots[field_index] {
                 pairs[slot].1 = value;

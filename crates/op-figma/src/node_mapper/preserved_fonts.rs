@@ -42,11 +42,31 @@ pub(super) fn restore_saved_instance_fonts(nodes: &mut [FigValue]) {
         })
         .collect();
     for node in nodes {
-        let (Some(derived), Some(overrides)) = (
-            node.get_array("derivedSymbolData"),
-            node.get("symbolData")
-                .and_then(|data| data.get_array("symbolOverrides")),
-        ) else {
+        let Some(overrides) = node
+            .get("symbolData")
+            .and_then(|data| data.get_array("symbolOverrides"))
+        else {
+            continue;
+        };
+        if !overrides.iter().any(|entry| {
+            let Some(font) = entry.get("fontName") else {
+                return false;
+            };
+            if entry.get_str("fontVersion").is_some_and(|v| !v.is_empty())
+                || entry.get_bool("isOverrideOverTextStyle") == Some(true)
+            {
+                return false;
+            }
+            let Some(path) = path(entry) else {
+                return false;
+            };
+            path.last()
+                .and_then(|id| masters.get(id))
+                .is_some_and(|master| !same_font(font, &master.font))
+        }) {
+            continue;
+        }
+        let Some(derived) = node.get_array("derivedSymbolData") else {
             continue;
         };
         let cached: HashMap<_, _> = derived

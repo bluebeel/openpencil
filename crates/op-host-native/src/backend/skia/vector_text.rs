@@ -8,6 +8,15 @@ use skia_safe::{
     Paint, Path, PathBuilder, Point, Rect, SamplingOptions, TileMode,
 };
 
+#[path = "vector_text_curve.rs"]
+mod curve;
+#[path = "vector_text_reuse.rs"]
+mod reuse;
+
+pub(super) fn with_export_scope<R>(action: impl FnOnce() -> R) -> R {
+    reuse::with_scope(action)
+}
+
 const MAX_EDGE: i32 = 8192;
 const MAX_PIXELS: i64 = 16 * 1024 * 1024;
 const MAX_GLYPHS: usize = 4096;
@@ -48,12 +57,24 @@ pub(super) fn draw(
         }
         return false;
     }
+    let path = reuse::outline(font, glyphs, positions, origin, || {
+        build_outline(font, glyphs, positions, origin)
+    });
+    path.is_some_and(|path| draw_path(canvas, &path, paint))
+}
+
+fn build_outline(
+    font: &Font,
+    glyphs: &[GlyphId],
+    positions: &[Point],
+    origin: Point,
+) -> Option<Path> {
     let mut path = PathBuilder::new();
     for (&glyph, position) in glyphs.iter().zip(positions) {
         let x = origin.x + position.x;
         let y = origin.y.round() + position.y;
         if !x.is_finite() || !y.is_finite() {
-            return false;
+            return None;
         }
         if let Some(outline) = font.get_path(glyph) {
             path.add_path_with_offset(&outline, (x, y), None);
@@ -61,14 +82,14 @@ pub(super) fn draw(
             let mut bounds = [Rect::default()];
             font.get_bounds(&[glyph], &mut bounds, None);
             if !bounds[0].is_empty() {
-                if point {
+                if jian_skia::raster_sampling::is_point_sampling() {
                     jian_skia::raster_sampling::mark_unsupported("missing glyph outline");
                 }
-                return false;
+                return None;
             }
         }
     }
-    draw_path(canvas, &path.detach(), paint)
+    Some(path.detach())
 }
 
 fn draw_path(canvas: &Canvas, path: &Path, paint: &Paint) -> bool {
@@ -78,7 +99,9 @@ fn draw_path(canvas: &Canvas, path: &Path, paint: &Paint) -> bool {
     if jian_skia::raster_sampling::is_point_sampling() {
         let mut point_paint = paint.clone();
         jian_skia::raster_sampling::configure_final_src_over(&mut point_paint);
-        canvas.draw_path(path, &point_paint);
+        let matrix = canvas.local_to_device_as_3x3();
+        let precise = reuse::flattened(path, &matrix, || curve::flatten(path, &matrix));
+        canvas.draw_path(precise.as_ref().unwrap_or(path), &point_paint);
         return true;
     }
     let matrix = canvas.local_to_device_as_3x3();
@@ -95,6 +118,11 @@ fn draw_path(canvas: &Canvas, path: &Path, paint: &Paint) -> bool {
         return false;
     }
     let path = filled.detach().with_transform(&matrix);
+    let matrix_identity = Matrix::new_identity();
+    let path = reuse::flattened(&path, &matrix_identity, || {
+        curve::flatten(&path, &matrix_identity)
+    })
+    .unwrap_or(path);
     let Some(clip) = canvas.device_clip_bounds() else {
         return true;
     };

@@ -125,17 +125,8 @@ pub(super) fn serve_connection<S: std::io::Read + std::io::Write>(
     // `Content-Length` a route requires) is a client fault detected before a
     // single body byte was read — answer it with its own status instead of
     // letting it bubble out as a 500. See `mcp_serve::read_http_request`.
-    let req = match crate::mcp_serve::read_http_request(stream) {
-        Ok(req) => req,
-        Err(crate::mcp_serve::McpServeError::Framing { status, message }) => {
-            return write_http_with_origin(
-                stream,
-                status,
-                &crate::mcp_serve::rest_error_body(&message),
-                None,
-            );
-        }
-        Err(e) => return Err(e.into()),
+    let Some((req, _body_lease)) = crate::mcp_serve::read_admitted_http_request(stream)? else {
+        return Ok(());
     };
     let token = admission.token();
     // The one origin this request may be answered to (never `*`) — computed

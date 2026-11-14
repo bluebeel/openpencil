@@ -47,6 +47,9 @@ pub(crate) fn compact_transient_text_caches(node_changes: &mut [FigValue]) {
 
 fn compact_instance_text_caches(value: &mut FigValue) {
     match value {
+        FigValue::Deferred(deferred) => {
+            crate::kiwi::deferred::Deferred::map(deferred, 0, compact_instance_text_caches)
+        }
         FigValue::Array(values) => {
             for value in values {
                 compact_instance_text_caches(value);

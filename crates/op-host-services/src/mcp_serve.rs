@@ -69,6 +69,7 @@ use op_mcp::{
 pub(crate) mod auto_finalize;
 pub mod error;
 pub mod file_path;
+mod http_body_budget;
 mod sniff;
 
 pub use error::McpServeError;
@@ -392,11 +393,19 @@ pub struct HttpRequest {
 
 /// Parse a capped HTTP header and then read exactly its declared body length.
 /// Query strings are stripped from the path before routing.
+/// Network hosts use `read_admitted_http_request` to retain a dispatch lease.
 pub fn read_http_request<S: std::io::Read>(stream: &mut S) -> Result<HttpRequest, McpServeError> {
+    read_http_request_with_budget(stream, None).map(|(request, _)| request)
+}
+
+pub(crate) use http_body_budget::read_admitted_http_request;
+
+fn read_http_request_with_budget<'a, S: std::io::Read>(
+    stream: &mut S,
+    budget: Option<&'a http_body_budget::BodyBudget>,
+) -> Result<(HttpRequest, http_body_budget::BodyLease<'a>), McpServeError> {
     const MAX_HEADER: usize = 64 * 1024;
-    // Whole-document sync can carry embedded images, so retain the 64 MiB
-    // ceiling while reading incrementally to avoid allocating from a claimed
-    // Content-Length alone.
+    // Whole-document sync can carry embedded images, so retain the 64 MiB cap.
     const MAX_BODY: usize = 64 * 1024 * 1024;
     let mut head: Vec<u8> = Vec::new();
     let mut byte = [0u8; 1];
@@ -573,9 +582,16 @@ pub fn read_http_request<S: std::io::Read>(stream: &mut S) -> Result<HttpRequest
             MAX_BODY / (1024 * 1024)
         )));
     }
-    // Grow the body from bytes actually received, not the declared length;
-    // socket timeouts bound a stalled peer.
-    let mut body = Vec::with_capacity(content_length.min(64 * 1024));
+    // Admission bounds the allocation before any body bytes are consumed.
+    // Allocate once for admitted bodies to avoid realloc overlap and copies;
+    // the raw compatibility parser still grows incrementally from received data.
+    let mut lease = http_body_budget::BodyLease::new(budget, content_length)?;
+    let capacity = if budget.is_some() {
+        content_length
+    } else {
+        content_length.min(64 * 1024)
+    };
+    let mut body = Vec::with_capacity(capacity);
     let mut remaining = content_length;
     let mut chunk = [0u8; 64 * 1024];
     while remaining > 0 {
@@ -588,6 +604,14 @@ pub fn read_http_request<S: std::io::Read>(stream: &mut S) -> Result<HttpRequest
                 "connection closed before body completed".into(),
             ));
         }
+        if body.len() + n > body.capacity() {
+            let target = body
+                .capacity()
+                .saturating_mul(2)
+                .max(body.len() + n)
+                .min(content_length);
+            body.reserve_exact(target - body.len());
+        }
         body.extend_from_slice(&chunk[..n]);
         remaining -= n;
     }
@@ -597,20 +621,39 @@ pub fn read_http_request<S: std::io::Read>(stream: &mut S) -> Result<HttpRequest
             message: "design.md evidence body must be valid UTF-8".into(),
         })?
     } else {
-        String::from_utf8_lossy(&body).into_owned()
+        match String::from_utf8(body) {
+            Ok(body) => body,
+            Err(error) => {
+                let bytes = error.into_bytes();
+                // Replacement characters may need three bytes per input byte,
+                // overlapping the original bytes until conversion completes.
+                lease.grow(bytes.len().saturating_mul(3))?;
+                let mut body = String::with_capacity(bytes.len().saturating_mul(3));
+                for chunk in bytes.utf8_chunks() {
+                    body.push_str(chunk.valid());
+                    if !chunk.invalid().is_empty() {
+                        body.push('\u{fffd}');
+                    }
+                }
+                body
+            }
+        }
     };
-    Ok(HttpRequest {
-        method,
-        path,
-        body,
-        host,
-        origin,
-        token,
-        content_type,
-        authorization,
-        cookie,
-        query,
-    })
+    Ok((
+        HttpRequest {
+            method,
+            path,
+            body,
+            host,
+            origin,
+            token,
+            content_type,
+            authorization,
+            cookie,
+            query,
+        },
+        lease,
+    ))
 }
 
 /// Compatibility wrapper for older tests/callers that only care about

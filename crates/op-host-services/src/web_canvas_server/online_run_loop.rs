@@ -518,7 +518,9 @@ pub(super) fn serve_one_online<S: Read + Write>(
     verifier: &dyn IdentityVerifier,
     write_barrier: &super::tenant::WriteBarrier,
 ) -> Result<bool> {
-    let req = crate::mcp_serve::read_http_request(stream)?;
+    let Some((req, _body_lease)) = crate::mcp_serve::read_admitted_http_request(stream)? else {
+        return Ok(false);
+    };
     let allow_origins = registry.allow_origins();
     let cors_origin = online_policy::online_cors_origin(allow_origins, req.origin.as_deref());
     if let Some(done) = serve_anonymous_prefix(stream, &req, cors_origin.as_deref())? {

@@ -88,7 +88,7 @@ pub(crate) fn with_prepared_nodes<R>(
                 }
             });
         };
-        action(&mut paint)
+        NativeBackend::with_export_text_reuse(|| action(&mut paint))
     })
 }
 

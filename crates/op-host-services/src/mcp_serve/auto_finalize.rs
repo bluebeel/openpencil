@@ -261,7 +261,9 @@ pub(super) fn serve_http_connection<S: std::io::Read + std::io::Write>(
     let reply = |stream: &mut S, status: &str, body: &str| {
         super::write_mcp_http_response_with_origin(stream, status, body, Some("*"))
     };
-    let req = super::read_http_request(stream)?;
+    let Some((req, _body_lease)) = super::read_admitted_http_request(stream)? else {
+        return Ok(false);
+    };
     if req.method == "OPTIONS" {
         return reply(stream, "204 No Content", "").map(|()| false);
     }

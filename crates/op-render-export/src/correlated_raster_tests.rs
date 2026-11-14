@@ -350,3 +350,56 @@ fn correlated_scene_export_scope_restores_and_raw_callback_stays_unscoped() {
     assert_eq!(calls.get(), 1);
     assert!(!raster_sampling::shadow_respects_ctm());
 }
+
+#[test]
+fn correlated_text_export_reuse_matches_independent_camera_scopes_byte_for_byte() {
+    use op_editor_ui::layout_scene::{NodeKind, SceneNode, SceneTextRun};
+    let mut latin = SceneNode::leaf("latin", NodeKind::Text);
+    latin.bounds = Rect::xywh(4.25, 4.5, 188.0, 48.0);
+    latin.text = Some("AVg outline".into());
+    latin.font_family = "Roboto".into();
+    latin.font_size = 22.0;
+    latin.font_weight = 400;
+    latin.font_kerning = Some(true);
+    latin.letter_spacing = 0.15;
+    latin.fill = Some(color([32, 53, 128], 0.6));
+    latin.text_runs.push(SceneTextRun {
+        start: 0,
+        end: 3,
+        font_size: 25.0,
+        font_weight: 400,
+        fill: Some(color([180, 32, 54], 0.8)),
+        italic: false,
+        underline: true,
+        strikethrough: false,
+    });
+    let mut rtl = SceneNode::leaf("rtl", NodeKind::Text);
+    rtl.bounds = Rect::xywh(6.0, 57.25, 184.0, 38.0);
+    rtl.text = Some("مرحبا AV".into());
+    rtl.font_family = "sans-serif".into();
+    rtl.font_size = 20.0;
+    rtl.font_kerning = Some(true);
+    rtl.fill = Some(color([45, 95, 30], 0.65));
+    rtl.strikethrough = true;
+    let nodes = [latin, rtl];
+    let bounds = Rect::xywh(0.0, 0.0, 200.0, 104.0);
+    // Each callback starts/releases its own text scope, so no outline or
+    // subdivision is reused between the independent reference cameras.
+    let expected = render(bounds, RasterFormat::Png, 1.0, 0.0, &mut |canvas| {
+        crate::paint_nodes(canvas, &nodes);
+    })
+    .unwrap();
+    let actual = crate::render_scene_nodes_raster_bytes(
+        &nodes,
+        bounds,
+        RasterFormat::Png,
+        1.0,
+        0.0,
+        RasterSampling::Correlated4x2,
+    )
+    .unwrap();
+    assert_eq!(
+        actual, expected,
+        "reuse must preserve encoded RGBA including fallback, styled runs and decorations"
+    );
+}

@@ -45,22 +45,38 @@ float4 storeRGBA8(float4 value) {
     // blending. Keep the integer expansion: reciprocal255 has different ties.
     return float4(int4(bytes) * 257) * (1.0 / 65535.0);
 }
+// Normalized nearest coordinates pass through an unsigned16 fraction before
+// source-size multiplication. Floating texel coordinates can cross a boundary
+// that this sampler cannot: perform the fixed-point address calculation first.
+float2 nearestTexel(float2 uv) {
+    int2 size = int2(sourceSize);
+    int2 coord = int2(min(floor(clamp(uv, 0.0, 1.0) * 65536.0), 65535.0));
+    // Base256 limbs keep every intermediate in signed32 range, including
+    // sources wider than32768. This is floor(coord * size / 65536).
+    int2 hi = coord / 256;
+    int2 lo = coord - hi * 256;
+    int2 sizeHi = size / 256;
+    int2 sizeLo = size - sizeHi * 256;
+    int2 middle = hi * sizeLo + lo * sizeHi;
+    int2 quotient = middle / 256;
+    int2 remainder = middle - quotient * 256;
+    int2 texel = hi * sizeHi + quotient + (remainder * 256 + lo * sizeLo) / 65536;
+    return float2(texel) + .5;
+}
 float4 sampleBytes(float2 p, float2 offset) {
     float2 q = p + float2(deviceInverse.x * offset.x + deviceInverse.y * offset.y,
                           deviceInverse.z * offset.x + deviceInverse.w * offset.y);
     float2 uv = float2(imageInverse.x * q.x + imageInverse.y * q.y,
                        imageInverse.z * q.x + imageInverse.w * q.y) + imageOffset;
-    float2 imagePoint = q;
     if (directRotationUv != 0.0) {
         float2 unit = (q - bounds.xy) / (bounds.zw - bounds.xy);
         uv = float2(imageInverse.x * unit.x + imageInverse.y * unit.y,
                     imageInverse.z * unit.x + imageInverse.w * unit.y) + imageOffset;
-        imagePoint = uv * sourceSize;
     }
     if (inside(q) == 0.0 || (directRotationUv == 0.0 && (any(lessThan(uv, float2(0.0))) || any(greaterThan(uv, float2(1.0)))))) return float4(0.0);
     // The source pass writes the point-sampled premultiplied color to RGBA8
     // before its 2x resolve. Recover those byte values before averaging.
-    float4 color = float4(image.eval(imagePoint));
+    float4 color = float4(image.eval(nearestTexel(uv)));
     return float4(quantizeByte(color.r), quantizeByte(color.g),
                   quantizeByte(color.b), quantizeByte(color.a));
 }
@@ -121,7 +137,7 @@ pub(super) fn make_with_rotation(
     let child = image.to_shader(
         (skia_safe::TileMode::Clamp, skia_safe::TileMode::Clamp),
         skia_safe::SamplingOptions::default(),
-        rotation_uv.is_none().then_some(local),
+        None,
     )?;
     let rect = shape.rect();
     let radii = shape.radii_ref();
@@ -176,6 +192,72 @@ pub(super) fn make_with_rotation(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn constant_uv_pixel(width: i32, u: f32) -> skia_safe::Color {
+        let pixels: Vec<u8> = (0..width)
+            .flat_map(|x| [(x % 251) as u8, (x / 251 % 251) as u8, 37, 255])
+            .collect();
+        let info = skia_safe::ImageInfo::new(
+            (width, 1),
+            skia_safe::ColorType::RGBA8888,
+            skia_safe::AlphaType::Unpremul,
+            None,
+        );
+        let image =
+            skia_safe::images::raster_from_data(&info, Data::new_copy(&pixels), width as usize * 4)
+                .unwrap();
+        let mut surface = skia_safe::surfaces::raster_n32_premul((1, 1)).unwrap();
+        let shape = RRect::new_rect_xy(skia_safe::Rect::from_wh(1.0, 1.0), 0.0, 0.0);
+        let shader = make_with_rotation(
+            surface.canvas(),
+            &image,
+            &Matrix::default(),
+            Some([0.0, 0.0, u, 0.0, 0.0, 0.5]),
+            &shape,
+            0.0,
+        )
+        .unwrap();
+        let mut paint = skia_safe::Paint::default();
+        paint.set_shader(shader);
+        surface.canvas().draw_rect(shape.rect(), &paint);
+        surface
+            .image_snapshot()
+            .peek_pixels()
+            .unwrap()
+            .get_color((0, 0))
+    }
+
+    #[test]
+    fn normalized_nearest_address_truncates_before_source_size_multiplication() {
+        for width in [3, 257, 375, 1009] {
+            // The greatest f32 below the next fixed16 step lies beyond the
+            // first floating texel boundary, yet still selects fixed texel0.
+            let step = (65536 / width + 1) as f32 / 65536.0;
+            let u = f32::from_bits(step.to_bits() - 1);
+            assert_eq!((u * width as f32).floor(), 1.0);
+            let pixel = constant_uv_pixel(width, u);
+            assert_eq!(
+                (pixel.r(), pixel.g(), pixel.b(), pixel.a()),
+                (0, 0, 37, 255)
+            );
+        }
+    }
+
+    #[test]
+    fn fixed_nearest_clamps_and_avoids_signed_product_overflow() {
+        for width in [375, 32769, 65537] {
+            for u in [-0.25_f32, 0.99999, 1.25] {
+                let coordinate = (u.clamp(0.0, 1.0) * 65536.0).floor().min(65535.0) as u64;
+                let texel = coordinate * width as u64 / 65536;
+                let pixel = constant_uv_pixel(width, u);
+                assert_eq!(
+                    (pixel.r(), pixel.g(), pixel.b(), pixel.a()),
+                    ((texel % 251) as u8, (texel / 251 % 251) as u8, 37, 255),
+                    "width{width},u{u}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn direct_rotated_uv_preserves_point_texels_at_nonzero_origins_and_zoom() {

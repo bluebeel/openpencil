@@ -7,6 +7,7 @@
 use crate::kiwi::FigValue;
 use crate::tree::guid_to_string;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 type Modes = HashMap<String, String>;
 
@@ -44,6 +45,41 @@ fn shared_master_branch(
     visiting.remove(key);
     cache.insert(key.into(), shared);
     shared
+}
+
+fn map_bound<K, V>(map: &HashMap<K, V>) -> usize {
+    if map.capacity() == 0 {
+        0
+    } else {
+        map.capacity().next_power_of_two() * 2 * (std::mem::size_of::<(K, V)>() + 1) + 16
+    }
+}
+fn modes_bound(modes: &Modes) -> usize {
+    map_bound(modes)
+        + modes
+            .iter()
+            .map(|(k, v)| k.capacity() + v.capacity())
+            .sum::<usize>()
+}
+fn resolver_bound(resolver: &Resolver) -> usize {
+    std::mem::size_of::<Resolver>()
+        + 16
+        + map_bound(&resolver.variables)
+        + modes_bound(&resolver.defaults)
+        + resolver
+            .variables
+            .iter()
+            .map(|(key, var)| {
+                key.capacity()
+                    + var.collection.as_ref().map_or(0, String::capacity)
+                    + var.values.capacity() * std::mem::size_of::<FigValue>()
+                    + var
+                        .values
+                        .iter()
+                        .map(crate::instance::value_retained_bound)
+                        .sum::<usize>()
+            })
+            .sum::<usize>()
 }
 
 fn local_modes(value: &FigValue) -> Modes {
@@ -94,6 +130,7 @@ fn inherited_modes(
 struct Resolver {
     variables: HashMap<String, Variable>,
     defaults: Modes,
+    retained_bound: usize,
 }
 
 impl Resolver {
@@ -131,7 +168,17 @@ impl Resolver {
         self.color(entry.get("variableData")?, modes, visiting)
     }
 
-    fn resolve_value(&self, value: &mut FigValue, inherited: &Modes) {
+    fn resolve_value(self: &Arc<Self>, value: &mut FigValue, inherited: &Modes) {
+        if let FigValue::Deferred(deferred) = value {
+            let resolver = self.clone();
+            let modes = inherited.clone();
+            crate::kiwi::deferred::Deferred::map(
+                deferred,
+                self.retained_bound + modes_bound(&modes),
+                move |value| resolver.resolve_value(value, &modes),
+            );
+            return;
+        }
         if !matches!(value, FigValue::Array(_) | FigValue::Object(_)) {
             return;
         }
@@ -145,7 +192,7 @@ impl Resolver {
         self.resolve_fields(value, &modes);
     }
 
-    fn resolve_fields(&self, value: &mut FigValue, modes: &Modes) {
+    fn resolve_fields(self: &Arc<Self>, value: &mut FigValue, modes: &Modes) {
         if let Some(mut color) = value
             .get("colorVar")
             .and_then(|binding| self.color(binding, modes, &mut HashSet::new()))
@@ -196,6 +243,7 @@ pub(crate) fn resolve_color_variables(nodes: &mut [FigValue]) {
     let mut resolver = Resolver {
         variables: HashMap::new(),
         defaults: Modes::new(),
+        retained_bound: 0,
     };
     let mut node_modes = HashMap::new();
     for node in nodes.iter() {
@@ -249,6 +297,8 @@ pub(crate) fn resolve_color_variables(nodes: &mut [FigValue]) {
     if resolver.variables.is_empty() {
         return;
     }
+    resolver.retained_bound = resolver_bound(&resolver);
+    let resolver = Arc::new(resolver);
     let mut cache = HashMap::new();
     let mut shared = HashMap::new();
     for node in nodes.iter_mut() {

@@ -8,6 +8,7 @@ use super::{storage, FigKey, FloatRecord};
 pub enum FigValue {
     /// Absent / unresolved (e.g. an unknown enum ordinal).
     Null,
+    Deferred(std::sync::Arc<super::deferred::Deferred>),
     Bool(bool),
     Int(i32),
     Uint(u32),
@@ -36,15 +37,34 @@ pub enum FigValue {
 }
 
 impl FigValue {
+    pub(crate) fn resolved(&self) -> &Self {
+        if let Self::Deferred(value) = self {
+            value.get()
+        } else {
+            self
+        }
+    }
+    pub(crate) fn make_eager(&mut self) {
+        if matches!(self, Self::Deferred(_)) {
+            let Self::Deferred(value) = std::mem::replace(self, Self::Null) else {
+                unreachable!()
+            };
+            *self = match std::sync::Arc::try_unwrap(value) {
+                Ok(unique) => unique.into_value(),
+                Err(shared) => shared.get().clone(),
+            };
+        }
+    }
+
     /// Field lookup on an object value; `None` for non-objects, absent
     /// keys, or keys explicitly decoded to [`FigValue::Null`].
     pub fn get(&self, key: &str) -> Option<&FigValue> {
-        match self {
+        match self.resolved() {
             FigValue::Vec2(_) | FigValue::Color(_) => self.small_float_get(key),
             FigValue::Object(pairs) => pairs
                 .iter()
                 .find(|(k, _)| k.as_ref() == key)
-                .map(|(_, v)| v)
+                .map(|(_, v)| v.resolved())
                 .filter(|v| !matches!(v, FigValue::Null)),
             _ => None,
         }
@@ -53,12 +73,16 @@ impl FigValue {
     /// Mutable field lookup on an object value. Explicit `Null`
     /// remains absent, matching [`get`](Self::get).
     pub fn get_mut(&mut self, key: &str) -> Option<&mut FigValue> {
+        self.make_eager();
         self.materialize_compact();
         match self {
             FigValue::Object(pairs) => pairs
                 .iter_mut()
                 .find(|(name, _)| name.as_ref() == key)
-                .map(|(_, value)| value)
+                .map(|(_, value)| {
+                    value.make_eager();
+                    value
+                })
                 .filter(|value| !matches!(value, FigValue::Null)),
             _ => None,
         }
@@ -66,7 +90,7 @@ impl FigValue {
 
     /// Numeric coercion across every integer/float variant.
     pub fn as_f64(&self) -> Option<f64> {
-        match self {
+        match self.resolved() {
             FigValue::Int(v) => Some(*v as f64),
             FigValue::Uint(v) => Some(*v as f64),
             FigValue::Int64(v) => Some(*v as f64),
@@ -78,7 +102,7 @@ impl FigValue {
     }
 
     pub fn as_str(&self) -> Option<&str> {
-        match self {
+        match self.resolved() {
             FigValue::Str(s) => Some(s),
             FigValue::Symbol(s) => Some(s.as_ref()),
             _ => None,
@@ -86,21 +110,21 @@ impl FigValue {
     }
 
     pub fn as_bool(&self) -> Option<bool> {
-        match self {
+        match self.resolved() {
             FigValue::Bool(b) => Some(*b),
             _ => None,
         }
     }
 
     pub fn as_array(&self) -> Option<&[FigValue]> {
-        match self {
+        match self.resolved() {
             FigValue::Array(v) => Some(v),
             _ => None,
         }
     }
 
     pub fn as_bytes(&self) -> Option<&[u8]> {
-        match self {
+        match self.resolved() {
             FigValue::Bytes(b) => Some(b),
             _ => None,
         }
@@ -108,7 +132,7 @@ impl FigValue {
 
     pub fn is_object(&self) -> bool {
         matches!(
-            self,
+            self.resolved(),
             FigValue::Object(_)
                 | FigValue::Guid(_, _)
                 | FigValue::Affine(_)
@@ -140,7 +164,9 @@ impl FigValue {
 
     /// Mutable array field read.
     pub fn get_array_mut(&mut self, key: &str) -> Option<&mut storage::Values<FigValue>> {
-        match self.get_mut(key)? {
+        let value = self.get_mut(key)?;
+        value.make_eager();
+        match value {
             FigValue::Array(values) => Some(values),
             _ => None,
         }

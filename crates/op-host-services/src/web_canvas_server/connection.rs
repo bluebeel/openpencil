@@ -84,7 +84,9 @@ pub(super) fn serve_one_with_authority<S: Read + Write>(
     mode: ServeMode,
     authority: &ConnAuthority,
 ) -> Result<bool> {
-    let req = crate::mcp_serve::read_http_request(stream)?;
+    let Some((req, _body_lease)) = crate::mcp_serve::read_admitted_http_request(stream)? else {
+        return Ok(false);
+    };
     dispatch_owned(
         stream,
         req,
@@ -100,14 +102,12 @@ pub(super) fn serve_one_with_authority<S: Read + Write>(
     )
 }
 
-/// Route one already-parsed request against `ctx`.
-///
-/// Split from the read so the online accept loop can resolve the identity —
-/// and therefore the tenant this ctx points at — from the request headers
-/// before anything is dispatched.
+/// Dispatch parsed requests after the online loop has resolved their identity.
 #[path = "connection_conversion.rs"]
 mod conversion;
-pub(super) use conversion::{dispatch, dispatch_owned};
+#[cfg(test)]
+pub(super) use conversion::dispatch;
+pub(super) use conversion::dispatch_owned;
 
 fn dispatch_inner<S: Read + Write>(
     stream: &mut S,
@@ -334,19 +334,7 @@ fn dispatch_inner<S: Read + Write>(
         return Ok(false);
     }
     if req.method == "POST" && req.path == "/api/figma/convert" {
-        let converted = match conversion_body {
-            Some(body) => crate::figma_convert::convert_fig_json_owned(body),
-            None => crate::figma_convert::convert_fig_json(&req.body),
-        };
-        let (status, body) = match converted {
-            Ok(body) => ("200 OK", body),
-            Err(error) => (
-                "400 Bad Request",
-                serde_json::json!({ "ok": false, "error": error.to_string() }).to_string(),
-            ),
-        };
-        crate::mcp_serve::write_mcp_http_response_with_origin(stream, status, &body, cors_origin)?;
-        return Ok(false);
+        return conversion::serve_conversion(stream, req, conversion_body, cors_origin);
     }
     // All `/api/mcp/*` REST paths go to the REST handler — including ones this
     // daemon doesn't implement yet, which it answers with 404 rather than

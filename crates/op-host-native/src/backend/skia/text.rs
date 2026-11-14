@@ -34,6 +34,12 @@ pub(super) fn uses_advance_grid(
 }
 
 impl NativeBackend {
+    /// Reuse immutable outlines only for this export's repeated cameras.
+    /// Nested calls share the same bounded cache; return/unwind releases it.
+    pub fn with_export_text_reuse<R>(action: impl FnOnce() -> R) -> R {
+        super::vector_text::with_export_scope(action)
+    }
+
     /// Resolve a typeface that covers `c`. Cached per codepoint —
     /// `FontMgr::match_family_style_character` is fast on first call
     /// but we still avoid the look-up on every chrome paint.

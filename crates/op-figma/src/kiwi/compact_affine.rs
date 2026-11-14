@@ -134,6 +134,7 @@ impl FigValue {
     }
 
     pub(super) fn materialize_compact(&mut self) {
+        self.make_eager();
         self.materialize_guid();
         self.materialize_small_float();
         if let Self::Affine(values) = self {
