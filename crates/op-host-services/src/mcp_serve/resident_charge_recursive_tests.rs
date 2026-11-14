@@ -30,10 +30,35 @@ fn recursive_history_charge_deduplicates_metadata_nodes_and_releases_weak_cache(
         retained,
         resident_charge_cached(&state, 1_000_000_000, &mut cache).unwrap()
     );
-    assert!(
-        retained < initial * 3,
-        "shared history must be charged once per recursive allocation: {retained}/{initial}"
-    );
+    // Inline nodes can shrink independently of the 100 immutable child-edge
+    // arrays. Prove recursive sharing directly instead of comparing the ledger
+    // against a size-dependent multiple of the current document.
+    let snapshots: Vec<_> = state
+        .history
+        .past
+        .iter()
+        .map(|entry| entry.full_snapshot().expect("complete legacy snapshot"))
+        .collect();
+    assert_eq!(snapshots.len(), 100);
+    let first = snapshots[0].doc.root_children()[0].children().unwrap();
+    let mut metadata = HashSet::new();
+    let mut child_edges = HashSet::new();
+    for snapshot in &snapshots {
+        let root = &snapshot.doc.root_children()[0];
+        metadata.insert(Arc::as_ptr(root) as usize);
+        child_edges.insert(root.child_edge_storage().unwrap().0);
+        let children = root.children().unwrap();
+        assert_eq!(children.len(), 5000);
+        for (index, child) in children.iter().enumerate() {
+            metadata.insert(Arc::as_ptr(child) as usize);
+            if index < 4999 {
+                assert!(Arc::ptr_eq(child, &first[index]));
+            }
+        }
+    }
+    assert_eq!(metadata.len(), 4999 + 2 * snapshots.len());
+    assert_eq!(child_edges.len(), snapshots.len());
+    assert!(retained > initial);
     assert!(retained < 200_000_000);
     state.history.past.clear();
     state.history.future.clear();
