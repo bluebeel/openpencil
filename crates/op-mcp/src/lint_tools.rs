@@ -1,81 +1,118 @@
-use std::collections::{BTreeMap, BTreeSet};
-
-use jian_ops_schema::node::PenNode;
-use op_design_lint::{detect_all, Issue};
-use op_editor_core::{EditorState, PenNodeExt};
-
 use super::{McpTool, ToolErrorCode, ToolOutcome};
-
+use op_design_lint::Issue;
+use op_editor_core::EditorState;
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
+#[path = "lint_tools_cache.rs"]
+mod cache;
+#[path = "lint_tools_scan.rs"]
+mod scan;
+type Prepared = Result<String, String>;
 pub struct LintDocument {
-    issues: Vec<Issue>,
-    subtree_ids: BTreeMap<String, BTreeSet<String>>,
+    data: Data,
 }
-
+enum Data {
+    Full {
+        issues: Vec<Issue>,
+        subtrees: scan::Subtrees,
+    },
+    Call {
+        filter: Option<String>,
+        result: Arc<cache::ResultValue>,
+    },
+}
+fn filter(args: &BTreeMap<String, String>) -> Option<&str> {
+    args.get("nodeId")
+        .map(|value| value.trim())
+        .filter(|id| !id.is_empty())
+}
+fn render(issues: &[Issue], allowed: Option<&BTreeSet<&str>>) -> String {
+    let issues = issues
+        .iter()
+        .filter(|issue| allowed.is_none_or(|ids| ids.contains(issue.node_id.as_str())))
+        .collect::<Vec<_>>();
+    serde_json::json!({"count":issues.len(),"issues":issues}).to_string()
+}
+fn outcome(result: &Prepared) -> ToolOutcome {
+    match result {
+        Ok(json) => ToolOutcome::OkJson(json.clone()),
+        Err(error) => ToolOutcome::Err(ToolErrorCode::InvalidArgument, error.clone()),
+    }
+}
 impl McpTool for LintDocument {
     fn name(&self) -> &str {
         "lint_document"
     }
-
     fn call(&self, args: &BTreeMap<String, String>) -> ToolOutcome {
-        let allowed = match args.get("nodeId").map(|value| value.trim()) {
-            None | Some("") => None,
-            Some(node_id) => match self.subtree_ids.get(node_id) {
-                Some(ids) => Some(ids),
-                None => {
+        match &self.data {
+            Data::Call {
+                filter: prepared,
+                result,
+            } => {
+                if filter(args) != prepared.as_deref() {
                     return ToolOutcome::Err(
                         ToolErrorCode::InvalidArgument,
-                        format!("nodeId not found: {node_id}"),
-                    )
+                        "lint snapshot was prepared for a different nodeId".into(),
+                    );
                 }
-            },
-        };
-        let issues: Vec<&Issue> = self
-            .issues
-            .iter()
-            .filter(|issue| allowed.is_none_or(|ids| ids.contains(&issue.node_id)))
-            .collect();
-        ToolOutcome::OkJson(
-            serde_json::json!({
-                "count": issues.len(),
-                "issues": issues,
-            })
-            .to_string(),
-        )
-    }
-}
-
-pub fn lint_document_snapshot(state: &EditorState) -> LintDocument {
-    let mut issues = Vec::new();
-    let mut subtree_ids = BTreeMap::new();
-    if let Some(pages) = state.doc.pages.as_ref() {
-        for page in pages {
-            for root in &page.children {
-                collect_subtree_ids(root, &mut subtree_ids);
-                issues.extend(detect_all(root, &state.doc));
+                outcome(&result.result)
+            }
+            Data::Full { issues, subtrees } => {
+                let allowed = match filter(args) {
+                    None => None,
+                    Some(id) => match subtrees.allowed(id) {
+                        Some(ids) => Some(ids),
+                        None => return outcome(&Err(format!("nodeId not found: {id}"))),
+                    },
+                };
+                ToolOutcome::OkJson(render(issues, allowed.as_ref()))
             }
         }
     }
-    for root in &state.doc.children {
-        collect_subtree_ids(root, &mut subtree_ids);
-        issues.extend(detect_all(root, &state.doc));
+}
+/// Reusable public snapshot: always inspect the actual mutable Doc afresh.
+pub fn lint_document_snapshot(state: &EditorState) -> LintDocument {
+    let mut subtrees = scan::Subtrees::default();
+    let mut issues = Vec::new();
+    for root in scan::roots(state) {
+        subtrees.push(root);
+        issues.extend(op_design_lint::detect_all(root, &state.doc));
     }
     LintDocument {
-        issues,
-        subtree_ids,
+        data: Data::Full { issues, subtrees },
     }
 }
-
-fn collect_subtree_ids(
-    node: &PenNode,
-    subtree_ids: &mut BTreeMap<String, BTreeSet<String>>,
-) -> BTreeSet<String> {
-    let mut ids = BTreeSet::new();
-    ids.insert(node.id_str().to_string());
-    if let Some(children) = node.children() {
-        for child in children {
-            ids.extend(collect_subtree_ids(child, subtree_ids));
-        }
+/// Request-scoped constructor; only the normalized nodeId may be reused by call.
+pub fn lint_document_snapshot_for_call(
+    state: &EditorState,
+    args: &BTreeMap<String, String>,
+) -> LintDocument {
+    snapshot_for_call(state, args, false)
+}
+/// Requires an explicit locked immutable host authority. A91 lexical handle is
+/// checked too: arbitrary public callers never acquire cache trust by revision.
+pub fn lint_document_snapshot_for_call_cached(
+    state: &EditorState,
+    args: &BTreeMap<String, String>,
+) -> LintDocument {
+    snapshot_for_call(
+        state,
+        args,
+        state.trusted_node_lookup(&state.doc.children).is_some(),
+    )
+}
+fn snapshot_for_call(
+    state: &EditorState,
+    args: &BTreeMap<String, String>,
+    trusted: bool,
+) -> LintDocument {
+    let filter = filter(args).map(str::to_owned);
+    let result = cache::result(state, filter.as_deref(), trusted, || {
+        scan::prepare(state, filter.as_deref())
+    });
+    LintDocument {
+        data: Data::Call { filter, result },
     }
-    subtree_ids.insert(node.id_str().to_string(), ids.clone());
-    ids
 }

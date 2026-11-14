@@ -267,20 +267,15 @@ fn is_slender_chart_mark(node: &PenNode) -> bool {
 }
 
 fn numeric_node_prop(node: &PenNode, key: &str) -> Option<f64> {
-    serde_json::to_value(node).ok()?.get(key)?.as_f64()
+    match key {
+        "width" => crate::node_util::numeric_wire_size(node, true),
+        "height" => crate::node_util::numeric_wire_size(node, false),
+        _ => None,
+    }
 }
 
 fn node_identity_label(node: &PenNode) -> String {
-    let mut label = node_id(node).to_ascii_lowercase();
-    if let Ok(value) = serde_json::to_value(node) {
-        for key in ["role", "name"] {
-            if let Some(text) = value.get(key).and_then(Value::as_str) {
-                label.push(' ');
-                label.push_str(&text.to_ascii_lowercase());
-            }
-        }
-    }
-    label
+    crate::node_util::identity_label(node)
 }
 
 /// Port of `getBorderStroke` (`detectors.ts:27-34`). Prefers the

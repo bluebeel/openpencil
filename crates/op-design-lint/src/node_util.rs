@@ -25,6 +25,10 @@ use jian_ops_schema::style::{PenFill, StrokeThickness};
 use jian_ops_schema::variable::{VariableDefinition, VariableScalar, VariableValue};
 use serde_json::Value;
 
+#[path = "node_util_borrowed.rs"]
+mod borrowed;
+pub use borrowed::{identity_label, numeric_wire_size};
+
 /// The 17 jian `PenNode` kinds, as a flat `Copy` enum. jian models kind via
 /// the `PenNode` enum variant + the `"type"` tag; detectors need a cheap
 /// kind discriminant for skip-sets and grouping keys, so this mirrors it.
@@ -575,8 +579,7 @@ pub fn corner_radius_numeric(node: &PenNode) -> f64 {
 
 /// Fully rounded geometry is an authored shape, not a sibling-style outlier.
 pub fn has_fully_round_shape(node: &PenNode) -> bool {
-    let value = serde_json::to_value(node).unwrap_or_default();
-    matches!((value["width"].as_f64(), value["height"].as_f64()),
+    matches!((numeric_wire_size(node, true), numeric_wire_size(node, false)),
         (Some(w), Some(h)) if w > 0.0 && h > 0.0 && corner_radius_numeric(node) >= w.min(h) / 2.0)
 }
 

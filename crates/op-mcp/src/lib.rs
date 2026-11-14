@@ -260,7 +260,10 @@ pub use extra_read_tools::{
 };
 pub use guidelines_tools::{get_guidelines_snapshot, GetGuidelines};
 pub use json_serializer::{response_to_json, tool_response_to_json};
-pub use lint_tools::{lint_document_snapshot, LintDocument};
+pub use lint_tools::{
+    lint_document_snapshot, lint_document_snapshot_for_call,
+    lint_document_snapshot_for_call_cached, LintDocument,
+};
 pub use node_attr_tools::{
     add_node_effect_snapshot, remove_node_effect_snapshot, set_ellipse_arc_snapshot,
     set_node_corner_radius_snapshot, set_node_fill_hex_snapshot, set_node_flip_snapshot,

@@ -102,7 +102,15 @@ pub(super) fn rebuild_registry_with_authority(
     register_tool!("upsert_component", upsert_component_snapshot());
     register_tool!("upsert_screen", upsert_screen_snapshot());
     register_tool!("conversion_status", conversion_status_snapshot(doc));
-    register_tool!("lint_document", lint_document_snapshot(doc));
+    register_tool!(
+        "lint_document",
+        match arguments {
+            Some(args) if trusted_authority && requested_tool.is_some() =>
+                op_mcp::lint_document_snapshot_for_call_cached(doc, args),
+            Some(args) => op_mcp::lint_document_snapshot_for_call(doc, args),
+            None => lint_document_snapshot(doc),
+        }
+    );
     register_tool!("save_theme_preset", save_theme_preset_snapshot(doc));
     register_tool!("load_theme_preset", load_theme_preset_snapshot());
     register_tool!("list_theme_presets", list_theme_presets_snapshot());
