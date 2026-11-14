@@ -65,6 +65,10 @@ impl EditorState {
         if matches!(
             command,
             EditorCommand::InsertNode { .. }
+                | EditorCommand::InsertSubtree { .. }
+                | EditorCommand::CopyNode { .. }
+                | EditorCommand::ReplaceNode { .. }
+                | EditorCommand::ReplaceSubtree { .. }
                 | EditorCommand::BatchInsert { .. }
                 | EditorCommand::GroupSelected
                 | EditorCommand::AddPage { .. }
