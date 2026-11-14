@@ -178,8 +178,8 @@ impl McpLiveServer {
             .map_err(|e| McpLiveError::Startup(format!("read bound MCP port: {e}")))?
             .port();
         listener
-            .set_nonblocking(true)
-            .map_err(|e| McpLiveError::Startup(format!("set nonblocking: {e}")))?;
+            .set_nonblocking(false)
+            .map_err(|e| McpLiveError::Startup(format!("set blocking: {e}")))?;
         let (req_tx, req_rx) = mpsc::channel();
         let (stop_tx, stop_rx) = mpsc::channel();
         let token = make_live_token();
@@ -353,7 +353,12 @@ impl McpLiveServer {
     }
 
     pub fn stop(&mut self) {
-        let _ = self.stop_tx.send(());
+        if self.stop_tx.send(()).is_ok() {
+            // Wake blocking accept without polling the listener while idle.
+            // A bounded connect keeps shutdown responsive under saturation.
+            let address = std::net::SocketAddr::from(([127, 0, 0, 1], self.port));
+            let _ = std::net::TcpStream::connect_timeout(&address, Duration::from_millis(100));
+        }
     }
 
     /// Tag a JUST-APPLIED `batch_design` write's genuinely new content

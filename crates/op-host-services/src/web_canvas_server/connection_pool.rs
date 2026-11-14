@@ -12,7 +12,7 @@ use std::{
 type Job = Box<dyn FnOnce() + Send + 'static>;
 
 #[derive(Debug)]
-pub(super) enum PoolError {
+pub(crate) enum PoolError {
     Spawn(std::io::Error),
     Full,
     Closed,
@@ -30,12 +30,13 @@ impl fmt::Display for PoolError {
 
 impl std::error::Error for PoolError {}
 
-pub(super) struct ConnectionPool {
+pub(crate) struct ConnectionPool {
     sender: mpsc::SyncSender<Job>,
     receiver: Arc<Mutex<mpsc::Receiver<Job>>>,
     workers: usize,
     max_workers: usize,
     name: &'static str,
+    stack_size: Option<usize>,
 }
 
 impl ConnectionPool {
@@ -48,7 +49,14 @@ impl ConnectionPool {
             workers: 0,
             max_workers,
             name,
+            stack_size: None,
         }
+    }
+
+    /// Keep endpoint-specific recursion headroom when reusing its workers.
+    pub fn with_stack_size(mut self, bytes: usize) -> Self {
+        self.stack_size = Some(bytes);
+        self
     }
 
     /// `connections` includes this accepted socket and long-lived SSE streams.
@@ -58,8 +66,12 @@ impl ConnectionPool {
         let desired = connections.clamp(1, self.max_workers);
         if self.workers < desired {
             let receiver = Arc::clone(&self.receiver);
-            thread::Builder::new()
-                .name(format!("{}-{}", self.name, self.workers))
+            let mut builder =
+                thread::Builder::new().name(format!("{}-{}", self.name, self.workers));
+            if let Some(bytes) = self.stack_size {
+                builder = builder.stack_size(bytes);
+            }
+            builder
                 .spawn(move || loop {
                     let next = {
                         let receiver = receiver.lock().unwrap_or_else(|p| p.into_inner());
@@ -94,7 +106,7 @@ mod tests {
 
     #[test]
     fn sequential_requests_reuse_one_worker() {
-        let mut pool = ConnectionPool::new(64, "pool-reuse-test");
+        let mut pool = ConnectionPool::new(64, "pool-reuse-test").with_stack_size(16 * 1024 * 1024);
         let (done, responses) = mpsc::channel();
         let mut threads = HashSet::new();
         for _ in 0..1000 {

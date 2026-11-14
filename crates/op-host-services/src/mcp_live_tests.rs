@@ -49,6 +49,44 @@ fn make_live_token_is_nonempty_and_structured() {
 }
 
 #[test]
+fn live_tcp_accept_handles_repeated_requests_and_stop_wakes_idle_listener() {
+    use std::io::{Read, Write};
+
+    let mut server = McpLiveServer::start(0).expect("live server");
+    let address = std::net::SocketAddr::from(([127, 0, 0, 1], server.port()));
+    for id in 0..32 {
+        let mut socket = std::net::TcpStream::connect_timeout(&address, Duration::from_secs(2))
+            .expect("connect");
+        socket
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let body = format!(r#"{{"jsonrpc":"2.0","method":"ping","id":{id}}}"#);
+        write!(
+            socket,
+            "POST /mcp HTTP/1.1\r\nHost: {address}\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        )
+        .unwrap();
+        let mut response = String::new();
+        socket.read_to_string(&mut response).unwrap();
+        assert!(response.starts_with("HTTP/1.1 200 OK"), "{response}");
+        let body: serde_json::Value =
+            serde_json::from_str(response.split_once("\r\n\r\n").unwrap().1).unwrap();
+        assert_eq!(body["id"], id);
+        assert_eq!(body["result"]["_meta"]["mode"], "live");
+    }
+    server.stop();
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while std::net::TcpStream::connect_timeout(&address, Duration::from_millis(20)).is_ok() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "idle listener did not stop"
+        );
+        thread::sleep(Duration::from_millis(1));
+    }
+}
+
+#[test]
 fn snapshot_request_wakes_ui_event_loop_after_queueing() {
     let (req_tx, req_rx) = mpsc::channel();
     let wake_count = Arc::new(AtomicUsize::new(0));

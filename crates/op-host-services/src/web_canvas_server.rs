@@ -744,7 +744,7 @@ mod collab_routes;
 pub(crate) mod collab_state;
 mod connect_routes;
 mod connection;
-mod connection_pool;
+pub(crate) mod connection_pool;
 mod connection_authority;
 use connection_authority::ConnAuthority;
 mod connection_ai_routes;

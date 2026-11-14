@@ -8,7 +8,7 @@ use crate::mcp_serve::tool_catalog::McpToolCatalog;
 use crate::mcp_serve::tool_profile::McpAccessProfile;
 
 /// RAII decrement for the live-connection counter — see its use in the
-/// per-connection thread. `Drop` runs during normal exit AND panic unwind, so a
+/// per-connection job. `Drop` runs during normal exit AND panic unwind, so a
 /// panicking connection can't leak its reserved slot.
 pub(super) struct ConnGuard(Arc<AtomicUsize>);
 
@@ -31,8 +31,13 @@ pub(super) fn server_loop(
     // can't interleave. Stateless probes (`ping`/`initialize`) bypass it, so
     // `op`'s liveness probe is never blocked behind an in-flight write.
     let stateful_lock = Arc::new(Mutex::new(()));
-    // Bounds the number of in-flight connection threads.
+    // Bound accepted connections and grow reusable workers only to demand.
     let conn_count = Arc::new(AtomicUsize::new(0));
+    let mut workers = crate::web_canvas_server::connection_pool::ConnectionPool::new(
+        MAX_LIVE_CONNS,
+        "op-mcp-live-conn",
+    )
+    .with_stack_size(LIVE_CONN_STACK_SIZE);
     loop {
         match stop_rx.try_recv() {
             Ok(()) | Err(TryRecvError::Disconnected) => break,
@@ -40,6 +45,11 @@ pub(super) fn server_loop(
         }
         match listener.accept() {
             Ok((mut stream, _addr)) => {
+                // `stop` wakes accept with an empty connection. Retire before
+                // admitting that wake socket or starting another worker.
+                if !matches!(stop_rx.try_recv(), Err(TryRecvError::Empty)) {
+                    break;
+                }
                 if let Err(e) = stream.set_nonblocking(false) {
                     eprintln!("openpencil-desktop mcp: accepted stream blocking mode: {e}");
                     continue;
@@ -54,26 +64,24 @@ pub(super) fn server_loop(
                     );
                     continue;
                 }
-                // Handle each connection on its own thread so a long write
-                // (which waits on the UI thread) doesn't stall concurrent
-                // pings. Threads are short-lived and detached.
+                // Reuse bounded workers while retaining parallel probes and
+                // the endpoint's existing recursion-safe stack allowance.
                 conn_count.fetch_add(1, Ordering::AcqRel);
                 let req_tx = req_tx.clone();
                 let admission = Arc::clone(&admission);
                 let lock = Arc::clone(&stateful_lock);
                 let quit = Arc::clone(&quit_flag);
-                let conns = Arc::clone(&conn_count);
+                let guard = ConnGuard(Arc::clone(&conn_count));
                 let wake = Arc::clone(&wake_ui);
                 let identity = Arc::clone(&client_identity);
-                let spawned = thread::Builder::new()
-                    .name("op-mcp-live-conn".into())
-                    .stack_size(LIVE_CONN_STACK_SIZE)
-                    .spawn(move || {
+                let submitted = workers.submit(
+                    conn_count.load(Ordering::Acquire),
+                    Box::new(move || {
                         // RAII: decrement the live-connection count even if
                         // `serve_connection` panics. Without this, a panic would
                         // leak the slot, and after MAX_LIVE_CONNS panics the
                         // server would wedge into permanent load-shedding.
-                        let _conn_guard = ConnGuard(conns);
+                        let _conn_guard = guard;
                         let mut stream = stream;
                         let _ = stream.set_read_timeout(Some(UI_ACK_TIMEOUT));
                         let _ = stream.set_write_timeout(Some(UI_ACK_TIMEOUT));
@@ -93,11 +101,11 @@ pub(super) fn server_loop(
                                 &error_json(&e.to_string()),
                             );
                         }
-                    });
-                if spawned.is_err() {
-                    // The closure (and its `conns` clone) was dropped without
-                    // running — undo the count we reserved above.
-                    conn_count.fetch_sub(1, Ordering::AcqRel);
+                    }),
+                );
+                if let Err(error) = submitted {
+                    // Dropping a refused job releases its socket and guard.
+                    eprintln!("openpencil-desktop mcp: {error}");
                 }
             }
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
