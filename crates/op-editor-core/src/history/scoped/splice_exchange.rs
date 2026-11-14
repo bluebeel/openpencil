@@ -48,7 +48,7 @@ impl Catalog {
             });
         }
     }
-    fn matching(&self, key: &ParentKey) -> impl Iterator<Item = Anchors> + '_ {
+    fn matching<'a>(&'a self, key: &'a ParentKey) -> impl Iterator<Item = Anchors> + 'a {
         self.0
             .iter()
             .filter(move |record| &record.key == key)
