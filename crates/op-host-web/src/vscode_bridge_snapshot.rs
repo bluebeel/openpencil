@@ -93,6 +93,7 @@ mod tests {
                 pinned_style_guide: None,
                 share_recipe: None,
                 imported_from: None,
+                component_catalog: None,
             })
         );
     }

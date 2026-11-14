@@ -23,12 +23,33 @@ fn reserve(
 pub(super) fn apply(
     editor: &mut EditorState,
     command: &EditorCommand,
+    tool: &str,
     input: usize,
     budget: &mut budget::Budget,
     quota: &mut quota::Reservation,
     metrics: &metrics::Metrics,
     capture: &mut Option<CommandEditCapture>,
 ) -> Outcome {
+    if matches!(command, EditorCommand::Undo | EditorCommand::Redo) {
+        let result = editor.try_apply_captured_history(command.clone(), capture, |state, bytes| {
+            let ok = budget.reserve_history(state, command, input, bytes).is_ok();
+            reserve(budget, quota, metrics, ok)
+        });
+        return result.map_or(Outcome::Isolated, Outcome::Applied);
+    }
+    if let Some(result) =
+        super::super::cohort_generation::apply(editor, command, tool, capture, |state, extra| {
+            let ok = budget
+                .reserve_generated(state, command, input, extra)
+                .is_ok();
+            reserve(budget, quota, metrics, ok)
+        })
+    {
+        return match result {
+            super::super::cohort_generation::Outcome::Applied(ok) => Outcome::Applied(ok),
+            super::super::cohort_generation::Outcome::Isolated => Outcome::Isolated,
+        };
+    }
     let mut attempted = false;
     if let Some(applied) =
         editor.try_apply_captured_auxiliary(command.clone(), capture, |state, bytes, components| {
@@ -67,9 +88,10 @@ pub(super) fn apply(
     };
     debug_assert!(checkpoint.is_target_only());
     *capture = Some(checkpoint);
-    Outcome::Applied(editor.apply_command_edit_then(
-        command.clone(),
-        capture.as_mut().unwrap(),
-        |_| {},
-    ))
+    Outcome::Applied(
+        editor.apply_command_edit_without_document_repairs(
+            command.clone(),
+            capture.as_mut().unwrap(),
+        ),
+    )
 }

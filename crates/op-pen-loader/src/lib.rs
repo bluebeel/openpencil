@@ -88,6 +88,7 @@ pub(crate) fn current_font_generation() -> u64 {
 pub(crate) fn current_font_generation() -> u64 {
     0
 }
+mod gradient_geometry;
 mod style_payload;
 mod text_style;
 mod widget_payload;
@@ -133,7 +134,7 @@ pub use adapter::{
 };
 pub use editor_meta::{
     apply_editor_meta, apply_editor_meta_or_legacy_fallback, extract_editor_meta,
-    extract_editor_meta_with_report, write_source_with_current_schema,
+    extract_editor_meta_checked, extract_editor_meta_with_report, write_source_with_current_schema,
     write_source_with_editor_meta, EditorMeta, EditorMetaExtraction,
 };
 pub use editor_meta_error::EditorMetaWriteError;

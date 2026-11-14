@@ -144,6 +144,8 @@ pub struct ShaderUniformPayload {
 /// visible colour.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ShaderPayload {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gradient: Option<Box<jian_ops_schema::style::GradientPaint>>,
     pub sksl: String,
     #[serde(default)]
     pub uniforms: Vec<ShaderUniformPayload>,

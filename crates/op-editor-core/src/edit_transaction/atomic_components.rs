@@ -21,6 +21,15 @@ pub(super) fn preserves(state: &EditorState, command: &C, targets: Option<&[Targ
     {
         return false;
     }
+    if matches!(
+        command,
+        C::DuplicateSelected { .. } | C::PasteClipboard { .. }
+    ) {
+        return crate::mutators::clone_splice::catalog_preserving(state, command);
+    }
+    if matches!(command, C::DeleteSelected | C::CutSelected) {
+        return crate::history::PendingScopedSnapshot::deletion_preserves_components(state);
+    }
     let Some([spec]) = targets else {
         return false;
     };
@@ -31,59 +40,85 @@ pub(super) fn preserves(state: &EditorState, command: &C, targets: Option<&[Targ
         return false;
     }
     match command {
-        // build_leaf_node produces no registered/reusable definition; its ID
-        // is fresh across the complete document. A document-backed parent
-        // resolves changed children from canonical Doc, not its catalog header.
-        C::InsertNode { .. } => splice.remove == 0 && splice.insert_limit == 1,
-        C::DeleteNode { .. } => {
-            let mut nodes = match &spec.scope {
-                Scope::Root => state.doc.children.as_slice(),
-                Scope::Page { index, id } => {
-                    let Some(page) = state.doc.pages.as_ref().and_then(|pages| pages.get(*index))
-                    else {
-                        return false;
-                    };
-                    if page.id != *id {
-                        return false;
-                    }
-                    page.children.as_slice()
-                }
-            };
-            for index in spec.path.iter() {
-                let Some(node) = nodes.get(*index) else {
-                    return false;
-                };
-                nodes = node.children().map_or(&[], Vec::as_slice);
-            }
-            let Some(end) = splice.index.checked_add(splice.remove) else {
-                return false;
-            };
-            let Some(removed) = nodes.get(splice.index..end) else {
-                return false;
-            };
-            let registered: HashSet<_> = state
-                .components
-                .components
-                .iter()
-                .map(|component| component.id.as_str())
-                .collect();
-            let mut stack = vec![removed.iter()];
-            while let Some(siblings) = stack.last_mut() {
-                if let Some(node) = siblings.next() {
-                    if registered.contains(node.id_str())
-                        || matches!(node, PenNode::Frame(frame) if frame.reusable == Some(true))
-                    {
-                        return false;
-                    }
-                    if let Some(children) = node.children() {
-                        stack.push(children.iter());
-                    }
-                } else {
-                    stack.pop();
-                }
-            }
-            true
+        // Factory leaves never introduce a reusable definition. Document-backed
+        // parents resolve their current children from the complete canonical Doc.
+        C::InsertNode { .. } | C::BatchInsert { .. } => splice.remove == 0,
+        C::InsertSubtree { nodes, .. }
+        | C::InsertAuthoredSubtree { nodes, .. }
+        | C::InsertAuthoredSubtreePreservingRoots { nodes, .. } => {
+            no_definitions(nodes) && removed_preserve_catalog(state, spec)
         }
+        C::DeleteNode { .. } => removed_preserve_catalog(state, spec),
         _ => false,
     }
+}
+fn no_definitions(nodes: &[PenNode]) -> bool {
+    let mut pending = vec![nodes.iter()];
+    while let Some(siblings) = pending.last_mut() {
+        if let Some(node) = siblings.next() {
+            if matches!(node,PenNode::Frame(frame) if frame.reusable==Some(true)) {
+                return false;
+            }
+            if let Some(children) = node.children() {
+                pending.push(children.iter());
+            }
+        } else {
+            pending.pop();
+        }
+    }
+    true
+}
+fn removed_preserve_catalog(state: &EditorState, spec: &TargetSpec) -> bool {
+    let Some(splice) = &spec.splice else {
+        return false;
+    };
+    let mut nodes = match &spec.scope {
+        Scope::Root => state.doc.children.as_slice(),
+        Scope::Page { index, id } => {
+            let Some(page) = state.doc.pages.as_ref().and_then(|pages| pages.get(*index)) else {
+                return false;
+            };
+            if page.id != *id {
+                return false;
+            }
+            page.children.as_slice()
+        }
+    };
+    for at in spec.path.iter() {
+        let Some(node) = nodes.get(*at) else {
+            return false;
+        };
+        nodes = node.children().map_or(&[], Vec::as_slice);
+    }
+    let Some(end) = splice.index.checked_add(splice.remove) else {
+        return false;
+    };
+    let Some(removed) = nodes.get(splice.index..end) else {
+        return false;
+    };
+    if removed.is_empty() {
+        return true;
+    }
+    let registered: HashSet<_> = state
+        .components
+        .components
+        .iter()
+        .map(|component| component.id.as_str())
+        .collect();
+    let mut pending = vec![removed.iter()];
+    while let Some(siblings) = pending.last_mut() {
+        if let Some(node) = siblings.next() {
+            if registered.contains(node.id_str())
+                || matches!(node,PenNode::Frame(frame) if frame.reusable==Some(true))
+            {
+                return false;
+            }
+            if let Some(children) = node.children() {
+                pending.push(children.iter());
+            }
+        } else {
+            pending.pop();
+        }
+    }
+    true
 }

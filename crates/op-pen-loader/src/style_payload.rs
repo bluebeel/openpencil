@@ -269,6 +269,9 @@ fn first_gradient(fills: Option<&[PenFill]>) -> Option<GradientPayload> {
 pub(crate) fn gradient_payload(fill: &PenFill) -> Option<GradientPayload> {
     match fill {
         PenFill::LinearGradient(body) => {
+            if body.geometry.is_some() {
+                return None;
+            }
             let stops = gradient_stops(&body.stops)?;
             Some(GradientPayload::Linear {
                 angle_deg: (body.angle.unwrap_or(0.0) as f32),
@@ -277,6 +280,9 @@ pub(crate) fn gradient_payload(fill: &PenFill) -> Option<GradientPayload> {
             })
         }
         PenFill::RadialGradient(body) => {
+            if body.geometry.is_some() {
+                return None;
+            }
             let stops = gradient_stops(&body.stops)?;
             Some(GradientPayload::Radial {
                 cx: (body.cx.unwrap_or(0.5) as f32).clamp(0.0, 1.0),
@@ -310,6 +316,9 @@ fn first_shader(fills: Option<&[PenFill]>) -> Option<ShaderPayload> {
 
 /// Resolve one canonical shader layer without projecting away siblings.
 pub(crate) fn shader_payload(fill: &PenFill) -> Option<ShaderPayload> {
+    if let Some(gradient) = crate::gradient_geometry::paint(fill) {
+        return crate::gradient_geometry::shader(gradient);
+    }
     let PenFill::Shader(body) = fill else {
         return None;
     };
@@ -365,6 +374,7 @@ pub(crate) fn shader_payload(fill: &PenFill) -> Option<ShaderPayload> {
         }
     }
     Some(ShaderPayload {
+        gradient: None,
         sksl,
         uniforms,
         opacity: (body.opacity.unwrap_or(1.0) as f32).clamp(0.0, 1.0),

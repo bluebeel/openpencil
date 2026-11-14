@@ -9,7 +9,11 @@ impl ScopedEditorSnapshot {
         state: &EditorState,
         visitor: &mut impl FnMut(&PenNode, &PenNode),
     ) -> bool {
-        if self.header.is_some()
+        if self
+            .auxiliary_patches
+            .iter()
+            .any(super::auxiliary::Patch::changes_document_outside_nodes)
+            || self.header.is_some()
             || !self.page_headers.is_empty()
             || self.validate_shape(state).is_err()
         {

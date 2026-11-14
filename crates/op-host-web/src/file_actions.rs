@@ -291,7 +291,9 @@ pub fn ingest_op_source(
     src: &str,
     previous: &EditorState,
 ) -> Result<IngestedDoc, DocumentIngestError> {
-    let editor_meta = op_pen_loader::extract_editor_meta(src);
+    let editor_meta = op_pen_loader::extract_editor_meta_checked(src)
+        .map_err(|error| DocumentIngestError::LoadCanonical(error.to_string()))?
+        .map(|value| value.meta);
     let loaded = op_pen_loader::load_canonical(src)
         .map_err(|e| DocumentIngestError::LoadCanonical(e.to_string()))?;
     let warnings = loaded.warnings.iter().map(|w| format!("{w:?}")).collect();

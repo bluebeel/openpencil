@@ -83,6 +83,7 @@ fn convert_decoded(name: String, bytes: Vec<u8>) -> Result<String> {
             pinned_style_guide: None,
             share_recipe: None,
             imported_from: None,
+            component_catalog: None,
         },
     )
     .map_err(|error| FigmaConvertError::Encode {

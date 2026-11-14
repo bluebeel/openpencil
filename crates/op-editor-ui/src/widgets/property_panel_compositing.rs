@@ -100,7 +100,7 @@ fn mask_key(mode: Option<MaskType>) -> &'static str {
         None => "maskType.none",
         Some(MaskType::Alpha) => "maskType.alpha",
         Some(MaskType::Vector) => "maskType.vector",
-        Some(MaskType::Luminance) => "maskType.luminance",
+        Some(MaskType::Luminance | MaskType::LuminanceLinear) => "maskType.luminance",
     }
 }
 

@@ -7,16 +7,61 @@ use super::*;
 /// `stroke-width` (inline `style="..."` takes precedence over the
 /// matching attribute, matching `extractStyleOrAttr` in TS).
 pub(super) fn merge_style_ctx(parent: &StyleCtx, attrs: &[(String, String)]) -> StyleCtx {
-    StyleCtx {
-        fill: extract_style_or_attr(attrs, "fill").or_else(|| parent.fill.clone()),
-        stroke: extract_style_or_attr(attrs, "stroke").or_else(|| parent.stroke.clone()),
-        stroke_width: extract_style_or_attr(attrs, "stroke-width")
-            .and_then(|s| s.trim().parse::<f64>().ok())
-            .unwrap_or(parent.stroke_width),
-        fill_rule: extract_style_or_attr(attrs, "fill-rule")
+    let value = |name| extract_style_or_attr(attrs, name);
+    let number = |name: &str, default: f64| {
+        value(name)
             .as_deref()
-            .and_then(parse_svg_fill_rule)
-            .or(parent.fill_rule),
+            .and_then(svg_number)
+            .unwrap_or(default)
+    };
+    StyleCtx {
+        fill: value("fill")
+            .filter(|v| v != "inherit")
+            .or_else(|| parent.fill.clone()),
+        stroke: value("stroke")
+            .filter(|v| v != "inherit")
+            .or_else(|| parent.stroke.clone()),
+        stroke_width: number("stroke-width", parent.stroke_width).max(0.0),
+        current_color: value("color")
+            .filter(|v| v != "inherit")
+            .unwrap_or_else(|| parent.current_color.clone()),
+        clip_mode: parent.clip_mode,
+        fill_rule: value(if parent.clip_mode {
+            "clip-rule"
+        } else {
+            "fill-rule"
+        })
+        .as_deref()
+        .and_then(parse_svg_fill_rule)
+        .or(parent.fill_rule),
+        stroke_cap: match value("stroke-linecap").as_deref() {
+            Some("butt") => kurbo::Cap::Butt,
+            Some("round") => kurbo::Cap::Round,
+            Some("square") => kurbo::Cap::Square,
+            _ => parent.stroke_cap,
+        },
+        stroke_join: match value("stroke-linejoin").as_deref() {
+            Some("miter") => kurbo::Join::Miter,
+            Some("round") => kurbo::Join::Round,
+            Some("bevel") => kurbo::Join::Bevel,
+            _ => parent.stroke_join,
+        },
+        stroke_miter: number("stroke-miterlimit", parent.stroke_miter).max(1.0),
+        stroke_dashes: value("stroke-dasharray")
+            .as_deref()
+            .and_then(svg_dash_array)
+            .unwrap_or_else(|| parent.stroke_dashes.clone()),
+        stroke_dash_offset: number("stroke-dashoffset", parent.stroke_dash_offset),
+        fill_opacity: value("fill-opacity")
+            .as_deref()
+            .and_then(svg_opacity)
+            .unwrap_or(parent.fill_opacity)
+            .clamp(0.0, 1.0),
+        stroke_opacity: value("stroke-opacity")
+            .as_deref()
+            .and_then(svg_opacity)
+            .unwrap_or(parent.stroke_opacity)
+            .clamp(0.0, 1.0),
     }
 }
 
@@ -75,14 +120,36 @@ pub(super) fn resolve_svg_stroke(
     if width <= 0.0 {
         return None;
     }
+    if !width.is_finite()
+        || !(ctx.stroke_dash_offset * scale).is_finite()
+        || ctx
+            .stroke_dashes
+            .iter()
+            .any(|dash| !(dash * scale).is_finite())
+    {
+        tracing::warn!("SVG stroke scale produces non-finite paint parameters");
+        return None;
+    }
     Some(PenStroke::from(jian_ops_schema::style::PenStrokeBody {
         thickness: StrokeThickness::Uniform(width),
         align: None,
-        join: None,
-        cap: None,
-        dash_pattern: None,
-        dash_offset: None,
-        fill: Some(vec![solid_fill(&hex)]),
+        join: Some(match ctx.stroke_join {
+            kurbo::Join::Miter => jian_ops_schema::style::StrokeJoin::Miter,
+            kurbo::Join::Round => jian_ops_schema::style::StrokeJoin::Round,
+            kurbo::Join::Bevel => jian_ops_schema::style::StrokeJoin::Bevel,
+        }),
+        cap: Some(match ctx.stroke_cap {
+            kurbo::Cap::Butt => jian_ops_schema::style::StrokeCap::None,
+            kurbo::Cap::Round => jian_ops_schema::style::StrokeCap::Round,
+            kurbo::Cap::Square => jian_ops_schema::style::StrokeCap::Square,
+        }),
+        dash_pattern: if ctx.stroke_dashes.is_empty() {
+            None
+        } else {
+            Some(ctx.stroke_dashes.iter().map(|v| v * scale).collect())
+        },
+        dash_offset: Some(ctx.stroke_dash_offset * scale),
+        fill: Some(vec![solid_fill_opacity(&hex, ctx.stroke_opacity)]),
     }))
 }
 
@@ -142,46 +209,59 @@ pub(super) fn clear_node_fill(node: &mut PenNode) {
     }
 }
 
-/// Parse an SVG `fill` value into a `#rrggbb` hex string. `none` /
-/// `transparent` and unparseable values return `None` (no fill).
+/// Preserve functional RGB and alpha without packing imported float colors.
+/// Invalid colors/none return no paint; transparent remains an explicit color.
 pub(super) fn parse_svg_color(raw: &str) -> Option<String> {
-    let v = raw.trim().to_ascii_lowercase();
-    if v.is_empty() || v == "none" || v == "transparent" {
+    colors::canonical_css(raw)
+}
+
+pub(super) fn svg_number(raw: &str) -> Option<f64> {
+    raw.trim()
+        .trim_end_matches("px")
+        .parse::<f64>()
+        .ok()
+        .filter(|v| v.is_finite())
+}
+pub(super) fn svg_opacity(raw: &str) -> Option<f64> {
+    if let Some(raw) = raw.trim().strip_suffix('%') {
+        svg_number(raw).map(|v| v * 0.01)
+    } else {
+        svg_number(raw)
+    }
+}
+
+fn svg_dash_array(raw: &str) -> Option<Vec<f64>> {
+    if raw.trim() == "none" {
+        return Some(Vec::new());
+    }
+    let mut values: Vec<f64> = svgtypes::NumberListParser::from(raw)
+        .collect::<Result<_, _>>()
+        .ok()?;
+    if values.is_empty() || values.iter().any(|v| !v.is_finite() || *v < 0.0) {
         return None;
     }
-    if let Some(hex) = v.strip_prefix('#') {
-        return match hex.len() {
-            3 => {
-                let mut out = String::with_capacity(7);
-                out.push('#');
-                for ch in hex.chars() {
-                    out.push(ch);
-                    out.push(ch);
-                }
-                Some(out)
-            }
-            6 | 8 => Some(format!("#{}", &hex[..6])),
-            _ => None,
-        };
+    if values.iter().all(|v| *v == 0.0) {
+        return Some(Vec::new());
     }
-    // Minimal named-colour table — the common SVG presentation names.
-    let named = match v.as_str() {
-        "black" => "#000000",
-        "white" => "#ffffff",
-        "red" => "#ff0000",
-        "green" => "#008000",
-        "lime" => "#00ff00",
-        "blue" => "#0000ff",
-        "yellow" => "#ffff00",
-        "cyan" | "aqua" => "#00ffff",
-        "magenta" | "fuchsia" => "#ff00ff",
-        "gray" | "grey" => "#808080",
-        "silver" => "#c0c0c0",
-        "orange" => "#ffa500",
-        "purple" => "#800080",
-        "navy" => "#000080",
-        "teal" => "#008080",
-        _ => return None,
-    };
-    Some(named.to_string())
+    if values.len() % 2 != 0 {
+        values.extend_from_within(..);
+    }
+    Some(values)
+}
+
+pub(super) fn solid_fill_opacity(hex: &str, opacity: f64) -> PenFill {
+    let mut fill = solid_fill(hex);
+    if let PenFill::Solid(body) = &mut fill {
+        body.opacity = if opacity == 1.0 { None } else { Some(opacity) };
+    }
+    fill
+}
+
+pub(super) fn svg_node_opacity(
+    attrs: &[(String, String)],
+) -> Option<jian_ops_schema::node::base::NumberOrExpression> {
+    extract_style_or_attr(attrs, "opacity")
+        .as_deref()
+        .and_then(svg_opacity)
+        .map(|v| jian_ops_schema::node::base::NumberOrExpression::Number(v.clamp(0.0, 1.0)))
 }

@@ -161,12 +161,10 @@ pub(super) fn build<'a>(state: &'a EditorState, command: &'a C) -> Option<Plan<'
                 .ok()?;
         add(&mut bytes, payload)?;
     }
-    let capture_components = !matches!(&value, Borrowed::Component { .. })
-        && !state
-            .components
-            .components
-            .iter()
-            .all(|component| state.components.is_document_backed(&component.id));
+    // Every admitted auxiliary operation is a closed key/name writer. Variables
+    // and page names never mutate owned/external prototypes; public arbitrary
+    // callbacks do not enter this no-repair constructor.
+    let capture_components = false;
     Some(Plan {
         value,
         scopes,

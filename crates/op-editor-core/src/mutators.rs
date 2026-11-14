@@ -100,9 +100,7 @@ impl EditorState {
         if let Some(node) = find_node(self.active_children(), id) {
             return node_editable(node);
         }
-        let Some((ref_id, _child_id)) =
-            crate::instance_override::split_instance_child_anchor(id, &self.doc)
-        else {
+        let Some((ref_id, _child_id)) = self.split_instance_anchor(id) else {
             return false;
         };
         find_node(self.active_children(), &ref_id)
@@ -161,10 +159,10 @@ impl EditorState {
             return false;
         }
         let children = self.active_children();
-        self.selection.set.iter().any(|id| {
-            find_node(children, id).is_some()
-                || crate::instance_override::split_instance_child_anchor(id, &self.doc).is_some()
-        })
+        self.selection
+            .set
+            .iter()
+            .any(|id| find_node(children, id).is_some() || self.split_instance_anchor(id).is_some())
     }
 
     /// True when a selection inspector or selection-independent Code panel

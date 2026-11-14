@@ -244,6 +244,34 @@ impl Budget {
     ) -> Result<(), Refusal> {
         self.reserve_inner(state, command, input, None, None)
     }
+    pub(crate) fn reserve_history(
+        &mut self,
+        state: &EditorState,
+        command: &C,
+        input: usize,
+        bytes: usize,
+    ) -> Result<(), Refusal> {
+        // A proved actor-selective exchange does not swap the whole catalog.
+        // Exact Catalog auxiliary patches are already in the receipt bound;
+        // old shared roots and every original branch are in the retained union.
+        self.reserve_inner(state, command, input, None, Some((bytes, false)))
+    }
+    pub(crate) fn reserve_generated(
+        &mut self,
+        state: &EditorState,
+        command: &C,
+        input: usize,
+        extra: usize,
+    ) -> Result<(), Refusal> {
+        let bytes = state
+            .forecast_structural_command_edit(command)
+            .ok_or(Refusal::Target)?
+            .checked_add(extra)
+            .ok_or(Refusal::CohortCapacity)?;
+        // Cleanup may change generated types/catalog-derived state. Preserve
+        // one complete original catalog instead of reusing a weaker leaf proof.
+        self.reserve_inner(state, command, input, None, Some((bytes, true)))
+    }
     pub(crate) fn reserve_metadata_target(
         &mut self,
         state: &EditorState,
@@ -327,7 +355,12 @@ impl Budget {
         // This exact borrowed target came from Core's lexical metadata path.
         // Definition/external/prototype and structural captures stay complete.
         let preserves_components = known_auxiliary.map_or_else(
-            || known_target.is_some_and(|node| state.metadata_target_preserves_components(node)),
+            || {
+                known_target.map_or_else(
+                    || state.command_edit_preserves_components(command),
+                    |node| state.metadata_target_preserves_components(node),
+                )
+            },
             |(_, captures)| !captures,
         );
         let components = if preserves_components {

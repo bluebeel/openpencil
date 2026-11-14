@@ -50,6 +50,8 @@ use op_editor_core::web_sync::{self, WebSyncClient};
 
 use crate::live_sync;
 use crate::repaint_ctx::RepaintContext;
+#[path = "live_sync_catalog.rs"]
+mod catalog;
 
 /// Pull cadence (version probe). TS gets SSE pushes; one tick of latency.
 const POLL_INTERVAL_MS: i32 = 400;
@@ -100,6 +102,7 @@ impl Write for CappedJsonWriter {
 /// Serialize directly into a capped buffer. A giant Figma document therefore
 /// never creates a giant temporary `String` merely to discover that live sync
 /// cannot send it.
+#[cfg(test)]
 fn serialize_sync_document(doc: &op_editor_core::PenDocument) -> SyncDocumentJson {
     let mut writer = CappedJsonWriter::new();
     if serde_json::to_writer(&mut writer, doc).is_err() {
@@ -379,13 +382,14 @@ fn apply_document_response<C: RepaintContext + 'static>(
         .ok()
         .and_then(|mut s| {
             s.client
-                .sync_with_editor_meta(
+                .sync_with_component_catalog(
                     body,
                     |doc,
                      _version,
                      active_page_index,
                      preserve_authored_geometry,
-                     wire_scenario| {
+                     wire_scenario,
+                     component_catalog| {
                         let host = inner_ref.host_mut();
                         host.replace_document_from_sync(doc, undoable);
                         // A daemon new enough to send `scenario` is the
@@ -412,6 +416,7 @@ fn apply_document_response<C: RepaintContext + 'static>(
                                 pinned_style_guide,
                                 share_recipe,
                                 imported_from,
+                                component_catalog,
                             },
                         );
                         inner_ref.repaint().is_ok()
@@ -431,7 +436,7 @@ fn apply_document_response<C: RepaintContext + 'static>(
         let state = inner_ref.host().editor_state();
         let active_page_index = state.ui.active_page_index;
         let preserve_authored_geometry = state.editor_ui.preserve_authored_geometry;
-        let serialized = serialize_sync_document(&state.doc);
+        let serialized = catalog::serialize_sync_state(state);
         if let Ok(mut s) = sync.try_borrow_mut() {
             // Always baseline the two scalar fields. Oversized documents skip
             // their byte hash, but must not look metadata-dirty forever.
@@ -511,7 +516,7 @@ fn push_document_if_changed<C: RepaintContext + 'static>(
         if sync.borrow().oversize_identity == Some(oversize_identity) {
             return;
         }
-        let json = match serialize_sync_document(&b.host().editor_state().doc) {
+        let json = match catalog::serialize_sync_state(b.host().editor_state()) {
             SyncDocumentJson::Ready(json) => json,
             SyncDocumentJson::Oversize => {
                 sync.borrow_mut().oversize_identity = Some(oversize_identity);

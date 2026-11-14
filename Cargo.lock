@@ -4427,6 +4427,7 @@ dependencies = [
  "op-util",
  "serde",
  "serde_json",
+ "serde_stacker",
  "svgtypes",
  "tracing",
 ]

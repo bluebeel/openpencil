@@ -38,6 +38,7 @@ pub struct WebSyncDocument {
     /// means "unknown", not "no scenario", so appliers keep their current
     /// value rather than clearing it.
     pub scenario: Option<crate::scene_template_catalog::TemplateScene>,
+    pub component_catalog: Option<crate::ComponentCatalog>,
 }
 
 #[derive(Debug, Default, serde::Deserialize)]
@@ -151,6 +152,13 @@ impl WebSyncClient {
             .get("editorMeta")
             .and_then(|meta| serde_json::from_value::<WireEditorMeta>(meta.clone()).ok())
             .unwrap_or_default();
+        let component_catalog = document
+            .get("editorMeta")
+            .and_then(|meta| meta.get("componentCatalog"))
+            .filter(|value| !value.is_null())
+            .map(|value| serde_json::from_value::<crate::ComponentCatalog>(value.clone()))
+            .transpose()
+            .map_err(|error| WebSyncError::DocumentParse(error.to_string()))?;
         let active_page_index = value
             .get("activePageIndex")
             .and_then(serde_json::Value::as_u64)
@@ -179,6 +187,7 @@ impl WebSyncClient {
             active_page_index,
             preserve_authored_geometry,
             scenario,
+            component_catalog,
         }))
     }
 
@@ -237,6 +246,30 @@ impl WebSyncClient {
             Option<crate::scene_template_catalog::TemplateScene>,
         ) -> bool,
     {
+        self.sync_with_component_catalog(
+            body,
+            |doc, version, page, preserve, scenario, _catalog| {
+                apply(doc, version, page, preserve, scenario)
+            },
+        )
+    }
+
+    /// Catalog-aware additive companion; existing callbacks stay compatible.
+    pub fn sync_with_component_catalog<F>(
+        &mut self,
+        body: &str,
+        apply: F,
+    ) -> Result<bool, WebSyncError>
+    where
+        F: FnOnce(
+            PenDocument,
+            u64,
+            usize,
+            bool,
+            Option<crate::scene_template_catalog::TemplateScene>,
+            Option<crate::ComponentCatalog>,
+        ) -> bool,
+    {
         match self.next_document_with_metadata(body)? {
             Some(next) => {
                 let version = next.version;
@@ -247,6 +280,7 @@ impl WebSyncClient {
                     next.active_page_index,
                     next.preserve_authored_geometry,
                     next.scenario,
+                    next.component_catalog,
                 ) {
                     self.mark_applied(version);
                     self.change_authority = change_cursor.as_deref().and_then(|cursor| {

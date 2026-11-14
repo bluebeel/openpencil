@@ -80,6 +80,7 @@ pub struct EditorState {
     /// Process-local numeric allocation ownership; deliberately not persisted.
     pub(crate) runtime_node_high_water: u64,
     pub(crate) runtime_allocator_depth: u32,
+    pub(crate) command_id_seed: crate::command_id_scope::sequence::SeedOverride,
     /// Monotonic document identity. Bumped by every `replace_document*`
     /// (open / revert / sync replace), so `(generation, revision)` uniquely
     /// names a state; a save-ack from a previous generation must be dropped.
@@ -165,6 +166,7 @@ impl EditorState {
             revision_counter: 0,
             runtime_node_high_water: numeric_high_water,
             runtime_allocator_depth: 0,
+            command_id_seed: Default::default(),
             document_generation: 0,
             derived_cache_identity: Default::default(),
             history_push_count: 0,
@@ -215,6 +217,7 @@ impl EditorState {
     /// layers/guides/in-progress property edits, all keyed by old node ids) are
     /// cleared via [`EditorUiState::clear_document_derived`].
     pub fn replace_document(&mut self, doc: jian_ops_schema::PenDocument) {
+        self.invalidate_command_id_sequence();
         self.components = ComponentLibrary::from_document(&doc);
         let old_doc = std::mem::replace(&mut self.doc, doc);
         jian_ops_schema::image_thumbs::activate_for_document(&self.doc);

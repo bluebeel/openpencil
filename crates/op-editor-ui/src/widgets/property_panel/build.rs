@@ -150,16 +150,11 @@ impl PropertyPanel {
             // overrides → instance props. A virtual child resolves to
             // the effective component child plus descendants[childId].
             // A dangling Ref falls back to the raw node.
-            let display = match authored_node {
-                Some(node) => op_editor_core::resolve_instance_display_node(&state.doc, node),
-                None => op_editor_core::resolve_instance_display_node_for_anchor(
-                    &state.doc,
-                    &state.selection.anchor,
-                ),
-            };
+            let display = state.instance_display_header(&state.selection.anchor);
             let is_instance = matches!(authored_node, Some(jian_ops_schema::node::PenNode::Ref(_)));
-            let display_node = display.or_else(|| authored_node.cloned())?;
-            let node = &display_node;
+            // Ordinary selections remain borrowed; the inspector never needs a
+            // clone of the selected container's complete descendant forest.
+            let node = display.as_ref().or(authored_node)?;
             let fill_type = op_editor_core::first_fill_type(node);
             let variable_name = |raw: Option<&str>| {
                 raw.and_then(|value| value.strip_prefix('$'))

@@ -121,14 +121,37 @@ pub fn merge_library_src_into_state(
     state: &mut EditorState,
     src: &str,
 ) -> Result<LibraryMergeReport, LibraryMergeError> {
+    let metadata =
+        crate::extract_editor_meta_checked(src).map_err(|e| LibraryMergeError::Parse {
+            error: e.to_string(),
+        })?;
     let loaded = load_canonical(src).map_err(|e| LibraryMergeError::Parse {
         error: e.to_string(),
     })?;
     let lib_doc = loaded.value;
 
     // Harvest reusable masters from the library document (top-level + pages).
-    let library = ComponentLibrary::from_document(&lib_doc);
+    let library = match metadata.and_then(|value| value.meta.component_catalog) {
+        Some(catalog) => {
+            catalog
+                .into_library(&lib_doc)
+                .map_err(|error| LibraryMergeError::Parse {
+                    error: error.to_string(),
+                })?
+        }
+        None => ComponentLibrary::from_document(&lib_doc),
+    };
+    let existing: std::collections::HashSet<_> = state
+        .components
+        .components
+        .iter()
+        .map(|component| component.id.clone())
+        .collect();
 
+    let catalog_added = library
+        .components
+        .iter()
+        .any(|component| !existing.contains(&component.id));
     let mut report = LibraryMergeReport::default();
 
     // 1. Append the master frames onto a dedicated, hidden `Components`
@@ -169,10 +192,19 @@ pub fn merge_library_src_into_state(
 
     // 4. Rebuild the runtime component registry off the merged document so the
     //    generator's available-components manifest sees the new masters now.
-    state.components = ComponentLibrary::from_document(&state.doc);
+    state
+        .components
+        .rebuild_from_document_preserving_catalog(&state.doc);
+    state
+        .components
+        .merge_imported_catalog(library, &state.doc, &existing);
     report.component_count = state.components.len();
 
-    if report.masters_added > 0 || report.variables_added > 0 || report.themes_added > 0 {
+    if catalog_added
+        || report.masters_added > 0
+        || report.variables_added > 0
+        || report.themes_added > 0
+    {
         state.mark_document_changed();
     }
 

@@ -48,7 +48,7 @@ impl<'a> Iterator for DocumentNodes<'a> {
 /// A lookup pass advances at most once through the document. Early targets
 /// avoid indexing unrelated later pages; late/missing targets still cost only
 /// one complete traversal, with first-ID duplicate semantics unchanged.
-pub(super) struct NodeLookup<'a> {
+pub(crate) struct NodeLookup<'a> {
     document: &'a PenDocument,
     components: Option<&'a ComponentLibrary>,
     component_by_id: HashMap<&'a str, &'a Component>,
@@ -57,7 +57,7 @@ pub(super) struct NodeLookup<'a> {
     by_id: RefCell<HashMap<&'a str, &'a PenNode>>,
 }
 impl<'a> NodeLookup<'a> {
-    pub(super) fn from_document(doc: &'a PenDocument) -> Self {
+    pub(crate) fn from_document(doc: &'a PenDocument) -> Self {
         Self {
             document: doc,
             components: None,
@@ -67,7 +67,7 @@ impl<'a> NodeLookup<'a> {
             by_id: RefCell::new(HashMap::new()),
         }
     }
-    pub(super) fn from_components_with_document_fallback(
+    pub(crate) fn from_components_with_document_fallback(
         components: &'a ComponentLibrary,
         document: &'a PenDocument,
     ) -> Self {
@@ -87,7 +87,7 @@ impl<'a> NodeLookup<'a> {
         self.by_id.borrow().len()
     }
 
-    pub(super) fn find(&self, id: &str) -> Option<&'a PenNode> {
+    pub(crate) fn find(&self, id: &str) -> Option<&'a PenNode> {
         // Registry precedence must not be lost when an earlier document scan
         // happened to encounter a different canonical node with the same id.
         if let Some(&component) = self.component_by_id.get(id) {
@@ -111,6 +111,10 @@ impl<'a> NodeLookup<'a> {
                 return root;
             }
         }
+        self.find_authored(id)
+    }
+    /// Canonical identity lookup must ignore a same-id catalog prototype.
+    pub(crate) fn find_authored(&self, id: &str) -> Option<&'a PenNode> {
         if let Some(node) = self.by_id.borrow().get(id).copied() {
             return Some(node);
         }

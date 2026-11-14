@@ -186,3 +186,39 @@ impl PendingDeletion {
         Ok(())
     }
 }
+
+/// Every possible selected canonical subtree is free of catalog definitions.
+/// Ambiguous/virtual mutation routes are still rejected by the real planner.
+pub(super) fn catalog_preserving(state: &EditorState) -> bool {
+    let registered: std::collections::HashSet<_> = state
+        .components
+        .components
+        .iter()
+        .map(|component| component.id.as_str())
+        .collect();
+    let selected: std::collections::HashSet<_> =
+        state.selection.set.iter().map(|id| id.as_str()).collect();
+    let mut pending = vec![state.active_children().iter()];
+    while let Some(siblings) = pending.last_mut() {
+        if let Some(node) = siblings.next() {
+            if selected.contains(node.id_str()) {
+                let mut subtree = vec![node];
+                while let Some(node) = subtree.pop() {
+                    if registered.contains(node.id_str())
+                        || matches!(node,PenNode::Frame(frame) if frame.reusable==Some(true))
+                    {
+                        return false;
+                    }
+                    if let Some(children) = node.children() {
+                        subtree.extend(children);
+                    }
+                }
+            } else if let Some(children) = node.children() {
+                pending.push(children.iter());
+            }
+        } else {
+            pending.pop();
+        }
+    }
+    true
+}

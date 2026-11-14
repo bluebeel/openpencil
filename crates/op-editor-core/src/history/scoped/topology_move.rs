@@ -209,6 +209,17 @@ impl MovePatch {
         reorders.rebase(&self.scope, &mut self.from.path);
         reorders.rebase(&self.scope, &mut self.to.path);
     }
+    pub(super) fn cohort_bound(
+        &self,
+        doc: &PenDocument,
+        index: &super::identity::Index,
+        bound: &mut super::cohort::Bound,
+    ) -> Option<()> {
+        for parent in [&self.from, &self.to] {
+            bound.parent(doc, &self.scope, parent.id.as_deref(), index)?;
+        }
+        Some(())
+    }
     pub(super) fn bytes(&self) -> usize {
         parent::scope_bytes(&self.scope)
             + self.from.bytes()

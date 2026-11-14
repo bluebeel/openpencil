@@ -4,12 +4,18 @@ use op_editor_core::EditorCommand as C;
 pub(crate) fn tool(name: &str) -> bool {
     matches!(
         name,
-        "set_variable_color"
+        "undo"
+            | "redo"
+            | "set_variable_color"
             | "set_variable_number"
             | "set_variable_string"
             | "set_variable_boolean"
             | "create_variable"
             | "rename_page"
+            | "rename_component"
+            | "create_component"
+            | "delete_component"
+            | "instantiate_component"
             | "update_node"
             | "set_node_rotation"
             | "set_node_text"
@@ -48,7 +54,9 @@ pub(crate) fn tool(name: &str) -> bool {
 pub(crate) fn structural_tool(name: &str) -> bool {
     matches!(
         name,
-        "insert_node"
+        "undo"
+            | "redo"
+            | "insert_node"
             | "delete_node"
             | "copy_node"
             | "duplicate_selected"
@@ -66,6 +74,11 @@ pub(crate) fn structural_tool(name: &str) -> bool {
     )
 }
 pub(crate) fn command(command: &C) -> bool {
+    // History exchange is one actor operation, never a child of atomic Batch.
+    // Core still validates the selected scoped entry and its actual receipt.
+    if matches!(command, C::Undo | C::Redo) {
+        return true;
+    }
     let mut pending = vec![(command, 0usize)];
     let mut count = 0usize;
     while let Some((command, depth)) = pending.pop() {
@@ -86,6 +99,10 @@ pub(crate) fn command(command: &C) -> bool {
                 | C::SetVariableScalar { .. }
                 | C::CreateVariable { .. }
                 | C::RenamePage { .. }
+                | C::RenameComponent { .. }
+                | C::CreateComponent { .. }
+                | C::DeleteComponent { .. }
+                | C::InstantiateComponent { .. }
                 | C::UpdateNode { .. }
                 | C::PatchNodeData { .. }
                 | C::SetNodeRotation { .. }

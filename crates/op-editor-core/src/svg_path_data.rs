@@ -4,9 +4,11 @@
 //! separate preserve-`d` path to retain arc primitives and compound fill
 //! rules without flattening.
 
+mod affine;
 mod arc;
 mod parser;
 
+pub(crate) use affine::{cubic_path, localize_transformed, transformed_bounds};
 pub(crate) use arc::{endpoint_arc, include_arc_bounds};
 pub(crate) use parser::AbsoluteSegments;
 
@@ -49,14 +51,20 @@ pub(crate) fn localize_svg_path_scaled(d: &str, scale: f64) -> Option<(String, S
             *segment = segment.scaled(scale);
         }
     }
-    let tight = segment_bounds(&segments)?;
+    localize_segments(&segments)
+}
+
+fn localize_segments(segments: &[Segment]) -> Option<(String, SvgPathBounds)> {
+    let tight = segment_bounds(segments)?;
     let bounds = SvgPathBounds {
-        x: tight.x.floor(),
-        y: tight.y.floor(),
-        w: (tight.x + tight.w - tight.x.floor()).ceil().max(1.0),
-        h: (tight.y + tight.h - tight.y.floor()).ceil().max(1.0),
+        x: tight.x,
+        y: tight.y,
+        // Renderers fit d's tight source bounds into this rectangle. Outward
+        // rounding would scale fractional geometry and shift paint coordinates.
+        w: if tight.w > 0.0 { tight.w } else { 1.0 },
+        h: if tight.h > 0.0 { tight.h } else { 1.0 },
     };
-    let local = serialize_local_segments(&segments, bounds.x, bounds.y);
+    let local = serialize_local_segments(segments, bounds.x, bounds.y);
     Some((local, bounds))
 }
 
@@ -142,7 +150,6 @@ fn segment_bounds(segments: &[Segment]) -> Option<SvgPathBounds> {
         }
         match *seg {
             Segment::Move(x, y) => {
-                include(x, y);
                 cx = x;
                 cy = y;
                 sx = x;
@@ -151,6 +158,7 @@ fn segment_bounds(segments: &[Segment]) -> Option<SvgPathBounds> {
                 last_quad_ctrl = None;
             }
             Segment::Line(x, y) => {
+                include(cx, cy);
                 include(x, y);
                 cx = x;
                 cy = y;
@@ -158,12 +166,14 @@ fn segment_bounds(segments: &[Segment]) -> Option<SvgPathBounds> {
                 last_quad_ctrl = None;
             }
             Segment::HLine(x) => {
+                include(cx, cy);
                 include(x, cy);
                 cx = x;
                 last_cubic_ctrl = None;
                 last_quad_ctrl = None;
             }
             Segment::VLine(y) => {
+                include(cx, cy);
                 include(cx, y);
                 cy = y;
                 last_cubic_ctrl = None;
@@ -206,6 +216,9 @@ fn segment_bounds(segments: &[Segment]) -> Option<SvgPathBounds> {
                 last_cubic_ctrl = None;
             }
             Segment::Arc(rx, ry, rotation, large, sweep, x, y) => {
+                if (cx, cy) == (x, y) {
+                    continue;
+                }
                 include(cx, cy);
                 include(x, y);
                 if rx != 0.0 && ry != 0.0 && (cx, cy) != (x, y) {

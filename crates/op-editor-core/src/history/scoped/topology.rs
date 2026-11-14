@@ -84,6 +84,17 @@ impl TopologyPatch {
             Self::Wrap(patch) => patch.roots(),
         }
     }
+    pub(super) fn cohort_bound(
+        &self,
+        doc: &crate::PenDocument,
+        index: &super::identity::Index,
+        bound: &mut super::cohort::Bound,
+    ) -> Option<()> {
+        match self {
+            Self::Move(patch) => patch.cohort_bound(doc, index, bound),
+            Self::Wrap(patch) => patch.cohort_bound(doc, index, bound),
+        }
+    }
     pub(super) fn bytes(&self) -> usize {
         match self {
             Self::Move(patch) => patch.bytes(),

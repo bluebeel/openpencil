@@ -1,4 +1,6 @@
 //! Exact changed-node swaps, retaining one historical side only.
+#[path = "cohort_patch.rs"]
+mod cohort;
 use crate::{history_snapshot::SharedNode, pen_node_ext::clone_without_children, PenNodeExt};
 use jian_ops_schema::{node::PenNode, page::PenPage, PenDocument};
 use std::{collections::HashMap, mem, sync::Arc};

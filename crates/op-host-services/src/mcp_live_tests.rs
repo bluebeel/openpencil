@@ -429,6 +429,7 @@ fn pump_flags_document_replaced_only_for_replace_document_requests() {
                 pinned_style_guide: None,
                 share_recipe: None,
                 imported_from: None,
+                component_catalog: None,
             },
             ack: ack_tx,
         })
@@ -455,6 +456,7 @@ fn pump_flags_document_replaced_only_for_replace_document_requests() {
                 pinned_style_guide: None,
                 share_recipe: None,
                 imported_from: None,
+                component_catalog: None,
             },
             ack: ack_tx,
         })

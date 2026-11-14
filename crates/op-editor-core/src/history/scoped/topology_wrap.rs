@@ -173,6 +173,19 @@ impl WrapPatch {
     pub(super) fn roots(&self) -> &[Arc<SharedNode>] {
         std::slice::from_ref(&self.header)
     }
+    pub(super) fn cohort_bound(
+        &self,
+        doc: &PenDocument,
+        index: &super::identity::Index,
+        bound: &mut super::cohort::Bound,
+    ) -> Option<()> {
+        bound.parent(doc, &self.scope, self.parent.id.as_deref(), index)?;
+        bound.add(
+            self.positions
+                .len()
+                .checked_mul(mem::size_of::<PenNode>() * 4)?,
+        )
+    }
     pub(super) fn bytes(&self) -> usize {
         parent::scope_bytes(&self.scope)
             + self.parent.bytes()

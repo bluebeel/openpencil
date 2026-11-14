@@ -23,12 +23,37 @@ pub(super) fn capture(
     state: &EditorState,
     specs: Vec<TargetSpec>,
 ) -> Result<Vec<TargetCheckpoint>, ScopedHistoryError> {
-    if specs.len() != 1
-        && specs
-            .iter()
-            .any(|spec| spec.splice.is_some() || spec.topology.is_some())
-    {
+    if specs.len() > 4096 || specs.len() != 1 && specs.iter().any(|spec| spec.topology.is_some()) {
         return Err(ScopedHistoryError::NodePathChanged);
+    }
+    if specs.iter().any(|spec| spec.splice.is_some()) && specs.iter().any(|spec| spec.subtree) {
+        return Err(ScopedHistoryError::NodePathChanged);
+    }
+    if specs.len() > 1 && specs.iter().any(|spec| spec.splice.is_some()) {
+        let mut wanted = super::identity::Wanted::new();
+        let mut expected = Vec::new();
+        for spec in &specs {
+            if spec.path.is_empty() {
+                continue;
+            }
+            let node = patch::node(patch::roots(&state.doc, &spec.scope)?, &spec.path)
+                .ok_or(ScopedHistoryError::NodePathChanged)?;
+            wanted
+                .entry(spec.scope.clone())
+                .or_default()
+                .insert(node.id_str().to_owned());
+            expected.push((
+                spec.scope.clone(),
+                node.id_str().to_owned(),
+                spec.path.clone(),
+            ));
+        }
+        let identities = super::identity::Index::new(&state.doc, wanted)?;
+        for (scope, id, path) in expected {
+            if identities.path(&scope, &id)? != path {
+                return Err(ScopedHistoryError::NodePathChanged);
+            }
+        }
     }
     specs
         .into_iter()

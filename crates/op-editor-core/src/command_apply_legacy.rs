@@ -8,7 +8,7 @@ pub(super) mod allocation_policy;
 /// Private to one top-level fresh-ID insertion/clone. Its initial counter is
 /// above every current node/page id, and these commands introduce only ids
 /// minted through this same allocator. Mixed batches keep full collision sets.
-struct LeafHighWaterAllocator(DocumentIdAllocator);
+pub(crate) struct LeafHighWaterAllocator(pub(crate) DocumentIdAllocator);
 
 impl crate::IdAllocator for LeafHighWaterAllocator {
     fn document_collision_ids(

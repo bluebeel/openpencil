@@ -63,6 +63,8 @@ struct Group {
     present: bool,
     recent: Vec<Anchors>,
 }
+#[path = "splice_metadata.rs"]
+mod metadata;
 struct ParentPlan {
     scope: Scope,
     path: Box<[usize]>,
@@ -71,9 +73,11 @@ struct ParentPlan {
     restore: Vec<Arc<SharedNode>>,
     remaining: usize,
     absence: bool,
+    relocation: Vec<Option<usize>>,
 }
 pub(super) struct Prepared {
     parents: Vec<ParentPlan>,
+    metadata: Vec<(usize, Box<[usize]>)>,
 }
 fn want(index: &mut identity::Wanted, scope: &Scope, id: &Option<String>) {
     if let Some(id) = id {
@@ -90,12 +94,23 @@ impl Prepared {
         if !patches.iter().any(|patch| patch.splices().next().is_some()) {
             return Ok(None);
         }
-        if patches.iter().any(|patch| patch.splices().next().is_none()) {
+        if patches.iter().any(|patch| {
+            patch.splices().next().is_none()
+                && !matches!(patch,Patch::Node(node) if node.metadata_only)
+        }) {
             return Err(ScopedHistoryError::NodePathChanged);
         }
         let mut wanted = identity::Wanted::new();
         for splice in patches.iter().flat_map(Patch::splices) {
             want(&mut wanted, &splice.scope, &splice.parent_id);
+        }
+        for patch in patches {
+            if let Patch::Node(node) = patch {
+                wanted
+                    .entry(node.scope.clone())
+                    .or_default()
+                    .insert(node.expected_id.clone());
+            }
         }
         let index = identity::Index::new(doc, wanted)?;
         let mut grouped: HashMap<ParentKey, Vec<(usize, usize)>> = HashMap::new();
@@ -232,6 +247,7 @@ impl Prepared {
             if absence && !order.is_empty() {
                 return Err(ScopedHistoryError::NodePathChanged);
             }
+            let relocation = metadata::relocations(nodes, &removed, &order);
             parents.push(ParentPlan {
                 scope: key.scope,
                 path,
@@ -240,6 +256,7 @@ impl Prepared {
                 restore,
                 remaining: remaining_ids.len(),
                 absence,
+                relocation,
             });
         }
         if check_collisions && !restoring_ids.is_empty() {
@@ -267,7 +284,8 @@ impl Prepared {
             };
             scope.then_with(|| b.path.cmp(&a.path))
         });
-        Ok(Some(Self { parents }))
+        let metadata = metadata::routes(doc, patches, &index, &parents)?;
+        Ok(Some(Self { parents, metadata }))
     }
     pub(super) fn rebase(&self, patches: &mut [Patch]) {
         for parent in &self.parents {
@@ -342,6 +360,12 @@ impl Prepared {
             if parent.absence {
                 *slot.unwrap() = None;
             }
+        }
+        for (at, path) in self.metadata {
+            let Patch::Node(node) = &mut patches[at] else {
+                unreachable!("prepared metadata patch");
+            };
+            node.path = path;
         }
     }
 }

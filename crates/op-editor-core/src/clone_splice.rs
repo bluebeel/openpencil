@@ -240,3 +240,7 @@ pub(crate) fn prepare_captured(
         _ => None,
     }
 }
+
+#[path = "clone_splice_components.rs"]
+mod catalog;
+pub(crate) use catalog::preserves as catalog_preserving;

@@ -5,6 +5,8 @@ use crate::{
     EditorCommand as C, EditorState, NodeId, PenNodeExt,
 };
 use jian_ops_schema::node::PenNode;
+#[path = "target_append_batch.rs"]
+mod append_batch;
 #[path = "target_selection_plan.rs"]
 mod selection;
 #[path = "target_splice_plan.rs"]
@@ -22,6 +24,9 @@ pub(super) fn plan_prepared(
 ) -> Option<Vec<TargetSpec>> {
     if state.instance_write_virtual_anchor.is_some() {
         return None;
+    }
+    if let Some(targets) = append_batch::plan(state, command) {
+        return Some(targets);
     }
     let mut out = Vec::new();
     let mut active = state.ui.active_page_index;
@@ -263,7 +268,14 @@ fn batch_bound(state: &EditorState, command: &C) -> Option<usize> {
     let limit = crate::history_snapshot::COMMAND_CAPTURE_ALLOWANCE;
     let mut bytes = 64 * 1024usize;
     for spec in targets {
-        if spec.subtree || spec.splice.is_some() || spec.topology.is_some() {
+        if let Some(splice) = &spec.splice {
+            bytes = bytes.checked_add(splice.forecast)?;
+            if bytes > limit {
+                return None;
+            }
+            continue;
+        }
+        if spec.subtree || spec.topology.is_some() {
             return None;
         }
         let mut nodes = match &spec.scope {

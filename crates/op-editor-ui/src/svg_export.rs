@@ -8,6 +8,7 @@ use crate::{Color, Rect};
 use std::fmt::Write as _;
 
 mod batch;
+mod gradient_geometry;
 pub use batch::SvgNodeBatch;
 
 mod bounds;
@@ -58,6 +59,9 @@ pub enum SvgExportError {
     /// The requested node exists but paints no geometry.
     NodePaintsNothing(String),
     InvalidScale,
+    UnsupportedGradientInterpolation {
+        node_id: String,
+    },
 }
 
 impl std::fmt::Display for SvgExportError {
@@ -69,6 +73,7 @@ impl std::fmt::Display for SvgExportError {
                 write!(f, "node {id} not found on the active page")
             }
             SvgExportError::NodePaintsNothing(id) => write!(f, "node {id} paints nothing"),
+            SvgExportError::UnsupportedGradientInterpolation{node_id}=>write!(f,"node {node_id} has a premultiplied alpha gradient that SVG cannot represent exactly"),
             SvgExportError::InvalidScale => write!(f, "SVG scale must be finite and positive"),
         }
     }
@@ -157,6 +162,14 @@ fn serialize_svg(
     scale: f32,
     sibling_roots: bool,
 ) -> Result<String, SvgExportError> {
+    for node in nodes {
+        gradient_geometry::validate(node)?;
+    }
+    for effect in ancestor_effects {
+        if let AncestorEffect::Mask { node, .. } = effect {
+            gradient_geometry::validate(node)?;
+        }
+    }
     let view_x = bounds.origin.x - margin;
     let view_y = bounds.origin.y - margin;
     let view_w = bounds.size.x + margin * 2.0;
@@ -218,6 +231,17 @@ fn emit_node_defs(out: &mut String, n: &SceneNode, sibling_mask: bool) {
         return;
     }
     let id = svg_id(&n.id);
+    if let Some(shader) = &n.shader {
+        if let Some(paint) = shader.gradient.as_deref() {
+            gradient_geometry::emit(
+                out,
+                &format!("gradient-{id}"),
+                paint,
+                normalize_rect(n.bounds),
+                shader.opacity,
+            );
+        }
+    }
     if let Some(gradient) = &n.gradient {
         emit_gradient(
             out,
@@ -593,7 +617,11 @@ fn fill_stroke_attrs(n: &SceneNode) -> String {
 
 fn fill_attrs(n: &SceneNode) -> String {
     let mut s = String::new();
-    if n.gradient.is_some() {
+    if n.gradient.is_some()
+        || n.shader
+            .as_ref()
+            .is_some_and(|shader| shader.gradient.is_some())
+    {
         let _ = write!(s, r#" fill="url(#gradient-{})""#, svg_id(&n.id));
     } else if let Some(fill) = n.fill {
         let _ = write!(s, r#" fill="{}""#, color_to_rgb(fill));

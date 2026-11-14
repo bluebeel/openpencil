@@ -11,6 +11,7 @@ pub(crate) struct BatchActorSnapshot {
     image_panel: crate::image_panel_state::ImagePanelState,
     crop_editing: Option<crate::NodeId>,
     clipboard: Option<Vec<PenNode>>,
+    runtime_high_water: u64,
 }
 
 impl BatchActorSnapshot {
@@ -24,6 +25,7 @@ impl BatchActorSnapshot {
     pub(crate) fn capture(state: &EditorState, commands: &[EditorCommand]) -> Self {
         Self {
             ui: state.ui.clone(),
+            runtime_high_water: state.runtime_node_high_water,
             tool: state.tool,
             viewport: state.viewport,
             image_panel: state.editor_ui.image_panel.clone(),
@@ -48,6 +50,9 @@ impl BatchActorSnapshot {
     }
 
     pub(crate) fn restore(self, state: &mut EditorState) {
+        // Only an unacknowledged, exclusively held Batch calls this rollback.
+        // Normal history undo remains monotonic and does not restore this floor.
+        state.runtime_node_high_water = self.runtime_high_water;
         state.ui = self.ui;
         state.tool = self.tool;
         state.viewport = self.viewport;

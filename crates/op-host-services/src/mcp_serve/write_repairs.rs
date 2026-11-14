@@ -21,7 +21,7 @@ struct Insertion {
     before: BeforeInsertion,
 }
 #[derive(Default)]
-pub(super) struct RepairPlan {
+pub(crate) struct RepairPlan {
     insertions: Vec<Insertion>,
     explicit: Vec<(usize, String)>,
     append_only: bool,
@@ -30,7 +30,7 @@ impl RepairPlan {
     pub(super) fn is_empty(&self) -> bool {
         self.insertions.is_empty() && self.explicit.is_empty()
     }
-    pub(super) fn capture(state: &EditorState, command: &C, enabled: bool) -> Self {
+    pub(crate) fn capture(state: &EditorState, command: &C, enabled: bool) -> Self {
         let mut plan = Self::default();
         if enabled
             && !state.editor_ui.preserve_authored_geometry
@@ -101,7 +101,7 @@ impl RepairPlan {
             _ => {}
         }
     }
-    pub(super) fn apply(self, state: &mut EditorState, before_revision: u64) -> bool {
+    pub(crate) fn apply(self, state: &mut EditorState, before_revision: u64) -> bool {
         if state.document_revision() == before_revision {
             return false;
         }

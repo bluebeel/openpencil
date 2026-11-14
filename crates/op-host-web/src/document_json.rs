@@ -23,7 +23,7 @@ impl Drop for ParsedDocumentJson {
 /// table payload. Thumbnail publication is deferred until the caller replaces
 /// the live host document through [`with_borrowed_parsed_document`].
 pub(crate) fn parse_document_json(json: &str) -> Result<ParsedDocumentJson, serde_json::Error> {
-    let editor_meta = op_pen_loader::extract_editor_meta(json);
+    let editor_meta = op_pen_loader::extract_editor_meta_checked(json)?.map(|value| value.meta);
     let mut raw: serde_json::Value = serde_json::from_str(json)?;
     let pending_thumbs = jian_ops_schema::image_thumbs::take_pending_from_document(&mut raw);
     let table = jian_ops_schema::image_table::take_image_table(&mut raw);
@@ -204,6 +204,7 @@ mod tests {
             pinned_style_guide: None,
             share_recipe: None,
             imported_from: None,
+            component_catalog: None,
         };
         let disk = externalize_for_disk(&serialized, meta.clone());
         assert_eq!(

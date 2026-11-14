@@ -9,11 +9,58 @@ pub(super) enum Outcome {
 pub(super) fn apply(
     editor: &mut EditorState,
     command: &EditorCommand,
+    tool: &str,
     input: usize,
     budget: &mut budget::Budget,
     metrics: &metrics::Metrics,
     capture: &mut Option<CommandEditCapture>,
 ) -> Outcome {
+    if matches!(command, EditorCommand::Undo | EditorCommand::Redo) {
+        let mut attempted = false;
+        let result = editor.try_apply_captured_history(command.clone(), capture, |state, bytes| {
+            attempted = true;
+            let reserved = budget.reserve_history(state, command, input, bytes);
+            metrics.observe_forecast(budget.forecast());
+            if let Err(reason) = reserved {
+                metrics.refuse(reason);
+                false
+            } else {
+                true
+            }
+        });
+        return match result {
+            Some(applied) => Outcome::Applied(applied),
+            None => {
+                if !attempted {
+                    metrics
+                        .strict_capture_fallback
+                        .fetch_add(1, Ordering::Relaxed);
+                }
+                Outcome::Isolated
+            }
+        };
+    }
+    if let Some(result) = crate::mcp_serve::cohort_generation::apply(
+        editor,
+        command,
+        tool,
+        capture,
+        |state, extra| {
+            let reserved = budget.reserve_generated(state, command, input, extra);
+            metrics.observe_forecast(budget.forecast());
+            if let Err(reason) = reserved {
+                metrics.refuse(reason);
+                false
+            } else {
+                true
+            }
+        },
+    ) {
+        return match result {
+            crate::mcp_serve::cohort_generation::Outcome::Applied(ok) => Outcome::Applied(ok),
+            crate::mcp_serve::cohort_generation::Outcome::Isolated => Outcome::Isolated,
+        };
+    }
     let mut attempted = false;
     let mut admitted = false;
     if let Some(applied) =
@@ -83,9 +130,10 @@ pub(super) fn apply(
     };
     debug_assert!(checkpoint.is_target_only());
     *capture = Some(checkpoint);
-    Outcome::Applied(editor.apply_command_edit_then(
-        command.clone(),
-        capture.as_mut().unwrap(),
-        |_| {},
-    ))
+    Outcome::Applied(
+        editor.apply_command_edit_without_document_repairs(
+            command.clone(),
+            capture.as_mut().unwrap(),
+        ),
+    )
 }

@@ -50,6 +50,7 @@ pub fn set_primary_gradient_angle(node: &mut PenNode, angle_deg: f32) -> bool {
     };
     match first {
         PenFill::LinearGradient(b) => {
+            b.geometry = None;
             b.angle = Some(f64::from(angle_deg));
             true
         }

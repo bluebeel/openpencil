@@ -138,6 +138,30 @@ impl<V: PartialEq + Serialize> MapPatch<V> {
     pub(super) fn retained_entries(&self) -> usize {
         self.entries.len()
     }
+    /// Values moved from the live map become the reverse receipt. Inspect
+    /// only changed keys, retaining all typed fields and exact optional shape.
+    pub(super) fn cohort_live_bound(
+        &self,
+        current: &Option<BTreeMap<String, V>>,
+        limit: usize,
+    ) -> Option<usize> {
+        let mut bytes = self
+            .entries
+            .len()
+            .checked_mul(mem::size_of::<Entry<V>>() + 256)?;
+        for entry in &self.entries {
+            let value = current.as_ref().and_then(|map| map.get(&entry.key));
+            bytes = bytes.checked_add(
+                crate::history_snapshot::command_capture_value_bytes(
+                    &value,
+                    limit.checked_sub(bytes)?,
+                )
+                .ok()?,
+            )?;
+            bytes = bytes.checked_add(entry.key.capacity().checked_mul(4)?)?;
+        }
+        (bytes <= limit).then_some(bytes)
+    }
     pub(super) fn storage_bytes(&self) -> usize {
         let nested = self
             .entries

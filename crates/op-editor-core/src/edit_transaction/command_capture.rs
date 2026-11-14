@@ -9,6 +9,8 @@ use std::{mem, sync::Arc};
 mod auxiliary;
 #[path = "command_scope.rs"]
 mod command_scope;
+#[path = "command_history_cohort.rs"]
+mod history_cohort;
 #[path = "command_metadata_apply.rs"]
 mod metadata;
 #[path = "target_plan.rs"]
@@ -58,6 +60,7 @@ struct ScopedCapture {
 #[derive(Debug)]
 struct HistoryCapture {
     actor_selective: bool,
+    started: bool,
     generation: u64,
     revision: u64,
     undo: bool,
@@ -115,7 +118,11 @@ impl CommandEditCapture {
                 .completed
                 .as_ref()?
                 .forward_metadata_json(state, limit),
-            CaptureKind::Full(_) | CaptureKind::Refused { .. } | CaptureKind::History(_) => None,
+            CaptureKind::History(captured) => captured
+                .completed
+                .as_ref()?
+                .forward_metadata_json(state, limit),
+            CaptureKind::Full(_) | CaptureKind::Refused { .. } => None,
         }
     }
 
@@ -149,6 +156,69 @@ impl EditorState {
     /// rollback/history clone. None keeps the caller's ordinary isolated path.
     pub fn forecast_structural_command_edit(&self, command: &EditorCommand) -> Option<usize> {
         target_plan::structural_bound(self, command)
+    }
+    /// Exact current no-catalog-write proof shared with the live atomic driver.
+    /// No revision cache survives this borrow or a later canonical mutation.
+    pub fn command_edit_preserves_components(&self, command: &EditorCommand) -> bool {
+        let targets = target_plan::plan(self, command);
+        super::component_proof::preserves(self, command, targets.as_deref())
+    }
+
+    /// New-content-only generation repair admission. Existing-target refine or
+    /// structural commands outside the static append proof retain broad capture.
+    pub fn command_repair_capture_bound(&self, command: &EditorCommand) -> Option<usize> {
+        let command_scope::Classification::Scoped(plan) = command_scope::classify(self, command)
+        else {
+            return None;
+        };
+        if plan.header {
+            return None;
+        }
+        let specs = target_plan::plan(self, command)?;
+        if !specs.iter().any(|spec| spec.splice.is_some())
+            || specs
+                .iter()
+                .any(|spec| spec.subtree || spec.topology.is_some())
+        {
+            return None;
+        }
+        let mut commands = vec![command];
+        let mut nodes = Vec::new();
+        let mut count = 0usize;
+        while let Some(command) = commands.pop() {
+            match command {
+                EditorCommand::Batch { commands: members } => commands.extend(members),
+                EditorCommand::InsertSubtree {
+                    nodes: incoming, ..
+                }
+                | EditorCommand::InsertAuthoredSubtree {
+                    nodes: incoming, ..
+                }
+                | EditorCommand::InsertAuthoredSubtreePreservingRoots {
+                    nodes: incoming, ..
+                } => nodes.extend(incoming),
+                EditorCommand::BatchInsert { items, .. } => {
+                    count = count.checked_add(items.len())?
+                }
+                EditorCommand::InsertNode { .. } => count = count.checked_add(1)?,
+                _ => {}
+            }
+        }
+        while let Some(node) = nodes.pop() {
+            count = count.checked_add(1)?;
+            if count > 16_384 {
+                return None;
+            }
+            if let Some(children) = crate::PenNodeExt::children(node) {
+                nodes.extend(children);
+            }
+        }
+        // Repairs move existing/new payload rather than clone a document. This
+        // covers bounded default status-bar/image-slot expansion per input node;
+        // complete input/path resources and sibling tables are charged separately.
+        count
+            .checked_mul(128 * 1024)
+            .filter(|bytes| *bytes <= crate::history_snapshot::COMMAND_CAPTURE_ALLOWANCE)
     }
 
     /// Capture before an exclusively owned host command. The caller guarantees
@@ -265,7 +335,14 @@ impl EditorState {
             command,
             EditorCommand::DeleteSelected | EditorCommand::CutSelected
         ) {
-            let pending = PendingScopedSnapshot::capture_deletion(self, plan.forests, command)?;
+            let captures_components =
+                !preserve_components || !super::component_proof::preserves(self, command, None);
+            let pending = PendingScopedSnapshot::capture_deletion(
+                self,
+                plan.forests,
+                command,
+                captures_components,
+            )?;
             return Some(CommandEditCapture {
                 rollback_clipboard: (clone_clipboard
                     && matches!(command, EditorCommand::CutSelected))
@@ -305,7 +382,14 @@ impl EditorState {
             if self.instance_write_virtual_anchor.is_some() {
                 return None;
             }
-            let pending = PendingScopedSnapshot::capture_clones(self, plan.forests, command)?;
+            let captures_components =
+                !preserve_components || !super::component_proof::preserves(self, command, None);
+            let pending = PendingScopedSnapshot::capture_clones(
+                self,
+                plan.forests,
+                command,
+                captures_components,
+            )?;
             return Some(CommandEditCapture {
                 rollback_clipboard: None,
                 batch_actor: None,
@@ -325,6 +409,7 @@ impl EditorState {
                 rollback_clipboard: None,
                 batch_actor: None,
                 kind: CaptureKind::History(HistoryCapture {
+                    started: false,
                     actor_selective: self
                         .history
                         .next_entry(matches!(command, EditorCommand::Redo))
@@ -343,9 +428,7 @@ impl EditorState {
         };
         let keep_catalog = preserve_components
             && !plan.header
-            && crate::command_node_attrs::bulk::prepare(command).is_some()
-            && target_plan::metadata_target(self, &specs)
-                .is_some_and(|target| self.metadata_target_preserves_components(target));
+            && super::component_proof::preserves(self, command, Some(&specs));
         let pending = if keep_catalog {
             PendingScopedSnapshot::capture_targets_preserving_components(self, plan.forests, specs)
         } else {
@@ -377,6 +460,28 @@ impl EditorState {
         capture: &mut CommandEditCapture,
         maintain: impl FnOnce(&mut Self),
     ) -> bool {
+        self.apply_command_edit_checked(command, capture, move |state| {
+            state.invalidate_command_id_sequence();
+            maintain(state);
+        })
+    }
+    /// Exact typed command with no canonical maintenance callback. Lexical
+    /// cohort ID receipts can survive this audited boundary; ordinary callback
+    /// callers continue through apply_command_edit_then and invalidate them.
+    pub fn apply_command_edit_without_document_repairs(
+        &mut self,
+        command: EditorCommand,
+        capture: &mut CommandEditCapture,
+    ) -> bool {
+        self.apply_command_edit_checked(command, capture, |_| {})
+    }
+    fn apply_command_edit_checked(
+        &mut self,
+        command: EditorCommand,
+        capture: &mut CommandEditCapture,
+        maintain: impl FnOnce(&mut Self),
+    ) -> bool {
+        self.observe_command_id_sequence(&command);
         if !capture.clipboard_context_matches(self) {
             return false;
         }
@@ -535,8 +640,10 @@ impl EditorState {
             return false;
         }
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            captured.started = true;
             let (applied, reverse) = self.exchange_history_retained(!captured.undo);
             captured.completed = reverse;
+            captured.started = applied && captured.completed.is_none();
             if applied {
                 maintain(self);
             }
@@ -554,6 +661,7 @@ impl EditorState {
         &mut self,
         capture: CommandEditCapture,
     ) -> Result<(), CommandEditError> {
+        self.invalidate_command_id_sequence();
         if !capture.clipboard_context_matches(self) {
             return Err(CommandEditError::ClipboardContextChanged);
         }
@@ -577,6 +685,9 @@ impl EditorState {
             CaptureKind::History(captured) => {
                 self.ensure_local_edit_generation(captured.generation)
                     .map_err(CommandEditError::Full)?;
+                if captured.started {
+                    return Err(CommandEditError::IncompleteScopedCapture);
+                }
                 self.history = captured.history;
                 if let Some(snapshot) = captured.completed {
                     self.editor_ui.clear_document_derived();

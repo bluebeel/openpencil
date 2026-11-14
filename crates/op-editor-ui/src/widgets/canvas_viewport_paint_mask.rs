@@ -104,7 +104,7 @@ fn begin_mask_with_bounds<'a>(
     let clip_eligible = match kind {
         MaskType::Alpha => alpha_clip_is_exact(mask),
         MaskType::Vector => vector_clip_is_exact(mask),
-        MaskType::Luminance => false,
+        MaskType::Luminance | MaskType::LuminanceLinear => false,
     };
     if clip_eligible && push_path_mask_clip(cx, mask, options) {
         return Some(ActiveMask::Clip);
@@ -156,8 +156,10 @@ pub(super) fn finish_active_mask(
         None => {}
         Some(ActiveMask::Clip) => cx.backend.restore(),
         Some(ActiveMask::Pixel { node, kind }) => {
-            cx.backend
-                .push_mask_source_layer(kind == MaskType::Luminance);
+            cx.backend.push_mask_source_layer_with_color_space(
+                matches!(kind, MaskType::Luminance | MaskType::LuminanceLinear),
+                kind == MaskType::LuminanceLinear,
+            );
             let mask_options = PaintNodeOptions {
                 viewport_origin: options.viewport_origin,
                 zoom: options.zoom,

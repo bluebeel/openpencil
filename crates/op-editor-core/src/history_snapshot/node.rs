@@ -34,13 +34,19 @@ impl SharedNode {
     }
     /// Compare the complete source subtree without creating a hidden owned view.
     pub fn equals_node(&self, node: &PenNode) -> bool {
-        if !self.equals_header(node) {
+        self.equals_node_with_scratch(node, &mut Vec::new())
+    }
+    fn equals_node_with_scratch(&self, node: &PenNode, scratch: &mut Vec<u8>) -> bool {
+        if !self.equals_header_with_scratch(node, scratch) {
             return false;
         }
         match (self.children(), node.children()) {
             (None, None) => true,
             (Some(a), Some(b)) => {
-                a.len() == b.len() && a.iter().zip(b).all(|(a, b)| a.equals_node(b))
+                a.len() == b.len()
+                    && a.iter()
+                        .zip(b)
+                        .all(|(a, b)| a.equals_node_with_scratch(b, scratch))
             }
             _ => false,
         }

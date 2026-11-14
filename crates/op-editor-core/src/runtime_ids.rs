@@ -49,6 +49,9 @@ impl EditorState {
             .ok_or(IdAllocError::CounterExhausted)
     }
     pub fn standalone_next_id_seed(&self) -> Result<u64, IdAllocError> {
+        if let Some(seed) = self.command_id_seed.get(self) {
+            return seed;
+        }
         let next = crate::id_allocator::next_sequential_counter(&self.doc)?;
         let runtime = self.runtime_next_id_seed()?;
         Ok(next.max(runtime))
@@ -98,6 +101,7 @@ impl EditorState {
         allocator: &mut dyn IdAllocator,
         checkpoint: Option<&EditorSnapshot>,
     ) -> Result<bool, IdAllocError> {
+        self.observe_command_id_sequence(&command);
         self.observe_runtime_allocations(
             allocator,
             |state, allocator| {

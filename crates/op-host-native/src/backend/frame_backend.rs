@@ -94,6 +94,11 @@ impl<'a> RenderBackend for NativeFrameBackend<'a> {
         self.inner.push_mask_source_layer(self.canvas, luminance);
     }
 
+    fn push_mask_source_layer_with_color_space(&mut self, luminance: bool, linear_rgb: bool) {
+        self.inner
+            .push_mask_source_layer_with_color_space(self.canvas, luminance, linear_rgb);
+    }
+
     fn push_blend_layer(&mut self, mode: ImageBlendMode) {
         self.inner.push_blend_layer(self.canvas, mode);
     }

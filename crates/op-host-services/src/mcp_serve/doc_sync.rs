@@ -55,6 +55,7 @@ impl DocumentSyncRequest<'_> {
             pinned_style_guide: embedded.pinned_style_guide,
             share_recipe: embedded.share_recipe,
             imported_from: embedded.imported_from,
+            component_catalog: embedded.component_catalog,
         }
     }
 }
@@ -230,9 +231,9 @@ pub fn parse_document_sync_request(body: &str) -> Result<DocumentSyncRequest<'_>
             .and_then(|index| usize::try_from(index).ok()),
         preserve_authored_geometry: envelope.preserve_authored_geometry,
         metadata_only: envelope.metadata_only,
-        embedded_editor_meta: document
-            .editor_meta
-            .and_then(|value| serde_json::from_str(value.get()).ok()),
+        embedded_editor_meta: op_pen_loader::extract_editor_meta_checked(document_json)
+            .map_err(|error| McpServeError::Validation(error.to_string()))?
+            .map(|value| value.meta),
     })
 }
 

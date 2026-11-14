@@ -36,10 +36,28 @@ impl NativeBackend {
     /// Assemble subsequent mask-source draws in isolation and apply the
     /// finished source to the already-isolated sibling content with DstIn.
     pub fn push_mask_source_layer(&self, canvas: &skia_safe::Canvas, luminance: bool) {
+        self.push_mask_source_layer_with_color_space(canvas, luminance, false);
+    }
+
+    pub fn push_mask_source_layer_with_color_space(
+        &self,
+        canvas: &skia_safe::Canvas,
+        luminance: bool,
+        linear_rgb: bool,
+    ) {
         let mut paint = skia_safe::Paint::default();
         jian_skia::raster_sampling::set_blend_mode(&mut paint, skia_safe::BlendMode::DstIn);
         if luminance {
-            paint.set_color_filter(skia_safe::ColorFilter::luma());
+            let luma = skia_safe::ColorFilter::luma();
+            let filter = if linear_rgb {
+                Some(
+                    luma.composed(skia_safe::ColorFilter::srgb_to_linear_gamma())
+                        .expect("Skia linearRGB luminance composition"),
+                )
+            } else {
+                Some(luma)
+            };
+            paint.set_color_filter(filter);
         }
         canvas.save_layer(&skia_safe::canvas::SaveLayerRec::default().paint(&paint));
     }

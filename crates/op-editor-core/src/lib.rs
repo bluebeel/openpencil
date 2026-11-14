@@ -65,7 +65,7 @@ mod sparse_atomic;
 pub use sparse_atomic::{validate_sparse_atomic_commands, SparseAtomicValidation};
 mod command_id_scope;
 mod node_json;
-pub use command_id_scope::{AtomicCommandSimulation, CommandSimulation};
+pub use command_id_scope::{AtomicCommandSimulation, CommandIdSequence, CommandSimulation};
 pub use edit_transaction::{AtomicAuthorityEdit, AtomicAuthorityError};
 pub use node_json::map_subtree_json;
 pub mod command_font_replace;
@@ -369,7 +369,9 @@ pub use command_node_attrs::{WidgetNumberField, WidgetTextField};
 pub use command_promote::PromoteResult;
 pub use command_style_replace::StyleReplaceError;
 pub use component_browser_state::ComponentBrowserButton;
-pub use components::{Component, ComponentLibrary, ComponentOption};
+pub use components::{
+    Component, ComponentCatalog, ComponentCatalogError, ComponentLibrary, ComponentOption,
+};
 pub use compositing::{fill_blend_mode_at, node_blend_mode, node_mask_type};
 pub use design_md::{extract_design_md_from_document, generate_design_md, parse_design_md};
 pub use design_md_button_state::DesignMdButton;

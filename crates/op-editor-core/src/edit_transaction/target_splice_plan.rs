@@ -54,6 +54,7 @@ pub(super) fn authored<'a>(roots: &'a [PenNode], path: &[usize]) -> Option<&'a P
 }
 #[path = "target_insert_plan.rs"]
 mod rich;
+pub(super) use rich::insertion_bound;
 pub(super) fn plan(state: &EditorState, command: &C, active: usize) -> Option<TargetSpec> {
     if let Some(plan) = rich::plan(state, command, active) {
         return Some(plan);
@@ -73,8 +74,12 @@ pub(super) fn plan(state: &EditorState, command: &C, active: usize) -> Option<Ta
     if let C::DeleteNode { node_id, .. } = command {
         let mut path = remove_path(roots, node_id)?;
         let source = authored(roots, &path)?;
-        let forecast = structural_payload_bound(source)?;
+        let mut forecast = structural_payload_bound(source)?;
         let index = path.pop()?;
+        forecast = forecast.checked_add(destination_bound(state, &scope, &path, 1)?)?;
+        if forecast > crate::history_snapshot::COMMAND_CAPTURE_ALLOWANCE {
+            return None;
+        }
         return Some(TargetSpec {
             scope,
             path: path.into_boxed_slice(),
@@ -147,8 +152,113 @@ pub(super) fn plan(state: &EditorState, command: &C, active: usize) -> Option<Ta
         let count = node.children().map_or(0, Vec::len);
         (path, count)
     };
+    forecast = forecast.checked_add(destination_bound(state, &scope, &path, 1)?)?;
+    if forecast > crate::history_snapshot::COMMAND_CAPTURE_ALLOWANCE {
+        return None;
+    }
     Some(TargetSpec {
         scope,
+        path: path.into_boxed_slice(),
+        subtree: false,
+        splice: Some(SpliceSpec {
+            index,
+            remove: 0,
+            insert_limit: 1,
+            forecast,
+        }),
+        topology: None,
+    })
+}
+
+/// Include sibling shell relocation and identity/anchor preparation before any
+/// allocation, without cloning sibling payloads. Static batches charge it once.
+
+#[derive(Clone, Copy)]
+pub(super) struct DestinationBudget {
+    len: usize,
+    capacity: usize,
+    identities: usize,
+    pub empty_root: bool,
+}
+impl DestinationBudget {
+    pub(super) fn bound(&self, extra: usize) -> Option<usize> {
+        let needed = self.len.checked_add(extra)?;
+        let mut bytes = needed.checked_mul(256)?.checked_add(self.identities)?;
+        if needed > self.capacity {
+            bytes = bytes.checked_add(
+                needed
+                    .max(4)
+                    .checked_mul(2)?
+                    .checked_mul(std::mem::size_of::<PenNode>())?,
+            )?;
+        }
+        (bytes <= crate::history_snapshot::COMMAND_CAPTURE_ALLOWANCE).then_some(bytes)
+    }
+}
+pub(super) fn destination_shape(
+    state: &EditorState,
+    scope: &Scope,
+    path: &[usize],
+) -> Option<DestinationBudget> {
+    let roots = match scope {
+        Scope::Root => &state.doc.children,
+        Scope::Page { index, .. } => &state.doc.pages.as_ref()?.get(*index)?.children,
+    };
+    let (nodes, capacity) = if path.is_empty() {
+        (roots.as_slice(), roots.capacity())
+    } else {
+        let parent = authored(roots, path)?;
+        parent.children().map_or((&[][..], 0), |children| {
+            (children.as_slice(), children.capacity())
+        })
+    };
+    let identities = nodes.iter().try_fold(0usize, |sum, node| {
+        sum.checked_add(node.id_str().len().checked_mul(32)?)
+    })?;
+    let empty_root = path.is_empty()
+        && nodes.iter().any(|node| {
+            matches!(node, PenNode::Frame(_)) && node.children().is_none_or(Vec::is_empty)
+        });
+    Some(DestinationBudget {
+        len: nodes.len(),
+        capacity,
+        identities,
+        empty_root,
+    })
+}
+pub(super) fn destination_bound(
+    state: &EditorState,
+    scope: &Scope,
+    path: &[usize],
+    extra: usize,
+) -> Option<usize> {
+    destination_shape(state, scope, path)?.bound(extra)
+}
+pub(super) fn append_destination(
+    state: &EditorState,
+    scope: &Scope,
+    parent: &NodeId,
+) -> Option<TargetSpec> {
+    let roots = match scope {
+        Scope::Root => &state.doc.children,
+        Scope::Page { index, .. } => &state.doc.pages.as_ref()?.get(*index)?.children,
+    };
+    let (path, index) = if parent.is_real() {
+        let path = read_path(roots, parent)?;
+        if remove_path(roots, parent)? != path {
+            return None;
+        }
+        let node = authored(roots, &path)?;
+        if !node.is_container() {
+            return None;
+        }
+        (path, node.children().map_or(0, Vec::len))
+    } else {
+        (Vec::new(), roots.len())
+    };
+    let forecast = 64 * 1024 + destination_bound(state, scope, &path, 1)?;
+    Some(TargetSpec {
+        scope: scope.clone(),
         path: path.into_boxed_slice(),
         subtree: false,
         splice: Some(SpliceSpec {

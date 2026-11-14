@@ -5,8 +5,10 @@
 //! SVG path commands remain compound SVG d data, preserving elliptical arcs
 //! and fill rules. The legacy editable path reader supports every standard
 //! command with f64 coordinates; quadratic/arc segments become cubic handles.
-//! Definitions, CSS stylesheets, masks/filters and transform attributes are
-//! still outside this importer's implemented feature set.
+//! Nested XML transforms are composed in SVG order in f64 and baked into
+//! geometry. General transformed strokes become filled outlines where a
+//! canonical scalar stroke cannot represent them. Definitions, CSS stylesheets,
+//! masks/filters and nested viewport clipping remain outside this importer.
 //!
 //! The XML scanner is hand-rolled; path grammar and arc subdivision use the
 //! existing wasm-clean svgtypes/Kurbo dependencies.
@@ -27,18 +29,29 @@
 //! - `lexer` — hand-rolled tag / attribute / number scanning
 //! - `path_data` — the `<path d="…">` command reader
 
+mod colors;
+mod geometry;
+mod gradient_defs;
 mod lexer;
+mod mask_defs;
 mod nodes;
 mod path_data;
+mod resources;
 mod scale;
 mod style;
+mod transform;
 mod xml;
 
+use geometry::*;
+use gradient_defs::*;
 use lexer::*;
+use mask_defs::*;
 use nodes::*;
 use path_data::*;
+use resources::*;
 use scale::*;
 use style::*;
+use transform::*;
 use xml::*;
 
 use crate::command_node::build_leaf_node;
@@ -85,6 +98,15 @@ struct StyleCtx {
     stroke: Option<String>,
     stroke_width: f64,
     fill_rule: Option<PathFillRule>,
+    stroke_cap: kurbo::Cap,
+    stroke_join: kurbo::Join,
+    stroke_miter: f64,
+    stroke_dashes: Vec<f64>,
+    stroke_dash_offset: f64,
+    fill_opacity: f64,
+    stroke_opacity: f64,
+    current_color: String,
+    clip_mode: bool,
 }
 
 impl Default for StyleCtx {
@@ -94,6 +116,15 @@ impl Default for StyleCtx {
             stroke: None,
             stroke_width: 1.0,
             fill_rule: None,
+            stroke_cap: kurbo::Cap::Butt,
+            stroke_join: kurbo::Join::Miter,
+            stroke_miter: 4.0,
+            stroke_dashes: Vec::new(),
+            stroke_dash_offset: 0.0,
+            fill_opacity: 1.0,
+            stroke_opacity: 1.0,
+            current_color: "black".into(),
+            clip_mode: false,
         }
     }
 }
@@ -124,17 +155,11 @@ impl SvgTree {
 /// Tags ignored verbatim — definitions, gradients, clipping, scripts.
 /// Mirrors the TS `SKIP_TAGS` constant.
 const SKIP_TAGS: &[&str] = &[
-    "defs",
     "style",
     "title",
     "desc",
     "metadata",
-    "clippath",
-    "mask",
     "filter",
-    "lineargradient",
-    "radialgradient",
-    "symbol",
     "marker",
     "pattern",
     "script",
@@ -204,23 +229,41 @@ impl EditorState {
             Some(p) => p,
             None => return Ok(0),
         };
-        let (scale, root_ctx) = compute_root_scale(&root_attrs);
+        let (_, root_ctx) = compute_root_scale(&root_attrs);
+        let matrix = match root_transform(&root_attrs, offset) {
+            Ok(matrix) => matrix,
+            Err(error) => {
+                tracing::warn!(%error, "SVG root transform import rejected");
+                return Ok(0);
+            }
+        };
         let tree = parse_svg_tree(body);
         if tree.is_empty() {
             return Ok(0);
         }
+        let resources = SvgResources::new(&tree, &root_attrs);
+        let viewport = match source_viewport(&root_attrs, [0.0, 0.0, 100.0, 100.0]) {
+            Ok(viewport) => viewport,
+            Err(error) => {
+                tracing::warn!(%error, "SVG viewport import rejected");
+                return Ok(0);
+            }
+        };
         let mut taken = self.collect_node_ids();
         let mut built: Vec<PenNode> = Vec::new();
         for el in &tree {
-            if let Some(node) =
-                element_to_node_ctx(el, &root_ctx, scale, offset, allocator, &mut taken)?
-            {
+            if let Some(node) = element_to_node_ctx(
+                el, &root_ctx, matrix, viewport, &resources, allocator, &mut taken,
+            )? {
                 built.push(node);
             }
         }
         if built.is_empty() {
             return Ok(0);
         }
+        // Canonical children are topmost-first; SVG siblings paint in source
+        // order, so reverse once at each imported sibling boundary.
+        built.reverse();
         let count = built.len();
         // Wrap the imported nodes in a Group so the user can move /
         // delete the SVG as a unit instead of `count` flat siblings
@@ -234,6 +277,7 @@ impl EditorState {
         let group = PenNode::Group(GroupNode {
             base: jian_ops_schema::node::base::PenNodeBase {
                 id: group_id.as_str().to_string(),
+                opacity: svg_node_opacity(&root_attrs),
                 name: Some(
                     group_name
                         .map(|s| s.to_string())

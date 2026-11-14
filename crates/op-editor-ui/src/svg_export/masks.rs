@@ -9,6 +9,7 @@ pub(super) enum Operation {
     Clip,
     Alpha,
     Luminance,
+    LuminanceLinear,
 }
 
 pub(super) fn marker(node: &SceneNode) -> Option<MaskType> {
@@ -24,7 +25,7 @@ pub(super) fn operation(node: &SceneNode) -> Option<Operation> {
     let clips = match kind {
         MaskType::Alpha => alpha_clip_is_exact(node),
         MaskType::Vector => vector_clip_is_exact(node),
-        MaskType::Luminance => false,
+        MaskType::Luminance | MaskType::LuminanceLinear => false,
     };
     if clips && has_clip_geometry(node) {
         return Some(Operation::Clip);
@@ -35,6 +36,7 @@ pub(super) fn operation(node: &SceneNode) -> Option<Operation> {
         MaskType::Vector => None,
         MaskType::Alpha => Some(Operation::Alpha),
         MaskType::Luminance => Some(Operation::Luminance),
+        MaskType::LuminanceLinear => Some(Operation::LuminanceLinear),
     }
 }
 
@@ -78,7 +80,7 @@ pub(super) fn emit_group_start(out: &mut String, node: &SceneNode, op: Operation
         }
         // Content first assembles in a transparent isolated layer, just as
         // canvas push_composite_layer followed by a DstIn mask source does.
-        Operation::Alpha | Operation::Luminance => {
+        Operation::Alpha | Operation::Luminance | Operation::LuminanceLinear => {
             let _ = write!(out, r#"<g mask="url(#{id})" style="isolation:isolate">"#);
         }
     }
@@ -104,15 +106,20 @@ pub(super) fn emit_definition(
         return;
     }
     let kind = match op {
-        Operation::Luminance => "luminance",
+        Operation::Luminance | Operation::LuminanceLinear => "luminance",
         _ => "alpha",
     };
     // Mask regions are derived from the complete source, not from a tile or
     // the content's untransformed bounding box. An empty source stays empty.
+    let interpolation = if matches!(op, Operation::LuminanceLinear) {
+        "linearRGB"
+    } else {
+        "sRGB"
+    };
     let r = source_bounds(node, parent_xform).unwrap_or_else(|| Rect::xywh(0.0, 0.0, 1.0, 1.0));
     let _ = write!(
         out,
-        r#"<mask id="{id}" maskUnits="userSpaceOnUse" maskContentUnits="userSpaceOnUse" x="{}" y="{}" width="{}" height="{}" mask-type="{kind}" style="mask-type:{kind}" color-interpolation="sRGB">"#,
+        r#"<mask id="{id}" maskUnits="userSpaceOnUse" maskContentUnits="userSpaceOnUse" x="{}" y="{}" width="{}" height="{}" mask-type="{kind}" style="mask-type:{kind}" color-interpolation="{interpolation}">"#,
         r.origin.x, r.origin.y, r.size.x, r.size.y
     );
     let transformed = parent_xform != glam::Affine2::IDENTITY;

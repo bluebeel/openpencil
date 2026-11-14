@@ -330,6 +330,11 @@ fn fill_layers_to_scene(
                         gradient,
                         blend_mode,
                     })
+                    .or_else(|| {
+                        crate::style_payload::shader_payload(fill)
+                            .map(|shader| owned::payload_shader_into_scene(shader, 1.0, size))
+                            .map(|shader| SceneFillLayer::Shader { shader, blend_mode })
+                    })
                     .or_else(fallback),
                 PenFill::Shader(_) => crate::style_payload::shader_payload(fill)
                     .map(|shader| owned::payload_shader_into_scene(shader, 1.0, size))

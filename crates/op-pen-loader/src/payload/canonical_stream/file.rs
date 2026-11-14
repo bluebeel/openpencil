@@ -69,7 +69,8 @@ pub fn load_canonical_file_with_compatibility(
     let (raw_header, editor_meta, legacy_doc_payload) = {
         let bytes = mapped(file)?;
         let source = std::str::from_utf8(&bytes).map_err(CanonicalFileLoadError::InvalidUtf8)?;
-        let editor_meta = crate::extract_editor_meta_with_report(source);
+        let editor_meta = crate::extract_editor_meta_checked(source)
+            .map_err(|error| schema(jian_ops_schema::OpsSchemaError::Json(error), false))?;
         let probe = serde_json::from_str::<Header>(source).ok();
         let legacy_doc_payload = probe.as_ref().is_some_and(|h| h.legacy_doc_payload);
         match probe {

@@ -175,6 +175,7 @@ mod tests {
                 pinned_style_guide: None,
                 share_recipe: None,
                 imported_from: None,
+                component_catalog: None,
             },
         )
         .expect("clean copy save");
@@ -208,6 +209,7 @@ mod tests {
                 pinned_style_guide: None,
                 share_recipe: None,
                 imported_from: None,
+                component_catalog: None,
             },
         )
         .expect("clean copy appends metadata");

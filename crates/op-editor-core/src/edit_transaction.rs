@@ -226,3 +226,6 @@ impl EditorState {
         }
     }
 }
+
+#[path = "edit_transaction/atomic_components.rs"]
+mod component_proof;

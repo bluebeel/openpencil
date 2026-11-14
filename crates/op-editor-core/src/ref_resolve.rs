@@ -39,7 +39,10 @@ pub(crate) fn instance_child_virtual_id(ref_id: &str, child_id: &str) -> String 
 
 #[path = "ref_resolve_lookup.rs"]
 mod request_lookup;
-use request_lookup::NodeLookup;
+pub(crate) use request_lookup::NodeLookup;
+#[path = "ref_instance_merge.rs"]
+mod instance_merge;
+pub(crate) use instance_merge::merge as merge_instance;
 
 /// Expand every `Ref` node in `doc` into its resolved component
 /// subtree. Unresolvable refs (unknown target, cycle) are dropped —
@@ -145,6 +148,36 @@ fn resolve_nodes(
     out
 }
 
+fn resolve_owned_nodes(
+    nodes: Vec<PenNode>,
+    lookup: &NodeLookup<'_>,
+    visited: &mut BTreeSet<String>,
+) -> Vec<PenNode> {
+    let mut out = Vec::with_capacity(nodes.len());
+    for mut node in nodes {
+        if let PenNode::Ref(reference) = &node {
+            if visited.contains(&reference.target) {
+                continue;
+            }
+            let Some(component) = lookup.find(&reference.target) else {
+                continue;
+            };
+            let target = reference.target.clone();
+            visited.insert(target.clone());
+            if let Some(expanded) = expand_ref(&node, component, lookup, visited) {
+                out.push(expanded);
+            }
+            visited.remove(&target);
+        } else {
+            if let Some(children) = crate::pen_node_ext::PenNodeExt::children_mut(&mut node) {
+                *children = resolve_owned_nodes(std::mem::take(children), lookup, visited);
+            }
+            out.push(node);
+        }
+    }
+    out
+}
+
 /// Merge `component` under the instance's defined props and remap the
 /// component's children into the instance's virtual id space.
 fn expand_ref(
@@ -153,79 +186,10 @@ fn expand_ref(
     lookup: &NodeLookup<'_>,
     visited: &mut BTreeSet<String>,
 ) -> Option<PenNode> {
-    let component_value = serde_json::to_value(component).ok()?;
-    let ref_value = serde_json::to_value(ref_node).ok()?;
-    let (Value::Object(component_map), Value::Object(ref_map)) = (component_value, ref_value)
-    else {
-        return None;
-    };
-
-    let mut merged = component_map.clone();
-    // `descendants[ref.target]` carries the instance's TOP-LEVEL
-    // overrides (fill / stroke / effects / size, written by the
-    // property panel's override router). TS's render flattener never
-    // applies them (panel + detach do) — applying them here is a
-    // DELIBERATE DIVERGENCE so an override-edited instance renders
-    // exactly what the inspector shows.
-    apply_top_level_overrides(&mut merged, &ref_map);
-    for (key, value) in &ref_map {
-        // `type`/`ref` identify the instance, `descendants` routes
-        // child overrides, `children` (slot content) never replaces
-        // the component subtree (TS skips it too).
-        if matches!(key.as_str(), "type" | "ref" | "descendants" | "children") {
-            continue;
-        }
-        if !value.is_null() {
-            merged.insert(key.clone(), value.clone());
-        }
-    }
-    // Keep the component's type; the instance cannot change it.
-    if let Some(t) = component_map.get("type") {
-        merged.insert("type".into(), t.clone());
-    }
-    // Name falls back to the component's when the instance has none.
-    if merged.get("name").is_none_or(Value::is_null) {
-        if let Some(name) = component_map.get("name") {
-            merged.insert("name".into(), name.clone());
-        }
-    }
-    // An expanded instance is not itself a component definition.
-    merged.remove("reusable");
-
-    // Children: clone the component's subtree into the instance's
-    // virtual id space with `descendants` overrides applied.
-    let ref_id = ref_map
-        .get("id")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    let overrides = ref_map.get("descendants").and_then(Value::as_object);
-    // Pencil's slot-component pattern: the master is an empty styled
-    // shell carrying a `slot:[…]` id list, and each instance supplies
-    // its real content as its OWN inline `children`. When the master
-    // has no children to render, fall back to the instance's inline
-    // slot content so the shell isn't rendered empty (an empty
-    // `fit_content` frame collapses to its padding box → a white
-    // circle for a high-`cornerRadius` card). The master-has-children
-    // branch is unchanged, so the 115 normal refs and the master-with-
-    // default-content (ambiguous) refs keep TS-parity behaviour.
-    let children_source = match component_map.get("children") {
-        Some(Value::Array(children)) if !children.is_empty() => Some(children),
-        _ => ref_map.get("children").and_then(Value::as_array),
-    };
-    if let Some(children) = children_source {
-        let remapped: Vec<Value> = children
-            .iter()
-            .map(|child| remap_ids(child, ref_id, overrides))
-            .collect();
-        merged.insert("children".into(), Value::Array(remapped));
-    }
-
-    // A failed re-parse must not silently erase the instance from the
-    // render output — fall back to the component subtree positioned at
-    // the instance (no prop overlay), which still shows the content.
-    let mut expanded: PenNode = match serde_json::from_value(Value::Object(merged)) {
-        Ok(node) => node,
-        Err(_) => {
+    // A failed merged parse retains the existing visible fallback.
+    let mut expanded: PenNode = match instance_merge::expand(ref_node, component) {
+        Some(node) => node,
+        None => {
             let mut fallback = component.clone();
             let ref_base = crate::pen_node_ext::PenNodeExt::base(ref_node);
             let ref_id = ref_base.id.clone();
@@ -244,13 +208,12 @@ fn expand_ref(
     // Nested instances inside the component expand recursively (the
     // visited set still holds this target, so self-cycles drop).
     if let Some(children) = crate::pen_node_ext::PenNodeExt::children_mut(&mut expanded) {
-        let resolved = resolve_nodes(children, lookup, visited);
-        *children = resolved;
+        *children = resolve_owned_nodes(std::mem::take(children), lookup, visited);
     }
     Some(expanded)
 }
 
-/// Typed mirror of [`remap_ids`] for the serde-failure fallback:
+/// Typed descendant remapping for the serde-failure fallback:
 /// every DESCENDANT id becomes `refId__originalId` (flat prefix at
 /// all depths, like TS). The root keeps the instance id the caller
 /// already wrote.
@@ -265,40 +228,6 @@ fn remap_ids_typed(node: &mut PenNode, ref_id: &str) {
     }
 }
 
-/// TS `remapIds`: virtual id `refId__childId`, `descendants`
-/// overrides spread onto the matching ORIGINAL child id, recursing
-/// with the same override map.
-fn remap_ids(child: &Value, ref_id: &str, overrides: Option<&Map<String, Value>>) -> Value {
-    let Value::Object(child_map) = child else {
-        return child.clone();
-    };
-    let original_id = child_map
-        .get("id")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    let mut mapped = child_map.clone();
-    if let Some(ov) = overrides
-        .and_then(|o| o.get(original_id))
-        .and_then(Value::as_object)
-    {
-        for (key, value) in ov {
-            mapped.insert(key.clone(), value.clone());
-        }
-    }
-    mapped.insert(
-        "id".into(),
-        Value::String(instance_child_virtual_id(ref_id, original_id)),
-    );
-    if let Some(Value::Array(children)) = mapped.clone().get("children") {
-        let remapped: Vec<Value> = children
-            .iter()
-            .map(|c| remap_ids(c, ref_id, overrides))
-            .collect();
-        mapped.insert("children".into(), Value::Array(remapped));
-    }
-    Value::Object(mapped)
-}
-
 /// Materialize an instance into an independent subtree — the TS
 /// `detachComponent` case-2 merge: component props under the
 /// instance's defined props, `descendants` overrides applied to the
@@ -307,46 +236,7 @@ fn remap_ids(child: &Value, ref_id: &str, overrides: Option<&Map<String, Value>>
 /// `deep_clone_with_new_ids` so the detached tree gets real ids,
 /// not virtual `refId__childId` ones).
 pub(crate) fn materialize_instance(ref_node: &PenNode, component: &PenNode) -> Option<PenNode> {
-    let component_value = serde_json::to_value(component).ok()?;
-    let ref_value = serde_json::to_value(ref_node).ok()?;
-    let (Value::Object(component_map), Value::Object(ref_map)) = (component_value, ref_value)
-    else {
-        return None;
-    };
-    let mut merged = component_map.clone();
-    // TS detach (case 2) applies `descendants[node.ref]` onto the
-    // source BEFORE the instance's direct props: top-level overrides
-    // materialize into the detached tree.
-    apply_top_level_overrides(&mut merged, &ref_map);
-    for (key, value) in &ref_map {
-        if matches!(
-            key.as_str(),
-            "type" | "ref" | "descendants" | "children" | "id"
-        ) {
-            continue;
-        }
-        if !value.is_null() {
-            merged.insert(key.clone(), value.clone());
-        }
-    }
-    if let Some(t) = component_map.get("type") {
-        merged.insert("type".into(), t.clone());
-    }
-    if merged.get("name").is_none_or(Value::is_null) {
-        if let Some(name) = component_map.get("name") {
-            merged.insert("name".into(), name.clone());
-        }
-    }
-    merged.remove("reusable");
-    let overrides = ref_map.get("descendants").and_then(Value::as_object);
-    if let Some(Value::Array(children)) = component_map.get("children") {
-        let with_overrides: Vec<Value> = children
-            .iter()
-            .map(|child| apply_overrides(child, overrides))
-            .collect();
-        merged.insert("children".into(), Value::Array(with_overrides));
-    }
-    serde_json::from_value(Value::Object(merged)).ok()
+    merge_instance(ref_node, component, false, false)
 }
 
 /// Spread the instance's `descendants[ref.target]` object onto a
@@ -376,45 +266,22 @@ fn apply_top_level_overrides(merged: &mut Map<String, Value>, ref_map: &Map<Stri
 /// `pub(crate)` so the inspector's merged-display resolver
 /// (`instance_override.rs`) reuses the exact same child-merge.
 pub(crate) fn apply_overrides(child: &Value, overrides: Option<&Map<String, Value>>) -> Value {
-    let Value::Object(child_map) = child else {
-        return child.clone();
-    };
-    let original_id = child_map
-        .get("id")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    let mut mapped = child_map.clone();
-    if let Some(ov) = overrides
-        .and_then(|o| o.get(original_id))
-        .and_then(Value::as_object)
-    {
-        for (key, value) in ov {
-            mapped.insert(key.clone(), value.clone());
-        }
-    }
-    if let Some(Value::Array(children)) = mapped.clone().get("children") {
-        let walked: Vec<Value> = children
-            .iter()
-            .map(|c| apply_overrides(c, overrides))
-            .collect();
-        mapped.insert("children".into(), Value::Array(walked));
-    }
-    Value::Object(mapped)
+    instance_merge::descendants(child.clone(), overrides, None)
 }
 
 /// Document-wide component lookup for instance flows (detach,
 /// inspector merge).
-pub(crate) fn find_component_node(doc: &PenDocument, id: &str) -> Option<PenNode> {
+pub(crate) fn find_component_node<'a>(doc: &'a PenDocument, id: &str) -> Option<&'a PenNode> {
     find_node(doc, id)
 }
 
 /// Find a node by id anywhere in the document (pages + fallback
 /// children) — TS `findNodeInTree` against the full root set.
-fn find_node(doc: &PenDocument, id: &str) -> Option<PenNode> {
-    fn walk(nodes: &[PenNode], id: &str) -> Option<PenNode> {
+fn find_node<'a>(doc: &'a PenDocument, id: &str) -> Option<&'a PenNode> {
+    fn walk<'a>(nodes: &'a [PenNode], id: &str) -> Option<&'a PenNode> {
         for node in nodes {
             if crate::pen_node_ext::PenNodeExt::base(node).id == id {
-                return Some(node.clone());
+                return Some(node);
             }
             if let Some(children) = crate::pen_node_ext::PenNodeExt::children(node) {
                 if let Some(hit) = walk(children, id) {

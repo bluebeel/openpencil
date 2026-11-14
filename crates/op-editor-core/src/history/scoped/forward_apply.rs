@@ -72,7 +72,8 @@ impl EditorState {
             return Ok(None);
         }
         if refresh_components {
-            self.components = crate::ComponentLibrary::from_document(&self.doc);
+            self.components
+                .rebuild_from_document_preserving_catalog(&self.doc);
         }
         if batch.changes_structure {
             self.ui.variables.fill_refs.clear();

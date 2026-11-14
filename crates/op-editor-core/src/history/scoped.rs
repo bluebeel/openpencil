@@ -5,6 +5,7 @@ use jian_ops_schema::{node::PenNode, page::PenPage};
 use std::{collections::BTreeMap, mem};
 mod actor_claim;
 mod auxiliary;
+mod component_local;
 pub(crate) use auxiliary::{
     forecast as auxiliary_command_forecast, supports as auxiliary_command_supported,
 };
@@ -13,6 +14,7 @@ mod boolean;
 mod deletion;
 pub(crate) use deletion::forecast as deletion_command_bound;
 mod clones;
+mod cohort;
 pub(crate) use boolean::forecast as boolean_command_bound;
 mod forward;
 mod forward_apply;
@@ -26,6 +28,7 @@ mod incremental;
 mod incremental_regions;
 mod metadata_changes;
 mod patch;
+mod ref_target;
 mod splice;
 mod splice_exchange;
 mod splice_identity;
@@ -140,11 +143,16 @@ impl PendingScopedSnapshot {
         state: &EditorState,
         scopes: Vec<Scope>,
         command: &crate::EditorCommand,
+        captures_components: bool,
     ) -> Option<Self> {
         let scope = scopes.first()?.clone();
         let clones = clones::PendingClones::capture(state, scope, command)?;
         Some(Self {
-            metadata: ScopedEditorSnapshot::auxiliary(state, scopes),
+            metadata: ScopedEditorSnapshot::auxiliary_with_components(
+                state,
+                scopes,
+                captures_components,
+            ),
             forests: Vec::new(),
             targets: Vec::new(),
             targeted: true,
@@ -173,14 +181,22 @@ impl PendingScopedSnapshot {
             auxiliary: None,
         })
     }
+    pub(crate) fn deletion_preserves_components(state: &EditorState) -> bool {
+        deletion::catalog_preserving(state)
+    }
     pub(crate) fn capture_deletion(
         state: &EditorState,
         scopes: Vec<Scope>,
         command: &crate::EditorCommand,
+        captures_components: bool,
     ) -> Option<Self> {
         let deletion = deletion::PendingDeletion::capture(state, command)?;
         Some(Self {
-            metadata: ScopedEditorSnapshot::auxiliary(state, scopes),
+            metadata: ScopedEditorSnapshot::auxiliary_with_components(
+                state,
+                scopes,
+                captures_components,
+            ),
             forests: Vec::new(),
             targets: Vec::new(),
             targeted: true,
@@ -191,35 +207,16 @@ impl PendingScopedSnapshot {
             auxiliary: None,
         })
     }
-    pub(crate) fn capture_auxiliary(
-        state: &EditorState,
-        command: &crate::EditorCommand,
-    ) -> Option<Self> {
-        let (auxiliary, scopes, capture_components) = auxiliary::Pending::capture(state, command)?;
-        Some(Self {
-            metadata: ScopedEditorSnapshot::auxiliary_with_components(
-                state,
-                scopes,
-                capture_components,
-            ),
-            forests: Vec::new(),
-            targets: Vec::new(),
-            targeted: true,
-            header: None,
-            clones: None,
-            boolean: None,
-            deletion: None,
-            auxiliary: Some(auxiliary),
-        })
-    }
     pub(crate) fn auxiliary_request_matches(
         &self,
         state: &EditorState,
         command: &crate::EditorCommand,
     ) -> Option<bool> {
-        self.auxiliary
-            .as_ref()
-            .map(|patch| patch.request_matches(command) && patch.matches(state))
+        self.auxiliary.as_ref().map(|patch| {
+            patch.request_matches(command)
+                && patch.matches(state)
+                && targets::matches(state, &self.targets)
+        })
     }
     pub(crate) fn captures_variable_key(&self) -> bool {
         self.auxiliary
@@ -608,7 +605,11 @@ impl ScopedEditorSnapshot {
         self.captures_components
     }
     pub fn retained_roots(&self) -> impl Iterator<Item = &Arc<SharedNode>> {
-        self.patches.iter().flat_map(Patch::retained_roots)
+        self.patches.iter().flat_map(Patch::retained_roots).chain(
+            self.auxiliary_patches
+                .iter()
+                .flat_map(auxiliary::Patch::retained_roots),
+        )
     }
     /// Includes every owned non-SharedNode allocation. Shared component roots
     /// and backing are exposed separately for identity-aware ledger accounting.
@@ -716,6 +717,11 @@ impl ScopedEditorSnapshot {
         let mut reordered = patch::Reorders::default();
         if let Some(splices) = splices {
             splices.exchange(&mut state.doc, &mut self.patches);
+            for patch in &mut self.patches {
+                if patch.splices().next().is_none() {
+                    patch.exchange(&mut state.doc, &mut reordered);
+                }
+            }
         } else {
             for patch in &mut self.patches {
                 patch.exchange(&mut state.doc, &mut reordered);

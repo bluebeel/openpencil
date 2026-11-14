@@ -6,39 +6,6 @@ use super::{
 };
 use crate::component_backing::DocumentNodeLocation;
 
-fn active_path(nodes: &[PenNode], id: &str, path: &mut Vec<usize>) -> Option<Box<[usize]>> {
-    for (at, node) in nodes.iter().enumerate() {
-        path.push(at);
-        if node.id_str() == id {
-            return Some(path.clone().into_boxed_slice());
-        }
-        if let Some(children) = node.children() {
-            if let Some(found) = active_path(children, id, path) {
-                return Some(found);
-            }
-        }
-        path.pop();
-    }
-    None
-}
-fn node_at<'a>(mut nodes: &'a [PenNode], path: &[usize]) -> Option<&'a PenNode> {
-    let (last, parents) = path.split_last()?;
-    for at in parents {
-        nodes = nodes.get(*at)?.children()?;
-    }
-    nodes.get(*last)
-}
-fn node_at_mut<'a>(mut nodes: &'a mut [PenNode], path: &[usize]) -> Option<&'a mut PenNode> {
-    let (last, parents) = path.split_last()?;
-    for at in parents {
-        let node = nodes.get_mut(*at)?;
-        if node.children().is_none() {
-            return None;
-        }
-        nodes = node.children_mut()?;
-    }
-    nodes.get_mut(*last)
-}
 struct Plan {
     active: Box<[usize]>,
     location: DocumentNodeLocation,
@@ -60,9 +27,9 @@ fn plan(state: &EditorState, id: &NodeId, name: Option<&str>) -> Option<Plan> {
     let active = if same_page {
         location.child_path.clone()
     } else {
-        active_path(state.active_children(), id.as_str(), &mut Vec::new())?
+        super::routes::find(state.active_children(), id.as_str())?
     };
-    let source = node_at(state.active_children(), &active)?;
+    let source = super::routes::at(state.active_children(), &active)?;
     if !is_component_root(source) {
         return None;
     }
@@ -92,9 +59,19 @@ pub(super) fn create(state: &mut EditorState, id: &NodeId, name: Option<&str>) -
     let Some(plan) = plan(state, id, name) else {
         return false;
     };
-    let snapshot = state.snapshot_for_undo();
+    let pending = crate::history::PendingScopedSnapshot::capture_auxiliary(
+        state,
+        &crate::EditorCommand::CreateComponent {
+            node_id: id.clone(),
+            name: plan.name.clone(),
+        },
+    );
+    let snapshot = pending
+        .is_none()
+        .then(|| state.snapshot_for_undo())
+        .flatten();
     set_reusable(
-        node_at_mut(state.active_children_mut(), &plan.active)
+        super::routes::at_mut(state.active_children_mut(), &plan.active)
             .expect("checked active component route"),
         true,
     );
@@ -106,6 +83,6 @@ pub(super) fn create(state: &mut EditorState, id: &NodeId, name: Option<&str>) -
         },
         plan.location,
     );
-    state.push_undo(snapshot);
+    state.finish_component_history(pending, snapshot);
     true
 }

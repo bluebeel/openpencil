@@ -34,6 +34,7 @@ pub(super) fn default_fill_of_type(kind: FillType, hex: &str) -> PenFill {
     match kind {
         FillType::Solid => solid_fill(hex.to_string()),
         FillType::LinearGradient => PenFill::LinearGradient(LinearGradientBody {
+            geometry: None,
             angle: None,
             stops: default_stops(hex),
             explain: None,
@@ -41,6 +42,7 @@ pub(super) fn default_fill_of_type(kind: FillType, hex: &str) -> PenFill {
             blend_mode: None,
         }),
         FillType::RadialGradient => PenFill::RadialGradient(RadialGradientBody {
+            geometry: None,
             cx: None,
             cy: None,
             radius: None,
@@ -197,6 +199,7 @@ pub(super) fn convert_fill(existing: PenFill, kind: FillType) -> PenFill {
         // Linear → Radial — carry every shared field.
         (FillType::RadialGradient, PenFill::LinearGradient(body)) => {
             PenFill::RadialGradient(RadialGradientBody {
+                geometry: None,
                 cx: None,
                 cy: None,
                 radius: None,
@@ -209,6 +212,7 @@ pub(super) fn convert_fill(existing: PenFill, kind: FillType) -> PenFill {
         // Radial → Linear — carry every shared field.
         (FillType::LinearGradient, PenFill::RadialGradient(body)) => {
             PenFill::LinearGradient(LinearGradientBody {
+                geometry: None,
                 angle: None,
                 stops: body.stops,
                 explain: body.explain,

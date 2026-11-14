@@ -98,10 +98,7 @@ fn set_fill_blend_mode_at(node: &mut PenNode, index: usize, mode: Option<BlendMo
 impl EditorState {
     /// Effective compositing mode of the anchor-selected node.
     pub fn selected_node_blend_mode(&self) -> Option<BlendMode> {
-        if let Some(display) = crate::instance_override::resolve_instance_display_node_for_anchor(
-            &self.doc,
-            &self.selection.anchor,
-        ) {
+        if let Some(display) = self.instance_display_header(&self.selection.anchor) {
             return node_blend_mode(&display);
         }
         node_blend_mode(self.selected_node()?)
@@ -109,10 +106,7 @@ impl EditorState {
 
     /// Effective mask mode of the anchor-selected node.
     pub fn selected_node_mask_type(&self) -> Option<MaskType> {
-        if let Some(display) = crate::instance_override::resolve_instance_display_node_for_anchor(
-            &self.doc,
-            &self.selection.anchor,
-        ) {
+        if let Some(display) = self.instance_display_header(&self.selection.anchor) {
             return node_mask_type(&display);
         }
         node_mask_type(self.selected_node()?)

@@ -694,6 +694,11 @@ impl RenderBackend for CanvasKitBackend {
     fn push_mask_source_layer(&mut self, luminance: bool) {
         self.ck.push_mask_source_layer(luminance);
     }
+    fn push_mask_source_layer_with_color_space(&mut self, luminance: bool, linear_rgb: bool) {
+        self.ck
+            .push_mask_source_layer_with_color_space(luminance, linear_rgb);
+    }
+
     fn push_blend_layer(&mut self, mode: ImageBlendMode) {
         self.ck.push_blend_layer(image_blend_mode_code(mode));
     }

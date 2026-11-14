@@ -1,6 +1,7 @@
 //! Single execution against a complete, exclusively held document authority.
 //! Proven edits retain touched roots once; broader writes upgrade their exact
 //! original forests. Both seal through existing scoped history, never simulation.
+use super::component_proof as components;
 use crate::command_batch::actor::BatchActorSnapshot;
 use crate::command_id_scope::AtomicCommandAllocator;
 use crate::history::PendingScopedSnapshot;
@@ -9,8 +10,6 @@ use crate::{
     ScopedHistoryError,
 };
 use std::{collections::BTreeMap, sync::Arc};
-#[path = "atomic_components.rs"]
-mod components;
 #[path = "atomic_identities.rs"]
 mod identities;
 

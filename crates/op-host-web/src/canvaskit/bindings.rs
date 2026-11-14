@@ -637,6 +637,12 @@ extern "C" {
     );
     #[wasm_bindgen(method, js_name = pushMaskSourceLayer)]
     pub(super) fn push_mask_source_layer(this: &OpCk, luminance: bool);
+    #[wasm_bindgen(method, js_name = pushMaskSourceLayerWithColorSpace)]
+    pub(super) fn push_mask_source_layer_with_color_space(
+        this: &OpCk,
+        luminance: bool,
+        linear_rgb: bool,
+    );
     #[wasm_bindgen(method, js_name = pushBlendLayer)]
     pub(super) fn push_blend_layer(this: &OpCk, blend_mode: u8);
     #[wasm_bindgen(method, js_name = pushBackdropBlurLayer)]

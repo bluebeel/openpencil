@@ -35,6 +35,7 @@ impl EditorState {
         capture: &mut Option<CommandEditCapture>,
         admit: impl FnOnce(&Self, usize, bool) -> bool,
     ) -> Option<bool> {
+        self.observe_command_id_sequence(&command);
         if capture.is_some() {
             return None;
         }
@@ -43,6 +44,6 @@ impl EditorState {
             return None;
         }
         *capture = Some(self.prepare_auxiliary_command_edit(&command)?);
-        Some(self.apply_command_edit_then(command, capture.as_mut().unwrap(), |_| {}))
+        Some(self.apply_command_edit_without_document_repairs(command, capture.as_mut().unwrap()))
     }
 }

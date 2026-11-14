@@ -1,7 +1,7 @@
 use super::load_report::is_strict_format_version;
 use super::{sidecar_path, DocIoError, DocumentLoadReport, LoadedEditorState};
 use op_editor_core::EditorState;
-use op_pen_loader::{apply_editor_meta, extract_editor_meta_with_report, EditorMeta};
+use op_pen_loader::{apply_editor_meta, extract_editor_meta_checked, EditorMeta};
 
 pub fn load_editor_state(
     path: &std::path::Path,
@@ -104,7 +104,8 @@ fn parse_editor_state_source(
     src: &str,
     locale: op_editor_core::Locale,
 ) -> Result<(EditorState, Option<EditorMeta>, DocumentLoadReport), DocIoError> {
-    let embedded = extract_editor_meta_with_report(src);
+    let embedded =
+        extract_editor_meta_checked(src).map_err(|error| DocIoError::Schema(error.to_string()))?;
     let canonical = match op_pen_loader::payload::load_canonical_with_compatibility(src) {
         Ok(loaded) => loaded,
         Err(error) => {

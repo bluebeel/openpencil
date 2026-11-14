@@ -7,10 +7,15 @@ use super::{
 use crate::{EditorCommand as C, EditorState, NodeId};
 use jian_ops_schema::variable::VariableDefinition;
 use std::mem;
+#[path = "auxiliary/catalog.rs"]
+mod catalog;
+#[path = "auxiliary/lifecycle.rs"]
+mod lifecycle;
 #[path = "auxiliary_plan.rs"]
 mod plan;
 #[derive(Debug)]
 pub(super) enum Target {
+    Lifecycle(lifecycle::Pending),
     Variable {
         key: String,
         old: Option<VariableDefinition>,
@@ -35,6 +40,7 @@ pub(super) struct Pending {
 }
 #[derive(Debug, Clone, PartialEq)]
 pub(super) enum Patch {
+    Catalog(catalog::Patch),
     Variable(MapPatch<VariableDefinition>),
     Page {
         index: usize,
@@ -49,13 +55,30 @@ pub(super) enum Patch {
     },
 }
 pub(crate) fn supports(command: &C) -> bool {
-    plan::supports(command)
+    lifecycle::supports(command) || plan::supports(command)
 }
 pub(crate) fn forecast(state: &EditorState, command: &C) -> Option<(usize, bool)> {
+    if lifecycle::supports(command) {
+        return lifecycle::forecast(state, command).map(|bytes| (bytes, false));
+    }
     plan::build(state, command).map(|plan| (plan.bytes, plan.capture_components))
 }
 impl Pending {
-    pub(super) fn capture(state: &EditorState, command: &C) -> Option<(Self, Vec<Scope>, bool)> {
+    pub(super) fn capture(
+        state: &EditorState,
+        command: &C,
+    ) -> Option<(Self, Vec<Scope>, bool, Vec<super::TargetSpec>)> {
+        if lifecycle::supports(command) {
+            let plan = lifecycle::Pending::capture(state, command)?;
+            return Some((
+                Self {
+                    value: Target::Lifecycle(plan.pending),
+                },
+                plan.scopes,
+                false,
+                plan.targets,
+            ));
+        }
         let plan = plan::build(state, command)?;
         Some((
             Self {
@@ -63,6 +86,22 @@ impl Pending {
             },
             plan.scopes,
             plan.capture_components,
+            Vec::new(),
+        ))
+    }
+    pub(super) fn capture_detach(
+        state: &EditorState,
+        id: &NodeId,
+        path: &[usize],
+    ) -> Option<(Self, Vec<Scope>, bool, Vec<super::TargetSpec>)> {
+        let plan = lifecycle::Pending::capture_detach(state, id, path)?;
+        Some((
+            Self {
+                value: Target::Lifecycle(plan.pending),
+            },
+            plan.scopes,
+            false,
+            plan.targets,
         ))
     }
     pub(super) fn is_header(&self) -> bool {
@@ -89,6 +128,7 @@ impl Pending {
     }
     pub(super) fn request_matches(&self, command: &C) -> bool {
         match (&self.value, command) {
+            (Target::Lifecycle(pending), command) => pending.request_matches(command),
             (
                 Target::Variable {
                     key, create: false, ..
@@ -111,6 +151,7 @@ impl Pending {
     pub(super) fn matches(&self, state: &EditorState) -> bool {
         self.matches_header(&state.doc)
             && match &self.value {
+                Target::Lifecycle(pending) => pending.matches(state),
                 Target::Variable { .. } => true,
                 Target::Page { index, id, old } => state
                     .doc
@@ -127,6 +168,7 @@ impl Pending {
     }
     pub(super) fn compact(self, state: &EditorState) -> Result<Option<Patch>, ScopedHistoryError> {
         Ok(match self.value {
+            Target::Lifecycle(pending) => pending.compact(state)?.map(Patch::Catalog),
             Target::Variable {
                 key,
                 old,
@@ -182,17 +224,26 @@ impl Pending {
     }
 }
 impl Patch {
+    /// Catalog changes are outside PenDocument. Variables/page names are not
+    /// described by the canonical node-header visitor and invalidate its delta.
+    pub(super) fn changes_document_outside_nodes(&self) -> bool {
+        matches!(self, Self::Variable(_) | Self::Page { .. })
+    }
     pub(super) fn is_header(&self) -> bool {
         matches!(self, Self::Variable(_))
     }
     pub(super) fn actor_safe(&self) -> bool {
         match self {
             Self::Variable(map) => map.actor_safe(),
+            Self::Catalog(_) => true,
             Self::Page { .. } | Self::Component { .. } => true,
         }
     }
     pub(super) fn actor_conflicts(&self, other: &Self) -> bool {
         match (self, other) {
+            (Self::Catalog(a), Self::Catalog(b)) => a.id == b.id,
+            (Self::Catalog(a), Self::Component { id, .. })
+            | (Self::Component { id, .. }, Self::Catalog(a)) => a.id == *id,
             (Self::Variable(a), Self::Variable(b)) => a.actor_conflicts(b),
             (
                 Self::Page {
@@ -206,10 +257,20 @@ impl Patch {
             _ => false,
         }
     }
+    pub(super) fn retained_roots(
+        &self,
+    ) -> impl Iterator<Item = &std::sync::Arc<crate::SharedNode>> {
+        let entry = match self {
+            Self::Catalog(entry) => Some(entry),
+            _ => None,
+        };
+        entry.into_iter().flat_map(catalog::Patch::roots)
+    }
     pub(super) fn storage_bytes(&self) -> usize {
         mem::size_of::<Self>()
             + match self {
                 Self::Variable(map) => map.storage_bytes(),
+                Self::Catalog(patch) => patch.bytes(),
                 Self::Page {
                     id, old, expected, ..
                 } => id.capacity() + old.capacity() + expected.capacity(),
@@ -221,6 +282,7 @@ impl Patch {
 }
 pub(super) struct Prepared {
     indices: Vec<Option<usize>>,
+    catalogs: Vec<Option<catalog::Prepared>>,
 }
 impl Prepared {
     pub(super) fn capture(
@@ -229,8 +291,16 @@ impl Prepared {
         actor: bool,
     ) -> Result<Self, ScopedHistoryError> {
         let mut indices = Vec::with_capacity(patches.len());
+        let mut catalogs = Vec::with_capacity(patches.len());
         for patch in patches {
+            if let Patch::Catalog(patch) = patch {
+                catalogs.push(Some(catalog::Prepared::capture(state, patch)?));
+                indices.push(None);
+                continue;
+            }
+            catalogs.push(None);
             indices.push(match patch {
+                Patch::Catalog(_) => unreachable!(),
                 Patch::Variable(map) => {
                     if !(if actor {
                         map.validate_actor(&state.doc.variables)
@@ -274,11 +344,14 @@ impl Prepared {
                 }
             });
         }
-        Ok(Self { indices })
+        Ok(Self { indices, catalogs })
     }
     pub(super) fn exchange(self, state: &mut EditorState, patches: &mut [Patch]) {
-        for (patch, index) in patches.iter_mut().zip(self.indices) {
+        for ((patch, index), catalog) in patches.iter_mut().zip(self.indices).zip(self.catalogs) {
             match patch {
+                Patch::Catalog(patch) => catalog
+                    .expect("prepared catalog destination")
+                    .exchange(state, patch),
                 Patch::Variable(map) => map.exchange(&mut state.doc.variables),
                 Patch::Page { old, expected, .. } => {
                     let name = &mut state.doc.pages.as_mut().unwrap()[index.unwrap()].name;
@@ -290,6 +363,34 @@ impl Prepared {
                     state.components.exchange_name_at(at, old);
                     *expected = state.components.components[at].name.clone();
                 }
+            }
+        }
+    }
+}
+
+impl Patch {
+    pub(super) fn cohort_live_bound(&self, state: &EditorState, limit: usize) -> Option<usize> {
+        match self {
+            Self::Catalog(patch) => patch.cohort_live_bound(state, limit),
+            Self::Variable(map) => map.cohort_live_bound(&state.doc.variables, limit),
+            Self::Page { index, id, .. } => {
+                let page = state.doc.pages.as_ref()?.get(*index)?;
+                if page.id != *id {
+                    return None;
+                }
+                crate::history_snapshot::command_capture_value_bytes(&page.name, limit).ok()
+            }
+            Self::Component { id, .. } => {
+                let mut matches = state
+                    .components
+                    .components
+                    .iter()
+                    .filter(|component| component.id == *id);
+                let component = matches.next()?;
+                if matches.next().is_some() {
+                    return None;
+                }
+                crate::history_snapshot::command_capture_value_bytes(&component.name, limit).ok()
             }
         }
     }

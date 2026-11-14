@@ -108,7 +108,19 @@ impl Charge {
         }
     }
     fn shader(&self, shader: &SceneShader) -> usize {
-        shader.sksl.capacity()
+        let gradient_bytes = shader.gradient.as_ref().map_or(0, |paint| {
+            std::mem::size_of::<jian_ops_schema::style::GradientPaint>()
+                + 2 * std::mem::size_of::<usize>()
+                + paint.stops.capacity()
+                    * std::mem::size_of::<jian_ops_schema::style::GradientStop>()
+                + paint
+                    .stops
+                    .iter()
+                    .map(|stop| stop.color.capacity())
+                    .sum::<usize>()
+        });
+        gradient_bytes
+            + shader.sksl.capacity()
             + shader.uniforms.capacity() * size_of::<SceneShaderUniform>()
             + shader
                 .uniforms

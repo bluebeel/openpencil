@@ -268,6 +268,7 @@ pub(super) fn payload_shader_into_scene(s: ShaderPayload, k: f32, size: [f32; 2]
         uniform.values = size.to_vec();
     }
     SceneShader {
+        gradient: s.gradient.map(std::sync::Arc::from),
         sksl: s.sksl,
         uniforms,
         opacity: (s.opacity * k).clamp(0.0, 1.0),

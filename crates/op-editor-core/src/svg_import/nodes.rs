@@ -9,97 +9,141 @@ use super::*;
 pub(super) fn element_to_node_ctx(
     el: &SvgTree,
     parent_ctx: &StyleCtx,
-    scale: f64,
-    offset: (f64, f64),
+    parent_matrix: kurbo::Affine,
+    parent_viewport: [f64; 4],
+    resources: &SvgResources<'_>,
     allocator: &mut dyn crate::IdAllocator,
     taken: &mut std::collections::HashSet<NodeId>,
 ) -> Result<Option<PenNode>, crate::IdAllocError> {
+    if is_definition(&el.tag)
+        || extract_style_or_attr(&el.attrs, "display").as_deref() == Some("none")
+    {
+        return Ok(None);
+    }
     let ctx = merge_style_ctx(parent_ctx, &el.attrs);
-    if el.tag == "g" || el.tag == "svg" {
-        let mut kids: Vec<PenNode> = Vec::new();
-        for child in &el.children {
-            if let Some(node) = element_to_node_ctx(child, &ctx, scale, offset, allocator, taken)? {
-                kids.push(node);
-            }
-        }
-        if kids.is_empty() {
+    let matrix = match element_transform(el, parent_matrix) {
+        Ok(matrix) => matrix,
+        Err(error) => {
+            tracing::warn!(%error,tag=%el.tag,"SVG element transform import rejected");
             return Ok(None);
         }
-        if kids.len() == 1 {
-            return Ok(kids.into_iter().next());
+    };
+    let viewport = if el.tag == "svg" {
+        match source_viewport(&el.attrs, parent_viewport) {
+            Ok(viewport) => viewport,
+            Err(error) => {
+                tracing::warn!(%error,"SVG nested viewport import rejected");
+                return Ok(None);
+            }
         }
-        let id = allocator.allocate(taken)?;
-        use jian_ops_schema::node::container::ContainerProps;
-        use jian_ops_schema::node::GroupNode;
-        let name = el
-            .attr("id")
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| "Group".to_string());
-        return Ok(Some(PenNode::Group(GroupNode {
-            base: PenNodeBase {
-                id: id.into(),
-                name: Some(name),
-                ..Default::default()
-            },
-            container: ContainerProps::default(),
-            children: Some(kids),
-            state: None,
-            bindings: None,
-            events: None,
-            lifecycle: None,
-            semantics: None,
-            gestures: None,
-            route: None,
-        })));
-    }
-    // Parse/scale/localize a path only once. Preserve arcs and compound
-    // subpaths in d; do not build an intermediate scaled path string.
-    if el.tag == "path" {
-        if let Some(d) = el.attr("d") {
+    } else {
+        parent_viewport
+    };
+    let mut node = if el.tag == "g" || el.tag == "svg" {
+        if el.tag == "svg" {
+            tracing::warn!("nested SVG viewport mapping is imported; automatic viewport clipping is not represented");
+        }
+        let mut children = Vec::new();
+        for child in &el.children {
+            if let Some(child) =
+                element_to_node_ctx(child, &ctx, matrix, viewport, resources, allocator, taken)?
+            {
+                children.push(child);
+            }
+        }
+        if children.is_empty() {
+            return Ok(None);
+        }
+        children.reverse();
+        let explicit_group = el.attr("id").is_some()
+            || svg_node_opacity(&el.attrs).is_some()
+            || ["clip-path", "mask", "mix-blend-mode"]
+                .iter()
+                .any(|name| extract_style_or_attr(&el.attrs, name).is_some());
+        if children.len() == 1 && !explicit_group {
+            children.pop().expect("one SVG child")
+        } else {
             let id = allocator.allocate(taken)?;
-            return Ok(path_node_from_svg_d(
-                id,
-                el.attr("id").unwrap_or("Path"),
-                d,
-                scale,
-                offset,
-                resolve_svg_fill_hex(&el.attrs, &ctx),
-                resolve_svg_stroke(&el.attrs, &ctx, scale),
-                ctx.fill_rule,
-            ));
+            import_group(id, el.attr("id").unwrap_or("Group"), children)
+        }
+    } else {
+        let Some(node) = transformed_leaf(el, &ctx, matrix, viewport, resources, allocator, taken)?
+        else {
+            return Ok(None);
+        };
+        node
+    };
+    let has_resource = ["clip-path", "mask"].iter().any(|property| {
+        extract_style_or_attr(&el.attrs, property).is_some_and(|value| value.trim() != "none")
+    });
+    if has_resource {
+        if let Some(source) = reference_bounds(el) {
+            let target = crate::svg_path_data::transformed_bounds(
+                &shape_data(el).unwrap_or_else(|| {
+                    std::borrow::Cow::Owned(format!(
+                        "M{} {} H{} V{} H{} Z",
+                        source.x,
+                        source.y,
+                        source.x + source.w,
+                        source.y + source.h,
+                        source.x
+                    ))
+                }),
+                matrix,
+            )
+            .unwrap_or(source);
+            node = apply_resources(
+                resources,
+                el,
+                node,
+                PaintSpace {
+                    source,
+                    target,
+                    matrix,
+                    viewport,
+                },
+                allocator,
+                taken,
+            )?;
         }
     }
-    let mut scaled = SvgElement {
-        tag: el.tag.clone(),
-        attrs: el.attrs.clone(),
-    };
-    apply_scale_to_attrs(&mut scaled, scale);
-    let fill_hex = resolve_svg_fill_hex(&scaled.attrs, &ctx);
-    let stroke = resolve_svg_stroke(&scaled.attrs, &ctx, scale);
-    let id = allocator.allocate(taken)?;
-    let Some(mut node) = element_to_node(&scaled, id, offset) else {
-        return Ok(None);
-    };
-    if let PenNode::Path(path) = &mut node {
-        path.fill_rule = ctx.fill_rule;
+    if !ctx.clip_mode {
+        node.base_mut().opacity = svg_node_opacity(&el.attrs);
+        if let Some(mode) = extract_style_or_attr(&el.attrs, "mix-blend-mode") {
+            node.base_mut().blend_mode =
+                serde_json::from_value(serde_json::Value::String(mode.replace('-', '_'))).ok();
+        }
     }
-    if let Some(stroke) = stroke {
-        set_node_stroke(&mut node, stroke);
-    }
-    if fill_hex.is_none() && scaled.tag != "line" && scaled.tag != "polyline" {
-        // Explicit fill="none" / fill="transparent" should not leave
-        // the old element builder's attribute fill behind.
-        clear_node_fill(&mut node);
-    } else if let Some(hex) = fill_hex.as_deref() {
-        set_primary_fill_hex(&mut node, hex);
+    if extract_style_or_attr(&el.attrs, "visibility").as_deref() == Some("hidden") {
+        node.base_mut().visible = Some(false);
     }
     Ok(Some(node))
+}
+
+pub(super) fn import_group(id: NodeId, name: &str, children: Vec<PenNode>) -> PenNode {
+    use jian_ops_schema::node::{container::ContainerProps, GroupNode};
+    PenNode::Group(GroupNode {
+        base: PenNodeBase {
+            id: id.into(),
+            name: Some(name.to_string()),
+            ..Default::default()
+        },
+        container: ContainerProps::default(),
+        children: Some(children),
+        state: None,
+        bindings: None,
+        events: None,
+        lifecycle: None,
+        semantics: None,
+        gestures: None,
+        route: None,
+    })
 }
 
 /// Build a `PenNode` from one parsed SVG element. `None` for
 /// unsupported tags (`g` / `svg` / `defs` / `style` / …) and for
 /// degenerate geometry.
-fn element_to_node(el: &SvgElement, id: NodeId, offset: (f64, f64)) -> Option<PenNode> {
+pub(super) fn element_to_node(el: &SvgElement, id: NodeId, offset: (f64, f64)) -> Option<PenNode> {
     let (ox, oy) = offset;
     let fill = el.attr("fill").and_then(parse_svg_color);
     let mut node = match el.tag.as_str() {
@@ -247,30 +291,39 @@ fn path_node_from_pen_anchors(
     }))
 }
 
-// Geometry, placement and inherited paint are independent import inputs.
-#[allow(clippy::too_many_arguments)]
-fn path_node_from_svg_d(
+/// Localize already-transformed f64 SVG geometry without rounding vertices.
+pub(super) fn path_node_from_svg_d(
     id: NodeId,
     name: &str,
     d: &str,
-    scale: f64,
-    offset: (f64, f64),
-    fill_hex: Option<String>,
+    matrix: kurbo::Affine,
+    fill: Option<Vec<PenFill>>,
     stroke: Option<PenStroke>,
     fill_rule: Option<PathFillRule>,
 ) -> Option<PenNode> {
-    let (local_d, bounds) = if scale == 1.0 {
-        crate::svg_path_data::localize_svg_path(d)?
-    } else {
-        crate::svg_path_data::localize_svg_path_scaled(d, scale)?
+    let Some((local_d, bounds)) = crate::svg_path_data::localize_transformed(d, matrix) else {
+        tracing::warn!("SVG path transform could not be represented as finite geometry");
+        return None;
     };
+    path_node_from_local_geometry(id, name, (local_d, bounds), fill, stroke, fill_rule)
+}
+
+pub(super) fn path_node_from_local_geometry(
+    id: NodeId,
+    name: &str,
+    geometry: (String, crate::svg_path_data::SvgPathBounds),
+    fill: Option<Vec<PenFill>>,
+    stroke: Option<PenStroke>,
+    fill_rule: Option<PathFillRule>,
+) -> Option<PenNode> {
+    let (local_d, bounds) = geometry;
     let closed = local_d.contains('Z');
     Some(PenNode::Path(PathNode {
         base: PenNodeBase {
             id: id.into(),
             name: Some(name.to_string()),
-            x: Some(bounds.x + offset.0),
-            y: Some(bounds.y + offset.1),
+            x: Some(bounds.x),
+            y: Some(bounds.y),
             ..Default::default()
         },
         icon_id: None,
@@ -281,7 +334,7 @@ fn path_node_from_svg_d(
         mask: None,
         width: Some(SizingBehavior::Number(bounds.w)),
         height: Some(SizingBehavior::Number(bounds.h)),
-        fill: fill_hex.map(|hex| vec![solid_fill(&hex)]),
+        fill,
         stroke,
         effects: None,
         state: None,

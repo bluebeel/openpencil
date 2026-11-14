@@ -2052,15 +2052,32 @@ export async function opCkInit(canvasId) {
       paint.delete();
     },
     pushMaskSourceLayer(luminance) {
+      this.pushMaskSourceLayerWithColorSpace(luminance, false);
+    },
+    pushMaskSourceLayerWithColorSpace(luminance, linearRgb) {
       const paint = new CK.Paint();
       paint.setBlendMode(CK.BlendMode.DstIn);
-      const luma = luminance && CK.ColorFilter && CK.ColorFilter.MakeLuma
-        ? CK.ColorFilter.MakeLuma()
-        : null;
-      if (luma) paint.setColorFilter(luma);
-      canvas.saveLayer(paint);
-      paint.delete();
-      if (luma && luma.delete) luma.delete();
+      let luma = null, gamma = null, filter = null;
+      try {
+        if (luminance) {
+          luma = CK.ColorFilter && CK.ColorFilter.MakeLuma ? CK.ColorFilter.MakeLuma() : null;
+          if (linearRgb) {
+            if (!luma || !CK.ColorFilter.MakeSRGBToLinearGamma || !CK.ColorFilter.MakeCompose) {
+              throw new Error('CanvasKit cannot render linearRGB luminance masks');
+            }
+            gamma = CK.ColorFilter.MakeSRGBToLinearGamma();
+            filter = CK.ColorFilter.MakeCompose(luma, gamma);
+            if (!filter) throw new Error('CanvasKit linearRGB mask filter failed');
+          } else filter = luma;
+          if (filter) paint.setColorFilter(filter);
+        }
+        canvas.saveLayer(paint);
+      } finally {
+        paint.delete();
+        if (filter && filter !== luma) filter.delete();
+        if (gamma) gamma.delete();
+        if (luma) luma.delete();
+      }
     },
     pushBlendLayer(blendMode) {
       if (!blendMode) {

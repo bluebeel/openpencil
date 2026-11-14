@@ -9,7 +9,7 @@ use serde::Serialize;
 use super::{McpTool, ToolErrorCode, ToolOutcome};
 
 pub struct SaveDocument {
-    document_payload: Vec<u8>,
+    document_payload: Result<Vec<u8>, serde_json::Error>,
 }
 
 #[derive(Serialize)]
@@ -17,6 +17,8 @@ pub struct SaveDocument {
 struct EditorMeta {
     active_page_index: usize,
     preserve_authored_geometry: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    component_catalog: Option<op_editor_core::ComponentCatalog>,
 }
 
 impl McpTool for SaveDocument {
@@ -31,8 +33,17 @@ impl McpTool for SaveDocument {
                 "filePath is required".into(),
             );
         };
+        let payload = match &self.document_payload {
+            Ok(payload) => payload,
+            Err(error) => {
+                return ToolOutcome::Err(
+                    ToolErrorCode::ToolFailed,
+                    format!("save document snapshot failed: {error}"),
+                )
+            }
+        };
         let path = resolve_path(path);
-        if let Err(e) = std::fs::write(&path, &self.document_payload) {
+        if let Err(e) = std::fs::write(&path, payload) {
             return ToolOutcome::Err(
                 ToolErrorCode::ToolFailed,
                 format!("save document failed: {e}"),
@@ -51,7 +62,7 @@ pub fn save_document_snapshot(state: &EditorState) -> SaveDocument {
     // document-sized `Value` and a second final `String` allocation.
     let mut document_payload = Vec::new();
     let thumbnails = jian_ops_schema::image_thumbs::capture_snapshot();
-    if jian_ops_schema::image_table::write_document_with_extension(
+    let result = jian_ops_schema::image_table::write_document_with_extension(
         &mut document_payload,
         &state.doc,
         &thumbnails,
@@ -59,14 +70,12 @@ pub fn save_document_snapshot(state: &EditorState) -> SaveDocument {
         &EditorMeta {
             active_page_index: state.ui.active_page_index,
             preserve_authored_geometry: state.editor_ui.preserve_authored_geometry,
+            component_catalog: op_editor_core::ComponentCatalog::capture(state),
         },
-    )
-    .is_err()
-    {
-        document_payload.clear();
-        document_payload.extend_from_slice(b"{}");
+    );
+    SaveDocument {
+        document_payload: result.map(|_| document_payload),
     }
-    SaveDocument { document_payload }
 }
 
 fn resolve_path(raw: &str) -> PathBuf {

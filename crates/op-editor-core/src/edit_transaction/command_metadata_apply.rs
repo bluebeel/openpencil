@@ -41,6 +41,7 @@ impl EditorState {
         capture: &mut Option<CommandEditCapture>,
         admit: impl FnOnce(&Self, &PenNode) -> bool,
     ) -> Option<bool> {
+        self.observe_command_id_sequence(&command);
         if capture.is_some() {
             return None;
         }
@@ -97,6 +98,33 @@ impl EditorState {
         node_id: &crate::NodeId,
         write: impl FnOnce(&mut PenNode) -> bool,
     ) -> Option<bool> {
+        self.try_edit_header_with_history_inner(node_id, false, write)
+    }
+    /// This lexical operation changes only a canonical Ref target. Even an
+    /// owned external catalog cannot be changed through that header write.
+    pub(crate) fn try_edit_ref_target_with_history(
+        &mut self,
+        node_id: &crate::NodeId,
+        target: &str,
+    ) -> Option<bool> {
+        self.try_edit_header_with_history_inner(node_id, true, |node| {
+            let PenNode::Ref(reference) = node else {
+                return false;
+            };
+            if reference.target == target {
+                return false;
+            }
+            reference.target.clear();
+            reference.target.push_str(target);
+            true
+        })
+    }
+    fn try_edit_header_with_history_inner(
+        &mut self,
+        node_id: &crate::NodeId,
+        ref_target: bool,
+        write: impl FnOnce(&mut PenNode) -> bool,
+    ) -> Option<bool> {
         if self.undo_capture_suspended
             || self.editor_ui.workspace.active
             || self.instance_write_virtual_anchor.is_some()
@@ -123,7 +151,12 @@ impl EditorState {
         )
         .ok()?;
         let spec = specs.first()?.clone();
-        let pending = if self.metadata_target_preserves_components(target) {
+        let catalog_stable = ref_target
+            && matches!(target, PenNode::Ref(_))
+            && !self.components.is_document_backed(node_id);
+        let pending = if catalog_stable {
+            PendingScopedSnapshot::capture_ref_target(self, plan.forests, specs)
+        } else if self.metadata_target_preserves_components(target) {
             PendingScopedSnapshot::capture_targets_preserving_components(self, plan.forests, specs)
         } else {
             PendingScopedSnapshot::capture_targets(self, plan.forests, false, specs)

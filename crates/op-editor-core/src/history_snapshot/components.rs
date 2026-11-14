@@ -10,7 +10,7 @@ impl SharedComponent {
     pub fn storage_bytes(&self) -> usize {
         std::mem::size_of::<Self>() + 2 * std::mem::size_of::<usize>()
     }
-    fn capture(component: &Component, anchor: Option<&Arc<Self>>) -> Arc<Self> {
+    pub(crate) fn capture(component: &Component, anchor: Option<&Arc<Self>>) -> Arc<Self> {
         let root = SharedNode::capture(&component.root, anchor.map(|c| &c.root));
         if let Some(old) = anchor {
             if old.id == component.id && old.name == component.name && Arc::ptr_eq(&old.root, &root)
@@ -25,7 +25,7 @@ impl SharedComponent {
             root,
         })
     }
-    fn materialize(&self) -> Component {
+    pub(crate) fn materialize(&self) -> Component {
         Component {
             id: self.id.clone(),
             name: self.name.clone(),

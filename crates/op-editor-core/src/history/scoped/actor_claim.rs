@@ -150,6 +150,11 @@ impl ScopedEditorSnapshot {
         let mut reordered = super::patch::Reorders::default();
         if let Some(splices) = splices {
             splices.exchange(&mut state.doc, &mut self.patches);
+            for patch in &mut self.patches {
+                if patch.splices().next().is_none() {
+                    patch.exchange(&mut state.doc, &mut reordered);
+                }
+            }
         } else {
             for patch in &mut self.patches {
                 patch.exchange(&mut state.doc, &mut reordered);

@@ -21,6 +21,7 @@ pub(super) struct Transaction<'s, 'q> {
     fence: &'s DocumentRecovery,
     groups: &'s Groups,
     requests: &'q [Request],
+    id_sequence: op_editor_core::CommandIdSequence,
     budget: budget::Budget,
     capture_quota: quota::Reservation,
     pending: Vec<Pending>,
@@ -50,6 +51,7 @@ impl<'s, 'q> Transaction<'s, 'q> {
             fence,
             groups,
             requests,
+            id_sequence: Default::default(),
             budget: Default::default(),
             capture_quota: quota::Reservation::captures(),
             pending: Vec::with_capacity(requests.len()),
@@ -135,96 +137,99 @@ impl<'s, 'q> Transaction<'s, 'q> {
         let mut isolated = false;
         let mut failure = None;
         let mut command_count = 0;
-        let response = mcp_serve::agent_context::with_agent_context_permit(
-            &request.contexts,
-            self.path,
-            self.editor,
-            &request.line,
-            request.profile,
-            &request.permit,
-            |editor| {
-                let operation = fence.watch();
-                let result = mcp_serve::process_message_with_bound_authority_profiled(
-                    editor,
-                    &request.line,
-                    request.profile,
-                    true,
-                    |tool, editor, command| {
-                        command_count += 1;
-                        if command_count != 1 {
-                            failure = Some(
-                                "resident grouped setter emitted more than one command".to_owned(),
-                            );
-                            return false;
-                        }
-                        if !audited_command(command)
-                            || !mcp_serve::cohort_coverage::repair_free(editor, tool, command)
-                        {
-                            isolated = true;
-                            return false;
-                        }
-                        let before = editor.document_revision();
-                        let attempt =
-                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                                apply::apply(
-                                    editor,
-                                    command,
-                                    request.line.len(),
-                                    budget,
-                                    capture_quota,
-                                    metrics,
-                                    &mut capture,
-                                )
-                            }));
-                        match attempt {
-                            Ok(apply::Outcome::Applied(ok)) => {
-                                applied = ok;
-                                changed = editor.document_revision() != before;
-                                if !ok && changed {
-                                    failure = Some(
-                                        "resident grouped command refused after mutation"
-                                            .to_owned(),
-                                    );
-                                }
-                                ok
+        let response = self.id_sequence.with_authority(self.editor, |editor| {
+            mcp_serve::agent_context::with_agent_context_permit(
+                &request.contexts,
+                self.path,
+                editor,
+                &request.line,
+                request.profile,
+                &request.permit,
+                |editor| {
+                    let operation = fence.watch();
+                    let result = mcp_serve::process_message_with_bound_authority_profiled(
+                        editor,
+                        &request.line,
+                        request.profile,
+                        true,
+                        |tool, editor, command| {
+                            command_count += 1;
+                            if command_count != 1 {
+                                failure = Some(
+                                    "resident grouped setter emitted more than one command"
+                                        .to_owned(),
+                                );
+                                return false;
                             }
-                            Ok(apply::Outcome::Isolated) => {
+                            if !audited_command(command) {
                                 isolated = true;
-                                false
+                                return false;
                             }
-                            Err(_) => {
-                                failure = Some("resident grouped command panicked".to_owned());
-                                false
+                            let before = editor.document_revision();
+                            let attempt =
+                                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                    apply::apply(
+                                        editor,
+                                        command,
+                                        tool,
+                                        request.line.len(),
+                                        budget,
+                                        capture_quota,
+                                        metrics,
+                                        &mut capture,
+                                    )
+                                }));
+                            match attempt {
+                                Ok(apply::Outcome::Applied(ok)) => {
+                                    applied = ok;
+                                    changed = editor.document_revision() != before;
+                                    if !ok && changed {
+                                        failure = Some(
+                                            "resident grouped command refused after mutation"
+                                                .to_owned(),
+                                        );
+                                    }
+                                    ok
+                                }
+                                Ok(apply::Outcome::Isolated) => {
+                                    isolated = true;
+                                    false
+                                }
+                                Err(_) => {
+                                    editor.invalidate_command_id_sequence();
+                                    failure = Some("resident grouped command panicked".to_owned());
+                                    false
+                                }
+                            }
+                        },
+                    );
+                    let oversized = result
+                        .as_ref()
+                        .ok()
+                        .and_then(Option::as_ref)
+                        .is_some_and(|response| response.len() > MAX_REPLY);
+                    isolated |= oversized;
+                    // No deferred external effects are admitted here. A rejected
+                    // or unrepresentable bounded call can fall back only after
+                    // its exact capture has demonstrably restored all local state.
+                    if !applied || isolated || failure.is_some() || result.is_err() {
+                        if let Some(checkpoint) = capture.take() {
+                            if editor.abort_command_edit(checkpoint).is_err() {
+                                fence.trip();
                             }
                         }
-                    },
-                );
-                let oversized = result
-                    .as_ref()
-                    .ok()
-                    .and_then(Option::as_ref)
-                    .is_some_and(|response| response.len() > MAX_REPLY);
-                isolated |= oversized;
-                // No deferred external effects are admitted here. A rejected
-                // or unrepresentable bounded call can fall back only after
-                // its exact capture has demonstrably restored all local state.
-                if !applied || isolated || failure.is_some() || result.is_err() {
-                    if let Some(checkpoint) = capture.take() {
-                        if editor.abort_command_edit(checkpoint).is_err() {
-                            fence.trip();
-                        }
+                        applied = false;
+                        changed = false;
+                        *budget = before_budget;
                     }
-                    applied = false;
-                    changed = false;
-                    *budget = before_budget;
-                }
-                if applied && !changed {
-                    budget.retain_unanchored_components();
-                }
-                operation.complete();
-                result
-            },
-        );
+                    if applied && !changed {
+                        budget.retain_unanchored_components();
+                    }
+                    operation.complete();
+                    result
+                },
+            )
+        });
         let rejected = response.as_ref().is_ok_and(|body| {
             body.as_ref().is_some_and(|wire| {
                 serde_json::from_str::<serde_json::Value>(wire).is_ok_and(|value| {
@@ -234,6 +239,7 @@ impl<'s, 'q> Transaction<'s, 'q> {
             })
         });
         if applied && (response.is_err() || rejected) {
+            self.id_sequence.invalidate();
             // A context restoration error must not leave an unacknowledged
             // staged command in the cohort. Reenter exactly that pinned actor.
             if let Some(checkpoint) = capture.take() {
@@ -268,6 +274,7 @@ impl<'s, 'q> Transaction<'s, 'q> {
     }
 
     fn rollback(&mut self) -> bool {
+        self.id_sequence.invalidate();
         let mut clean = true;
         for pending in std::mem::take(&mut self.pending).into_iter().rev() {
             clean &= rollback_one(

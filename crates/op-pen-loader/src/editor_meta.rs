@@ -69,6 +69,9 @@ pub struct EditorMeta {
         skip_serializing_if = "Option::is_none"
     )]
     pub imported_from: Option<String>,
+    /// Independent component catalog names/order and owned external prototypes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub component_catalog: Option<op_editor_core::ComponentCatalog>,
 }
 
 impl EditorMeta {
@@ -97,6 +100,7 @@ impl EditorMeta {
             // imported site through every save, so a later AI edit keeps
             // deferring to its authored design.
             imported_from: state.editor_ui.home.imported_from.clone(),
+            component_catalog: op_editor_core::ComponentCatalog::capture(state),
         }
     }
 }
@@ -182,6 +186,8 @@ struct WireEditorMeta {
     share_recipe: Option<ShareRecipe>,
     #[serde(default, with = "crate::editor_meta_import")]
     imported_from: Option<String>,
+    #[serde(default)]
+    component_catalog: Option<op_editor_core::ComponentCatalog>,
 }
 
 /// Parsed metadata plus compatibility inference used for migration decisions.
@@ -205,17 +211,41 @@ pub fn extract_editor_meta(src: &str) -> Option<EditorMeta> {
 /// Like [`extract_editor_meta`], but preserves whether a known legacy Figma
 /// metadata omission had to be inferred.
 pub fn extract_editor_meta_with_report(src: &str) -> Option<EditorMetaExtraction> {
-    let scan = scan_top_level(src, "editorMeta")?;
-    let wire = serde_json::from_str::<WireEditorMeta>(scan.value?).ok()?;
+    extract_editor_meta_checked(src).ok().flatten()
+}
+
+/// Production loaders must not silently discard a malformed persistent
+/// component catalog. Legacy optional UI hints retain their permissive policy.
+pub fn extract_editor_meta_checked(
+    src: &str,
+) -> Result<Option<EditorMetaExtraction>, serde_json::Error> {
+    use serde::Deserialize;
+    let Some(scan) = scan_top_level(src, "editorMeta") else {
+        return Ok(None);
+    };
+    let Some(raw) = scan.value else {
+        return Ok(None);
+    };
+    let mut de = serde_json::Deserializer::from_str(raw);
+    de.disable_recursion_limit();
+    let wire = match WireEditorMeta::deserialize(serde_stacker::Deserializer::new(&mut de))
+        .and_then(|wire| {
+            de.end()?;
+            Ok(wire)
+        }) {
+        Ok(wire) => wire,
+        Err(error) => {
+            if scan_top_level(raw, "componentCatalog").is_some_and(|scan| scan.value.is_some()) {
+                return Err(error);
+            }
+            return Ok(None);
+        }
+    };
     let inferred_preserve_authored_geometry =
         wire.preserve_authored_geometry.is_none() && scan.first_page_has_figma_id;
-    Some(EditorMetaExtraction {
+    Ok(Some(EditorMetaExtraction {
         meta: EditorMeta {
             active_page_index: wire.active_page_index,
-            // A short-lived writer version emitted editorMeta without this
-            // field for Preserve-mode Figma imports. Recover only when the
-            // canonical first page carries op-figma's unambiguous generated
-            // ID. Explicit true/false always wins.
             preserve_authored_geometry: wire
                 .preserve_authored_geometry
                 .unwrap_or(scan.first_page_has_figma_id),
@@ -224,9 +254,10 @@ pub fn extract_editor_meta_with_report(src: &str) -> Option<EditorMetaExtraction
             pinned_style_guide: wire.pinned_style_guide,
             share_recipe: wire.share_recipe,
             imported_from: wire.imported_from,
+            component_catalog: wire.component_catalog,
         },
         inferred_preserve_authored_geometry,
-    })
+    }))
 }
 
 /// Copy canonical JSON to `writer`, replacing or appending only its top-level
@@ -368,6 +399,9 @@ pub fn apply_editor_meta(state: &mut op_editor_core::EditorState, meta: EditorMe
     state.editor_ui.pinned_style_guide = meta.pinned_style_guide;
     state.editor_ui.home.recipe = meta.share_recipe;
     state.editor_ui.home.imported_from = meta.imported_from;
+    if let Some(catalog) = meta.component_catalog {
+        catalog.apply(state);
+    }
 }
 
 /// Apply saved metadata, or use the legacy reopen policy when it is absent.

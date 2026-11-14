@@ -377,6 +377,7 @@ fn map_gradient(value: &str, style: &ComputedStyle, context: &mut MapCtx<'_>) ->
     }
     if radial {
         Some(PenFill::RadialGradient(RadialGradientBody {
+            geometry: None,
             cx: center.0,
             cy: center.1,
             radius,
@@ -393,6 +394,7 @@ fn map_gradient(value: &str, style: &ComputedStyle, context: &mut MapCtx<'_>) ->
         }))
     } else {
         Some(PenFill::LinearGradient(LinearGradientBody {
+            geometry: None,
             // Copied through unchanged ON PURPOSE: the editor canvas
             // (`linear_gradient_endpoints`, `angle - 90`), SVG export and
             // HTML export all read `.op` angles like CSS (0 = bottom→top,

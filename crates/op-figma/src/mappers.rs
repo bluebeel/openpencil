@@ -4,6 +4,9 @@
 //! (decoded [`FigValue`] objects) into canonical `jian_ops_schema`
 //! style values.
 
+mod gradient_geometry;
+use gradient_geometry::map_gradient_geometry;
+
 use crate::color::figma_color_to_hex;
 use crate::figma_types::{FigColor, FigMatrix};
 use crate::kiwi::FigValue;
@@ -75,6 +78,25 @@ fn gradient_stops(paint: &FigValue) -> Vec<GradientStop> {
         .unwrap_or_default()
 }
 
+fn precise_gradient_stops(paint: &FigValue) -> Vec<GradientStop> {
+    paint
+        .get_array("stops")
+        .map(|stops| {
+            stops
+                .iter()
+                .map(|stop| GradientStop {
+                    offset: stop.get_f64("position").unwrap_or(0.0),
+                    color: stop
+                        .get("color")
+                        .and_then(FigColor::from_value)
+                        .map(shadow_color_css)
+                        .unwrap_or_else(|| "#000000".into()),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 fn map_single_fill(paint: &FigValue) -> Option<PenFill> {
     let opacity = paint.get_f64("opacity");
     let blend_mode = map_blend_mode(paint.get_str("blendMode"));
@@ -90,14 +112,21 @@ fn map_single_fill(paint: &FigValue) -> Option<PenFill> {
         }
         "GRADIENT_LINEAR" => {
             paint.get("stops")?;
+            let geometry = map_gradient_geometry(paint, false);
+            let precise = geometry.is_some();
             let angle = paint
                 .get("transform")
                 .and_then(FigMatrix::from_value)
                 .map(|m| gradient_angle_from_transform(&m))
                 .unwrap_or(0);
             Some(PenFill::LinearGradient(LinearGradientBody {
+                geometry,
                 angle: Some(angle as f64),
-                stops: gradient_stops(paint),
+                stops: if precise {
+                    precise_gradient_stops(paint)
+                } else {
+                    gradient_stops(paint)
+                },
                 explain: None,
                 opacity,
                 blend_mode,
@@ -105,11 +134,22 @@ fn map_single_fill(paint: &FigValue) -> Option<PenFill> {
         }
         "GRADIENT_RADIAL" | "GRADIENT_ANGULAR" | "GRADIENT_DIAMOND" => {
             paint.get("stops")?;
+            let geometry = if paint.get_str("type") == Some("GRADIENT_RADIAL") {
+                map_gradient_geometry(paint, true)
+            } else {
+                None
+            };
+            let precise = geometry.is_some();
             Some(PenFill::RadialGradient(RadialGradientBody {
+                geometry,
                 cx: Some(0.5),
                 cy: Some(0.5),
                 radius: Some(0.5),
-                stops: gradient_stops(paint),
+                stops: if precise {
+                    precise_gradient_stops(paint)
+                } else {
+                    gradient_stops(paint)
+                },
                 explain: None,
                 opacity,
                 blend_mode,

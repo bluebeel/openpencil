@@ -272,6 +272,7 @@ struct Transaction<'s, 'a, 'q> {
     replies: Vec<Option<Reply>>,
     ticks: Vec<super::SseTick>,
     changes: Vec<(u64, super::changefeed::Staged)>,
+    id_sequence: op_editor_core::CommandIdSequence,
     budget: budget::Budget,
     before_version: u64,
     last_changed: Option<usize>,
@@ -331,93 +332,98 @@ impl Transaction<'_, '_, '_> {
         let before_budget = *budget;
         let fence = self.state.recovery.clone();
         let metrics = &self.owner.metrics;
-        let response = mcp_serve::agent_context::with_agent_context_permit(
-            &self.ctx.authority.agent_contexts,
-            &request.document,
-            &mut self.state.editor,
-            &request.line,
-            request.profile,
-            &request.permit,
-            |editor| {
-                let operation = fence.watch();
-                let result = mcp_serve::process_message_with_applier_profiled(
+        let response = self
+            .id_sequence
+            .with_authority(&mut self.state.editor, |editor| {
+                mcp_serve::agent_context::with_agent_context_permit(
+                    &self.ctx.authority.agent_contexts,
+                    &request.document,
                     editor,
                     &request.line,
                     request.profile,
-                    |tool, editor, command| {
-                        if capture.is_some() {
-                            failure = Some(GroupError::CommandCount);
-                            return false;
-                        }
-                        if let Err(reason) =
-                            policy.check_command(command, op_editor_core::CollabEditSource::Mcp)
-                        {
-                            refused = Some(reason);
-                            return false;
-                        }
-                        if !audited(command)
-                            || !mcp_serve::cohort_coverage::repair_free(editor, tool, command)
-                        {
-                            isolated = true;
-                            return false;
-                        }
-                        let before = editor.document_revision();
-                        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            apply::apply(
-                                editor,
-                                command,
-                                request.line.len(),
-                                budget,
-                                metrics,
-                                &mut capture,
-                            )
-                        })) {
-                            Ok(apply::Outcome::Isolated) => {
-                                isolated = true;
-                                false
-                            }
-                            Ok(apply::Outcome::Applied(ok)) => {
-                                applied = ok;
-                                changed = editor.document_revision() != before;
-                                if !ok && changed {
-                                    failure = Some(GroupError::PartialRefusal);
+                    &request.permit,
+                    |editor| {
+                        let operation = fence.watch();
+                        let result = mcp_serve::process_message_with_applier_profiled(
+                            editor,
+                            &request.line,
+                            request.profile,
+                            |tool, editor, command| {
+                                if capture.is_some() {
+                                    failure = Some(GroupError::CommandCount);
+                                    return false;
                                 }
-                                ok
+                                if let Err(reason) = policy
+                                    .check_command(command, op_editor_core::CollabEditSource::Mcp)
+                                {
+                                    refused = Some(reason);
+                                    return false;
+                                }
+                                if !audited(command) {
+                                    isolated = true;
+                                    return false;
+                                }
+                                let before = editor.document_revision();
+                                match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                    apply::apply(
+                                        editor,
+                                        command,
+                                        tool,
+                                        request.line.len(),
+                                        budget,
+                                        metrics,
+                                        &mut capture,
+                                    )
+                                })) {
+                                    Ok(apply::Outcome::Isolated) => {
+                                        isolated = true;
+                                        false
+                                    }
+                                    Ok(apply::Outcome::Applied(ok)) => {
+                                        applied = ok;
+                                        changed = editor.document_revision() != before;
+                                        if !ok && changed {
+                                            failure = Some(GroupError::PartialRefusal);
+                                        }
+                                        ok
+                                    }
+                                    Err(_) => {
+                                        editor.invalidate_command_id_sequence();
+                                        failure = Some(GroupError::CommandPanicked);
+                                        false
+                                    }
+                                }
+                            },
+                        );
+                        let oversized = result
+                            .as_ref()
+                            .ok()
+                            .and_then(Option::as_ref)
+                            .is_some_and(|response| response.len() > MAX_REPLY);
+                        isolated |= oversized;
+                        if !applied || isolated || failure.is_some() || result.is_err() {
+                            if let Some(checkpoint) = capture.take() {
+                                if let Err(reason) = editor.abort_command_edit(checkpoint) {
+                                    fence.trip();
+                                    failure = Some(GroupError::Rollback(reason));
+                                }
                             }
-                            Err(_) => {
-                                failure = Some(GroupError::CommandPanicked);
-                                false
-                            }
+                            applied = false;
+                            changed = false;
+                            *budget = before_budget;
                         }
+                        if applied && !changed {
+                            budget.retain_unanchored_components();
+                        }
+                        if applied && changed {
+                            committed_changes
+                                .capture(capture.as_ref().expect("applied capture"), editor);
+                        }
+                        operation.complete();
+                        result
                     },
-                );
-                let oversized = result
-                    .as_ref()
-                    .ok()
-                    .and_then(Option::as_ref)
-                    .is_some_and(|response| response.len() > MAX_REPLY);
-                isolated |= oversized;
-                if !applied || isolated || failure.is_some() || result.is_err() {
-                    if let Some(checkpoint) = capture.take() {
-                        if let Err(reason) = editor.abort_command_edit(checkpoint) {
-                            fence.trip();
-                            failure = Some(GroupError::Rollback(reason));
-                        }
-                    }
-                    applied = false;
-                    changed = false;
-                    *budget = before_budget;
-                }
-                if applied && !changed {
-                    budget.retain_unanchored_components();
-                }
-                if applied && changed {
-                    committed_changes.capture(capture.as_ref().expect("applied capture"), editor);
-                }
-                operation.complete();
-                result
-            },
-        );
+                )
+            });
         if let Some(reason) = refused {
             self.state.editor.editor_ui.collab.set_notice(
                 reason.notice_kind(),
@@ -454,6 +460,7 @@ impl Transaction<'_, '_, '_> {
     }
 
     fn rollback(&mut self) -> bool {
+        self.id_sequence.invalidate();
         let mut clean = true;
         for pending in std::mem::take(&mut self.pending).into_iter().rev() {
             let request = &self.requests[pending.request];
@@ -639,6 +646,7 @@ fn run_group(ctx: &ConnCtx<'_>, owner: &Groups, requests: &[Request]) -> Vec<Rep
         replies: (0..requests.len()).map(|_| None).collect(),
         ticks: Vec::with_capacity(requests.len()),
         changes: Vec::with_capacity(requests.len()),
+        id_sequence: Default::default(),
         budget: budget::Budget::default(),
         before_version,
         last_changed: None,

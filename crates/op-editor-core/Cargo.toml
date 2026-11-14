@@ -33,6 +33,7 @@ kurbo = "0.13.1"
 glam = { version = "0.29", default-features = false, features = ["std"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
+serde_stacker = { workspace = true }
 tracing = { workspace = true }
 
 # Test-only: the Home task wrappers must keep steering the orchestrator's
