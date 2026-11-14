@@ -17,6 +17,8 @@ use std::rc::Rc;
 
 #[path = "shaped_text_features.rs"]
 mod features;
+#[path = "shaped_text_cache.rs"]
+mod paragraph_cache;
 
 use jian_skia::FontResolver;
 use op_editor_core::text_script::{base_direction, BaseDirection};
@@ -63,6 +65,7 @@ pub(crate) struct ShapedRun<'a> {
 pub(crate) struct ShapedText {
     collection: Rc<FontCollection>,
     built_generation: u64,
+    paragraphs: paragraph_cache::Cache,
     pub(super) metadata: std::cell::RefCell<super::vector_text::MetadataCache>,
 }
 
@@ -73,6 +76,7 @@ impl ShapedText {
             // registration can at worst leave this stale-low, costing one
             // harmless rebuild.
             built_generation: jian_skia::font_generation(),
+            paragraphs: paragraph_cache::Cache::default(),
             metadata: std::cell::RefCell::new(super::vector_text::MetadataCache::default()),
             collection: Rc::new(build_collection(font_resolver)),
         })
@@ -81,6 +85,7 @@ impl ShapedText {
     fn collection(&mut self, font_resolver: &FontResolver) -> Rc<FontCollection> {
         let generation = jian_skia::font_generation();
         if generation != self.built_generation {
+            self.paragraphs.clear();
             self.collection = Rc::new(build_collection(font_resolver));
             self.built_generation = generation;
         }
@@ -90,66 +95,67 @@ impl ShapedText {
     /// Natural, unwrapped advance width of the shaped run.
     pub(crate) fn measure(&mut self, font_resolver: &FontResolver, run: &ShapedRun<'_>) -> f32 {
         jian_skia::with_font_lock(|| {
-            let mut paragraph = self.build(font_resolver, run);
-            paragraph.layout(NATURAL_LAYOUT_BUDGET);
-            let mut width = paragraph.max_intrinsic_width();
-            if super::text::uses_advance_grid(run.text, run.kerning, run.font_features) {
-                let mut corrections = std::collections::BTreeMap::<usize, f32>::new();
-                let mut clusters = std::collections::BTreeMap::<usize, TrackingClusters>::new();
-                paragraph.visit(|line, info| {
-                    if let Some(info) = info {
-                        let tracking = clusters.entry(line).or_default();
-                        for &cluster in info.utf8_starts().iter().take(info.glyphs().len()) {
-                            tracking.ordinal(cluster);
+            self.with_paragraph(font_resolver, run, false, |paragraph, _| {
+                let mut width = paragraph.max_intrinsic_width();
+                if super::text::uses_advance_grid(run.text, run.kerning, run.font_features) {
+                    let mut corrections = std::collections::BTreeMap::<usize, f32>::new();
+                    let mut clusters = std::collections::BTreeMap::<usize, TrackingClusters>::new();
+                    paragraph.visit(|line, info| {
+                        if let Some(info) = info {
+                            let tracking = clusters.entry(line).or_default();
+                            for &cluster in info.utf8_starts().iter().take(info.glyphs().len()) {
+                                tracking.ordinal(cluster);
+                            }
+                            if let Some(adjusted) = jian_skia::advance_grid::adjust_glyph_run(
+                                info.font(),
+                                info.glyphs(),
+                                info.positions(),
+                                info.utf8_starts(),
+                                info.advance_x(),
+                            ) {
+                                *corrections.entry(line).or_default() +=
+                                    adjusted.advance_correction;
+                            }
                         }
-                        if let Some(adjusted) = jian_skia::advance_grid::adjust_glyph_run(
-                            info.font(),
-                            info.glyphs(),
-                            info.positions(),
-                            info.utf8_starts(),
-                            info.advance_x(),
-                        ) {
-                            *corrections.entry(line).or_default() += adjusted.advance_correction;
-                        }
+                    });
+                    if run.text.contains('\n') {
+                        width = paragraph
+                            .get_line_metrics()
+                            .iter()
+                            .enumerate()
+                            .map(|(line, metrics)| {
+                                jian_skia::advance_grid::tracked_position(
+                                    jian_skia::advance_grid::quantize_advance(
+                                        metrics.width as f32
+                                            + corrections.get(&line).copied().unwrap_or(0.0),
+                                        run.font_size,
+                                    ),
+                                    clusters.get(&line).map_or(0, |c| c.count.saturating_sub(1)),
+                                    run.letter_spacing,
+                                )
+                            })
+                            .fold(0.0, f32::max);
+                        return width;
+                    } else {
+                        width = jian_skia::advance_grid::quantize_advance(
+                            width + corrections.get(&0).copied().unwrap_or(0.0),
+                            run.font_size,
+                        );
+                        return jian_skia::advance_grid::tracked_position(
+                            width,
+                            clusters
+                                .get(&0)
+                                .map_or_else(
+                                    || TrackingClusters::default().including_trailing(run.text),
+                                    |c| c.including_trailing(run.text),
+                                )
+                                .saturating_sub(1),
+                            run.letter_spacing,
+                        );
                     }
-                });
-                if run.text.contains('\n') {
-                    width = paragraph
-                        .get_line_metrics()
-                        .iter()
-                        .enumerate()
-                        .map(|(line, metrics)| {
-                            jian_skia::advance_grid::tracked_position(
-                                jian_skia::advance_grid::quantize_advance(
-                                    metrics.width as f32
-                                        + corrections.get(&line).copied().unwrap_or(0.0),
-                                    run.font_size,
-                                ),
-                                clusters.get(&line).map_or(0, |c| c.count.saturating_sub(1)),
-                                run.letter_spacing,
-                            )
-                        })
-                        .fold(0.0, f32::max);
-                    return width;
-                } else {
-                    width = jian_skia::advance_grid::quantize_advance(
-                        width + corrections.get(&0).copied().unwrap_or(0.0),
-                        run.font_size,
-                    );
-                    return jian_skia::advance_grid::tracked_position(
-                        width,
-                        clusters
-                            .get(&0)
-                            .map_or_else(
-                                || TrackingClusters::default().including_trailing(run.text),
-                                |c| c.including_trailing(run.text),
-                            )
-                            .saturating_sub(1),
-                        run.letter_spacing,
-                    );
                 }
-            }
-            width + run.text.chars().count().saturating_sub(1) as f32 * run.letter_spacing
+                width + run.text.chars().count().saturating_sub(1) as f32 * run.letter_spacing
+            })
         })
     }
 
@@ -160,11 +166,9 @@ impl ShapedText {
         run: &ShapedRun<'_>,
         action: impl FnMut(&skia_safe::Font, &[skia_safe::GlyphId], &[skia_safe::Point], f32),
     ) {
-        let mut paragraph = self.build(font_resolver, run);
-        paragraph.layout(NATURAL_LAYOUT_BUDGET);
-        let natural = paragraph.max_intrinsic_width();
-        paragraph.layout(natural.ceil());
-        visit_positioned(&mut paragraph, run, action);
+        self.with_paragraph(font_resolver, run, true, |paragraph, _| {
+            visit_positioned(paragraph, run, action);
+        });
     }
 
     /// Paint the run with `baseline_y` on its alphabetic baseline, matching
@@ -179,45 +183,39 @@ impl ShapedText {
         baseline_y: f32,
     ) {
         jian_skia::with_font_lock(|| {
-            let mut paragraph = self.build(font_resolver, run);
-            // Two passes. A right-to-left paragraph anchors against the RIGHT
-            // edge of its layout box, so laying out once against the probe
-            // budget would fling Arabic a million pixels off-screen. Measure
-            // the natural width first, then re-lay out into a box of exactly
-            // that width so the run occupies the same span at `x` either way.
-            //
-            // `ceil` rather than the raw width: a box even a float-epsilon
-            // narrower than the text makes the shaper wrap, turning one line
-            // into two. Rounding up trades a sub-pixel anchor shift for
-            // never breaking a line that should not break.
-            paragraph.layout(NATURAL_LAYOUT_BUDGET);
-            let natural = paragraph.max_intrinsic_width();
-            paragraph.layout(natural.ceil());
-            if jian_skia::raster_sampling::is_point_sampling()
-                || (run.kerning == Some(true)
-                    || run
-                        .font_features
-                        .is_some_and(|f| f.values().any(|value| *value != 0)))
-                    && !op_editor_core::text_script::needs_complex_shaping(run.text)
-            {
-                // HarfBuzz supplies pair positioning; the direct native font
-                // path supplies the same raster treatment as unkerned text.
-                // Paragraph's visitor origin contains a rounded line baseline,
-                // so retain the caller's authored baseline for this one line.
-                let mut paint = skia_safe::Paint::default();
-                paint.set_color(run.color);
-                if let Some(color) = run.source_color {
-                    paint.set_color4f(color, None);
-                }
-                jian_skia::raster_sampling::configure_geometry(&mut paint);
-                let modern = run.kerning.is_some()
-                    || run
-                        .font_features
-                        .is_some_and(|features| !features.is_empty());
-                visit_positioned(
-                    &mut paragraph,
-                    run,
-                    |font, glyphs, positions, relative_x| {
+            self.with_paragraph(font_resolver, run, true, |paragraph, metadata| {
+                // Two passes. A right-to-left paragraph anchors against the RIGHT
+                // edge of its layout box, so laying out once against the probe
+                // budget would fling Arabic a million pixels off-screen. Measure
+                // the natural width first, then re-lay out into a box of exactly
+                // that width so the run occupies the same span at `x` either way.
+                //
+                // `ceil` rather than the raw width: a box even a float-epsilon
+                // narrower than the text makes the shaper wrap, turning one line
+                // into two. Rounding up trades a sub-pixel anchor shift for
+                // never breaking a line that should not break.
+                if jian_skia::raster_sampling::is_point_sampling()
+                    || (run.kerning == Some(true)
+                        || run
+                            .font_features
+                            .is_some_and(|f| f.values().any(|value| *value != 0)))
+                        && !op_editor_core::text_script::needs_complex_shaping(run.text)
+                {
+                    // HarfBuzz supplies pair positioning; the direct native font
+                    // path supplies the same raster treatment as unkerned text.
+                    // Paragraph's visitor origin contains a rounded line baseline,
+                    // so retain the caller's authored baseline for this one line.
+                    let mut paint = skia_safe::Paint::default();
+                    paint.set_color(run.color);
+                    if let Some(color) = run.source_color {
+                        paint.set_color4f(color, None);
+                    }
+                    jian_skia::raster_sampling::configure_geometry(&mut paint);
+                    let modern = run.kerning.is_some()
+                        || run
+                            .font_features
+                            .is_some_and(|features| !features.is_empty());
+                    visit_positioned(paragraph, run, |font, glyphs, positions, relative_x| {
                         let origin = (x + relative_x, baseline_y);
                         if !super::vector_text::draw(
                             canvas,
@@ -227,18 +225,18 @@ impl ShapedText {
                             origin.into(),
                             &paint,
                             modern,
-                            Some(&self.metadata),
+                            Some(metadata),
                         ) {
                             canvas.draw_glyphs_at(glyphs, positions, origin, font, &paint);
                         }
-                    },
-                );
-                return;
-            }
-            // `Paragraph::paint` places the line-box top; callers hand us a
-            // baseline.
-            let top = baseline_y - paragraph.alphabetic_baseline();
-            paragraph.paint(canvas, (x, top));
+                    });
+                    return;
+                }
+                // `Paragraph::paint` places the line-box top; callers hand us a
+                // baseline.
+                let top = baseline_y - paragraph.alphabetic_baseline();
+                paragraph.paint(canvas, (x, top));
+            });
         });
     }
 
