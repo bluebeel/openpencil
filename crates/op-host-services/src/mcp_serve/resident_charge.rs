@@ -219,6 +219,9 @@ fn resident_charge_mode(
     cache.components.prune();
     cache.documents.prune();
     let mut ledger = new_ledger(limit);
+    ledger.shared_storage = ledger
+        .shared_storage
+        .saturating_add(state.history.runtime_storage_bytes());
     ledger.serialize(&state.doc)?;
     ledger.node_storage(&state.doc.children, state.doc.children.capacity())?;
     if let Some(pages) = &state.doc.pages {

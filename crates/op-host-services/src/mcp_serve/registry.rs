@@ -39,6 +39,7 @@ pub(super) fn rebuild_registry(
     register_tool!("open_document", open_document_snapshot(doc));
     register_tool!("save_document", save_document_snapshot(doc));
     register_tool!("reload_document", op_mcp::ReloadDocument);
+    register_tool!("batch_tools", atomic_tools::Unavailable);
     register_tool!("get_document_info", document_info_snapshot(doc));
     register_tool!("query_canvas", canvas_query::snapshot(doc, arguments));
     register_tool!(

@@ -143,6 +143,21 @@ impl MovePatch {
         .expect("validated topology move retains exact inverse routes");
         *self = reverse;
     }
+    pub(super) fn actor_regions(&self) -> [Option<super::actor_claim::Region<'_>>; 2] {
+        use super::actor_claim::{Kind, Region};
+        [
+            Some(Region {
+                scope: &self.scope,
+                path: &self.from.path,
+                kind: Kind::Children,
+            }),
+            Some(Region {
+                scope: &self.scope,
+                path: &self.to.path,
+                kind: Kind::Children,
+            }),
+        ]
+    }
     pub(super) fn rebase(&mut self, reorders: &patch::Reorders) {
         reorders.rebase(&self.scope, &mut self.from.path);
         reorders.rebase(&self.scope, &mut self.to.path);

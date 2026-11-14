@@ -13,6 +13,7 @@ mod target_plan;
 #[derive(Debug)]
 pub struct CommandEditCapture {
     kind: CaptureKind,
+    batch_actor: Option<crate::command_batch::actor::BatchActorSnapshot>,
 }
 #[derive(Debug)]
 enum CaptureKind {
@@ -33,6 +34,7 @@ struct ScopedCapture {
 }
 #[derive(Debug)]
 struct HistoryCapture {
+    actor_selective: bool,
     generation: u64,
     revision: u64,
     undo: bool,
@@ -99,7 +101,12 @@ impl EditorState {
                 generation: self.document_generation,
             },
         };
-        CommandEditCapture { kind }
+        CommandEditCapture {
+            kind,
+            batch_actor: crate::command_batch::actor::BatchActorSnapshot::for_command(
+                self, command,
+            ),
+        }
     }
     /// Trusted host variant: the synchronous maintenance callback must not
     /// mutate canonical document content. Existing begin_command_edit keeps
@@ -122,6 +129,7 @@ impl EditorState {
             command_scope::Classification::Scoped(plan) => plan,
             command_scope::Classification::Refused => {
                 return Some(CommandEditCapture {
+                    batch_actor: None,
                     kind: CaptureKind::Refused {
                         generation: self.document_generation,
                     },
@@ -131,7 +139,16 @@ impl EditorState {
         };
         if matches!(command, EditorCommand::Undo | EditorCommand::Redo) {
             return Some(CommandEditCapture {
+                batch_actor: None,
                 kind: CaptureKind::History(HistoryCapture {
+                    actor_selective: self
+                        .history
+                        .next_entry(matches!(command, EditorCommand::Redo))
+                        .is_some_and(|entry| {
+                            entry.selective()
+                                && (self.history.actor().is_some()
+                                    || entry.history_tag().actor.is_some())
+                        }),
                     generation: self.document_generation,
                     revision: self.revision,
                     undo: matches!(command, EditorCommand::Undo),
@@ -150,6 +167,9 @@ impl EditorState {
             return None;
         };
         Some(CommandEditCapture {
+            batch_actor: crate::command_batch::actor::BatchActorSnapshot::for_command(
+                self, command,
+            ),
             kind: CaptureKind::Scoped(ScopedCapture {
                 targeted: true,
                 generation: self.document_generation,
@@ -286,35 +306,27 @@ impl EditorState {
             return false;
         }
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let applied = self.apply(command);
+            let (applied, reverse) = self.exchange_history_retained(!captured.undo);
+            captured.completed = reverse;
             if applied {
                 maintain(self);
             }
             applied
         }));
-        if self.history.past != captured.history.past
-            || self.history.future != captured.history.future
-        {
-            let reverse = if captured.undo {
-                self.history.future.back()
-            } else {
-                self.history.past.back()
-            };
-            captured.completed = reverse.and_then(HistoryEntry::scoped_snapshot).cloned();
-        }
         match result {
             Ok(applied) => applied,
             Err(panic) => std::panic::resume_unwind(panic),
         }
     }
     /// Restore document, history and derived UI after external persistence
-    /// rejects a trusted command. Clipboard remains the host's moved rollback
-    /// responsibility, matching abort_local_edit.
+    /// rejects a trusted command. Atomic batches also restore the actor state
+    /// outside document history. Standalone Cut keeps its moved host rollback.
     pub fn abort_command_edit(
         &mut self,
         capture: CommandEditCapture,
     ) -> Result<(), CommandEditError> {
-        match capture.kind {
+        let CommandEditCapture { kind, batch_actor } = capture;
+        let result = match kind {
             CaptureKind::Refused { generation } => self
                 .ensure_local_edit_generation(generation)
                 .map_err(CommandEditError::Full),
@@ -325,9 +337,16 @@ impl EditorState {
                 self.history = captured.history;
                 if let Some(snapshot) = captured.completed {
                     self.editor_ui.clear_document_derived();
-                    Arc::unwrap_or_clone(snapshot)
-                        .exchange(self)
-                        .map_err(CommandEditError::Scoped)?;
+                    let mut snapshot = Arc::unwrap_or_clone(snapshot);
+                    if captured.actor_selective {
+                        snapshot
+                            .exchange_actor(self)
+                            .map_err(CommandEditError::Scoped)?;
+                        self.revision = captured.revision;
+                        self.sync_dirty_flag();
+                    } else {
+                        snapshot.exchange(self).map_err(CommandEditError::Scoped)?;
+                    }
                     self.clear_document_drafts(captured.active_theme);
                     self.codegen.reset_for_document_replacement();
                     self.instance_write_virtual_anchor = None;
@@ -351,7 +370,13 @@ impl EditorState {
                 }
                 Ok(())
             }
+        };
+        if result.is_ok() {
+            if let Some(actor) = batch_actor {
+                actor.restore(self);
+            }
         }
+        result
     }
 }
 

@@ -9,7 +9,7 @@ use crate::id_allocator::{IdAllocError, IdAllocator, SequentialIdAllocator};
 use crate::node_id::NodeId;
 use crate::pen_node_ext::PenNodeExt;
 use crate::state::EditorState;
-use crate::walkers::{self, find_node};
+use crate::walkers;
 use jian_ops_schema::node::PenNode;
 
 impl EditorState {
@@ -19,12 +19,14 @@ impl EditorState {
         if self.selection.set.is_empty() {
             return false;
         }
-        let mut buf: Vec<PenNode> = Vec::with_capacity(self.selection.set.len());
-        for id in &self.selection.set {
-            if let Some(node) = find_node(self.active_children(), id) {
-                buf.push(node.clone());
-            }
-        }
+        let selected =
+            crate::mutators::selection_nodes::resolve(self.active_children(), &self.selection.set);
+        let buf: Vec<PenNode> = self
+            .selection
+            .set
+            .iter()
+            .filter_map(|id| selected.get(id.as_str()).map(|node| (*node).clone()))
+            .collect();
         if buf.is_empty() {
             return false;
         }

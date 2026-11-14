@@ -3,6 +3,7 @@ use super::*;
 use crate::history_snapshot::SharedNode;
 use jian_ops_schema::{node::PenNode, page::PenPage};
 use std::{collections::BTreeMap, mem};
+mod actor_claim;
 mod header;
 mod header_map;
 mod patch;
@@ -26,6 +27,8 @@ pub(crate) use token_probe::contains as contains_header_token;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ScopedEditorSnapshot {
+    pub(crate) history_tag: super::HistoryTag,
+    pub(crate) actor_safe: bool,
     generation: u64,
     page_count: Option<usize>,
     scopes: Vec<Scope>,
@@ -45,6 +48,7 @@ pub struct ScopedEditorSnapshot {
 // remain on Full while the chooser is active; no mutable document revision is
 // used as evidence that public, unversioned content was unchanged.
 const _: fn(&EditorSnapshot) = |EditorSnapshot {
+                                    history_tag: _,
                                     doc: _,
                                     selection: _,
                                     active_page_index: _,
@@ -200,6 +204,14 @@ impl PendingScopedSnapshot {
             .patches
             .extend(targets::compact(state, self.targets)?);
         self.metadata.header = self.header.map(|header| header.compact(&state.doc));
+        self.metadata.actor_safe = self.targeted
+            && self.metadata.header.is_none()
+            && self.metadata.page_headers.is_empty()
+            && self.metadata.app_state_owner == state.app_state_owner
+            && self.metadata.fill_refs == state.ui.variables.fill_refs
+            && self.metadata.stroke_refs == state.ui.variables.stroke_refs
+            && self.metadata.preserve_authored_geometry
+                == state.editor_ui.preserve_authored_geometry;
         self.metadata.patches.shrink_to_fit();
         self.metadata.page_headers.shrink_to_fit();
         Ok(self.metadata)
@@ -231,6 +243,8 @@ impl ScopedEditorSnapshot {
     }
     fn auxiliary(state: &EditorState, scopes: Vec<Scope>) -> Self {
         Self {
+            history_tag: super::HistoryTag::capture(state.history.actor()),
+            actor_safe: false,
             generation: state.document_generation,
             page_count: state.doc.pages.as_ref().map(Vec::len),
             scopes,

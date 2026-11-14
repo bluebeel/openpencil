@@ -22,6 +22,9 @@ use crate::walkers::{self, find_node, find_node_mut, reorder_in_children, Reorde
 use jian_ops_schema::node::PenNode;
 use std::collections::HashSet;
 
+#[path = "selection_nodes.rs"]
+pub(crate) mod selection_nodes;
+
 impl EditorState {
     // --- Active-page node access -------------------------------------
 
@@ -403,15 +406,19 @@ impl EditorState {
         if self.selection.set.is_empty() || (dx == 0.0 && dy == 0.0) {
             return false;
         }
-        // Owned, not borrowed from `self.selection` — the `HashSet<&str>`
-        // built below borrows these local `NodeId`s instead, so it can
-        // coexist with the `&mut self` borrow `active_children_mut()`
-        // needs.
+        // Resolve the entire selection once; checking editability with a
+        // separate tree search per ID was still quadratic on select-all.
+        let selected = selection_nodes::resolve(self.active_children(), &self.selection.set);
         let editable: Vec<NodeId> = self
             .selection
             .set
             .iter()
-            .filter(|id| self.is_editable(id))
+            .filter(|id| {
+                self.instance_write_virtual_anchor.as_ref() == Some(*id)
+                    || selected
+                        .get(id.as_str())
+                        .is_some_and(|node| node_editable(node))
+            })
             .cloned()
             .collect();
         if editable.is_empty() {
@@ -437,6 +444,9 @@ impl EditorState {
     pub fn delete_selected(&mut self) -> bool {
         if self.selection.set.is_empty() {
             return false;
+        }
+        if let Some(removed) = selection_nodes::delete(self) {
+            return removed;
         }
         let (deletable, kept): (Vec<NodeId>, Vec<NodeId>) = self
             .selection

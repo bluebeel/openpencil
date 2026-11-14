@@ -98,10 +98,10 @@ impl WrapPatch {
             if !group.is_group()
                 || group.id_str() != self.header.id_str()
                 || group.children().is_some() != self.header.children().is_some()
-                || group.children().map_or(&[], Vec::as_slice).len() != self.members.len()
+                || group.children().map_or(0, Vec::len) != self.members.len()
                 || group
                     .children()
-                    .map_or(&[], Vec::as_slice)
+                    .map_or(&[][..], Vec::as_slice)
                     .iter()
                     .zip(&self.members)
                     .any(|(node, id)| node.id_str() != id)
@@ -181,6 +181,17 @@ impl WrapPatch {
             + self.members.iter().map(String::capacity).sum::<usize>()
             + self.left.as_ref().map_or(0, String::capacity)
             + self.right.as_ref().map_or(0, String::capacity)
+    }
+    pub(super) fn actor_regions(&self) -> [Option<super::actor_claim::Region<'_>>; 2] {
+        use super::actor_claim::{Kind, Region};
+        [
+            Some(Region {
+                scope: &self.scope,
+                path: &self.parent.path,
+                kind: Kind::Children,
+            }),
+            None,
+        ]
     }
     pub(super) fn rebase(&mut self, reorders: &patch::Reorders) {
         reorders.rebase(&self.scope, &mut self.parent.path);

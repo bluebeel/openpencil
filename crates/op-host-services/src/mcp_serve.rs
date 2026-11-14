@@ -212,71 +212,9 @@ where
     )
 }
 
-/// [`process_message_with_applier`] under an explicit capability profile.
-///
-/// The profile decides which tools the catalog advertises and which calls are
-/// refused before they run. A refusal is a normal `tools/call` error envelope
-/// carrying the originating request id — never a panic, and never a transport
-/// error, because an MCP client has to be able to keep the session.
-pub fn process_message_with_applier_profiled<F>(
-    state: &mut EditorState,
-    line: &str,
-    profile: tool_profile::McpAccessProfile,
-    mut apply: F,
-) -> Result<Option<String>, McpServeError>
-where
-    F: FnMut(&str, &mut EditorState, &EditorCommand) -> bool,
-{
-    let trimmed = line.trim();
-    if trimmed.is_empty() {
-        return Ok(None);
-    }
-    // MCP handshake / discovery methods short-circuit the tool dispatcher.
-    match sniff_method(trimmed).as_deref() {
-        Some("initialize") => {
-            return Ok(sniff_id_raw(trimmed).map(|id| initialize_response(&id)));
-        }
-        Some("tools/list") => {
-            return Ok(sniff_id_raw(trimmed)
-                .map(|id| tools_list_response(&id, state, debug_tools_enabled(), profile)));
-        }
-        Some("notifications/initialized") | Some("initialized") => {
-            return Ok(None); // notification — no response required
-        }
-        Some("ping") => {
-            return Ok(sniff_id_raw(trimmed)
-                .map(|id| ping_response(&id, headless_token_from_env().as_deref())));
-        }
-        _ => {}
-    }
-    // Fall through: tools/call or legacy direct dispatch. The
-    // registry snapshots `state` at build time, so it no longer
-    // borrows it once the applier closure mutates it.
-    let call = op_mcp::parse_tool_call(trimmed);
-    // Enforcement, ahead of the registry build and therefore ahead of the
-    // tool's own argument parsing: a denied tool never sees the path it was
-    // asked to open.
-    if let Some(call) = call.as_ref() {
-        if let Some(refusal) = profile.refuse_call(&call.tool, &call.arguments) {
-            // The ordinary tools/call error envelope (`isError:true`) with
-            // the originating id, so a client sees a refusal it can read
-            // rather than a transport failure that would drop the session.
-            return Ok(Some(op_mcp::tool_response_to_json(
-                &op_mcp::ToolResponse::Err {
-                    id: call.id.clone(),
-                    code: op_mcp::ToolErrorCode::ToolFailed,
-                    message: refusal.message(&call.tool),
-                },
-            )));
-        }
-    }
-    let requested_tool = call.as_ref().map(|call| call.tool.as_str());
-    let arguments = call.as_ref().map(|call| &call.arguments);
-    let registry = rebuild_registry(state, requested_tool, profile, arguments);
-    process_tool_message_with_registry(&registry, line, |tool_name, cmd| {
-        apply(tool_name, state, cmd)
-    })
-}
+mod profiled_dispatch;
+pub use profiled_dispatch::process_message_with_applier_profiled;
+pub(crate) use profiled_dispatch::process_message_with_bound_authority_profiled;
 
 /// Dispatch one already-classified tool call through a caller-provided
 /// registry. Live hosts use this seam for tools whose complete snapshot is
@@ -667,6 +605,7 @@ pub fn write_mcp_http_response<S: std::io::Write>(
 mod http_response;
 pub(crate) use http_response::write_mcp_http_response_with_origin;
 
+mod atomic_tools;
 mod boolean_selected;
 mod canvas_query;
 mod registry;

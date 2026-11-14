@@ -62,7 +62,7 @@ pub mod command_authored_subtree;
 pub mod command_batch;
 mod command_id_scope;
 mod node_json;
-pub use command_id_scope::CommandSimulation;
+pub use command_id_scope::{AtomicCommandSimulation, CommandSimulation};
 pub use node_json::map_subtree_json;
 pub mod command_font_replace;
 pub mod command_layout_prop;
@@ -425,7 +425,9 @@ pub use fills::{
 pub use geometry::{aggregate_bounds, own_bounds, union_aggregate_bounds, DocRect};
 pub use git_button_state::GitButton;
 pub use history::{
-    EditorSnapshot, History, HistoryEntry, ScopedEditorSnapshot, ScopedHistoryError, HISTORY_CAP,
+    ActorHistoryError, EditorSnapshot, History, HistoryActor, HistoryEntry, HistoryLimitError,
+    HistoryLimits, HistoryRetentionStatus, HistoryTag, ScopedEditorSnapshot, ScopedHistoryError,
+    HISTORY_CAP,
 };
 pub use history_snapshot::{SharedComponent, SharedComponents, SharedDoc, SharedNode};
 pub use hoist_app_state::{hoist_app_state, UNPLANNED_APP_STATE_IDX};

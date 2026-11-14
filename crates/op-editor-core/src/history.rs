@@ -15,9 +15,13 @@ use crate::selection::SelectionState;
 use crate::state::EditorState;
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
+mod actor;
 mod entry;
+mod retention;
 mod scoped;
+pub use actor::{ActorHistoryError, HistoryActor, HistoryTag};
 pub use entry::HistoryEntry;
+pub use retention::{HistoryLimitError, HistoryLimits, HistoryRetentionStatus};
 pub(crate) use scoped::{
     contains_header_token, structural_payload_bound, PendingScopedSnapshot, Scope, SpliceSpec,
     TargetSpec, TopologyKind, TopologyLocation, TopologyRequest, TopologySpec,
@@ -50,6 +54,8 @@ pub const HISTORY_CAP: usize = 100;
 /// `PenDocument` on every restore.
 #[derive(Debug, Clone, PartialEq)]
 pub struct EditorSnapshot {
+    /// Runtime-only operation ownership; never part of the canonical schema.
+    pub history_tag: HistoryTag,
     /// The canonical document at snapshot time, shared recursively.
     pub doc: SharedDoc,
     /// Selection at snapshot time.
@@ -90,6 +96,12 @@ pub struct EditorSnapshot {
 pub struct History {
     pub past: VecDeque<HistoryEntry>,
     pub future: VecDeque<HistoryEntry>,
+    actor: Option<HistoryActor>,
+    actor_error: Option<ActorHistoryError>,
+    conflicts: std::collections::BTreeSet<u64>,
+    limits: HistoryLimits,
+    mixed_actors: bool,
+    retention: retention::HistoryRetention,
 }
 
 impl History {
@@ -100,12 +112,12 @@ impl History {
 
     /// True when there is at least one undo entry.
     pub fn can_undo(&self) -> bool {
-        !self.past.is_empty()
+        self.validate_actor(false).is_ok()
     }
 
     /// True when there is at least one redo entry.
     pub fn can_redo(&self) -> bool {
-        !self.future.is_empty()
+        self.validate_actor(true).is_ok()
     }
 }
 
@@ -197,6 +209,7 @@ impl EditorState {
         anchor: Option<&EditorSnapshot>,
     ) -> EditorSnapshot {
         EditorSnapshot {
+            history_tag: HistoryTag::capture(self.history.actor),
             doc: SharedDoc::capture(&self.doc, anchor.map(|snapshot| &snapshot.doc)),
             selection: self.selection.clone(),
             active_page_index: self.ui.active_page_index,
@@ -224,11 +237,10 @@ impl EditorState {
 
     pub(crate) fn history_push_entry(&mut self, entry: HistoryEntry) {
         self.history_push_count = self.history_push_count.saturating_add(1);
+        self.history.mixed_actors |= entry.history_tag().actor.is_some();
+        self.history.invalidate_redo(&entry, true);
         self.history.past.push_back(entry);
-        if self.history.past.len() > HISTORY_CAP {
-            self.history.past.pop_front();
-        }
-        self.history.future.clear();
+        self.history.enforce_retention();
         self.mark_document_changed();
     }
 
@@ -313,64 +325,14 @@ impl EditorState {
         workspace.fitted_bounds = None;
     }
 
-    /// Undo the last change. Returns false when the undo stack is empty.
+    /// Undo this actor's latest disjoint edit, or the latest global edit when
+    /// no host actor context is installed. Conflicts never mutate the document.
     pub fn undo(&mut self) -> bool {
-        let Some(previous) = self.history.past.pop_back() else {
-            return false;
-        };
-        match previous {
-            HistoryEntry::Full(previous) => {
-                let current = self.snapshot_for_history_with_anchor(Some(&previous));
-                self.history.future.push_back(current.into());
-                self.restore(previous);
-                rebase_scoped_prefix(&mut self.history.past, self.document_generation);
-                true
-            }
-            HistoryEntry::Scoped(previous) => {
-                let mut previous = Arc::unwrap_or_clone(previous);
-                if previous.exchange(self).is_err() {
-                    self.history
-                        .past
-                        .push_back(HistoryEntry::Scoped(Arc::new(previous)));
-                    false
-                } else {
-                    self.history
-                        .future
-                        .push_back(HistoryEntry::Scoped(Arc::new(previous)));
-                    true
-                }
-            }
-        }
+        self.exchange_history(false)
     }
-
-    /// Redo the last undone change. Returns false when redo is empty.
+    /// Redo this actor's retained branch, preserving unrelated actors' branches.
     pub fn redo(&mut self) -> bool {
-        let Some(next) = self.history.future.pop_back() else {
-            return false;
-        };
-        match next {
-            HistoryEntry::Full(next) => {
-                let current = self.snapshot_for_history_with_anchor(Some(&next));
-                self.history.past.push_back(current.into());
-                self.restore(next);
-                rebase_scoped_prefix(&mut self.history.future, self.document_generation);
-                true
-            }
-            HistoryEntry::Scoped(next) => {
-                let mut next = Arc::unwrap_or_clone(next);
-                if next.exchange(self).is_err() {
-                    self.history
-                        .future
-                        .push_back(HistoryEntry::Scoped(Arc::new(next)));
-                    false
-                } else {
-                    self.history
-                        .past
-                        .push_back(HistoryEntry::Scoped(Arc::new(next)));
-                    true
-                }
-            }
-        }
+        self.exchange_history(true)
     }
 }
 

@@ -42,8 +42,8 @@ enum PlanError {
 }
 pub(super) fn classify(state: &EditorState, command: &C) -> Classification {
     if refused_header(state, command)
-        || matches!(command, C::Undo) && state.history.past.is_empty()
-        || matches!(command, C::Redo) && state.history.future.is_empty()
+        || matches!(command, C::Undo) && state.history.next_entry(false).is_none()
+        || matches!(command, C::Redo) && state.history.next_entry(true).is_none()
         || matches!(command, C::Batch { commands } if commands.is_empty())
     {
         return Classification::Refused;
@@ -75,12 +75,10 @@ pub(super) fn classify(state: &EditorState, command: &C) -> Classification {
         return Classification::Full;
     }
     if let C::Undo | C::Redo = command {
-        let entry = if matches!(command, C::Undo) {
-            state.history.past.back()
-        } else {
-            state.history.future.back()
-        }
-        .unwrap();
+        let entry = state
+            .history
+            .next_entry(matches!(command, C::Redo))
+            .unwrap();
         return entry
             .scoped_snapshot()
             .map_or(Classification::Full, |snapshot| {

@@ -202,36 +202,11 @@ fn panicking_batch_restores_document_and_history_then_resumes_unwind() {
 }
 
 #[test]
-fn batch_rejects_non_document_sub_commands_up_front_with_no_state_change() {
-    // Commands whose primary state lives outside the rollback
-    // snapshot reject the WHOLE batch before any sub-command runs —
-    // including document commands listed BEFORE the offender.
-    let offenders = vec![
-        EditorCommand::SetActiveTool {
-            tool: "hand".into(),
-        },
-        EditorCommand::SetViewport {
-            pan_x: Some(10),
-            pan_y: Some(10),
-            zoom_percent: Some(200),
-        },
-        EditorCommand::CopySelected,
-        EditorCommand::CutSelected,
-        EditorCommand::PasteClipboard { offset_px: 10 },
-        EditorCommand::Undo,
-        EditorCommand::Redo,
-        EditorCommand::SetActiveAxisValue {
-            axis: "mode".into(),
-            value: "dark".into(),
-        },
-        EditorCommand::CycleActiveAxisValue {
-            axis: "mode".into(),
-        },
-    ];
+fn batch_rejects_history_sub_commands_up_front_with_no_state_change() {
+    // Undo/redo exchange the surrounding stacks rather than one operation's
+    // actor/document state, so they remain unsupported inside a Batch.
+    let offenders = vec![EditorCommand::Undo, EditorCommand::Redo];
     for offender in offenders {
-        // `sample()` selects `n11`, so `CopySelected` / `CutSelected`
-        // WOULD succeed standalone — proving the rejection is the
-        // classification, not a sub-command failure.
         let mut s = sample();
         let before_doc = serde_json::to_string(&s.doc).unwrap();
         let before_selection = s.selection.clone();
@@ -261,16 +236,9 @@ fn batch_rejects_non_document_sub_commands_up_front_with_no_state_change() {
 fn batch_rejection_runs_nothing_even_when_the_offender_leads() {
     let mut s = sample();
     let before = s.active_children().len();
-    // `SetActiveTool` would succeed standalone; as the FIRST batch
-    // entry it must still be rejected up front — the tool stays put
-    // and the following insert never runs.
+    // History exchange rejects before the following insert can run.
     assert!(!s.apply(EditorCommand::Batch {
-        commands: vec![
-            EditorCommand::SetActiveTool {
-                tool: "hand".into(),
-            },
-            insert("A"),
-        ],
+        commands: vec![EditorCommand::Undo, insert("A"),],
     }));
     assert_eq!(s.tool, crate::tool::Tool::Select);
     assert_eq!(s.active_children().len(), before);

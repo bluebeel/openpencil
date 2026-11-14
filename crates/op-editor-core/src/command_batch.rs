@@ -13,17 +13,12 @@
 //!
 //! ## Sub-command restriction
 //!
-//! The rollback snapshot covers exactly the history-snapshot fields —
-//! document, selection, active page index, components
-//! ([`crate::history::EditorSnapshot`]). A command whose primary state
-//! lives OUTSIDE that snapshot (active tool, viewport, clipboard,
-//! the undo/redo stacks themselves, the transient active-theme pin)
-//! could not be rolled back, so [`batchable`] rejects it: the whole
-//! batch fails BEFORE any sub-command executes, with zero state
-//! change. The only production `Batch` producer today — the MCP
-//! `batch_program` executor — emits document commands exclusively
-//! (insert / update / replace / delete / move variants), so the
-//! restriction loses nothing and keeps the atomicity contract honest.
+//! Document, selection, active page and components use the existing history
+//! snapshot. A companion actor snapshot covers tool, viewport, UI drafts,
+//! active theme and clipboard writers. Undo/redo remain unsupported because
+//! they exchange the surrounding history itself. Nested Batch commands must
+//! be flattened and classified before application. A rejected member fails
+//! before any command executes.
 //!
 //! Allowed commands may still maintain doc-derived transient caches
 //! (the variable ref caches, the `preserve_authored_geometry` latch,
@@ -37,9 +32,19 @@ use crate::command::EditorCommand;
 use crate::command_apply::command_marks_document_dirty;
 use crate::{EditorState, IdAllocError, IdAllocator};
 
+#[path = "command_batch_actor.rs"]
+pub(crate) mod actor;
+
+impl EditorCommand {
+    /// Shares the exhaustive rollback classification used by Batch itself.
+    pub fn supports_atomic_batch(&self) -> bool {
+        batchable(self)
+    }
+}
+
 /// `true` when every piece of editor state `cmd` primarily mutates is
-/// covered by the pre-batch rollback snapshot (document, selection,
-/// active page index, components), so the all-or-nothing contract can
+/// covered by the document and actor rollback snapshots, so the
+/// all-or-nothing contract can
 /// genuinely restore it.
 ///
 /// Exhaustive on purpose: a new `EditorCommand` variant fails to
@@ -48,25 +53,19 @@ use crate::{EditorState, IdAllocError, IdAllocator};
 fn batchable(cmd: &EditorCommand) -> bool {
     use EditorCommand as C;
     match cmd {
-        // Primary state outside the rollback snapshot: the active
-        // tool, the viewport, the clipboard buffer (paste also READS
-        // it, making the outcome depend on un-snapshotted state), the
-        // undo/redo stacks themselves, and the transient active-theme
-        // pin. Nested batches are rejected so rollback stays
-        // single-level.
+        // History exchange remains outside this operation's rollback. Nested
+        // batches are flattened by planners so rollback stays single-level.
+        C::Undo | C::Redo | C::Batch { .. } => false,
+        // Document / selection / page / component mutators — fully
+        // covered by the pre-batch snapshot.
         C::SetActiveTool { .. }
         | C::SetViewport { .. }
         | C::CopySelected
         | C::CutSelected
         | C::PasteClipboard { .. }
-        | C::Undo
-        | C::Redo
         | C::SetActiveAxisValue { .. }
         | C::CycleActiveAxisValue { .. }
-        | C::Batch { .. } => false,
-        // Document / selection / page / component mutators — fully
-        // covered by the pre-batch snapshot.
-        C::SetVariableColor { .. }
+        | C::SetVariableColor { .. }
         | C::InsertNode { .. }
         | C::UpdateNode { .. }
         | C::PatchNodeData { .. }
@@ -184,6 +183,7 @@ impl EditorState {
         if !commands.iter().all(batchable) {
             return Ok(false);
         }
+        let actor = actor::BatchActorSnapshot::capture(self, &commands);
         let marks_document_dirty = commands.iter().any(command_marks_document_dirty);
         let pre = if scoped.is_none() {
             Some(
@@ -239,6 +239,7 @@ impl EditorState {
                         .restore(self)
                         .expect("page-local Batch rollback");
                 }
+                actor.restore(self);
                 failure
             }
             Err(panic) => {
@@ -251,6 +252,7 @@ impl EditorState {
                         .restore(self)
                         .expect("page-local Batch rollback");
                 }
+                actor.restore(self);
                 std::panic::resume_unwind(panic)
             }
         }

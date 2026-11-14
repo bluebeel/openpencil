@@ -3,7 +3,7 @@
 //! Their scene kinds are degraded rectangles/text for layout. Serializing
 //! those kinds directly leaks select values and turns icon glyphs into boxes.
 
-use super::{color_to_rgb, normalize_rect, stroke_attrs, svg_id, xml_escape};
+use super::{color_to_rgb, node_id, normalize_rect, stroke_attrs, svg_id, xml_escape};
 use crate::layout_scene::{NodeKind, SceneNode};
 use crate::{Color, Point2D, Rect, RenderBackend, TextLayout};
 use std::fmt::Write as _;
@@ -57,7 +57,7 @@ pub(super) fn emit_visual(out: &mut String, node: &SceneNode) -> bool {
         let _ = write!(
             out,
             r#"<g id="{}">{}</g>"#,
-            xml_escape(&node.id),
+            xml_escape(&node_id(&node.id)),
             backend.markup
         );
     }

@@ -1,12 +1,10 @@
 //! Read-only headless picking/marquee queries using the editor's actual scene.
 //! Batch queries share one layout snapshot and retain only their small results.
-use op_editor_ui::snapping::{SnapAxis, SnapIndex, SnapRect};
+use op_editor_ui::snapping::{ResizeHandle, SnapAxis, SnapIndex, SnapRect};
 use std::{
     collections::{BTreeMap, HashMap},
     fmt,
 };
-#[path = "canvas_snap.rs"]
-mod canvas_snap;
 
 use op_editor_core::{
     render_backend::{Point2D, Rect},
@@ -45,6 +43,8 @@ enum Query {
         parent: Option<String>,
         #[serde(default, rename = "excludeIds")]
         excluded: Vec<String>,
+        #[serde(default, rename = "resizeHandle")]
+        resize: Option<String>,
     },
     Rect {
         x: f32,
@@ -146,6 +146,7 @@ fn queries(args: &BTreeMap<String, String>) -> Result<Vec<Query>, QueryError> {
                         6.0
                     },
                     parent: args.get("parentId").cloned(),
+                    resize: args.get("resizeHandle").cloned(),
                     excluded: args
                         .get("exclude_ids_json")
                         .map(|v| serde_json::from_str(v))
@@ -161,6 +162,15 @@ fn queries(args: &BTreeMap<String, String>) -> Result<Vec<Query>, QueryError> {
         return Err(QueryError::BatchLimit);
     }
     for query in &queries {
+        if let Query::Snap {
+            resize: Some(handle),
+            ..
+        } = query
+        {
+            if ResizeHandle::from_name(handle).is_none() {
+                return Err(QueryError::InvalidField("resizeHandle"));
+            }
+        }
         let valid = match *query {
             Query::Point { x, y, zoom } => {
                 x.is_finite() && y.is_finite() && zoom.is_finite() && zoom > 0.0
@@ -261,19 +271,32 @@ pub(super) fn snapshot(
                     });
                     json!({"kind":"rect", "nodeIds":ids})
                 }
-                Query::Snap {x,y,width,height,dx,dy,zoom,threshold,parent,excluded} => {
+                Query::Snap {x,y,width,height,dx,dy,zoom,threshold,parent,excluded,resize} => {
                     if !snap_indexes.contains_key(&parent) {
-                        let index=canvas_snap::index(&scene,parent.as_deref())
+                        let index=SnapIndex::for_scene(&scene,parent.as_deref())
                             .ok_or_else(||QueryError::MissingParent(parent.clone().unwrap_or_default()))?;
                         snap_indexes.insert(parent.clone(),index);
                     }
-                    let result=snap_indexes[&parent].query(SnapRect{x,y,width,height},dx,dy,zoom,threshold,&excluded)
-                        .ok_or(QueryError::InvalidField("snap geometry"))?;
+                    let index=&snap_indexes[&parent];
+                    let bounds=SnapRect{x,y,width,height};
+                    let (result,resized)=if let Some(handle)=resize {
+                        let handle=ResizeHandle::from_name(&handle).ok_or(QueryError::InvalidField("resizeHandle"))?;
+                        let (bounds,result)=index.query_resize(bounds,handle,dx,dy,zoom,threshold,&excluded)
+                            .ok_or(QueryError::InvalidField("resize geometry"))?;
+                        (result,Some(bounds))
+                    } else {
+                        (index.query(bounds,dx,dy,zoom,threshold,&excluded)
+                            .ok_or(QueryError::InvalidField("snap geometry"))?,None)
+                    };
                     let guides:Vec<_>=result.guides.iter().map(|guide|json!({
                         "axis":if guide.axis==SnapAxis::X {"x"} else {"y"},"position":guide.position,
                         "start":guide.start,"end":guide.end,"nodeId":guide.target_id,
                     })).collect();
-                    json!({"kind":"snap","dx":result.dx,"dy":result.dy,"guides":guides})
+                    let mut output=json!({"kind":"snap","dx":result.dx,"dy":result.dy,"guides":guides});
+                    if let Some(bounds)=resized {
+                        output["bounds"]=json!({"x":bounds.x,"y":bounds.y,"width":bounds.width,"height":bounds.height});
+                    }
+                    output
                 }
             });
         }

@@ -19,7 +19,7 @@ pub(super) struct NodePatch {
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct ForestPatch {
     pub scope: Scope,
-    parent: Box<[usize]>,
+    pub(super) parent: Box<[usize]>,
     parent_id: Option<String>,
     pub expected_ids: Vec<String>,
     pub old: Vec<Arc<SharedNode>>,
@@ -34,8 +34,8 @@ pub(super) enum Patch {
 }
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct OrderPatch {
-    scope: Scope,
-    parent: Box<[usize]>,
+    pub(super) scope: Scope,
+    pub(super) parent: Box<[usize]>,
     parent_id: Option<String>,
     old_order: Vec<String>,
     expected_ids: Vec<String>,

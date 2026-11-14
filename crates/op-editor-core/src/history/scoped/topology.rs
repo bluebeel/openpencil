@@ -105,6 +105,12 @@ impl TopologyPatch {
             Self::Wrap(patch) => patch.exchange(state),
         }
     }
+    pub(super) fn actor_regions(&self) -> [Option<super::actor_claim::Region<'_>>; 2] {
+        match self {
+            Self::Move(patch) => patch.actor_regions(),
+            Self::Wrap(patch) => patch.actor_regions(),
+        }
+    }
     pub(super) fn rebase(&mut self, reorders: &patch::Reorders) {
         match self {
             Self::Move(patch) => patch.rebase(reorders),

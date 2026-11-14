@@ -335,7 +335,7 @@ pub(super) fn plan(state: &EditorState, command: &C, active: usize) -> Option<Ta
             }
             let from = location(path)?;
             parent_ok(roots, &from.parent)?;
-            let members = group.children().map_or(&[], Vec::as_slice);
+            let members: &[PenNode] = group.children().map_or(&[], Vec::as_slice);
             let ids = identity_bytes(members.iter().map(PenNodeExt::id_str))?;
             let header = command_capture_node_bytes(group, true, COMMAND_CAPTURE_ALLOWANCE).ok()?;
             let growth =

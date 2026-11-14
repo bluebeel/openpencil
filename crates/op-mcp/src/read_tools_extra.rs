@@ -320,6 +320,11 @@ pub fn list_node_kinds_snapshot(state: &EditorState) -> ListNodeKinds {
 pub struct GetHistoryDepth {
     pub past: usize,
     pub future: usize,
+    pub actor_past: usize,
+    pub actor_future: usize,
+    pub undo_blocked: bool,
+    pub redo_blocked: bool,
+    pub retention: op_editor_core::HistoryRetentionStatus,
 }
 
 impl McpTool for GetHistoryDepth {
@@ -330,12 +335,36 @@ impl McpTool for GetHistoryDepth {
         let mut out = BTreeMap::new();
         out.insert("past".into(), self.past.to_string());
         out.insert("future".into(), self.future.to_string());
+        out.insert("actor_past".into(), self.actor_past.to_string());
+        out.insert("actor_future".into(), self.actor_future.to_string());
+        out.insert("undo_blocked".into(), self.undo_blocked.to_string());
+        out.insert("redo_blocked".into(), self.redo_blocked.to_string());
+        out.insert(
+            "retained_bytes".into(),
+            self.retention.retained_bytes.to_string(),
+        );
+        out.insert(
+            "evicted_entries".into(),
+            self.retention.evicted_entries.to_string(),
+        );
+        out.insert(
+            "sizing_failures".into(),
+            self.retention.sizing_failures.to_string(),
+        );
+        out.insert("max_entries".into(), self.retention.max_entries.to_string());
+        out.insert("max_bytes".into(), self.retention.max_bytes.to_string());
         ToolOutcome::Ok(out)
     }
 }
 
 pub fn get_history_depth_snapshot(state: &EditorState) -> GetHistoryDepth {
+    let (actor_past, actor_future) = state.history.actor_depths();
     GetHistoryDepth {
+        actor_past,
+        actor_future,
+        undo_blocked: actor_past > 0 && !state.history.can_undo(),
+        redo_blocked: actor_future > 0 && !state.history.can_redo(),
+        retention: state.history.retention_status(),
         past: state.history.past.len(),
         future: state.history.future.len(),
     }

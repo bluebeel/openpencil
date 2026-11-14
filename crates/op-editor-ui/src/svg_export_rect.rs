@@ -1,6 +1,6 @@
 //! Rectangle emission helpers for the SVG serializer.
 
-use super::{fill_attrs, fill_stroke_attrs, normalize_rect, stroke_attrs, xml_escape};
+use super::{fill_attrs, fill_stroke_attrs, node_id, normalize_rect, stroke_attrs, xml_escape};
 use crate::layout_scene::{NodeKind, SceneNode};
 use std::fmt::Write as _;
 
@@ -53,7 +53,7 @@ fn emit_rect_shape(out: &mut String, node: &SceneNode, id: Option<&str>, attrs: 
         String::new()
     };
     let id = id
-        .map(|id| format!(r#" id="{}""#, xml_escape(id)))
+        .map(|id| format!(r#" id="{}""#, xml_escape(&node_id(id))))
         .unwrap_or_default();
     let _ = write!(
         out,

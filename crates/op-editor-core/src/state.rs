@@ -618,6 +618,7 @@ mod tests {
         let mut pre_sync = empty_document();
         pre_sync.name = Some("PRE-SYNC".to_string());
         s.ui.pending_pen_history = Some(crate::history::EditorSnapshot {
+            history_tag: crate::history::HistoryTag::default(),
             doc: crate::history_snapshot::SharedDoc::capture(&pre_sync, None),
             selection: SelectionState::empty(),
             active_page_index: 0,

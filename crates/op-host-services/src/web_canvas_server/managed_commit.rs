@@ -45,7 +45,9 @@ fn apply_command(
     repair: bool,
     fence: &crate::document_recovery::DocumentRecovery,
 ) -> Result<bool, CommitError> {
-    let Some(path) = path.filter(|_| command.may_change_document()) else {
+    let Some(path) = path.filter(|_| {
+        command.may_change_document() || matches!(command, EditorCommand::Batch { .. })
+    }) else {
         return Ok(mcp_serve::apply_command_with_undo(
             editor,
             command.clone(),
@@ -128,10 +130,11 @@ pub(super) fn dispatch(
         line,
         profile,
         |editor| {
-            mcp_serve::process_message_with_applier_profiled(
+            mcp_serve::process_message_with_bound_authority_profiled(
                 editor,
                 line,
                 profile,
+                managed && commit_path.is_some(),
                 |tool, editor, command| {
                     if failed.is_some() {
                         return false;

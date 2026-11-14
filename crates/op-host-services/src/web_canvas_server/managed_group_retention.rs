@@ -85,18 +85,9 @@ pub(super) fn retained_bytes(state: &EditorState, limit: usize) -> Result<usize,
         scoped: HashSet::new(),
         workspaces: HashSet::new(),
     };
-    let evicted = if state.history.past.len() + 32 > op_editor_core::history::HISTORY_CAP {
-        32
-    } else {
-        0
-    };
-    for entry in state
-        .history
-        .past
-        .iter()
-        .take(evicted)
-        .chain(&state.history.future)
-    {
+    // Every pending command owns a History clone. Count the retained union
+    // once per cohort: byte-based trimming can evict more than 32 old entries.
+    for entry in state.history.past.iter().chain(&state.history.future) {
         match entry {
             HistoryEntry::Full(snapshot) => {
                 let metadata = snapshot.doc.metadata_arc();
@@ -146,9 +137,10 @@ pub(super) fn retained_bytes(state: &EditorState, limit: usize) -> Result<usize,
     Ok(ledger.bytes)
 }
 pub(super) fn clone_bytes(state: &EditorState) -> usize {
-    (state.history.past.len() + state.history.future.len() + 2)
-        * std::mem::size_of::<HistoryEntry>()
-        * 2
+    state.history.runtime_clone_bytes()
+        + (state.history.past.len() + state.history.future.len() + 2)
+            * std::mem::size_of::<HistoryEntry>()
+            * 2
         + state
             .history
             .past

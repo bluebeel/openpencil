@@ -33,85 +33,91 @@ pub(super) fn process_message_with_auto_finalize(
         line,
         profile,
         |state| {
-            process_message_with_applier_profiled(state, line, profile, |tool, state, cmd| {
-                // `EditorState::apply` runs the pre-validate-then-mutate
-                // discipline; `false` means the command rejected and the
-                // document was NOT changed.
-                let revision_before = state.document_revision();
-                let metadata_before =
-                    (!agent_owned).then(|| op_pen_loader::EditorMeta::from_state(state));
-                let repair = !annotation_only && super::write_repairs::generated_tool(tool);
-                let mut capture = cmd
-                    .may_change_document()
+            process_message_with_bound_authority_profiled(
+                state,
+                line,
+                profile,
+                true,
+                |tool, state, cmd| {
+                    // `EditorState::apply` runs the pre-validate-then-mutate
+                    // discipline; `false` means the command rejected and the
+                    // document was NOT changed.
+                    let revision_before = state.document_revision();
+                    let metadata_before =
+                        (!agent_owned).then(|| op_pen_loader::EditorMeta::from_state(state));
+                    let repair = !annotation_only && super::write_repairs::generated_tool(tool);
+                    let mut capture = (cmd.may_change_document()
+                        || matches!(cmd, EditorCommand::Batch { .. }))
                     .then(|| super::begin_command_capture(state, cmd, repair));
-                let page_ui_before = (!agent_owned
-                    && !cmd.may_change_document()
-                    && matches!(
-                        cmd,
-                        EditorCommand::SetActivePage { .. } | EditorCommand::Batch { .. }
-                    ))
-                .then(|| (state.selection.clone(), state.viewport));
-                // Cut replaces rather than reads the old clipboard. Moving it
-                // aside permits exact failure recovery without a deep clone.
-                let clipboard_before = matches!(cmd, EditorCommand::CutSelected)
-                    .then(|| std::mem::take(&mut state.clipboard));
-                let applied = match capture.as_mut() {
-                    Some(capture) => {
-                        super::apply_command_with_command_capture(state, cmd.clone(), capture)
-                    }
-                    None => apply_command_with_undo(state, cmd.clone(), repair),
-                };
-                if !applied {
-                    if let Some(clipboard) = clipboard_before {
-                        state.clipboard = clipboard;
-                    }
-                    apply_rejected = true;
-                    return false;
-                }
-                let document_changed = state.document_revision() != revision_before;
-                let metadata_changed = metadata_before
-                    .as_ref()
-                    .is_some_and(|before| before != &op_pen_loader::EditorMeta::from_state(state));
-                if document_changed || metadata_changed {
-                    if let Err(e) = save_editor_state(state, path) {
-                        let rollback = if let Some(capture) = capture {
-                            capture.abort(state)
-                        } else {
-                            if let Some(metadata) = metadata_before {
-                                op_pen_loader::apply_editor_meta(state, metadata);
-                            }
-                            if let Some((selection, viewport)) = page_ui_before {
-                                state.selection = selection;
-                                state.viewport = viewport;
-                            }
-                            Ok(())
-                        };
+                    let page_ui_before = (!agent_owned
+                        && !cmd.may_change_document()
+                        && matches!(
+                            cmd,
+                            EditorCommand::SetActivePage { .. } | EditorCommand::Batch { .. }
+                        ))
+                    .then(|| (state.selection.clone(), state.viewport));
+                    // Cut replaces rather than reads the old clipboard. Moving it
+                    // aside permits exact failure recovery without a deep clone.
+                    let clipboard_before = matches!(cmd, EditorCommand::CutSelected)
+                        .then(|| std::mem::take(&mut state.clipboard));
+                    let applied = match capture.as_mut() {
+                        Some(capture) => {
+                            super::apply_command_with_command_capture(state, cmd.clone(), capture)
+                        }
+                        None => apply_command_with_undo(state, cmd.clone(), repair),
+                    };
+                    if !applied {
                         if let Some(clipboard) = clipboard_before {
                             state.clipboard = clipboard;
                         }
-                        applier_failed = Some(match rollback {
-                            Ok(()) => format!("save failed: {e}"),
-                            Err(rollback) => {
-                                format!("save failed: {e}; rollback failed: {rollback}")
-                            }
-                        });
+                        apply_rejected = true;
                         return false;
                     }
-                }
-                if !document_changed {
-                    return true;
-                }
-                if annotation_only {
-                    if let Some(auto_finalize) = auto_finalize.as_deref_mut() {
-                        auto_finalize.note_scoped_annotation(state.document_revision());
+                    let document_changed = state.document_revision() != revision_before;
+                    let metadata_changed = metadata_before.as_ref().is_some_and(|before| {
+                        before != &op_pen_loader::EditorMeta::from_state(state)
+                    });
+                    if document_changed || metadata_changed {
+                        if let Err(e) = save_editor_state(state, path) {
+                            let rollback = if let Some(capture) = capture {
+                                capture.abort(state)
+                            } else {
+                                if let Some(metadata) = metadata_before {
+                                    op_pen_loader::apply_editor_meta(state, metadata);
+                                }
+                                if let Some((selection, viewport)) = page_ui_before {
+                                    state.selection = selection;
+                                    state.viewport = viewport;
+                                }
+                                Ok(())
+                            };
+                            if let Some(clipboard) = clipboard_before {
+                                state.clipboard = clipboard;
+                            }
+                            applier_failed = Some(match rollback {
+                                Ok(()) => format!("save failed: {e}"),
+                                Err(rollback) => {
+                                    format!("save failed: {e}; rollback failed: {rollback}")
+                                }
+                            });
+                            return false;
+                        }
                     }
-                } else {
-                    if let Some(auto_finalize) = auto_finalize.as_deref_mut() {
-                        auto_finalize.note_write(Instant::now());
+                    if !document_changed {
+                        return true;
                     }
-                }
-                true
-            })
+                    if annotation_only {
+                        if let Some(auto_finalize) = auto_finalize.as_deref_mut() {
+                            auto_finalize.note_scoped_annotation(state.document_revision());
+                        }
+                    } else {
+                        if let Some(auto_finalize) = auto_finalize.as_deref_mut() {
+                            auto_finalize.note_write(Instant::now());
+                        }
+                    }
+                    true
+                },
+            )
         },
     )?;
     if let Some(ref msg) = applier_failed {

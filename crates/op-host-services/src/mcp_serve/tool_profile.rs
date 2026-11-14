@@ -378,6 +378,7 @@ pub const TOOL_PROFILES: &[ToolProfile] = &[
         ToolSurface::InMemory,
     ),
     ToolProfile::new("batch_design", ToolAccess::Write, ToolSurface::InMemory),
+    ToolProfile::new("batch_tools", ToolAccess::Write, ToolSurface::InMemory),
     ToolProfile::new("create_generator", ToolAccess::Write, ToolSurface::InMemory),
     ToolProfile::new(
         "update_generator_params",

@@ -1,4 +1,4 @@
-//! Opt-in, bounded MCP UI contexts. Documents and undo history stay shared.
+//! Opt-in, bounded MCP actor contexts. Documents and undo storage stay shared.
 //!
 //! A store belongs to one host/account. `agentId` is a client context identifier,
 //! never an authentication credential. Calls without it retain legacy behavior.
@@ -11,7 +11,7 @@ use std::{
 };
 
 use jian_ops_schema::node::PenNode;
-use op_editor_core::{EditorState, PenNodeExt, SelectionState};
+use op_editor_core::{EditorState, HistoryActor, PenNodeExt, SelectionState};
 
 use super::{tool_profile::McpAccessProfile, McpServeError};
 
@@ -22,7 +22,9 @@ pub(crate) use error::AgentContextError;
 const UI_ALLOWANCE: usize = 64 * 1024;
 const MAX_CLIPBOARD: usize = 4 * 1024 * 1024;
 const MAX_SELECTION: usize = 1024;
-const AGENT_BASE: usize = 288;
+const AGENT_BASE: usize = 304;
+#[path = "agent_history_limits.rs"]
+mod history_limits;
 
 #[derive(Default)]
 struct UiContext {
@@ -70,6 +72,7 @@ use execution::AdmissionOwner;
 pub(crate) use execution::{with_agent_context_permit, AgentExecutionPermit};
 
 struct Slot {
+    history_actor: HistoryActor,
     admitted: Option<AdmissionOwner>,
     execution_pins: usize,
     execution_reservation: usize,
@@ -172,10 +175,13 @@ impl AgentContexts {
                     limit: self.max_bytes,
                 });
             }
+            let history_actor =
+                HistoryActor::allocate().ok_or(AgentContextError::AdmissionExhausted)?;
             ledger.charge += AGENT_BASE;
             ledger.agents.insert(
                 agent.clone(),
                 Slot {
+                    history_actor,
                     admitted: Some(owner),
                     execution_pins: 0,
                     execution_reservation: 0,
@@ -259,8 +265,13 @@ impl AgentContexts {
                 limit: self.max_bytes,
             });
         }
+        let history_actor = match ledger.agents.get(agent) {
+            Some(slot) => slot.history_actor,
+            None => HistoryActor::allocate().ok_or(AgentContextError::AdmissionExhausted)?,
+        };
         ledger.charge = total;
         let slot = ledger.agents.entry(agent.into()).or_insert_with(|| Slot {
+            history_actor,
             admitted: None,
             execution_pins: 0,
             execution_reservation: 0,
@@ -275,6 +286,7 @@ impl AgentContexts {
             agent: agent.into(),
             data: Some(data),
             reservation,
+            history_actor,
         })
     }
 }
@@ -327,6 +339,7 @@ struct Lease<'a> {
     agent: String,
     data: Option<AgentData>,
     reservation: usize,
+    history_actor: HistoryActor,
 }
 
 impl Lease<'_> {
@@ -417,6 +430,12 @@ fn with_agent_context_impl(
     if super::sniff::is_control_message(line) {
         return action(state);
     }
+    let limits = history_limits::configured()
+        .map_err(|error| McpServeError::Validation(error.to_string()))?;
+    state
+        .history
+        .configure_limits(limits)
+        .map_err(|error| McpServeError::Validation(error.to_string()))?;
     let Some(call) = op_mcp::parse_tool_call(line.trim()) else {
         return action(state);
     };
@@ -434,6 +453,11 @@ fn with_agent_context_impl(
         Err(error) => return refusal(&call, error.to_string()),
     };
     let mut scope = Scope::enter(lease, document, state);
+    if matches!(call.tool.as_str(), "undo" | "redo") {
+        if let Err(error) = scope.state.validate_actor_history(call.tool == "redo") {
+            return refusal(&call, error.to_string());
+        }
+    }
     // Both production clipboard writers copy this exact selected forest. Charge
     // before registry/application, without cloning it or making a JSON buffer.
     if matches!(call.tool.as_str(), "copy_selected" | "cut_selected") {
@@ -443,7 +467,18 @@ fn with_agent_context_impl(
             return refusal(&call, error.to_string());
         }
     }
-    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| action(scope.state)));
+    if super::atomic_tools::requests_clipboard_reservation(line) {
+        if let Err(error) = scope.lease.reserve_clipboard(MAX_CLIPBOARD) {
+            return refusal(&call, error.to_string());
+        }
+    }
+    let mut outcome =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| action(scope.state)));
+    if let Some(error) = scope.state.take_actor_history_error() {
+        if matches!(&outcome, Ok(Ok(_))) {
+            outcome = Ok(refusal(&call, error.to_string()));
+        }
+    }
     let restored = scope.finish();
     if let Err(error) = restored {
         if let Ok(Ok(Some(response))) = &outcome {
@@ -466,6 +501,7 @@ struct Scope<'a, 's> {
     state: &'s mut EditorState,
     document: PathBuf,
     live: UiContext,
+    live_history_actor: Option<HistoryActor>,
     live_clipboard: Vec<PenNode>,
     // Protect interactive text/property drafts too. Variable/theme caches remain
     // shared and are moved back after the call, including canonical edits.
@@ -478,6 +514,8 @@ struct Scope<'a, 's> {
 
 impl<'a, 's> Scope<'a, 's> {
     fn enter(mut lease: Lease<'a>, document: &Path, state: &'s mut EditorState) -> Self {
+        let live_history_actor = state.set_history_actor(Some(lease.history_actor));
+        state.take_actor_history_error();
         let data = lease.data.as_mut().unwrap();
         let mut agent_ui = data.documents.remove(document).unwrap_or_default();
         let mut live_ui = std::mem::take(&mut state.ui);
@@ -504,6 +542,7 @@ impl<'a, 's> Scope<'a, 's> {
             state,
             document: document.into(),
             live: agent_ui,
+            live_history_actor,
             live_clipboard,
             live_ui: Some(live_ui),
             live_image_panel,
@@ -518,6 +557,7 @@ impl<'a, 's> Scope<'a, 's> {
             return Ok(());
         }
         self.finished = true;
+        self.state.set_history_actor(self.live_history_actor);
         let data = self.lease.data.as_mut().unwrap();
         let clipboard_changed =
             self.clipboard_identity != (self.state.clipboard.as_ptr(), self.state.clipboard.len());
@@ -625,6 +665,33 @@ fn clipboard_charge<'a>(
     } else {
         Ok(bytes)
     }
+}
+
+/// Atomic preparation rejects an oversized clipboard before any live command.
+pub(super) fn validate_atomic_clipboard(state: &EditorState) -> Result<(), AgentContextError> {
+    clipboard_charge(state.clipboard.iter(), state.clipboard.capacity()).map(|_| ())
+}
+
+pub(super) fn validate_atomic_ui(state: &EditorState) -> Result<(), AgentContextError> {
+    if state.selection.len() > MAX_SELECTION {
+        return Err(AgentContextError::Capacity {
+            resource: "atomic selection entries",
+            limit: MAX_SELECTION,
+        });
+    }
+    let ui = UiContext {
+        selection: state.selection.clone(),
+        viewport: state.viewport,
+        active_page: state.ui.active_page_index,
+        tool: state.tool,
+    };
+    if ui.charge() > UI_ALLOWANCE / 2 {
+        return Err(AgentContextError::Capacity {
+            resource: "atomic UI bytes",
+            limit: UI_ALLOWANCE / 2,
+        });
+    }
+    Ok(())
 }
 
 fn selected_clipboard_charge(state: &EditorState) -> Result<usize, AgentContextError> {

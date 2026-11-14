@@ -201,6 +201,10 @@ impl std::ops::Deref for CommandSimulation {
     }
 }
 
+#[path = "atomic_command_simulation.rs"]
+mod atomic;
+pub use atomic::AtomicCommandSimulation;
+
 #[cfg(test)]
 #[path = "command_id_scope_tests.rs"]
 mod tests;

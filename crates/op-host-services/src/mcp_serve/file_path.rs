@@ -188,10 +188,11 @@ pub(crate) fn process_message_for_file_path_arg_with_contexts(
                 let response =
                     with_agent_context(contexts, lease.path(), state, line, profile, |state| {
                         let operation = fence.watch();
-                        let result = super::process_message_with_applier_profiled(
+                        let result = super::process_message_with_bound_authority_profiled(
                             state,
                             line,
                             profile,
+                            true,
                             |tool, state, cmd| {
                                 if let Err(error) = stamp.verify(lease.path()) {
                                     write_failure = Some(error.to_string());
@@ -204,9 +205,9 @@ pub(crate) fn process_message_for_file_path_arg_with_contexts(
                                     state.editor_ui.preserve_authored_geometry,
                                 );
                                 let repair = super::write_repairs::generated_tool(tool);
-                                let mut capture = cmd
-                                    .may_change_document()
-                                    .then(|| super::begin_command_capture(state, cmd, repair));
+                                let mut capture = (cmd.may_change_document()
+                                    || matches!(cmd, EditorCommand::Batch { .. }))
+                                .then(|| super::begin_command_capture(state, cmd, repair));
                                 let page_ui_before = (!cmd.may_change_document()
                                     && matches!(
                                         cmd,
