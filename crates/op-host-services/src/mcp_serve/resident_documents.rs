@@ -135,6 +135,7 @@ pub(super) struct ResidentDocuments {
     max_source_bytes: u64,
 }
 
+#[derive(Clone)]
 pub(super) struct DocumentLease<'a> {
     hub: &'a ResidentDocuments,
     slot: Arc<Slot>,
@@ -267,6 +268,15 @@ impl ResidentDocuments {
 impl DocumentLease<'_> {
     pub fn path(&self) -> &Path {
         &self.slot.path
+    }
+    pub(super) fn pin_receipt(
+        &self,
+        expected_epoch: u64,
+    ) -> Result<super::file_ownership::Operation, AuthorityError> {
+        self.slot
+            .claim
+            .resident_operation(&self.slot.owner, Some(expected_epoch))
+            .map_err(AuthorityError::Ownership)
     }
     pub(super) fn claim_receipt(&self) -> Result<u64, AuthorityError> {
         self.slot

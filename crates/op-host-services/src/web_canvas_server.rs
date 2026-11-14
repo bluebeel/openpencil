@@ -487,6 +487,7 @@ pub(crate) use document_push::collab_aware_error_reply_for_test;
 pub(crate) use document_push::{document_push_reply, PendingDocumentPush};
 // Spine-local: the shared coded-error renderer for the document routes.
 use document_push::collab_aware_error_reply;
+pub(crate) mod async_completion;
 mod async_sse;
 mod changefeed;
 mod sse_hub;

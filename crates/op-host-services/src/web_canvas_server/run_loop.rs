@@ -207,9 +207,18 @@ pub fn run_web_canvas(options: ServeWebOptions) -> Result<()> {
                     );
                     return;
                 }
-                match async_sse::serve_socket(s, connection, &sse_streams, |socket| {
-                    serve_one_with_authority(socket, &state, &hub, mode, &authority)
-                }) {
+                let result = async_completion::with_primary(
+                    Arc::clone(&state),
+                    Arc::clone(&authority),
+                    Arc::clone(&hub),
+                    mode,
+                    || {
+                        async_sse::serve_socket(s, connection, &sse_streams, |socket| {
+                            serve_one_with_authority(socket, &state, &hub, mode, &authority)
+                        })
+                    },
+                );
+                match result {
                     Ok(true) => {
                         shutdown_flag.store(true, Ordering::Release);
                         // Wake the (possibly blocked) accept loop. Loopback

@@ -116,7 +116,54 @@ pub(super) fn dispatch(
     agent_owned: bool,
     writes: bool,
 ) -> Result<String, WebCanvasError> {
+    dispatch_inner(
+        ctx,
+        line,
+        profile,
+        routed_path,
+        document_key,
+        agent_owned,
+        writes,
+        None,
+    )
+}
+pub(super) fn dispatch_pending(
+    ctx: &ConnCtx<'_>,
+    line: &str,
+    profile: mcp_serve::tool_profile::McpAccessProfile,
+    routed_path: Option<&Path>,
+    document_key: &Path,
+    expected: (u64, u64),
+) -> Result<String, WebCanvasError> {
+    dispatch_inner(
+        ctx,
+        line,
+        profile,
+        routed_path,
+        document_key,
+        true,
+        true,
+        Some(expected),
+    )
+}
+
+fn dispatch_inner(
+    ctx: &ConnCtx<'_>,
+    line: &str,
+    profile: mcp_serve::tool_profile::McpAccessProfile,
+    routed_path: Option<&Path>,
+    document_key: &Path,
+    agent_owned: bool,
+    writes: bool,
+    expected: Option<(u64, u64)>,
+) -> Result<String, WebCanvasError> {
     let mut state = ctx.state.lock().unwrap_or_else(|p| p.into_inner());
+    if expected.is_some_and(|(epoch, generation)| {
+        state.recovery.epoch() != epoch || state.editor.document_generation() != generation
+    }) {
+        return Ok(error_response(line, &CommitError::AuthorityChanged));
+    }
+
     let managed = matches!(ctx.mode, ServeMode::Managed);
     state.ensure_document_available()?;
     let fence = state.recovery.clone();

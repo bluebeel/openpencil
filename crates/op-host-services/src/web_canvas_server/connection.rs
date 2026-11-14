@@ -134,6 +134,7 @@ fn dispatch_inner<S: Read + Write>(
         Some("*".to_string())
     };
     let cors_origin = cors_origin.as_deref();
+    super::async_completion::origin(cors_origin);
     if matches!(ctx.mode, ServeMode::Managed)
         && !managed_request_origin_allowed(
             &allow_origins,

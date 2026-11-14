@@ -1,5 +1,5 @@
-//! The original HTTP worker retains its admission until the durable reply.
-//! A commit leader receives only an opaque capability to that exact admission.
+//! Opaque original admission retained through commit and reply delivery.
+//! Shared pins let owned async responses release request workers safely.
 use super::*;
 #[path = "agent_context_execution_identity.rs"]
 mod identity;
@@ -7,7 +7,11 @@ mod identity;
 pub(super) mod reservation;
 pub(super) use identity::AdmissionOwner;
 
+#[derive(Clone)]
 pub(crate) struct AgentExecutionPermit {
+    inner: std::sync::Arc<ExecutionPin>,
+}
+pub(crate) struct ExecutionPin {
     identity: identity::Identity,
     store: std::sync::Arc<AgentContexts>,
     document: PathBuf,
@@ -43,18 +47,20 @@ impl AgentAdmission<'_> {
         slot.charge = reservation;
         ledger.charge = total;
         Some(AgentExecutionPermit {
-            store: std::sync::Arc::clone(store),
-            document: document.to_owned(),
-            identity: identity::Identity::new(
-                self.store as *const AgentContexts as usize,
-                agent.clone(),
-                owner,
-            ),
+            inner: std::sync::Arc::new(ExecutionPin {
+                store: std::sync::Arc::clone(store),
+                document: document.to_owned(),
+                identity: identity::Identity::new(
+                    self.store as *const AgentContexts as usize,
+                    agent.clone(),
+                    owner,
+                ),
+            }),
         })
     }
 }
 
-impl Drop for AgentExecutionPermit {
+impl Drop for ExecutionPin {
     fn drop(&mut self) {
         let mut ledger = self.store.ledger.lock().unwrap_or_else(|p| p.into_inner());
         let Some(slot) = ledger.agents.get_mut(self.identity.agent()) else {
@@ -119,3 +125,14 @@ pub(crate) fn with_agent_context_permit(
         action,
     )
 }
+
+impl std::ops::Deref for AgentExecutionPermit {
+    type Target = ExecutionPin;
+    fn deref(&self) -> &ExecutionPin {
+        &self.inner
+    }
+}
+#[path = "agent_context_delivery.rs"]
+mod delivery;
+pub(super) use delivery::permit as delivery_permit;
+pub(crate) use delivery::Scope as AgentDeliveryScope;

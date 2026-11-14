@@ -112,18 +112,23 @@ pub(super) fn retain_online_admission(permit: super::online_run_loop::scheduler:
 /// connection quota until their async task releases its original `ConnGuard`.
 pub(super) struct Streams {
     shutdown: watch::Sender<bool>,
+    completions: super::async_completion::Flights,
 }
 
 impl Streams {
     pub(super) fn new() -> Self {
         let (shutdown, _) = watch::channel(false);
-        Self { shutdown }
+        Self {
+            shutdown,
+            completions: Default::default(),
+        }
     }
 
     pub(super) fn close(&self) {
         // `send_replace` retains closure even when the last task has exited,
         // so a queued request cannot create a new stream after shutdown.
         self.shutdown.send_replace(true);
+        self.completions.close();
     }
 
     fn handoff(&self, socket: TcpStream, connection: ConnGuard, ready: Ready) -> Result<()> {
@@ -165,8 +170,19 @@ pub(super) fn serve_socket(
     dispatch: impl FnOnce(&mut TcpStream) -> Result<bool>,
 ) -> Result<bool> {
     let capture = Capture::enter();
+    let completion = super::async_completion::Capture::enter();
     let outcome = dispatch(&mut socket);
     let ready = capture.finish();
+    let pending = completion.finish();
+    if let (Ok(false), Some(pending)) = (&outcome, pending) {
+        if ready.is_some() {
+            return Err(WebCanvasError::Config(
+                "two response handoffs requested".into(),
+            ));
+        }
+        streams.completions.handoff(socket, connection, pending)?;
+        return Ok(false);
+    }
     match (outcome, ready) {
         (Ok(false), Some(ready)) => {
             streams.handoff(socket, connection, ready)?;

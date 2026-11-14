@@ -71,7 +71,7 @@ impl AgentData {
 #[path = "agent_context_execution.rs"]
 mod execution;
 use execution::AdmissionOwner;
-pub(crate) use execution::{with_agent_context_permit, AgentExecutionPermit};
+pub(crate) use execution::{with_agent_context_permit, AgentDeliveryScope, AgentExecutionPermit};
 
 struct Slot {
     history_actor: HistoryActor,
@@ -417,6 +417,11 @@ pub(crate) fn with_agent_context(
     profile: McpAccessProfile,
     action: impl FnOnce(&mut EditorState) -> Result<Option<String>, McpServeError>,
 ) -> Result<Option<String>, McpServeError> {
+    if let Some(permit) = execution::delivery_permit(contexts, document, line) {
+        return with_agent_context_permit(
+            contexts, document, state, line, profile, &permit, action,
+        );
+    }
     with_agent_context_impl(contexts, document, state, line, profile, None, action)
 }
 

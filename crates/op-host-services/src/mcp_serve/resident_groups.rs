@@ -107,53 +107,13 @@ fn candidate(line: &str, profile: McpAccessProfile) -> Option<op_mcp::ToolCall> 
     {
         return None;
     }
-    if !matches!(
-        call.tool.as_str(),
-        "update_node"
-            | "set_node_rotation"
-            | "set_node_text"
-            | "set_node_corner_radius"
-            | "set_node_font_size"
-            | "set_node_font_weight"
-            | "set_node_stroke_hex"
-            | "set_node_stroke_width"
-            | "set_node_fill_hex"
-            | "set_node_name"
-            | "set_node_hidden"
-            | "set_node_locked"
-            | "set_node_collapsed"
-            | "set_node_flip"
-            | "set_ellipse_arc"
-            | "add_node_effect"
-            | "remove_node_effect"
-            | "set_node_stroke_side_width"
-    ) {
+    if !super::cohort_coverage::tool(&call.tool) {
         return None;
     }
     Some(call)
 }
-fn metadata_command(command: &EditorCommand) -> bool {
-    use EditorCommand::*;
-    matches!(
-        command,
-        UpdateNode { .. }
-            | PatchNodeData { .. }
-            | SetNodeRotation { .. }
-            | SetNodeText { .. }
-            | SetNodeCornerRadius { .. }
-            | SetNodeFontSize { .. }
-            | SetNodeFontWeight { .. }
-            | SetNodeStrokeHex { .. }
-            | SetNodeStrokeWidth { .. }
-            | SetNodeFillHex { .. }
-            | SetNodeName { .. }
-            | SetNodeFlag { .. }
-            | SetNodeFlip { .. }
-            | SetEllipseArc { .. }
-            | AddNodeEffect { .. }
-            | RemoveNodeEffect { .. }
-            | SetNodeStrokeSideWidth { .. }
-    )
+fn audited_command(command: &EditorCommand) -> bool {
+    super::cohort_coverage::command(command)
 }
 
 /// Called only by the already authenticated file router with its original agent
@@ -210,8 +170,10 @@ pub(crate) fn dispatch(
             )))
         }
     };
+    let deferred = crate::web_canvas_server::async_completion::prepare();
     let charge = line
         .len()
+        .saturating_add(if deferred.is_some() { line.len() } else { 0 })
         .saturating_add(MAX_REPLY)
         .saturating_add(lease.path().as_os_str().len() * 2)
         .saturating_add(4096);
@@ -229,6 +191,9 @@ pub(crate) fn dispatch(
         retained: Arc::new(reserved),
         route,
     };
+    let deferred_pin = deferred.as_ref().map(|_| input.permit.clone());
+    let deferred_line = deferred.as_ref().map(|_| input.line.clone());
+    let deferred_route = deferred.as_ref().map(|_| input.route.clone());
     let ticket = match groups.queue.submit(input, line.len(), charge) {
         Ok(ticket) => ticket,
         Err(_) => {
@@ -238,6 +203,47 @@ pub(crate) fn dispatch(
     };
     groups.metrics.admitted.fetch_add(1, Ordering::Relaxed);
     let fence = lease.recovery();
+    if let Some(factory) = deferred {
+        let run_lease = lease.clone();
+        let fallback_lease = lease.clone();
+        let panic_fence = fence.clone();
+        let fallback_fence = fence.clone();
+        let contexts = Arc::clone(contexts);
+        let current = current.map(Path::to_path_buf);
+        let line = deferred_line.expect("deferred resident request retains its input");
+        let pin = deferred_pin.expect("deferred resident request retains admission");
+        let route = deferred_route.expect("deferred resident request retains routing epoch");
+        let pending = ticket.execute_async(
+            move |requests| run(&run_lease, requests),
+            move |request| {
+                panic_fence.trip();
+                request.reply(ReplyValue::Complete(Err(McpServeError::Io(
+                    crate::document_recovery::REQUIRED.into(),
+                ))))
+            },
+        );
+        factory.install(async move {
+            let (reply, queue_charge) = pending.await.into_parts();
+            let Reply { value, _retained: global_charge } = reply;
+            let body = match value {
+                ReplyValue::Complete(reply) => reply?,
+                ReplyValue::Isolated => {
+                    let fallback_pin = pin.clone();
+                    let unconfirmed_fence = fallback_fence.clone();
+                    queue::execute_isolated(move || {
+                        if fallback_fence.required() { return Err(McpServeError::Io(crate::document_recovery::REQUIRED.into())); }
+                        if !route.valid() { return Err(McpServeError::Document("bound primary changed while this request waited; no command applied".into())); }
+                        let _owner = fallback_lease.pin_receipt(claim_epoch).map_err(|error|McpServeError::Document(error.to_string()))?;
+                        let _actor = super::agent_context::AgentDeliveryScope::enter(fallback_pin);
+                        super::file_path::process_message_for_file_path_arg_with_contexts(&contexts, current.as_deref(), &line, profile)
+                            .map(|reply|reply.unwrap_or_default())
+                    }).await.map_err(|_| { unconfirmed_fence.trip(); crate::web_canvas_server::WebCanvasError::Config(crate::document_recovery::REQUIRED.into()) })??
+                }
+            };
+            Ok(crate::web_canvas_server::async_completion::Response { body, _retained: Box::new((queue_charge,global_charge,pin)) })
+        });
+        return Some(Ok(String::new()));
+    }
     let result = ticket.execute(
         |requests| run(&lease, requests),
         |request| {

@@ -1,5 +1,6 @@
 //! Bounded rendezvous queue: one caller drains a FIFO group, then wakes replies.
-//! No worker thread, polling loop, detached task, retry or document ownership.
+//! Compatibility callers wait synchronously; owned TCP callers use notified
+//! futures and bounded cohort execution. No retry or document ownership.
 use std::{
     collections::VecDeque,
     sync::{Arc, Condvar, Mutex},
@@ -28,6 +29,7 @@ struct Job<T, R> {
     charge: usize,
     body_bytes: usize,
     ready: Condvar,
+    notified: tokio::sync::Notify,
 }
 
 struct Inner<T, R> {
@@ -38,13 +40,14 @@ struct Inner<T, R> {
 }
 
 pub(crate) struct Queue<T, R> {
-    inner: Mutex<Inner<T, R>>,
-    collect: Condvar,
-    limits: Limits,
+    inner: Arc<Mutex<Inner<T, R>>>,
+    collect: Arc<Condvar>,
+    collected: Arc<tokio::sync::Notify>,
+    limits: Arc<Limits>,
 }
 
-pub(crate) struct Ticket<'a, T, R> {
-    queue: &'a Queue<T, R>,
+pub(crate) struct Ticket<T, R> {
+    queue: Queue<T, R>,
     job: Arc<Job<T, R>>,
     consumed: bool,
 }
@@ -54,14 +57,15 @@ impl<T, R> Queue<T, R> {
         assert!(limits.calls > 0 && limits.group_calls > 0);
         assert!(limits.bytes > 0 && limits.group_bytes > 0);
         Self {
-            inner: Mutex::new(Inner {
+            inner: Arc::new(Mutex::new(Inner {
                 pending: VecDeque::new(),
                 retained_calls: 0,
                 retained_bytes: 0,
                 leader: false,
-            }),
-            collect: Condvar::new(),
-            limits,
+            })),
+            collect: Arc::new(Condvar::new()),
+            collected: Arc::new(tokio::sync::Notify::new()),
+            limits: Arc::new(limits),
         }
     }
 
@@ -72,7 +76,7 @@ impl<T, R> Queue<T, R> {
         input: T,
         body_bytes: usize,
         charge: usize,
-    ) -> Result<Ticket<'_, T, R>, T> {
+    ) -> Result<Ticket<T, R>, T> {
         let mut inner = self.inner.lock().unwrap_or_else(|p| p.into_inner());
         if inner.retained_calls >= self.limits.calls
             || charge > self.limits.bytes.saturating_sub(inner.retained_bytes)
@@ -85,17 +89,20 @@ impl<T, R> Queue<T, R> {
             body_bytes,
             charge,
             ready: Condvar::new(),
+            notified: tokio::sync::Notify::new(),
         });
         inner.retained_calls += 1;
         inner.retained_bytes += charge;
         inner.pending.push_back(Arc::clone(&job));
         if inner.leader {
             self.collect.notify_one();
+            self.collected.notify_one();
         } else if let Some(head) = inner.pending.front() {
             head.ready.notify_one();
+            head.notified.notify_one();
         }
         Ok(Ticket {
-            queue: self,
+            queue: self.clone(),
             job,
             consumed: false,
         })
@@ -108,7 +115,7 @@ impl<T, R> Queue<T, R> {
     }
 }
 
-impl<T, R> Ticket<'_, T, R> {
+impl<T, R> Ticket<T, R> {
     /// Only the oldest waiting caller can lead. The executor receives borrowed
     /// inputs, so panic fallback can answer every claimed request without replay.
     /// It must finish its document commit/rollback before returning or unwinding.
@@ -117,7 +124,7 @@ impl<T, R> Ticket<'_, T, R> {
         run: impl FnOnce(&[T]) -> Vec<R>,
         failed: impl Fn(&T) -> R,
     ) -> R {
-        let queue = self.queue;
+        let queue = &self.queue;
         let mut run = Some(run);
         loop {
             let mut inner = queue.inner.lock().unwrap_or_else(|p| p.into_inner());
@@ -205,6 +212,7 @@ impl<T, R> Ticket<'_, T, R> {
                     State::Claimed => {
                         *state = State::Complete(Some(reply));
                         job.ready.notify_one();
+                        job.notified.notify_one();
                     }
                     State::Abandoned => {
                         // Already claimed work is never replayed or rolled back
@@ -220,18 +228,19 @@ impl<T, R> Ticket<'_, T, R> {
             inner.leader = false;
             if let Some(head) = inner.pending.front() {
                 head.ready.notify_one();
+                head.notified.notify_one();
             }
             // Consume this caller's response in the same path as every follower.
         }
     }
 }
 
-impl<T, R> Drop for Ticket<'_, T, R> {
+impl<T, R> Drop for Ticket<T, R> {
     fn drop(&mut self) {
         if self.consumed {
             return;
         }
-        let queue = self.queue;
+        let queue = &self.queue;
         let mut inner = queue.inner.lock().unwrap_or_else(|p| p.into_inner());
         let mut state = self.job.state.lock().unwrap_or_else(|p| p.into_inner());
         match &*state {
@@ -242,8 +251,10 @@ impl<T, R> Drop for Ticket<'_, T, R> {
                 inner.retained_bytes -= self.job.charge;
                 if inner.leader {
                     queue.collect.notify_one();
+                    queue.collected.notify_one();
                 } else if let Some(head) = inner.pending.front() {
                     head.ready.notify_one();
+                    head.notified.notify_one();
                 }
             }
             State::Complete(_) => {
@@ -258,6 +269,20 @@ impl<T, R> Drop for Ticket<'_, T, R> {
         }
     }
 }
+
+impl<T, R> Clone for Queue<T, R> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: Arc::clone(&self.inner),
+            collect: Arc::clone(&self.collect),
+            collected: Arc::clone(&self.collected),
+            limits: Arc::clone(&self.limits),
+        }
+    }
+}
+#[path = "managed_group_queue_async.rs"]
+mod asynchronous;
+pub(crate) use asynchronous::isolated as execute_isolated;
 
 #[cfg(test)]
 #[path = "managed_group_queue_tests.rs"]

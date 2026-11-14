@@ -9,6 +9,9 @@ pub(crate) fn write_mcp_http_response_with_origin<S: std::io::Write>(
     body: &str,
     cors_origin: Option<&str>,
 ) -> Result<(), McpServeError> {
+    if crate::web_canvas_server::async_completion::captured_empty_response(body) {
+        return Ok(());
+    }
     let resolved = super::http_export::complete_response(body)?;
     let body = resolved.as_deref().unwrap_or(body);
     if let Some(result) = super::export_stream::try_write(stream, status, body, cors_origin) {

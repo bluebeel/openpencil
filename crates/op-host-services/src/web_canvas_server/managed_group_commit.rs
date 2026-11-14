@@ -15,6 +15,8 @@ use std::sync::atomic::Ordering;
 mod apply;
 #[path = "managed_group_budget.rs"]
 pub(crate) mod budget;
+#[path = "managed_group_deferred.rs"]
+mod deferred_reply;
 #[path = "managed_group_limits.rs"]
 mod limits;
 #[path = "managed_group_metrics.rs"]
@@ -116,91 +118,11 @@ fn candidate(line: &str, profile: McpAccessProfile) -> bool {
     {
         return false;
     }
-    matches!(
-        call.tool.as_str(),
-        "set_variable_color"
-            | "set_variable_number"
-            | "set_variable_string"
-            | "set_variable_boolean"
-            | "create_variable"
-            | "rename_page"
-            | "update_node"
-            | "set_node_rotation"
-            | "set_node_text"
-            | "set_node_corner_radius"
-            | "set_node_font_size"
-            | "set_node_font_weight"
-            | "set_node_stroke_hex"
-            | "set_node_stroke_width"
-            | "set_node_fill_hex"
-            | "set_node_name"
-            | "set_node_hidden"
-            | "set_node_locked"
-            | "set_node_collapsed"
-            | "set_node_flip"
-            | "set_ellipse_arc"
-            | "add_node_effect"
-            | "remove_node_effect"
-            | "set_node_stroke_side_width"
-            | "insert_node"
-            | "delete_node"
-            | "copy_node"
-            | "duplicate_selected"
-            | "paste_clipboard"
-            | "move_node"
-            | "reorder_selected"
-            | "group_selected"
-            | "ungroup_selected"
-            | "delete_selected"
-            | "cut_selected"
-            | "boolean_selected"
-            | "nudge_selected"
-            | "align_selected"
-    )
+    mcp_serve::cohort_coverage::tool(&call.tool)
 }
 
 fn audited(command: &C) -> bool {
-    match command {
-        C::SetVariableColor { .. }
-        | C::SetVariableScalar { .. }
-        | C::CreateVariable { .. }
-        | C::RenamePage { .. }
-        | C::UpdateNode { .. }
-        | C::SetNodeRotation { .. }
-        | C::SetNodeText { .. }
-        | C::SetNodeCornerRadius { .. }
-        | C::SetNodeFontSize { .. }
-        | C::SetNodeFontWeight { .. }
-        | C::SetNodeStrokeHex { .. }
-        | C::SetNodeStrokeWidth { .. }
-        | C::SetNodeFillHex { .. }
-        | C::SetNodeName { .. }
-        | C::SetNodeFlag { .. }
-        | C::SetNodeFlip { .. }
-        | C::SetEllipseArc { .. }
-        | C::AddNodeEffect { .. }
-        | C::RemoveNodeEffect { .. }
-        | C::SetNodeStrokeSideWidth { .. }
-        | C::InsertNode { .. }
-        | C::DeleteNode { .. }
-        | C::CopyNode { .. }
-        | C::DuplicateSelected { .. }
-        | C::PasteClipboard { .. }
-        | C::MoveNode { .. }
-        | C::ReorderSelected { .. }
-        | C::GroupSelected
-        | C::UngroupSelected
-        | C::DeleteSelected
-        | C::CutSelected
-        | C::ReplacePathsWithSvg(_)
-        | C::NudgeSelected { .. }
-        | C::AlignSelected { .. } => true,
-        // The strict Core target factory proves header-only shape and Ref
-        // ancestry before capture/apply. Keep one authoritative parse there;
-        // unknown/new header properties need no second host key whitelist.
-        C::PatchNodeData { .. } => true,
-        _ => false,
-    }
+    mcp_serve::cohort_coverage::command(command)
 }
 
 /// Called after the existing boundary, file router and agent admission. A None
@@ -242,9 +164,13 @@ pub(super) fn dispatch(
         generation,
         permit,
     };
+    let deferred = super::async_completion::prepare();
+    let deferred_pin = deferred.as_ref().map(|_| input.permit.clone());
+    let deferred_line = deferred.as_ref().map(|_| input.line.clone());
     let charge = input.line.capacity()
         + input.path.as_os_str().len()
         + input.document.as_os_str().len() * 2
+        + deferred_line.as_ref().map_or(0, String::capacity)
         + MAX_REPLY
         + 2048;
     let ticket = match groups.queue.submit(input, line.len(), charge) {
@@ -258,6 +184,21 @@ pub(super) fn dispatch(
         }
     };
     groups.metrics.admitted.fetch_add(1, Ordering::Relaxed);
+    if let Some(factory) = deferred {
+        deferred_reply::install(
+            factory,
+            ticket,
+            deferred_line.unwrap(),
+            deferred_pin.unwrap(),
+            path,
+            document,
+            profile,
+            fence,
+            recovery_epoch,
+            generation,
+        );
+        return Some(Ok(String::new()));
+    }
     match ticket.execute(
         |requests| run_group(ctx, groups, requests),
         |_| {
@@ -356,25 +297,8 @@ impl Transaction<'_, '_, '_> {
             ))));
             return;
         }
-        let structural = op_mcp::parse_tool_call(&request.line).is_some_and(|call| {
-            matches!(
-                call.tool.as_str(),
-                "insert_node"
-                    | "delete_node"
-                    | "copy_node"
-                    | "duplicate_selected"
-                    | "paste_clipboard"
-                    | "move_node"
-                    | "reorder_selected"
-                    | "group_selected"
-                    | "ungroup_selected"
-                    | "delete_selected"
-                    | "cut_selected"
-                    | "boolean_selected"
-                    | "nudge_selected"
-                    | "align_selected"
-            )
-        });
+        let structural = op_mcp::parse_tool_call(&request.line)
+            .is_some_and(|call| mcp_serve::cohort_coverage::structural_tool(&call.tool));
         if structural && self.live_selection.is_none() {
             let selection = &self.state.editor.selection;
             if selection.set.len() > 16_384 {
@@ -420,7 +344,7 @@ impl Transaction<'_, '_, '_> {
                     editor,
                     &request.line,
                     request.profile,
-                    |_, editor, command| {
+                    |tool, editor, command| {
                         if capture.is_some() {
                             failure = Some(GroupError::CommandCount);
                             return false;
@@ -431,7 +355,9 @@ impl Transaction<'_, '_, '_> {
                             refused = Some(reason);
                             return false;
                         }
-                        if !audited(command) {
+                        if !audited(command)
+                            || !mcp_serve::cohort_coverage::repair_free(editor, tool, command)
+                        {
                             isolated = true;
                             return false;
                         }
