@@ -8,6 +8,7 @@ use std::{
     rc::Rc,
 };
 
+// Shared by these scoped entries and persistent immutable coverage masks.
 const MAX_BYTES: usize = 8 * 1024 * 1024;
 const MAX_ENTRIES: usize = 512;
 const ENTRY_OVERHEAD: usize = 512;
@@ -90,6 +91,7 @@ impl Cache {
         if self.entries >= self.max_entries || bytes > self.max_bytes.saturating_sub(self.bytes) {
             return false;
         }
+        super::stencil::trim_retained_cache(self.max_bytes - self.bytes - bytes);
         self.entries += 1;
         self.bytes += bytes;
         true
@@ -263,4 +265,51 @@ pub(super) fn glyph_metadata(
         }
     });
     metadata
+}
+
+pub(super) fn cache_headroom() -> usize {
+    ACTIVE.with(|slot| {
+        slot.borrow().as_ref().map_or(MAX_BYTES, |cache| {
+            cache.max_bytes.saturating_sub(cache.bytes)
+        })
+    })
+}
+
+#[cfg(test)]
+#[test]
+fn retained_masks_and_request_entries_enforce_the_budget_in_both_directions() {
+    super::stencil::trim_retained_cache(0);
+    with_scope(|| {
+        let mut p = skia_safe::PathBuilder::new();
+        p.move_to((0., 0.));
+        p.quad_to((12., -4.), (20., 12.));
+        p.close();
+        let p = p.detach();
+        let draw = || {
+            super::stencil::coverage(&p, &Matrix::default(), skia_safe::IRect::from_wh(32, 32), 2)
+                .unwrap()
+        };
+        draw();
+        let active = draw();
+        assert!(super::stencil::retained_coverage_bytes() > 0);
+        with_cache(|cache| {
+            assert!(cache.admit(cache.max_bytes - cache.bytes));
+            assert_eq!(super::stencil::retained_coverage_bytes(), 0);
+        });
+        drop(active);
+        draw();
+        assert_eq!(
+            super::stencil::retained_coverage_bytes(),
+            0,
+            "full request cache prevents mask retention"
+        );
+        with_cache(|cache| {
+            cache.bytes = 0;
+            cache.entries = 0;
+        });
+        draw();
+        draw();
+        assert!(super::stencil::retained_coverage_bytes() > 0);
+    });
+    super::stencil::trim_retained_cache(0);
 }

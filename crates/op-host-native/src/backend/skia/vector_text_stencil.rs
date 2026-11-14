@@ -11,6 +11,17 @@ use skia_safe::{
     Rect, SamplingOptions, Shader, TileMode,
 };
 
+#[path = "vector_text_mask_cache.rs"]
+mod mask_cache;
+
+pub(super) fn trim_retained_cache(budget: usize) {
+    mask_cache::trim(budget);
+}
+#[cfg(test)]
+pub(super) fn retained_coverage_bytes() -> usize {
+    mask_cache::retained_bytes()
+}
+
 const MAX_TRIANGLES: usize = 65536;
 const MAX_WORKING_BYTES: usize = 32 * 1024 * 1024;
 const MAX_DEVICE_COORDINATE: f32 = 1_000_000.0;
@@ -340,14 +351,58 @@ fn raster(triangle: Triangle, camera: &Camera<'_>, target: &mut Target<'_>) -> O
     Some(())
 }
 
-/// A zero grid samples the current point camera; one/two resolve four jittered
-/// cameras at that physical grid. No mask or triangle data survives the draw.
 pub(super) fn coverage(
     path: &Path,
     matrix: &Matrix,
     clip: IRect,
     grid: u32,
 ) -> Option<(Shader, Rect)> {
+    if !matches!(grid, 0..=2)
+        || !matrix.is_finite()
+        || matrix.has_perspective()
+        || path.count_points() > MAX_TRIANGLES
+    {
+        return None;
+    }
+    let budget = super::reuse::cache_headroom();
+    if budget == 0 {
+        mask_cache::trim(0);
+        return coverage_uncached(path, matrix, clip, grid, 0)
+            .map(|(shader, bounds, _)| (shader, bounds));
+    }
+    let key = mask_cache::Key::new(path, matrix, clip, grid);
+    if let Some(result) = mask_cache::lookup(&key, super::reuse::cache_headroom()) {
+        return Some(result);
+    }
+    let Some((shader, bounds, bytes)) = coverage_uncached(path, matrix, clip, grid, key.bytes())
+    else {
+        // A temporary cache key must not make a previously supported draw
+        // cross its working-buffer limit. Drop it and retain the exact cold
+        // renderer's allocation/fallback contract.
+        drop(key);
+        return coverage_uncached(path, matrix, clip, grid, 0)
+            .map(|(shader, bounds, _)| (shader, bounds));
+    };
+    mask_cache::insert(
+        key,
+        shader.clone(),
+        bounds,
+        bytes,
+        super::reuse::cache_headroom(),
+    );
+    Some((shader, bounds))
+}
+
+/// A zero grid samples the current point camera; one/two resolve four jittered
+/// cameras at that physical grid. Temporary counts/triangles leave before the
+/// returned immutable mask; the caller may retain that mask in its cache.
+fn coverage_uncached(
+    path: &Path,
+    matrix: &Matrix,
+    clip: IRect,
+    grid: u32,
+    key_bytes: usize,
+) -> Option<(Shader, Rect, usize)> {
     if !matches!(grid, 0..=2) || !matrix.is_finite() || matrix.has_perspective() {
         return None;
     }
@@ -390,6 +445,7 @@ pub(super) fn coverage(
                 .capacity()
                 .checked_mul(std::mem::size_of::<Triangle>())?,
         )?;
+    let working = working.checked_add(key_bytes)?;
     if working > MAX_WORKING_BYTES {
         return None;
     }
@@ -460,7 +516,7 @@ pub(super) fn coverage(
         &image_to_local,
     )?;
     let (local_bounds, _) = inverse.map_rect(bounds);
-    Some((shader, local_bounds))
+    Some((shader, local_bounds, bytes.len()))
 }
 
 #[cfg(test)]
