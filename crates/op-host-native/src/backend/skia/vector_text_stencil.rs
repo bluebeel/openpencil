@@ -40,7 +40,7 @@ const CUBIC: [[f32; 3]; 4] = [
 ];
 
 #[derive(Clone, Copy)]
-struct Triangle {
+pub(super) struct Triangle {
     points: [Point; 3],
     values: [[f32; 3]; 3],
     interior: bool,
@@ -524,7 +524,7 @@ fn coverage_uncached(
     let point = grid == 0;
     let grid = grid.max(1) as usize;
     let source_pixels = pixels.checked_mul(grid * grid)?;
-    let triangles = triangles(path)?;
+    let triangles = super::reuse::triangles(path, || triangles(path))?;
     let working = source_pixels
         .checked_mul(4)?
         .checked_add(pixels.checked_mul(2)?)?
@@ -559,7 +559,7 @@ fn coverage_uncached(
             width: width * grid,
             height: height * grid,
         };
-        for triangle in &triangles {
+        for triangle in triangles.iter() {
             raster(*triangle, &camera, &mut target)?;
         }
         for y in 0..height {

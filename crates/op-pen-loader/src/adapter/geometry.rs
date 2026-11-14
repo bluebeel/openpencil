@@ -59,33 +59,33 @@ fn pen_base(n: &PenNode) -> &jian_ops_schema::node::base::PenNodeBase {
 pub fn root_available_size(root: &PenNode) -> (f32, f32) {
     let (w_sizing, h_sizing) = root_sizing(root);
     let w = match w_sizing {
-        Some(SizingBehavior::Number(n)) => n as f32,
+        Some(SizingBehavior::Number(n)) => *n as f32,
         _ => ROOT_FALLBACK_W,
     };
     let h = match h_sizing {
-        Some(SizingBehavior::Number(n)) => n as f32,
+        Some(SizingBehavior::Number(n)) => *n as f32,
         _ => ROOT_FALLBACK_H,
     };
     (w, h)
 }
 
-fn root_sizing(root: &PenNode) -> (Option<SizingBehavior>, Option<SizingBehavior>) {
+fn root_sizing(root: &PenNode) -> (Option<&SizingBehavior>, Option<&SizingBehavior>) {
     match root {
-        PenNode::Frame(f) => (f.container.width.clone(), f.container.height.clone()),
-        PenNode::Group(g) => (g.container.width.clone(), g.container.height.clone()),
-        PenNode::Rectangle(r) => (r.container.width.clone(), r.container.height.clone()),
-        PenNode::Ellipse(e) => (e.width.clone(), e.height.clone()),
-        PenNode::Text(t) => (t.width.clone(), t.height.clone()),
-        PenNode::TextInput(t) => (t.width.clone(), t.height.clone()),
-        PenNode::TextArea(t) => (t.width.clone(), t.height.clone()),
-        PenNode::Select(s) => (s.width.clone(), s.height.clone()),
-        PenNode::Switch(s) => (s.width.clone(), s.height.clone()),
-        PenNode::Checkbox(c) => (c.width.clone(), c.height.clone()),
-        PenNode::Slider(s) => (s.width.clone(), s.height.clone()),
-        PenNode::Image(i) => (i.width.clone(), i.height.clone()),
-        PenNode::IconFont(i) => (i.width.clone(), i.height.clone()),
-        PenNode::Polygon(p) => (p.width.clone(), p.height.clone()),
-        PenNode::Path(p) => (p.width.clone(), p.height.clone()),
+        PenNode::Frame(f) => (f.container.width.as_ref(), f.container.height.as_ref()),
+        PenNode::Group(g) => (g.container.width.as_ref(), g.container.height.as_ref()),
+        PenNode::Rectangle(r) => (r.container.width.as_ref(), r.container.height.as_ref()),
+        PenNode::Ellipse(e) => (e.width.as_ref(), e.height.as_ref()),
+        PenNode::Text(t) => (t.width.as_ref(), t.height.as_ref()),
+        PenNode::TextInput(t) => (t.width.as_ref(), t.height.as_ref()),
+        PenNode::TextArea(t) => (t.width.as_ref(), t.height.as_ref()),
+        PenNode::Select(s) => (s.width.as_ref(), s.height.as_ref()),
+        PenNode::Switch(s) => (s.width.as_ref(), s.height.as_ref()),
+        PenNode::Checkbox(c) => (c.width.as_ref(), c.height.as_ref()),
+        PenNode::Slider(s) => (s.width.as_ref(), s.height.as_ref()),
+        PenNode::Image(i) => (i.width.as_ref(), i.height.as_ref()),
+        PenNode::IconFont(i) => (i.width.as_ref(), i.height.as_ref()),
+        PenNode::Polygon(p) => (p.width.as_ref(), p.height.as_ref()),
+        PenNode::Path(p) => (p.width.as_ref(), p.height.as_ref()),
         _ => (None, None),
     }
 }

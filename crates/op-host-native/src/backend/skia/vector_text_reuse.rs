@@ -1,6 +1,6 @@
 //! Short-lived reuse for immutable text drawn by repeated export cameras.
 
-use skia_safe::{Font, GlyphId, Matrix, Path, Point};
+use skia_safe::{Data, Font, GlyphId, Matrix, Path, Point};
 use std::{
     cell::RefCell,
     collections::HashMap,
@@ -51,10 +51,48 @@ struct FlatEntry {
     path: Path,
 }
 
+struct GlyphEntry {
+    font: Font,
+    glyph: GlyphId,
+    modern: bool,
+    path: Path,
+}
+
+struct MeshEntry {
+    original: Path,
+    triangles: Rc<Vec<super::stencil::Triangle>>,
+}
+
+struct SerializedEntry {
+    original: Path,
+    bytes: Data,
+    digest: u64,
+}
+
+/// A miss outside export scope retains the original Vec, with no additional
+/// Rc allocation. Admitted immutable geometry shares that same Vec across
+/// cameras; its capacity remains part of the stencil working-limit check.
+pub(super) enum PreparedTriangles {
+    Owned(Vec<super::stencil::Triangle>),
+    Shared(Rc<Vec<super::stencil::Triangle>>),
+}
+impl std::ops::Deref for PreparedTriangles {
+    type Target = Vec<super::stencil::Triangle>;
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Owned(triangles) => triangles,
+            Self::Shared(triangles) => triangles,
+        }
+    }
+}
+
 struct Cache {
     generation: u64,
     outlines: HashMap<u64, Vec<OutlineEntry>>,
     flattened: HashMap<u64, Vec<FlatEntry>>,
+    glyph_paths: HashMap<u64, Vec<GlyphEntry>>,
+    meshes: HashMap<u32, Vec<MeshEntry>>,
+    serialized: HashMap<u32, Vec<SerializedEntry>>,
     metadata: HashMap<(u32, GlyphId), Option<Rc<super::units::GlyphMetadata>>>,
     bytes: usize,
     entries: usize,
@@ -68,6 +106,9 @@ impl Cache {
             generation: jian_skia::font_generation(),
             outlines: HashMap::new(),
             flattened: HashMap::new(),
+            glyph_paths: HashMap::new(),
+            meshes: HashMap::new(),
+            serialized: HashMap::new(),
             metadata: HashMap::new(),
             bytes: 0,
             entries: 0,
@@ -80,6 +121,9 @@ impl Cache {
         if self.generation != generation {
             self.outlines = HashMap::new();
             self.flattened = HashMap::new();
+            self.glyph_paths = HashMap::new();
+            self.meshes = HashMap::new();
+            self.serialized = HashMap::new();
             self.metadata = HashMap::new();
             self.bytes = 0;
             self.entries = 0;
@@ -232,6 +276,139 @@ pub(super) fn flattened(
         }
     });
     Some(result)
+}
+
+/// Glyph geometry is independent of the run's positions and paint. Retain
+/// only successful outlines, so missing/unsupported paths keep their retry
+/// and bounds-fallback behavior. Full Font equality checks all font settings.
+pub(super) fn glyph_outline(
+    font: &Font,
+    glyph: GlyphId,
+    modern: bool,
+    build: impl FnOnce() -> Option<Path>,
+) -> Option<Path> {
+    if !ACTIVE.with(|slot| slot.borrow().is_some()) {
+        return build();
+    }
+    let mut hash = std::collections::hash_map::DefaultHasher::new();
+    font.typeface().unique_id().hash(&mut hash);
+    font.size().to_bits().hash(&mut hash);
+    glyph.hash(&mut hash);
+    modern.hash(&mut hash);
+    let hash = hash.finish();
+    let cached = with_cache(|cache| {
+        cache.glyph_paths.get(&hash).and_then(|entries| {
+            entries
+                .iter()
+                .find(|entry| entry.font == *font && entry.glyph == glyph && entry.modern == modern)
+                .map(|entry| entry.path.clone())
+        })
+    })
+    .flatten();
+    if cached.is_some() {
+        return cached;
+    }
+    let path = build()?;
+    with_cache(|cache| {
+        let bytes = ENTRY_OVERHEAD + 2 * path.approximate_bytes_used();
+        if cache.admit(bytes) {
+            cache.glyph_paths.entry(hash).or_default().push(GlyphEntry {
+                font: font.clone(),
+                glyph,
+                modern,
+                path: path.clone(),
+            });
+        }
+    });
+    Some(path)
+}
+
+/// Local triangles contain no camera/clip/color state. Equality is checked
+/// against the complete immutable source path, not a revision or hash alone.
+pub(super) fn triangles(
+    path: &Path,
+    build: impl FnOnce() -> Option<Vec<super::stencil::Triangle>>,
+) -> Option<PreparedTriangles> {
+    if !ACTIVE.with(|slot| slot.borrow().is_some()) {
+        return build().map(PreparedTriangles::Owned);
+    }
+    let generation = path.generation_id();
+    let cached = with_cache(|cache| {
+        cache.meshes.get(&generation).and_then(|entries| {
+            entries
+                .iter()
+                .find(|entry| entry.original == *path)
+                .map(|entry| Rc::clone(&entry.triangles))
+        })
+    })
+    .flatten();
+    if let Some(triangles) = cached {
+        return Some(PreparedTriangles::Shared(triangles));
+    }
+    let mut owned = Some(build()?);
+    let shared = with_cache(|cache| {
+        let triangles = owned.as_ref()?;
+        let bytes = ENTRY_OVERHEAD
+            + 2 * (path.approximate_bytes_used()
+                + triangles.capacity() * std::mem::size_of::<super::stencil::Triangle>());
+        if !cache.admit(bytes) {
+            return None;
+        }
+        let triangles = Rc::new(owned.take()?);
+        cache.meshes.entry(generation).or_default().push(MeshEntry {
+            original: path.clone(),
+            triangles: Rc::clone(&triangles),
+        });
+        Some(triangles)
+    })
+    .flatten();
+    match shared {
+        Some(triangles) => Some(PreparedTriangles::Shared(triangles)),
+        None => owned.map(PreparedTriangles::Owned),
+    }
+}
+
+/// Serializing and hashing a large run path on every camera is preparation,
+/// not rasterization. Share the exact serialized data/digest within this
+/// export, subject to the same mask/outline/metadata byte and entry limits.
+pub(super) fn serialized_path(path: &Path) -> (Data, u64) {
+    let active = ACTIVE.with(|slot| slot.borrow().is_some());
+    let generation = path.generation_id();
+    if active {
+        if let Some(cached) = with_cache(|cache| {
+            cache.serialized.get(&generation).and_then(|entries| {
+                entries
+                    .iter()
+                    .find(|entry| entry.original == *path)
+                    .map(|entry| (entry.bytes.clone(), entry.digest))
+            })
+        })
+        .flatten()
+        {
+            return cached;
+        }
+    }
+    let data = path.serialize();
+    let mut hash = std::collections::hash_map::DefaultHasher::new();
+    data.as_bytes().hash(&mut hash);
+    let digest = hash.finish();
+    if active {
+        with_cache(|cache| {
+            let bytes = ENTRY_OVERHEAD + 2 * (path.approximate_bytes_used() + data.len());
+            if cache.admit(bytes) {
+                cache
+                    .serialized
+                    .entry(generation)
+                    .or_default()
+                    .push(SerializedEntry {
+                        original: path.clone(),
+                        bytes: data.clone(),
+                        digest,
+                    });
+            }
+        });
+    }
+    (data, digest)
 }
 
 #[cfg(test)]

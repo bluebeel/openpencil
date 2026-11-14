@@ -28,6 +28,7 @@ use super::{McpTool, ToolErrorCode, ToolOutcome};
 pub struct DesignRefine {
     pages: Vec<PageNodes>,
     active_page_id: String,
+    prepared: Option<ToolOutcome>,
 }
 
 impl McpTool for DesignRefine {
@@ -35,6 +36,9 @@ impl McpTool for DesignRefine {
         "design_refine"
     }
     fn call(&self, args: &BTreeMap<String, String>) -> ToolOutcome {
+        if let Some(outcome) = &self.prepared {
+            return outcome.clone();
+        }
         if args.contains_key("rootId") || args.contains_key("root_id") {
             return self.refine_with_result(args);
         }
@@ -48,7 +52,48 @@ pub fn design_refine_snapshot(state: &EditorState) -> DesignRefine {
     DesignRefine {
         pages,
         active_page_id,
+        prepared: None,
     }
+}
+
+/// Refine against borrowed canonical roots without snapshotting other pages.
+pub fn design_refine_snapshot_for_call(
+    state: &EditorState,
+    args: &BTreeMap<String, String>,
+) -> DesignRefine {
+    let outcome = if args.contains_key("rootId") || args.contains_key("root_id") {
+        refine_with_result_in(refine_page_roots(state, args), args)
+    } else {
+        dispatch_phase(args, "refine")
+    };
+    DesignRefine {
+        pages: Vec::new(),
+        active_page_id: String::new(),
+        prepared: Some(outcome),
+    }
+}
+
+fn refine_page_roots<'a>(
+    state: &'a EditorState,
+    args: &BTreeMap<String, String>,
+) -> Option<&'a [PenNode]> {
+    let pages = state.doc.pages.as_deref().unwrap_or_default();
+    let target = optional_page_id(args);
+    if pages.is_empty() {
+        return match target.as_deref() {
+            None | Some("0") => Some(state.doc.children.as_slice()),
+            Some(raw) if raw.parse::<usize>() == Ok(0) => Some(state.doc.children.as_slice()),
+            _ => None,
+        };
+    }
+    let page = match target.as_deref() {
+        None => pages.get(state.ui.active_page_index.min(pages.len() - 1)),
+        Some(raw) => pages
+            .iter()
+            .find(|page| page.id == raw)
+            .or_else(|| raw.parse::<usize>().ok().and_then(|index| pages.get(index))),
+    };
+    page.map(|page| page.children.as_slice())
 }
 
 impl DesignRefine {
@@ -81,77 +126,75 @@ impl DesignRefine {
     /// the root (the same `refine_subtree` the host apply runs), then return it
     /// alongside the real `RefineDesign` command for the host to apply.
     fn refine_with_result(&self, args: &BTreeMap<String, String>) -> ToolOutcome {
-        if let Some(err) = super::batch_layered::reject_script_with_structured_payload(args) {
-            return err;
-        }
-        // Reuse the validated command construction (rootId + canvasWidth parse).
-        let command = match dispatch_design_refine(args) {
-            ToolOutcome::OkWithCommand(_flat, command) => command,
-            other => return other, // propagate validation errors verbatim
-        };
-        let root_id = args
-            .get("rootId")
-            .or_else(|| args.get("root_id"))
-            .map(|s| s.trim().to_string())
-            .unwrap_or_default();
-
-        // Resolve the SAME page the host will refine. The command carries
-        // `optional_page_id(args)` and the apply (command_apply.rs RefineDesign)
-        // switches the active page to `command_page_index(...)` before refining
-        // — id-match first, then numeric-index fallback, else the active page.
-        let Some(page) = self.resolve_page(args) else {
-            return ToolOutcome::Err(ToolErrorCode::ToolFailed, "page not found".into());
-        };
-        let children = &page.roots;
-
-        // TS errors when the root is absent instead of silently no-op refining.
-        let Some(root) = find_node(children, &NodeId::new(root_id.clone())) else {
-            return ToolOutcome::Err(
-                ToolErrorCode::ToolFailed,
-                format!("Root node not found: {root_id}"),
-            );
-        };
-
-        let mut refined = root.clone();
-        let fixes = refine_subtree(&mut refined);
-        let fixes_json: Vec<Value> = fixes
-            .iter()
-            .map(|f| {
-                let mut obj = Map::new();
-                obj.insert("nodeId".into(), json!(f.node_id));
-                // TS RefineFix.nodeName is optional — omit when absent.
-                if let Some(name) = &f.node_name {
-                    obj.insert("nodeName".into(), json!(name));
-                }
-                obj.insert("fix".into(), json!(f.fix));
-                Value::Object(obj)
-            })
-            .collect();
-
-        // Lay out against the POST-refine page (root swapped in) so ref-node
-        // dimension lookups read the refined dimensions, matching the applied
-        // document. TS: computeLayoutTree([root], allChildren, 3).
-        let all_after: Vec<PenNode> = children
-            .iter()
-            .map(|n| {
-                if n.id_str() == root_id {
-                    refined.clone()
-                } else {
-                    n.clone()
-                }
-            })
-            .collect();
-        let layout_snapshot =
-            crate::read_tools::subtree_layout_value(std::slice::from_ref(&refined), &all_after, 3);
-
-        let result = json!({
-            "rootId": root_id,
-            "totalNodeCount": count_subtree(&refined),
-            "fixes": fixes_json,
-            "layoutSnapshot": layout_snapshot,
-        });
-        ToolOutcome::OkJsonWithCommand(result.to_string(), command)
+        refine_with_result_in(
+            self.resolve_page(args).map(|page| page.roots.as_slice()),
+            args,
+        )
     }
+}
+
+fn refine_with_result_in(
+    children: Option<&[PenNode]>,
+    args: &BTreeMap<String, String>,
+) -> ToolOutcome {
+    if let Some(err) = super::batch_layered::reject_script_with_structured_payload(args) {
+        return err;
+    }
+    // Reuse the validated command construction (rootId + canvasWidth parse).
+    let command = match dispatch_design_refine(args) {
+        ToolOutcome::OkWithCommand(_flat, command) => command,
+        other => return other, // propagate validation errors verbatim
+    };
+    let root_id = args
+        .get("rootId")
+        .or_else(|| args.get("root_id"))
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
+
+    // Resolve the SAME page the host will refine. The command carries
+    // `optional_page_id(args)` and the apply (command_apply.rs RefineDesign)
+    // switches the active page to `command_page_index(...)` before refining
+    // — id-match first, then numeric-index fallback, else the active page.
+    let Some(children) = children else {
+        return ToolOutcome::Err(ToolErrorCode::ToolFailed, "page not found".into());
+    };
+
+    // TS errors when the root is absent instead of silently no-op refining.
+    let Some(root) = find_node(children, &NodeId::new(root_id.clone())) else {
+        return ToolOutcome::Err(
+            ToolErrorCode::ToolFailed,
+            format!("Root node not found: {root_id}"),
+        );
+    };
+
+    let mut refined = root.clone();
+    let fixes = refine_subtree(&mut refined);
+    let fixes_json: Vec<Value> = fixes
+        .iter()
+        .map(|f| {
+            let mut obj = Map::new();
+            obj.insert("nodeId".into(), json!(f.node_id));
+            // TS RefineFix.nodeName is optional — omit when absent.
+            if let Some(name) = &f.node_name {
+                obj.insert("nodeName".into(), json!(name));
+            }
+            obj.insert("fix".into(), json!(f.fix));
+            Value::Object(obj)
+        })
+        .collect();
+
+    // Lay out against the POST-refine page (root swapped in) so ref-node
+    // dimension lookups read the refined dimensions, matching the applied
+    // document. TS: computeLayoutTree([root], allChildren, 3).
+    let layout_snapshot = crate::read_tools::subtree_layout_value_refined(&refined, children, 3);
+
+    let result = json!({
+        "rootId": root_id,
+        "totalNodeCount": count_subtree(&refined),
+        "fixes": fixes_json,
+        "layoutSnapshot": layout_snapshot,
+    });
+    ToolOutcome::OkJsonWithCommand(result.to_string(), command)
 }
 
 /// Count a node plus all its descendants (TS `flatten(root).length`).

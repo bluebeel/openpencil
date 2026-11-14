@@ -14,6 +14,7 @@ mod forward_structure;
 mod header;
 mod header_map;
 mod identity;
+mod metadata_changes;
 mod patch;
 mod splice;
 mod splice_exchange;
@@ -215,6 +216,14 @@ impl PendingScopedSnapshot {
             clones: None,
             header: capture_header.then(|| PendingHeader::capture(&state.doc)),
         }
+    }
+    pub(crate) fn apply_metadata_direct(
+        &mut self,
+        state: &mut EditorState,
+        command: &crate::EditorCommand,
+        prepared: &crate::command_node_attrs::bulk::Prepared,
+    ) -> Option<bool> {
+        targets::apply_metadata_direct(state, command, prepared, &mut self.targets)
     }
     pub(crate) fn compact(
         mut self,

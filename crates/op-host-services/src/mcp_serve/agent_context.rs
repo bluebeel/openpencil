@@ -14,6 +14,8 @@ use jian_ops_schema::node::PenNode;
 use op_editor_core::{EditorState, HistoryActor, PenNodeExt, SelectionState};
 
 use super::{tool_profile::McpAccessProfile, McpServeError};
+#[path = "agent_context_selection.rs"]
+mod selected;
 
 #[path = "agent_context_error.rs"]
 mod error;
@@ -523,11 +525,7 @@ impl<'a, 's> Scope<'a, 's> {
         state.ui.active_page_index = agent_ui
             .active_page
             .min(state.page_count().saturating_sub(1));
-        agent_ui
-            .selection
-            .set
-            .retain(|id| op_editor_core::walkers::find_node(state.active_children(), id).is_some());
-        agent_ui.selection.anchor = agent_ui.selection.set.last().cloned().unwrap_or_default();
+        selected::prune(&mut agent_ui.selection, state.active_children());
         agent_ui.active_page = live_ui.active_page_index;
         std::mem::swap(&mut state.selection, &mut agent_ui.selection);
         std::mem::swap(&mut state.viewport, &mut agent_ui.viewport);
@@ -576,10 +574,7 @@ impl<'a, 's> Scope<'a, 's> {
             .active_page_index
             .min(self.state.page_count().saturating_sub(1));
         let mut selection = std::mem::take(&mut self.state.selection);
-        selection.set.retain(|id| {
-            op_editor_core::walkers::find_node(self.state.active_children(), id).is_some()
-        });
-        selection.anchor = selection.set.last().cloned().unwrap_or_default();
+        selected::prune(&mut selection, self.state.active_children());
         self.state.selection = selection;
         data.clipboard = std::mem::replace(
             &mut self.state.clipboard,
@@ -696,11 +691,7 @@ pub(super) fn validate_atomic_ui(state: &EditorState) -> Result<(), AgentContext
 
 fn selected_clipboard_charge(state: &EditorState) -> Result<usize, AgentContextError> {
     clipboard_charge(
-        state
-            .selection
-            .set
-            .iter()
-            .filter_map(|id| op_editor_core::walkers::find_node(state.active_children(), id)),
+        selected::roots(&state.selection, state.active_children()).into_iter(),
         state.selection.set.len(),
     )
 }

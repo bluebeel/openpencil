@@ -1,6 +1,8 @@
 //! Schema-complete recursive sharing: canonical metadata plus immutable child edges.
 use super::*;
 use crate::pen_node_ext::clone_without_children;
+#[path = "node_header.rs"]
+mod header;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SharedNode {
@@ -32,8 +34,7 @@ impl SharedNode {
     }
     /// Compare the complete source subtree without creating a hidden owned view.
     pub fn equals_node(&self, node: &PenNode) -> bool {
-        let metadata = clone_without_children(node);
-        if self.metadata != metadata || self.sensitivity != super::sensitivity::bytes(&metadata) {
+        if !self.equals_header(node) {
             return false;
         }
         match (self.children(), node.children()) {
@@ -43,6 +44,24 @@ impl SharedNode {
             }
             _ => false,
         }
+    }
+    /// Schema-complete borrowed metadata equality, including exact float bits
+    /// and map order; child payloads are compared separately by equals_node.
+    pub(crate) fn equals_header(&self, node: &PenNode) -> bool {
+        self.equals_header_with_scratch(node, &mut Vec::new())
+    }
+    fn equals_header_with_scratch(&self, node: &PenNode, scratch: &mut Vec<u8>) -> bool {
+        if let Some(equal) = super::exact::geometry_matches(&self.metadata, node) {
+            return equal;
+        }
+        if !header::partial_eq(&self.metadata, node) {
+            return false;
+        }
+        super::sensitivity::write(&super::BorrowedNodeMetadata(node), scratch);
+        self.sensitivity.as_ref() == scratch.as_slice()
+    }
+    pub(crate) fn capture_header(node: &PenNode) -> Arc<Self> {
+        Self::capture_owned(clone_without_children(node))
     }
     pub fn find_node(&self, id: &NodeId) -> Option<&Self> {
         if self.id_str() == id.as_str() {
@@ -70,7 +89,7 @@ impl SharedNode {
         } else {
             None
         };
-        let sensitivity = super::sensitivity::bytes(&node);
+        let sensitivity = super::sensitivity::bytes(&super::BorrowedNodeMetadata(&node));
         Arc::new(Self {
             metadata: node,
             sensitivity,
@@ -116,7 +135,10 @@ impl Capture {
                         Some(equal) => equal,
                         None => {
                             if old.metadata == *node {
-                                super::sensitivity::write(node, &mut self.scratch);
+                                super::sensitivity::write(
+                                    &super::BorrowedNodeMetadata(node),
+                                    &mut self.scratch,
+                                );
                                 old.sensitivity.as_ref() == self.scratch
                             } else {
                                 false
@@ -129,11 +151,9 @@ impl Capture {
                 }
             }
         }
-        let metadata = clone_without_children(node);
         let children = node
             .children()
             .map(|nodes| self.children(nodes, anchor.and_then(|a| a.children.as_ref())));
-        super::sensitivity::write(&metadata, &mut self.scratch);
         if let Some(old) = anchor {
             let same = match (&children, &old.children) {
                 (None, None) => true,
@@ -142,10 +162,12 @@ impl Capture {
                 }
                 _ => false,
             };
-            if same && old.metadata == metadata && old.sensitivity.as_ref() == self.scratch {
+            if same && old.equals_header_with_scratch(node, &mut self.scratch) {
                 return old.clone();
             }
         }
+        let metadata = clone_without_children(node);
+        super::sensitivity::write(&super::BorrowedNodeMetadata(&metadata), &mut self.scratch);
         Arc::new(SharedNode {
             metadata,
             children,

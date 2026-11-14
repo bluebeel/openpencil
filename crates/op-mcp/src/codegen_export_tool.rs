@@ -10,7 +10,7 @@
 //! Target nodes, first match wins: `nodeIds` (anywhere in the document),
 //! `pageId` (that page's roots), the live selection, the active page.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use jian_ops_schema::node::PenNode;
 use jian_ops_schema::PenDocument;
@@ -19,8 +19,7 @@ use op_codegen::{
     ReactTailwind, Svelte, SwiftUi, Vue,
 };
 use op_editor_core::codegen::Framework;
-use op_editor_core::walkers::find_node;
-use op_editor_core::{EditorState, NodeId};
+use op_editor_core::{EditorState, PenNodeExt};
 use serde_json::{json, Map, Value};
 
 use super::{McpTool, ToolErrorCode, ToolOutcome};
@@ -31,9 +30,20 @@ const CSS_VARIABLES: &str = "css-variables";
 const DEFAULT_TARGET: &str = "react-tailwind";
 
 pub struct CodegenExport {
+    snapshot: Option<CodegenInput>,
+    prepared: Option<ToolOutcome>,
+}
+
+struct CodegenInput {
     doc: PenDocument,
     active_page: usize,
     selection: Vec<String>,
+}
+
+struct ExportContext<'a> {
+    doc: &'a PenDocument,
+    active_page: usize,
+    selection: Vec<&'a str>,
 }
 
 /// Every wire token `codegen_export` accepts, in catalog order.
@@ -47,14 +57,34 @@ pub fn codegen_export_targets() -> Vec<&'static str> {
 
 pub fn codegen_export_snapshot(state: &EditorState) -> CodegenExport {
     CodegenExport {
-        doc: state.doc.clone(),
+        snapshot: Some(CodegenInput {
+            doc: state.doc.clone(),
+            active_page: state.ui.active_page_index,
+            selection: state
+                .selection
+                .set
+                .iter()
+                .map(|id| id.as_str().to_owned())
+                .collect(),
+        }),
+        prepared: None,
+    }
+}
+
+/// Prepare this exact request from borrowed source trees. Generators own only
+/// the selected roots and document metadata, never the full source document.
+pub fn codegen_export_snapshot_for_call(
+    state: &EditorState,
+    args: &BTreeMap<String, String>,
+) -> CodegenExport {
+    let context = ExportContext {
+        doc: &state.doc,
         active_page: state.ui.active_page_index,
-        selection: state
-            .selection
-            .set
-            .iter()
-            .map(|id| id.as_str().to_string())
-            .collect(),
+        selection: state.selection.set.iter().map(|id| id.as_str()).collect(),
+    };
+    CodegenExport {
+        snapshot: None,
+        prepared: Some(context.result(args)),
     }
 }
 
@@ -64,6 +94,23 @@ impl McpTool for CodegenExport {
     }
 
     fn call(&self, args: &BTreeMap<String, String>) -> ToolOutcome {
+        if let Some(outcome) = &self.prepared {
+            return outcome.clone();
+        }
+        let Some(input) = &self.snapshot else {
+            return ToolOutcome::Err(ToolErrorCode::Internal, "missing codegen snapshot".into());
+        };
+        ExportContext {
+            doc: &input.doc,
+            active_page: input.active_page,
+            selection: input.selection.iter().map(String::as_str).collect(),
+        }
+        .result(args)
+    }
+}
+
+impl ExportContext<'_> {
+    fn result(&self, args: &BTreeMap<String, String>) -> ToolOutcome {
         let target = args
             .get("framework")
             .map(|s| s.trim())
@@ -83,14 +130,14 @@ impl McpTool for CodegenExport {
             Ok(roots) => roots,
             Err(message) => return ToolOutcome::Err(ToolErrorCode::ToolFailed, message),
         };
-        let mut scoped = self.doc.clone();
-        scoped.pages = None;
-        scoped.children = roots.iter().map(|node| (*node).clone()).collect();
+        // CSS variables consume metadata only, while retaining the same target
+        // validation/nodeCount as every other format.
+        let scoped = scoped_document(self.doc, if framework.is_some() { &roots } else { &[] });
 
         let mut files = Map::new();
         let code = match framework {
             Some(Framework::ReactTailwind) => {
-                let components = referenced_components(&roots, &self.doc);
+                let components = referenced_components(&roots, self.doc);
                 let generated = ReactTailwind.generate_files_with_components(&scoped, &components);
                 files.insert("component.tsx".into(), json!(generated.component));
                 files.insert("app/globals.css".into(), json!(generated.globals_css));
@@ -121,9 +168,7 @@ impl McpTool for CodegenExport {
         });
         ToolOutcome::OkJson(out.to_string())
     }
-}
 
-impl CodegenExport {
     fn pages(&self) -> Vec<(&str, &[PenNode])> {
         match self.doc.pages.as_deref() {
             Some(pages) if !pages.is_empty() => pages
@@ -134,22 +179,26 @@ impl CodegenExport {
         }
     }
 
-    fn find_anywhere(&self, id: &str) -> Option<&PenNode> {
-        let id = NodeId::new_opt(id)?;
-        self.pages()
-            .into_iter()
-            .find_map(|(_, roots)| find_node(roots, &id))
+    fn find_requested<S: AsRef<str>>(&self, ids: &[S]) -> Vec<Option<&PenNode>> {
+        let mut found = HashMap::new();
+        for (_, roots) in self.pages() {
+            for node in super::requested_nodes::find(roots, ids) {
+                // The old per-ID lookup stops at the first matching page/DFS
+                // node; duplicate authored IDs must not change that rule.
+                found.entry(node.id_str()).or_insert(node);
+            }
+        }
+        ids.iter()
+            .map(|id| found.get(id.as_ref()).copied())
+            .collect()
     }
 
     fn target_nodes(&self, args: &BTreeMap<String, String>) -> Result<Vec<&PenNode>, String> {
         if let Some(raw) = args.get("nodeIds").filter(|raw| !raw.trim().is_empty()) {
             let ids = parse_ids(raw)?;
             let mut nodes = Vec::with_capacity(ids.len());
-            for id in &ids {
-                nodes.push(
-                    self.find_anywhere(id)
-                        .ok_or_else(|| format!("node not found: {id}"))?,
-                );
+            for (id, node) in ids.iter().zip(self.find_requested(&ids)) {
+                nodes.push(node.ok_or_else(|| format!("node not found: {id}"))?);
             }
             return Ok(nodes);
         }
@@ -162,15 +211,40 @@ impl CodegenExport {
             return non_empty(roots.iter().collect());
         }
         let selected: Vec<&PenNode> = self
-            .selection
-            .iter()
-            .filter_map(|id| self.find_anywhere(id))
+            .find_requested(&self.selection)
+            .into_iter()
+            .flatten()
             .collect();
         if !selected.is_empty() {
             return Ok(selected);
         }
         let index = self.active_page.min(pages.len().saturating_sub(1));
         non_empty(pages[index].1.iter().collect())
+    }
+}
+
+/// Clone the complete typed header without touching any unselected forests.
+/// This explicit struct initializer also requires new schema fields to be
+/// handled at compile time; optional/empty header values are not normalized.
+fn scoped_document(doc: &PenDocument, roots: &[&PenNode]) -> PenDocument {
+    PenDocument {
+        version: doc.version.clone(),
+        name: doc.name.clone(),
+        themes: doc.themes.clone(),
+        variables: doc.variables.clone(),
+        pages: None,
+        children: roots.iter().map(|node| (*node).clone()).collect(),
+        format_version: doc.format_version.clone(),
+        responsive: doc.responsive,
+        id: doc.id.clone(),
+        app: doc.app.clone(),
+        routes: doc.routes.clone(),
+        state: doc.state.clone(),
+        lifecycle: doc.lifecycle.clone(),
+        logic_modules: doc.logic_modules.clone(),
+        design_md: doc.design_md.clone(),
+        conversion: doc.conversion.clone(),
+        motion: doc.motion,
     }
 }
 

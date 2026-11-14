@@ -38,7 +38,14 @@ pub(crate) fn metadata_sensitivity<T: Serialize + ?Sized>(value: &T) -> Box<[u8]
 /// Serialize every canonical node metadata field without traversing descendants.
 /// An authored `children` field is represented by an empty placeholder only;
 /// forward consumers must retain its exact existing value and presence.
-pub(crate) struct BorrowedNodeMetadata<'a>(pub(crate) &'a PenNode);
+pub struct BorrowedNodeMetadata<'a>(pub(crate) &'a PenNode);
+impl<'a> BorrowedNodeMetadata<'a> {
+    /// Borrow complete schema metadata without cloning or visiting descendants.
+    /// The placeholder is unsuitable as a standalone replacement node.
+    pub fn new(node: &'a PenNode) -> Self {
+        Self(node)
+    }
+}
 impl Serialize for BorrowedNodeMetadata<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         self.0.serialize(node_wire::ReplaceChildren::new(

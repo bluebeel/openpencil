@@ -49,7 +49,7 @@ mod batch_layered_guidelines;
 mod batch_layered_tests;
 mod batch_page;
 mod image_annotation;
-pub use image_annotation::annotate_image_snapshot;
+pub use image_annotation::{annotate_image_snapshot, annotate_image_snapshot_for_call};
 mod batch_program;
 mod batch_program_context;
 #[cfg(test)]
@@ -111,6 +111,7 @@ pub mod design_refine_result;
 pub mod document_save;
 #[cfg(test)]
 mod document_save_tests;
+pub mod document_summary;
 pub mod editor_state_tool;
 pub mod effect_normalize;
 pub mod element_tools;

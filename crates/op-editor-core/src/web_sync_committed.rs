@@ -97,6 +97,9 @@ struct Wire {
 }
 
 pub struct CommittedMetadata {
+    from_version: u64,
+    encoded_bytes: usize,
+    incoming_nodes: usize,
     pub version: u64,
     pub cursor: String,
     pub more: bool,
@@ -105,6 +108,55 @@ pub struct CommittedMetadata {
     pub(crate) operations: Vec<Operation>,
 }
 impl CommittedMetadata {
+    /// Combine contiguous since pages before any live mutation. False means
+    /// the bounded prefix is full; next is discarded and can be fetched again
+    /// after that prefix is applied. Errors require resync, never partial data.
+    pub fn append_page(&mut self, mut next: Self) -> Result<bool, CommittedFeedError> {
+        if next.from_version != self.version
+            || next.version < self.version
+            || next.cursor.rsplit_once('.').map(|(authority, _)| authority)
+                != self.cursor.rsplit_once('.').map(|(authority, _)| authority)
+        {
+            return Err(CommittedFeedError::InvalidResponse);
+        }
+        let bytes = self
+            .encoded_bytes
+            .checked_add(next.encoded_bytes)
+            .ok_or(CommittedFeedError::InvalidResponse)?;
+        let nodes = self
+            .incoming_nodes
+            .checked_add(next.incoming_nodes)
+            .ok_or(CommittedFeedError::InvalidResponse)?;
+        let operations = self
+            .operations
+            .len()
+            .checked_add(next.operations.len())
+            .ok_or(CommittedFeedError::InvalidResponse)?;
+        if bytes > 4 * 1024 * 1024 || nodes > 32768 || operations > 4096 {
+            return Ok(false);
+        }
+        if operations > self.operations.capacity() {
+            let capacity = operations.next_power_of_two().min(4096);
+            self.operations
+                .reserve_exact(capacity - self.operations.len());
+        }
+        self.operations.append(&mut next.operations);
+        self.encoded_bytes = bytes;
+        self.incoming_nodes = nodes;
+        self.version = next.version;
+        self.cursor = next.cursor;
+        self.more = next.more;
+        self.changes_structure |= next.changes_structure;
+        self.highest_id = self.highest_id.max(next.highest_id);
+        Ok(true)
+    }
+    pub fn can_drain_more(&self) -> bool {
+        self.more
+            && self.encoded_bytes < 4 * 1024 * 1024
+            && self.incoming_nodes < 32768
+            && self.operations.len() < 4096
+    }
+
     pub fn parse(body: &str, from_version: u64) -> Result<Self, CommittedFeedError> {
         if body.len() > 1024 * 1024 {
             return Err(CommittedFeedError::InvalidResponse);
@@ -185,6 +237,9 @@ impl CommittedMetadata {
             return Err(CommittedFeedError::InvalidResponse);
         }
         Ok(Self {
+            from_version,
+            encoded_bytes: body.len(),
+            incoming_nodes: 32768 - nodes_left,
             version: wire.version,
             cursor: wire.cursor,
             more: wire.more,

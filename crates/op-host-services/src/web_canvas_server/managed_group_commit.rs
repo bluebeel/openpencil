@@ -11,6 +11,8 @@ use std::path::{Path, PathBuf};
 #[path = "document_recovery.rs"]
 pub(super) mod recovery;
 use std::sync::atomic::Ordering;
+#[path = "managed_group_apply.rs"]
+mod apply;
 #[path = "managed_group_budget.rs"]
 mod budget;
 #[path = "managed_group_limits.rs"]
@@ -173,49 +175,10 @@ fn audited(command: &C) -> bool {
         | C::ReorderSelected { .. }
         | C::GroupSelected
         | C::UngroupSelected => true,
-        C::PatchNodeData { patch_json, .. } => {
-            let Ok(value) = serde_json::from_str::<serde_json::Value>(patch_json) else {
-                return false;
-            };
-            value.as_object().is_some_and(|object| {
-                object.keys().all(|key| {
-                    matches!(
-                        key.as_str(),
-                        "x" | "y"
-                            | "width"
-                            | "height"
-                            | "rotation"
-                            | "name"
-                            | "opacity"
-                            | "visible"
-                            | "locked"
-                            | "flipX"
-                            | "flipY"
-                            | "fill"
-                            | "stroke"
-                            | "effects"
-                            | "cornerRadius"
-                            | "d"
-                            | "anchors"
-                            | "closed"
-                            | "fillRule"
-                            | "fontFamily"
-                            | "fontSize"
-                            | "fontWeight"
-                            | "fontStyle"
-                            | "fontFeatures"
-                            | "fontVariations"
-                            | "content"
-                            | "lineHeight"
-                            | "letterSpacing"
-                            | "textAlign"
-                            | "textAlignVertical"
-                            | "textDecoration"
-                            | "textDecorationSkipInk"
-                    )
-                })
-            })
-        }
+        // The strict Core target factory proves header-only shape and Ref
+        // ancestry before capture/apply. Keep one authoritative parse there;
+        // unknown/new header properties need no second host key whitelist.
+        C::PatchNodeData { .. } => true,
         _ => false,
     }
 }
@@ -447,34 +410,22 @@ impl Transaction<'_, '_, '_> {
                             isolated = true;
                             return false;
                         }
-                        let reservation = budget.reserve(editor, command, request.line.len());
-                        metrics.observe_forecast(budget.forecast());
-                        if let Err(reason) = reservation {
-                            metrics.refuse(reason);
-                            isolated = true;
-                            return false;
-                        }
-                        // Strict16 API: None allocates no page/full fallback.
-                        let Some(checkpoint) =
-                            editor.try_begin_command_edit_without_document_repairs(command)
-                        else {
-                            metrics
-                                .strict_capture_fallback
-                                .fetch_add(1, Ordering::Relaxed);
-                            isolated = true;
-                            return false;
-                        };
-                        debug_assert!(checkpoint.is_target_only());
-                        capture = Some(checkpoint);
                         let before = editor.document_revision();
                         match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            editor.apply_command_edit_then(
-                                command.clone(),
-                                capture.as_mut().unwrap(),
-                                |_| {},
+                            apply::apply(
+                                editor,
+                                command,
+                                request.line.len(),
+                                budget,
+                                metrics,
+                                &mut capture,
                             )
                         })) {
-                            Ok(ok) => {
+                            Ok(apply::Outcome::Isolated) => {
+                                isolated = true;
+                                false
+                            }
+                            Ok(apply::Outcome::Applied(ok)) => {
                                 applied = ok;
                                 changed = editor.document_revision() != before;
                                 if !ok && changed {

@@ -5,7 +5,7 @@ import json
 import re
 import struct
 
-FAMILIES = {'agentic-batch', 'reparent', 'reorder', 'group-ungroup', 'group-ungroup-nested', 'align', 'variables', 'themes'}
+FAMILIES = {'document-summary', 'agentic-batch', 'reparent', 'reorder', 'group-ungroup', 'group-ungroup-nested', 'align', 'variables', 'themes'}
 
 
 class FamilyWorkflows:
@@ -64,6 +64,25 @@ class FamilyWorkflows:
 
     async def extra_workflow(self, family, target, agent):
         await getattr(self, 'family_' + family.replace('-', '_'))(target, agent)
+
+    async def family_document_summary(self, target, agent):
+        await self.page(target, agent)
+        info = await self.call('get_document_info', {}, agent)
+        counts = await self.call('count_nodes', {}, agent)
+        kinds = await self.call('list_node_kinds', {}, agent)
+        expected = self.fixture['nodeCount']
+        assert int(info['total_nodes']) == int(counts['total']) == expected
+        assert int(info['page_count']) == self.fixture['pageCount']
+        per_page = dict((int(index), int(count)) for index, count in
+            (entry.split('|') for entry in counts['per_page'].split(';') if entry))
+        assert sum(per_page.values()) == expected
+        histogram = dict((kind, int(count)) for kind, count in
+            (entry.split('|') for entry in kinds['kinds'].split(';') if entry))
+        assert int(kinds['distinct']) == len(histogram)
+        assert sum(histogram.values()) == per_page[int(info['active_page_index'])]
+        self.report['phases'][self.current].setdefault('summaryControls', []).append({
+            'agent': agent, 'nodeCount': expected, 'pages': len(per_page),
+            'activePage': int(info['active_page_index']), 'distinctKinds': len(histogram)})
 
     async def family_reparent(self, target, agent):
         await self.page(target, agent)

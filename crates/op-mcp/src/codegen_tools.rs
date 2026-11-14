@@ -38,12 +38,15 @@ use std::collections::BTreeMap;
 use op_editor_core::EditorState;
 use serde_json::Value;
 
-use super::codegen_plan_store::{assemble_plan, clean_plan, create_plan, submit_chunk_result};
-use super::read_nodes::{node_snapshot_value, page_nodes_snapshots, PageNodes};
+use super::codegen_plan_store::{
+    assemble_plan, clean_plan, create_plan_for_roots, submit_chunk_result,
+};
+use super::read_nodes::{page_nodes_snapshots, PageNodes};
 use super::{McpTool, ToolErrorCode, ToolOutcome};
 
 pub struct CodegenPlan {
     pages: Vec<PageNodes>,
+    prepared: Option<ToolOutcome>,
 }
 
 pub struct CodegenSubmitChunk;
@@ -63,48 +66,46 @@ impl McpTool for CodegenPlan {
     }
 
     fn call(&self, args: &BTreeMap<String, String>) -> ToolOutcome {
-        let Some(raw_plan) = args.get("plan") else {
-            // TS: no plan in the forwarded body → plan.post.ts 400
-            // "Missing plan in request body".
-            return ToolOutcome::Err(
-                ToolErrorCode::ToolFailed,
-                "codegen_plan failed: Missing plan in request body".into(),
-            );
-        };
-        let plan: Value = match serde_json::from_str(raw_plan) {
-            Ok(value @ Value::Object(_)) => value,
-            Ok(_) | Err(_) => {
-                return ToolOutcome::Err(
-                    ToolErrorCode::InvalidArgument,
-                    "plan must be a JSON object".into(),
-                );
-            }
-        };
-        // TS getActivePageChildren(doc, pageId ?? null): first page by
-        // default; unknown pageId also falls back to the first page.
-        let page = match args.get("pageId").map(String::as_str) {
-            Some(page_id) => self
-                .pages
-                .iter()
-                .find(|page| page.id == page_id)
-                .or_else(|| self.pages.first()),
-            None => self.pages.first(),
-        };
-        let all_nodes: Vec<Value> = page
-            .map(|page| {
-                page.roots
-                    .iter()
-                    .map(|node| node_snapshot_value(node, -1))
-                    .collect()
-            })
-            .unwrap_or_default();
-        match create_plan(&plan, &all_nodes) {
-            Ok(result) => ToolOutcome::OkJson(pretty(&result)),
-            Err(message) => ToolOutcome::Err(
-                ToolErrorCode::ToolFailed,
-                format!("codegen_plan failed: {message}"),
-            ),
+        if let Some(outcome) = &self.prepared {
+            return outcome.clone();
         }
+        // This tool deliberately defaults/falls back to the first page,
+        // rather than the editor's active page.
+        let page = args
+            .get("pageId")
+            .and_then(|id| self.pages.iter().find(|page| page.id == *id))
+            .or_else(|| self.pages.first());
+        codegen_plan_result(page.map_or(&[], |page| page.roots.as_slice()), args)
+    }
+}
+
+fn codegen_plan_result(
+    roots: &[jian_ops_schema::node::PenNode],
+    args: &BTreeMap<String, String>,
+) -> ToolOutcome {
+    let Some(raw_plan) = args.get("plan") else {
+        // TS: no plan in the forwarded body → plan.post.ts 400
+        // "Missing plan in request body".
+        return ToolOutcome::Err(
+            ToolErrorCode::ToolFailed,
+            "codegen_plan failed: Missing plan in request body".into(),
+        );
+    };
+    let plan: Value = match serde_json::from_str(raw_plan) {
+        Ok(value @ Value::Object(_)) => value,
+        Ok(_) | Err(_) => {
+            return ToolOutcome::Err(
+                ToolErrorCode::InvalidArgument,
+                "plan must be a JSON object".into(),
+            );
+        }
+    };
+    match create_plan_for_roots(&plan, roots) {
+        Ok(result) => ToolOutcome::OkJson(pretty(&result)),
+        Err(message) => ToolOutcome::Err(
+            ToolErrorCode::ToolFailed,
+            format!("codegen_plan failed: {message}"),
+        ),
     }
 }
 
@@ -192,7 +193,32 @@ impl McpTool for CodegenClean {
 
 pub fn codegen_plan_snapshot(state: &EditorState) -> CodegenPlan {
     let (pages, _active_page_id) = page_nodes_snapshots(state);
-    CodegenPlan { pages }
+    CodegenPlan {
+        pages,
+        prepared: None,
+    }
+}
+
+/// Resolve only the requested page and retain only this plan result. The
+/// plan store serializes named chunk roots, not every node on every page.
+pub fn codegen_plan_snapshot_for_call(
+    state: &EditorState,
+    args: &BTreeMap<String, String>,
+) -> CodegenPlan {
+    let pages = state.doc.pages.as_deref().unwrap_or_default();
+    let roots = if pages.is_empty() {
+        state.doc.children.as_slice()
+    } else {
+        args.get("pageId")
+            .and_then(|id| pages.iter().find(|page| page.id == *id))
+            .unwrap_or(&pages[0])
+            .children
+            .as_slice()
+    };
+    CodegenPlan {
+        pages: Vec::new(),
+        prepared: Some(codegen_plan_result(roots, args)),
+    }
 }
 
 pub fn codegen_submit_chunk_snapshot() -> CodegenSubmitChunk {

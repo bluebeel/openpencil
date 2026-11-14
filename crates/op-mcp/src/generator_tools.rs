@@ -258,7 +258,7 @@ impl McpTool for UpdateGeneratorParams {
             return outcome.clone();
         }
         match self.state.as_ref() {
-            Some(state) => update_generator_params_call(state, args),
+            Some(state) => update_generator_params_call(state, args, false),
             None => ToolOutcome::Err(ToolErrorCode::Internal, "missing generator snapshot".into()),
         }
     }
@@ -271,13 +271,14 @@ pub fn update_generator_params_snapshot_for_call(
 ) -> UpdateGeneratorParams {
     UpdateGeneratorParams {
         state: None,
-        prepared: Some(update_generator_params_call(state, args)),
+        prepared: Some(update_generator_params_call(state, args, true)),
     }
 }
 
 fn update_generator_params_call(
     state: &EditorState,
     args: &BTreeMap<String, String>,
+    request_specific: bool,
 ) -> ToolOutcome {
     let id = match node_id_arg(args) {
         Ok(id) => id,
@@ -299,11 +300,32 @@ fn update_generator_params_call(
     };
     match state.generator_rewrite_command(&id, &edit, runner()) {
         Ok(Some(command)) => {
-            let mut after = state.clone();
-            let children = if after.apply(command.clone()) {
-                child_count(find_node(&after, &id))
+            let children = if request_specific {
+                // Core has already generated and validated this replacement.
+                // Its complete children are in the emitted patch; counting
+                // them needs neither a cloned Doc nor speculative application.
+                match &command {
+                    op_editor_core::EditorCommand::PatchNodeData { patch_json, .. } => {
+                        serde_json::from_str::<Value>(patch_json)
+                            .ok()
+                            .and_then(|patch| {
+                                patch
+                                    .get("children")
+                                    .and_then(Value::as_array)
+                                    .map(Vec::len)
+                            })
+                            .unwrap_or(0)
+                    }
+                    _ => 0,
+                }
             } else {
-                0
+                // Preserve the legacy arbitrary-argument snapshot contract.
+                let mut after = state.clone();
+                if after.apply(command.clone()) {
+                    child_count(find_node(&after, &id))
+                } else {
+                    0
+                }
             };
             let result = json!({ "nodeId": id.as_str(), "changed": true, "childCount": children });
             ToolOutcome::OkJsonWithCommand(result.to_string(), command)

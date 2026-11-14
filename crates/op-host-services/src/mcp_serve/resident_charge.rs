@@ -15,11 +15,15 @@ mod charge_cache;
 #[path = "charge_formatter.rs"]
 mod charge_formatter;
 use charge_cache::{RootCache, RootCharge};
+#[path = "resident_charge_delta.rs"]
+mod delta;
 #[path = "history_charge.rs"]
 mod history_charge;
+pub(super) use delta::DocumentDelta;
 
 #[derive(Default)]
 pub(super) struct ChargeCache {
+    document: Option<delta::DocumentCharge>,
     nodes: RootCache<SharedNode>,
     documents: RootCache<PenDocument>,
     components: RootCache<SharedComponent>,
@@ -128,6 +132,7 @@ impl Ledger {
     }
 }
 
+#[cfg(test)]
 pub(super) fn resident_charge(state: &EditorState, limit: usize) -> Result<usize, ChargeError> {
     resident_charge_cached(state, limit, &mut ChargeCache::default())
 }
@@ -209,11 +214,37 @@ pub(super) fn resident_charge_cached(
     resident_charge_mode(state, limit, cache, true)
 }
 
+/// The caller holds the resident writer lock and observed every canonical
+/// command through trusted captures. Ordinary/public mutation paths keep the
+/// complete measurement API above; a revision alone never authorizes reuse.
+pub(super) fn resident_charge_after_commands(
+    state: &EditorState,
+    limit: usize,
+    cache: &mut ChargeCache,
+    delta: Option<DocumentDelta>,
+) -> Result<usize, ChargeError> {
+    let document = cache
+        .document
+        .take()
+        .and_then(|old| delta.and_then(|delta| old.adjust(state, delta)));
+    resident_charge_with_document(state, limit, cache, true, document)
+}
+
 fn resident_charge_mode(
     state: &EditorState,
     limit: usize,
     cache: &mut ChargeCache,
     reuse_history: bool,
+) -> Result<usize, ChargeError> {
+    resident_charge_with_document(state, limit, cache, reuse_history, None)
+}
+
+fn resident_charge_with_document(
+    state: &EditorState,
+    limit: usize,
+    cache: &mut ChargeCache,
+    reuse_history: bool,
+    document: Option<RootCharge>,
 ) -> Result<usize, ChargeError> {
     cache.nodes.prune();
     cache.components.prune();
@@ -222,13 +253,26 @@ fn resident_charge_mode(
     ledger.shared_storage = ledger
         .shared_storage
         .saturating_add(state.history.runtime_storage_bytes());
-    ledger.serialize(&state.doc)?;
-    ledger.node_storage(&state.doc.children, state.doc.children.capacity())?;
-    if let Some(pages) = &state.doc.pages {
-        for page in pages {
-            ledger.node_storage(&page.children, page.children.capacity())?;
+    let document = match document {
+        Some(document) => document,
+        None => {
+            let mut count = new_ledger(limit);
+            count.serialize(&state.doc)?;
+            count.node_storage(&state.doc.children, state.doc.children.capacity())?;
+            if let Some(pages) = &state.doc.pages {
+                for page in pages {
+                    count.node_storage(&page.children, page.children.capacity())?;
+                }
+            }
+            RootCharge {
+                serialized: count.serialized.bytes,
+                nodes: count.nodes,
+                shared_bytes: count.shared_storage,
+            }
         }
-    }
+    };
+    ledger.add_root(document)?;
+    cache.document = Some(delta::DocumentCharge::new(state, document));
     ledger.serialize(&state.clipboard)?;
     ledger.node_storage(&state.clipboard, state.clipboard.capacity())?;
     for component in &state.components.components {

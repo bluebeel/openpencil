@@ -179,14 +179,16 @@ pub(super) fn make_with_vertex_uv(
     let radii = shape.radii_ref();
     let w = image.width() as f32;
     let h = image.height() as f32;
-    let uv_values = rotation_uv.unwrap_or([
-        uv.scale_x() / w,
-        uv.skew_x() / w,
-        uv.translate_x() / w,
-        uv.skew_y() / h,
-        uv.scale_y() / h,
-        uv.translate_y() / h,
-    ]);
+    let uv_values = rotation_uv.unwrap_or_else(|| {
+        [
+            uv.scale_x() / w,
+            uv.skew_x() / w,
+            uv.translate_x() / w,
+            uv.skew_y() / h,
+            uv.scale_y() / h,
+            uv.translate_y() / h,
+        ]
+    });
     let vertex = vertex_uv.and_then(|uv| super::varyings::uniforms(&device, *rect, uv, grid));
     let uniforms = [
         rect.left,
@@ -216,17 +218,24 @@ pub(super) fn make_with_vertex_uv(
         if rotation_uv.is_some() { 1.0 } else { 0.0 },
         grid,
     ];
-    let bytes: Vec<u8> = uniforms
+    // Both program layouts are fixed. Preserve every native-endian f32 bit
+    // while avoiding a short-lived heap Vec before Skia copies its uniforms.
+    const MAX_UNIFORM_BYTES: usize = (26 + super::varyings::FLOATS) * 4;
+    let mut storage = [0u8; MAX_UNIFORM_BYTES];
+    let floats = uniforms
         .iter()
-        .chain(vertex.as_ref().into_iter().flat_map(|v| v.iter()))
-        .flat_map(|v| v.to_ne_bytes())
-        .collect();
+        .chain(vertex.as_ref().into_iter().flat_map(|v| v.iter()));
+    let length = (uniforms.len() + vertex.as_ref().map_or(0, |v| v.len())) * 4;
+    for (value, target) in floats.zip(storage.chunks_exact_mut(4)) {
+        target.copy_from_slice(&value.to_ne_bytes());
+    }
+    let bytes = &storage[..length];
     let build = |effect: &Option<RuntimeEffect>| {
         let effect = effect.as_ref()?;
         if effect.uniform_size() != bytes.len() {
             return None;
         }
-        effect.make_shader(Data::new_copy(&bytes), &[ChildPtr::Shader(child)], None)
+        effect.make_shader(Data::new_copy(bytes), &[ChildPtr::Shader(child)], None)
     };
     let small = image.width() <= MAX_DIRECT_DIMENSION && image.height() <= MAX_DIRECT_DIMENSION;
     let result = match (small, vertex.is_some()) {

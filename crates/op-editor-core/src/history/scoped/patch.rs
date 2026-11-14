@@ -538,7 +538,7 @@ impl Patch {
             Self::Node(p) => {
                 let found = node_mut(roots_mut(doc, &p.scope).unwrap(), &p.path).unwrap();
                 let reverse = if p.metadata_only {
-                    SharedNode::capture(&clone_without_children(found), Some(&p.old))
+                    SharedNode::capture_header(found)
                 } else {
                     SharedNode::capture(found, Some(&p.old))
                 };

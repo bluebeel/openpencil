@@ -87,25 +87,7 @@ fn full_scene(state: &op_editor_core::EditorState, paged: bool, full_content: bo
     drop(prepared);
     let var_table: VariableTable = editor_state_var_table(state);
 
-    LayoutScene {
-        pages: payload
-            .pages
-            .iter()
-            .map(|page| ScenePage {
-                id: page.id.clone(),
-                name: page.name.clone(),
-                children: page
-                    .children
-                    .iter()
-                    .map(|node| crate::layout_scene::node_payload_to_scene(node, &var_table, 1.0))
-                    .collect(),
-            })
-            .collect(),
-        active_page_index: state
-            .ui
-            .active_page_index
-            .min(payload.pages.len().saturating_sub(1)),
-    }
+    crate::layout_scene::payload_into_scene(payload, &var_table, state.ui.active_page_index)
 }
 
 /// Build the interactive editor scene for only the active page.
@@ -230,7 +212,7 @@ pub(crate) fn roots_to_scene_children(
     let var_table = editor_state_var_table(state);
     payload
         .children
-        .iter()
+        .into_iter()
         .map(|node| crate::layout_scene::node_payload_to_scene(node, &var_table, 1.0))
         .collect()
 }

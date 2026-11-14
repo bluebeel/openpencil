@@ -10,6 +10,14 @@ pub(crate) struct PreparedCommandEdit {
     repairs: Option<RepairPlan>,
 }
 impl PreparedCommandEdit {
+    pub(crate) fn visit_metadata_changes(
+        &self,
+        state: &EditorState,
+        visitor: impl FnMut(&jian_ops_schema::node::PenNode, &jian_ops_schema::node::PenNode),
+    ) -> bool {
+        self.capture.visit_metadata_changes(state, visitor)
+    }
+
     pub(crate) fn forward_metadata_json(
         &self,
         state: &EditorState,

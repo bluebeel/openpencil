@@ -7,6 +7,8 @@ use crate::{
 use std::{mem, sync::Arc};
 #[path = "command_scope.rs"]
 mod command_scope;
+#[path = "command_metadata_apply.rs"]
+mod metadata;
 #[path = "target_plan.rs"]
 mod target_plan;
 
@@ -46,17 +48,39 @@ struct HistoryCapture {
 pub enum CommandEditError {
     Full(LocalEditError),
     Scoped(ScopedHistoryError),
+    IncompleteScopedCapture,
 }
 impl std::fmt::Display for CommandEditError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Full(error) => write!(f, "{error}"),
             Self::Scoped(error) => write!(f, "{error}"),
+            Self::IncompleteScopedCapture => f.write_str(
+                "trusted command rollback capture did not complete; document requires recovery",
+            ),
         }
     }
 }
 impl std::error::Error for CommandEditError {}
 impl CommandEditCapture {
+    /// Visit exact old/new headers immediately after a trusted target edit.
+    /// True proves only metadata Node patches: child buffers are unchanged.
+    /// Full, structural, broad-maintenance and history transactions return false.
+    /// This is not a proof for arbitrary intervening public document mutation.
+    pub fn visit_metadata_changes(
+        &self,
+        state: &EditorState,
+        mut visitor: impl FnMut(&jian_ops_schema::node::PenNode, &jian_ops_schema::node::PenNode),
+    ) -> bool {
+        match &self.kind {
+            CaptureKind::Scoped(captured) if captured.targeted => captured
+                .completed
+                .as_ref()
+                .is_some_and(|snapshot| snapshot.visit_metadata_changes(state, &mut visitor)),
+            _ => false,
+        }
+    }
+
     /// Exact bounded forward canonical metadata from a completed trusted edit.
     /// Call immediately after apply/maintenance, before another command changes
     /// this document. None requires a resync barrier, never command replay.
@@ -220,6 +244,15 @@ impl EditorState {
         capture: &mut CommandEditCapture,
         maintain: impl FnOnce(&mut Self),
     ) -> bool {
+        self.apply_command_edit_inner(command, capture, maintain, None)
+    }
+    fn apply_command_edit_inner(
+        &mut self,
+        command: EditorCommand,
+        capture: &mut CommandEditCapture,
+        maintain: impl FnOnce(&mut Self),
+        fresh: Option<crate::command_node_attrs::bulk::Prepared>,
+    ) -> bool {
         match &mut capture.kind {
             CaptureKind::Refused { .. } => false,
             CaptureKind::Full(full) => self.apply_undoable_captured_then(command, full, maintain),
@@ -233,27 +266,29 @@ impl EditorState {
                 {
                     return false;
                 }
-                let command_scope::Classification::Scoped(plan) =
-                    command_scope::classify(self, &command)
-                else {
-                    return false;
-                };
-                if plan.forests != captured.pending.as_ref().unwrap().scopes()
-                    || plan.header != captured.pending.as_ref().unwrap().captures_header()
-                    || !captured.pending.as_ref().unwrap().matches_header(&self.doc)
-                {
-                    return false;
-                }
-                let pending = captured.pending.as_ref().unwrap();
-                if pending.is_targeted() {
-                    let request_matches = pending
-                        .matches_topology_request(self, &command)
-                        .unwrap_or_else(|| {
-                            target_plan::plan(self, &command)
-                                .is_some_and(|specs| pending.matches_target_specs(&specs))
-                        });
-                    if !request_matches || !pending.matches_targets(self) {
+                if fresh.is_none() {
+                    let command_scope::Classification::Scoped(plan) =
+                        command_scope::classify(self, &command)
+                    else {
                         return false;
+                    };
+                    if plan.forests != captured.pending.as_ref().unwrap().scopes()
+                        || plan.header != captured.pending.as_ref().unwrap().captures_header()
+                        || !captured.pending.as_ref().unwrap().matches_header(&self.doc)
+                    {
+                        return false;
+                    }
+                    let pending = captured.pending.as_ref().unwrap();
+                    if pending.is_targeted() {
+                        let request_matches = pending
+                            .matches_topology_request(self, &command)
+                            .unwrap_or_else(|| {
+                                target_plan::plan(self, &command)
+                                    .is_some_and(|specs| pending.matches_target_specs(&specs))
+                            });
+                        if !request_matches || !pending.matches_targets(self) {
+                            return false;
+                        }
                     }
                 }
                 let mut pending = captured.pending.take().unwrap();
@@ -263,7 +298,11 @@ impl EditorState {
                     self.undo_capture_suspended = true;
                 }
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    let applied = if let Some(applied) = pending.apply_topology(self) {
+                    let applied = if let Some(prepared) = fresh.as_ref() {
+                        pending
+                            .apply_metadata_direct(self, &command, prepared)
+                            .expect("single freshly prepared metadata target")
+                    } else if let Some(applied) = pending.apply_topology(self) {
                         applied
                     } else if let EditorCommand::Batch { commands } = command {
                         let batch = EditorCommand::Batch { commands };
@@ -391,6 +430,12 @@ impl EditorState {
             CaptureKind::Scoped(captured) => {
                 self.ensure_local_edit_generation(captured.generation)
                     .map_err(CommandEditError::Full)?;
+                // Apply consumed the pending checkpoint but failed before its
+                // exact inverse was completed. Never report a successful abort
+                // for canonical state whose rollback outcome is unknown.
+                if captured.pending.is_none() && captured.completed.is_none() {
+                    return Err(CommandEditError::IncompleteScopedCapture);
+                }
                 self.history = captured.history;
                 if let Some(snapshot) = captured.completed {
                     self.editor_ui.clear_document_derived();

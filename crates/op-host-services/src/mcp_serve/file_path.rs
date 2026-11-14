@@ -10,6 +10,9 @@ use std::path::{Path, PathBuf};
 
 use super::agent_context::{default_agent_contexts, with_agent_context, AgentContexts};
 use super::McpServeError;
+#[path = "file_path_resolution.rs"]
+mod resolution;
+use resolution::RequestPaths;
 
 const LIVE_CANVAS_SENTINELS: &[&str] = &["live://canvas", "live://canvas/current"];
 static COPIES: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -28,9 +31,7 @@ pub(crate) fn process_live_save_for_file_path_arg(
     profile: super::tool_profile::McpAccessProfile,
     save: impl FnOnce(&Path) -> Result<(), McpServeError>,
 ) -> Result<Option<String>, McpServeError> {
-    use super::resident_documents::{
-        canonical_key, resident_documents, ActionResult, AuthorityError,
-    };
+    use super::resident_documents::{resident_documents, ActionResult, AuthorityError};
     let Some(call) = op_mcp::parse_tool_call(line.trim()) else {
         return Ok(None);
     };
@@ -40,9 +41,10 @@ pub(crate) fn process_live_save_for_file_path_arg(
     if let Some(refusal) = profile.refuse_call(&call.tool, &call.arguments) {
         return Ok(Some(error_response(&call, refusal.message(&call.tool))));
     }
+    let mut paths = RequestPaths::default();
     if let Some(source) = call.arguments.get("sourceFilePath") {
         if !LIVE_CANVAS_SENTINELS.contains(&source.as_str())
-            && !current_path.is_some_and(|current| same_path(Path::new(source), current))
+            && !current_path.is_some_and(|current| paths.same(Path::new(source), current))
         {
             return Ok(None);
         }
@@ -56,12 +58,13 @@ pub(crate) fn process_live_save_for_file_path_arg(
     };
     let result = (|| {
         let _coordination = COPIES.lock().map_err(|_| AuthorityError::Poisoned)?;
-        let destination = canonical_key(Path::new(destination))?;
-        let saved = if current_path.is_some_and(|current| same_path(&destination, current)) {
-            save(&destination)
+        paths.after_coordination_wait();
+        let destination = paths.resolve(Path::new(destination))?;
+        let saved = if paths.is_current(&destination, current_path) {
+            save(destination.as_path())
         } else {
             resident_documents()
-                .acquire(&destination)?
+                .acquire_canonical(&destination)?
                 .with_destination(|path| {
                     let saved = save(path);
                     ActionResult {
@@ -71,7 +74,7 @@ pub(crate) fn process_live_save_for_file_path_arg(
                     }
                 })?
         };
-        Ok::<_, AuthorityError>(save_response(&call, &destination, &saved))
+        Ok::<_, AuthorityError>(save_response(&call, destination.as_path(), &saved))
     })();
     Ok(Some(match result {
         Ok(response) => response,
@@ -149,6 +152,7 @@ pub(crate) fn process_message_for_file_path_arg_with_contexts(
     if profile.deny_unshareable_tools {
         return Ok(None);
     }
+    let mut paths = RequestPaths::default();
     // A primary-source copy must borrow its live editor, not reload a disk
     // snapshot or race an alternate-file writer through the old save tool.
     if call.tool == "save_document" {
@@ -156,8 +160,8 @@ pub(crate) fn process_message_for_file_path_arg_with_contexts(
             let source_is_primary = call
                 .arguments
                 .get("sourceFilePath")
-                .is_none_or(|source| same_path(Path::new(source), current));
-            if source_is_primary && !same_path(Path::new(destination), current) {
+                .is_none_or(|source| paths.same(Path::new(source), current));
+            if source_is_primary && !paths.same(Path::new(destination), current) {
                 let conflict = super::resident_documents::AuthorityError::BoundPrimaryConflict {
                     path: current.to_path_buf(),
                 };
@@ -165,7 +169,7 @@ pub(crate) fn process_message_for_file_path_arg_with_contexts(
             }
         }
     }
-    let Some(target) = target_file_call(line, current_path)? else {
+    let Some(target) = target_file_call(&call, current_path, &mut paths) else {
         return Ok(None);
     };
     let hub = super::resident_documents::resident_documents();
@@ -178,118 +182,154 @@ pub(crate) fn process_message_for_file_path_arg_with_contexts(
             line,
             profile,
             contexts,
+            &mut paths,
         )
     } else {
-        hub.acquire(&target.path).and_then(|lease| {
-            lease.with_editor_guarded(target.tool == "open_document", |state, stamp, fence| {
-                let mut persisted = false;
-                let mut invalidate = false;
-                let mut write_failure = None;
-                let response =
-                    with_agent_context(contexts, lease.path(), state, line, profile, |state| {
-                        let operation = fence.watch();
-                        let result = super::process_message_with_bound_authority_profiled(
+        paths
+            .resolve(&target.path)
+            .and_then(|path| hub.acquire_canonical(&path))
+            .and_then(|lease| {
+                lease.with_editor_accounted(
+                    target.tool == "open_document",
+                    |state, stamp, fence| {
+                        let mut document_delta =
+                            super::resident_charge::DocumentDelta::begin(state);
+                        let mut persisted = false;
+                        let mut invalidate = false;
+                        let mut write_failure = None;
+                        let response = with_agent_context(
+                            contexts,
+                            lease.path(),
                             state,
                             line,
                             profile,
-                            true,
-                            |tool, state, cmd| {
-                                if let Err(error) = stamp.verify(lease.path()) {
-                                    write_failure = Some(error.to_string());
-                                    invalidate = true;
-                                    return false;
-                                }
-                                let revision = state.document_revision();
-                                let meta = (
-                                    state.ui.active_page_index,
-                                    state.editor_ui.preserve_authored_geometry,
+                            |state| {
+                                let operation = fence.watch();
+                                let result = super::process_message_with_bound_authority_profiled(
+                                    state,
+                                    line,
+                                    profile,
+                                    true,
+                                    |tool, state, cmd| {
+                                        if let Err(error) = stamp.verify(lease.path()) {
+                                            write_failure = Some(error.to_string());
+                                            invalidate = true;
+                                            return false;
+                                        }
+                                        let revision = state.document_revision();
+                                        let generation = state.document_generation();
+                                        let meta = (
+                                            state.ui.active_page_index,
+                                            state.editor_ui.preserve_authored_geometry,
+                                        );
+                                        let repair = super::write_repairs::generated_tool(tool);
+                                        let mut capture = (cmd.may_change_document()
+                                            || matches!(cmd, EditorCommand::Batch { .. }))
+                                        .then(|| super::begin_command_capture(state, cmd, repair));
+                                        let page_ui_before = (!cmd.may_change_document()
+                                            && matches!(
+                                                cmd,
+                                                EditorCommand::SetActivePage { .. }
+                                                    | EditorCommand::Batch { .. }
+                                            ))
+                                        .then(|| (state.selection.clone(), state.viewport));
+                                        let clipboard_before =
+                                            matches!(cmd, EditorCommand::CutSelected)
+                                                .then(|| std::mem::take(&mut state.clipboard));
+                                        let applied = match capture.as_mut() {
+                                            Some(capture) => {
+                                                super::apply_command_with_command_capture(
+                                                    state,
+                                                    cmd.clone(),
+                                                    capture,
+                                                )
+                                            }
+                                            None => super::apply_command_with_undo(
+                                                state,
+                                                cmd.clone(),
+                                                repair,
+                                            ),
+                                        };
+                                        if !applied {
+                                            if let Some(clipboard) = clipboard_before {
+                                                state.clipboard = clipboard;
+                                            }
+                                            return false;
+                                        }
+                                        document_delta.observe(
+                                            (generation, revision),
+                                            state,
+                                            capture.as_ref(),
+                                            lease.accounting_limit(),
+                                        );
+                                        let needs_save = state.document_revision() != revision
+                                            || (!call.arguments.contains_key("agentId")
+                                                && meta
+                                                    != (
+                                                        state.ui.active_page_index,
+                                                        state.editor_ui.preserve_authored_geometry,
+                                                    ));
+                                        if !needs_save {
+                                            return true;
+                                        }
+                                        let saved = stamp
+                                            .verify(lease.path())
+                                            .map_err(|error| {
+                                                McpServeError::Document(error.to_string())
+                                            })
+                                            .and_then(|_| {
+                                                super::save_editor_state(state, lease.path())
+                                            });
+                                        if let Err(error) = saved {
+                                            let rollback = if let Some(capture) = capture {
+                                                capture.abort(state)
+                                            } else {
+                                                state.ui.active_page_index = meta.0;
+                                                state.editor_ui.preserve_authored_geometry = meta.1;
+                                                if let Some((selection, viewport)) = page_ui_before
+                                                {
+                                                    state.selection = selection;
+                                                    state.viewport = viewport;
+                                                }
+                                                Ok(())
+                                            };
+                                            if let Some(clipboard) = clipboard_before {
+                                                state.clipboard = clipboard;
+                                            }
+                                            write_failure = Some(match rollback {
+                                                Ok(()) => error.to_string(),
+                                                Err(rollback) => {
+                                                    fence.trip();
+                                                    format!("{error}; rollback failed: {rollback}")
+                                                }
+                                            });
+                                            invalidate = true;
+                                            return false;
+                                        }
+                                        persisted = true;
+                                        true
+                                    },
                                 );
-                                let repair = super::write_repairs::generated_tool(tool);
-                                let mut capture = (cmd.may_change_document()
-                                    || matches!(cmd, EditorCommand::Batch { .. }))
-                                .then(|| super::begin_command_capture(state, cmd, repair));
-                                let page_ui_before = (!cmd.may_change_document()
-                                    && matches!(
-                                        cmd,
-                                        EditorCommand::SetActivePage { .. }
-                                            | EditorCommand::Batch { .. }
-                                    ))
-                                .then(|| (state.selection.clone(), state.viewport));
-                                let clipboard_before = matches!(cmd, EditorCommand::CutSelected)
-                                    .then(|| std::mem::take(&mut state.clipboard));
-                                let applied = match capture.as_mut() {
-                                    Some(capture) => super::apply_command_with_command_capture(
-                                        state,
-                                        cmd.clone(),
-                                        capture,
-                                    ),
-                                    None => {
-                                        super::apply_command_with_undo(state, cmd.clone(), repair)
-                                    }
-                                };
-                                if !applied {
-                                    if let Some(clipboard) = clipboard_before {
-                                        state.clipboard = clipboard;
-                                    }
-                                    return false;
-                                }
-                                let needs_save = state.document_revision() != revision
-                                    || (!call.arguments.contains_key("agentId")
-                                        && meta
-                                            != (
-                                                state.ui.active_page_index,
-                                                state.editor_ui.preserve_authored_geometry,
-                                            ));
-                                if !needs_save {
-                                    return true;
-                                }
-                                let saved = stamp
-                                    .verify(lease.path())
-                                    .map_err(|error| McpServeError::Document(error.to_string()))
-                                    .and_then(|_| super::save_editor_state(state, lease.path()));
-                                if let Err(error) = saved {
-                                    let rollback = if let Some(capture) = capture {
-                                        capture.abort(state)
-                                    } else {
-                                        state.ui.active_page_index = meta.0;
-                                        state.editor_ui.preserve_authored_geometry = meta.1;
-                                        if let Some((selection, viewport)) = page_ui_before {
-                                            state.selection = selection;
-                                            state.viewport = viewport;
-                                        }
-                                        Ok(())
-                                    };
-                                    if let Some(clipboard) = clipboard_before {
-                                        state.clipboard = clipboard;
-                                    }
-                                    write_failure = Some(match rollback {
-                                        Ok(()) => error.to_string(),
-                                        Err(rollback) => {
-                                            fence.trip();
-                                            format!("{error}; rollback failed: {rollback}")
-                                        }
-                                    });
-                                    invalidate = true;
-                                    return false;
-                                }
-                                persisted = true;
-                                true
+                                operation.complete();
+                                result
                             },
                         );
-                        operation.complete();
-                        result
-                    });
-                let response = match write_failure {
-                    Some(message) => Ok(Some(error_response(&call, message))),
-                    None => response,
-                };
-                super::resident_documents::ActionResult {
-                    value: response,
-                    persisted,
-                    invalidate,
-                }
+                        let response = match write_failure {
+                            Some(message) => Ok(Some(error_response(&call, message))),
+                            None => response,
+                        };
+                        let document_delta = document_delta.finish(state);
+                        (
+                            super::resident_documents::ActionResult {
+                                value: response,
+                                persisted,
+                                invalidate,
+                            },
+                            document_delta,
+                        )
+                    },
+                )
             })
-        })
     };
     match result {
         Ok(response) => response,
@@ -316,11 +356,13 @@ fn process_save_copy(
     line: &str,
     profile: super::tool_profile::McpAccessProfile,
     contexts: &AgentContexts,
+    paths: &mut RequestPaths,
 ) -> Result<Result<Option<String>, McpServeError>, super::resident_documents::AuthorityError> {
-    use super::resident_documents::{canonical_key, ActionResult, AuthorityError};
+    use super::resident_documents::{ActionResult, AuthorityError};
     // Serialize copy coordination BEFORE any source/destination writer locks.
     // Ordinary per-file writes still run independently on unrelated files.
     let _copy = COPIES.lock().map_err(|_| AuthorityError::Poisoned)?;
+    paths.after_coordination_wait();
     let Some(destination) = call
         .arguments
         .get("filePath")
@@ -331,17 +373,21 @@ fn process_save_copy(
             "filePath is required".into(),
         ))));
     };
-    let destination = canonical_key(Path::new(destination))?;
-    if current_path.is_some_and(|current| same_path(&destination, current))
-        && !same_path(source, &destination)
-    {
-        return Err(AuthorityError::BoundPrimaryConflict { path: destination });
+    let destination = paths.resolve(Path::new(destination))?;
+    let source = paths.resolve(source)?;
+    if paths.is_current(&destination, current_path) && source.as_path() != destination.as_path() {
+        return Err(AuthorityError::BoundPrimaryConflict {
+            path: destination.as_path().to_path_buf(),
+        });
     }
-    let source = hub.acquire(source)?;
-    let destination_lease = (source.path() != destination)
-        .then(|| hub.acquire(&destination))
+    let source = hub.acquire_canonical(&source)?;
+    let destination_lease = (source.path() != destination.as_path())
+        .then(|| hub.acquire_canonical(&destination))
         .transpose()?;
-    source.with_editor_guarded(false, |state, stamp, fence| {
+    source.with_editor_accounted(false, |state, stamp, fence| {
+        // This save callback only borrows canonical content. Context exchange
+        // may change runtime/history accounting, but never the live Doc charge.
+        let document_delta = super::resident_charge::DocumentDelta::begin(state);
         let mut persisted = false;
         let response = with_agent_context(contexts, source.path(), state, line, profile, |state| {
             let operation = fence.watch();
@@ -373,13 +419,17 @@ fn process_save_copy(
             };
             persisted = destination_lease.is_none() && saved.is_ok();
             operation.complete();
-            Ok(Some(save_response(call, &destination, &saved)))
+            Ok(Some(save_response(call, destination.as_path(), &saved)))
         });
-        ActionResult {
-            value: response,
-            persisted,
-            invalidate: false,
-        }
+        let document_delta = document_delta.finish(state);
+        (
+            ActionResult {
+                value: response,
+                persisted,
+                invalidate: false,
+            },
+            document_delta,
+        )
     })
 }
 
@@ -404,12 +454,10 @@ fn save_response(
 }
 
 fn target_file_call(
-    line: &str,
+    call: &op_mcp::ToolCall,
     current_path: Option<&Path>,
-) -> Result<Option<TargetFileCall>, McpServeError> {
-    let Some(call) = op_mcp::parse_tool_call(line.trim()) else {
-        return Ok(None);
-    };
+    paths: &mut RequestPaths,
+) -> Option<TargetFileCall> {
     let source_arg = if call.tool == "save_document" {
         "sourceFilePath"
     } else {
@@ -421,27 +469,17 @@ fn target_file_call(
         .map(|value| value.trim())
         .filter(|value| !value.is_empty())
     else {
-        return Ok(None);
+        return None;
     };
     if LIVE_CANVAS_SENTINELS.contains(&raw) {
-        return Ok(None);
+        return None;
     }
     let target = PathBuf::from(raw);
-    if current_path.is_some_and(|current| same_path(&target, current)) {
-        return Ok(None);
+    if current_path.is_some_and(|current| paths.same(&target, current)) {
+        return None;
     }
-    Ok(Some(TargetFileCall {
-        tool: call.tool,
+    Some(TargetFileCall {
+        tool: call.tool.clone(),
         path: target,
-    }))
-}
-
-fn same_path(target: &Path, current: &Path) -> bool {
-    match (
-        super::resident_documents::canonical_key(target),
-        super::resident_documents::canonical_key(current),
-    ) {
-        (Ok(target), Ok(current)) => target == current,
-        _ => false,
-    }
+    })
 }

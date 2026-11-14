@@ -84,14 +84,14 @@ fn build_document_json(state: &EditorState) -> String {
 
 fn build_document_context(state: &EditorState) -> String {
     let roots = state.active_children();
-    let mut nodes = Vec::new();
-    collect_nodes(roots, &mut nodes);
-    if nodes.is_empty() {
+    let mut count = 0;
+    let mut summary = Vec::with_capacity(20);
+    collect_summary(roots, &mut count, &mut summary);
+    if count == 0 {
         return "Empty document. No existing nodes.".into();
     }
-    let summary = nodes
-        .iter()
-        .take(20)
+    let summary = summary
+        .into_iter()
         .map(|node| {
             let name = node.base().name.as_deref().unwrap_or_else(|| node.id_str());
             format!("{}:{name}", node_type(node))
@@ -101,7 +101,7 @@ fn build_document_context(state: &EditorState) -> String {
     let (width, height) = estimate_canvas_size(roots);
     [
         "DOCUMENT SUMMARY:".to_string(),
-        format!("- Total nodes: {}", nodes.len()),
+        format!("- Total nodes: {count}"),
         format!("- Canvas size: {width}x{height}"),
         format!("- Nodes (first 20): {summary}"),
     ]
@@ -135,11 +135,14 @@ fn build_open_design_prompt(state: &EditorState) -> String {
         .into()
 }
 
-fn collect_nodes<'a>(nodes: &'a [PenNode], out: &mut Vec<&'a PenNode>) {
+fn collect_summary<'a>(nodes: &'a [PenNode], count: &mut usize, first: &mut Vec<&'a PenNode>) {
     for node in nodes {
-        out.push(node);
+        *count += 1;
+        if first.len() < 20 {
+            first.push(node);
+        }
         if let Some(children) = node.children() {
-            collect_nodes(children, out);
+            collect_summary(children, count, first);
         }
     }
 }

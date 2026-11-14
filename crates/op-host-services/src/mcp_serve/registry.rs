@@ -51,7 +51,14 @@ pub(super) fn rebuild_registry_with_authority(
     register_tool!("save_document", save_document_snapshot(doc));
     register_tool!("reload_document", op_mcp::ReloadDocument);
     register_tool!("batch_tools", atomic_tools::Unavailable);
-    register_tool!("get_document_info", document_info_snapshot(doc));
+    register_tool!(
+        "get_document_info",
+        if trusted_authority && requested_tool.is_some() {
+            op_mcp::document_summary::document_info_snapshot_cached(doc)
+        } else {
+            document_info_snapshot(doc)
+        }
+    );
     register_tool!(
         "query_canvas",
         if trusted_authority && requested_tool.is_some() {
@@ -62,7 +69,11 @@ pub(super) fn rebuild_registry_with_authority(
     );
     register_tool!(
         "boolean_selected",
-        boolean_selected::snapshot(doc, arguments)
+        if trusted_authority && requested_tool.is_some() {
+            boolean_selected::snapshot_cached(doc, arguments)
+        } else {
+            boolean_selected::snapshot(doc, arguments)
+        }
     );
     if should_register(requested_tool, "get_selection") {
         match arguments {
@@ -77,7 +88,13 @@ pub(super) fn rebuild_registry_with_authority(
             None => get_node_snapshot(doc),
         }
     );
-    register_tool!("annotate_image", op_mcp::annotate_image_snapshot(doc));
+    register_tool!(
+        "annotate_image",
+        match arguments {
+            Some(args) => op_mcp::annotate_image_snapshot_for_call(doc, args),
+            None => op_mcp::annotate_image_snapshot(doc),
+        }
+    );
     register_tool!("list_pages", list_pages_snapshot(doc));
     register_tool!("list_variables", list_variables_snapshot(doc));
     register_tool!("get_variables", get_variables_snapshot(doc));
@@ -167,11 +184,23 @@ pub(super) fn rebuild_registry_with_authority(
             None => read_nodes_snapshot(doc),
         }
     );
-    register_tool!("codegen_plan", codegen_plan_snapshot(doc));
+    register_tool!(
+        "codegen_plan",
+        match arguments {
+            Some(args) => op_mcp::codegen_tools::codegen_plan_snapshot_for_call(doc, args),
+            None => codegen_plan_snapshot(doc),
+        }
+    );
     register_tool!("codegen_submit_chunk", codegen_submit_chunk_snapshot());
     register_tool!("codegen_assemble", codegen_assemble_snapshot());
     register_tool!("codegen_clean", codegen_clean_snapshot());
-    register_tool!("codegen_export", codegen_export_snapshot(doc));
+    register_tool!(
+        "codegen_export",
+        match arguments {
+            Some(args) => op_mcp::codegen_export_tool::codegen_export_snapshot_for_call(doc, args),
+            None => codegen_export_snapshot(doc),
+        }
+    );
     register_tool!(
         "search_all_unique_properties",
         match arguments {
@@ -228,8 +257,22 @@ pub(super) fn rebuild_registry_with_authority(
             None => get_node_children_snapshot(doc),
         }
     );
-    register_tool!("count_nodes", count_nodes_snapshot(doc));
-    register_tool!("list_node_kinds", list_node_kinds_snapshot(doc));
+    register_tool!(
+        "count_nodes",
+        if trusted_authority && requested_tool.is_some() {
+            op_mcp::document_summary::count_nodes_snapshot_cached(doc)
+        } else {
+            count_nodes_snapshot(doc)
+        }
+    );
+    register_tool!(
+        "list_node_kinds",
+        if trusted_authority && requested_tool.is_some() {
+            op_mcp::document_summary::list_node_kinds_snapshot_cached(doc)
+        } else {
+            list_node_kinds_snapshot(doc)
+        }
+    );
     register_tool!("get_history_depth", get_history_depth_snapshot(doc));
     register_tool!("get_viewport", get_viewport_snapshot(doc));
     register_tool!("get_selection_set", get_selection_set_snapshot(doc));
@@ -337,7 +380,13 @@ pub(super) fn rebuild_registry_with_authority(
     register_tool!("get_design_prompt", get_design_prompt_snapshot(doc));
     register_tool!("design_skeleton", design_skeleton_snapshot());
     register_tool!("design_content", design_content_snapshot());
-    register_tool!("design_refine", design_refine_snapshot(doc));
+    register_tool!(
+        "design_refine",
+        match arguments {
+            Some(args) => op_mcp::design_refine_result::design_refine_snapshot_for_call(doc, args),
+            None => design_refine_snapshot(doc),
+        }
+    );
     register_tool!("finalize_design", finalize_design_snapshot(doc));
     register_tool!("enrich_images", enrich_images_snapshot(doc));
     register_tool!("run_design_agent", run_design_agent_snapshot(doc));

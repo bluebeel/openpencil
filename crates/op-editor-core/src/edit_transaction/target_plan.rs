@@ -11,12 +11,19 @@ mod splice;
 mod topology;
 
 pub(super) fn plan(state: &EditorState, command: &C) -> Option<Vec<TargetSpec>> {
+    plan_prepared(state, command, false)
+}
+pub(super) fn plan_prepared(
+    state: &EditorState,
+    command: &C,
+    numeric_patch: bool,
+) -> Option<Vec<TargetSpec>> {
     if state.instance_write_virtual_anchor.is_some() {
         return None;
     }
     let mut out = Vec::new();
     let mut active = state.ui.active_page_index;
-    collect(state, command, &mut active, &mut out, false)?;
+    collect(state, command, &mut active, &mut out, false, numeric_patch)?;
     Some(out)
 }
 fn collect(
@@ -25,6 +32,7 @@ fn collect(
     active: &mut usize,
     out: &mut Vec<TargetSpec>,
     in_batch: bool,
+    numeric_patch: bool,
 ) -> Option<()> {
     if matches!(
         command,
@@ -50,7 +58,7 @@ fn collect(
     let (id, page) = match command {
         C::Batch { commands } => {
             for command in commands {
-                collect(state, command, active, out, true)?;
+                collect(state, command, active, out, true, numeric_patch)?;
             }
             return Some(());
         }
@@ -62,13 +70,15 @@ fn collect(
             page_id,
             patch_json,
         } => {
-            let patch: serde_json::Value = serde_json::from_str(patch_json).ok()?;
-            let object = patch.as_object()?;
-            if ["children", "type", "id"]
-                .iter()
-                .any(|key| object.contains_key(*key))
-            {
-                return None;
+            if !numeric_patch {
+                let patch: serde_json::Value = serde_json::from_str(patch_json).ok()?;
+                let object = patch.as_object()?;
+                if ["children", "type", "id"]
+                    .iter()
+                    .any(|key| object.contains_key(*key))
+                {
+                    return None;
+                }
             }
             (node_id, page_id.as_deref())
         }
@@ -187,4 +197,27 @@ pub(super) fn structural_bound(state: &EditorState, command: &C) -> Option<usize
     splice::plan(state, command, state.ui.active_page_index)?
         .splice
         .map(|spec| spec.forecast)
+}
+
+/// Borrow a single metadata target already resolved by this request's plan.
+/// The caller owns the same exclusive state borrow through admission/capture.
+pub(super) fn metadata_target<'a>(
+    state: &'a EditorState,
+    specs: &[TargetSpec],
+) -> Option<&'a PenNode> {
+    let [spec] = specs else {
+        return None;
+    };
+    if spec.subtree || spec.splice.is_some() || spec.topology.is_some() {
+        return None;
+    }
+    let mut nodes = match &spec.scope {
+        Scope::Root => state.doc.children.as_slice(),
+        Scope::Page { index, .. } => state.doc.pages.as_ref()?.get(*index)?.children.as_slice(),
+    };
+    let (last, parents) = spec.path.split_last()?;
+    for at in parents {
+        nodes = nodes.get(*at)?.children()?;
+    }
+    nodes.get(*last)
 }

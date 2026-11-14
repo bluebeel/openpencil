@@ -411,6 +411,13 @@ fn page_space_snapshots(state: &EditorState) -> (Vec<PageSpace>, String) {
 /// width adopts the referenced node's dimensions (looked up in `all_nodes`),
 /// exactly as TS does.
 fn node_bounds(n: &PenNode, all_nodes: &[PenNode]) -> (f64, f64, f64, f64) {
+    node_bounds_with(n, |id| find_node(all_nodes, id))
+}
+
+fn node_bounds_with<'a>(
+    n: &PenNode,
+    lookup: impl FnOnce(&NodeId) -> Option<&'a PenNode>,
+) -> (f64, f64, f64, f64) {
     let base = n.base();
     let numeric = |px: Option<f64>| px.filter(|&v| v != 0.0);
     let mut w = numeric(n.width_px());
@@ -420,7 +427,7 @@ fn node_bounds(n: &PenNode, all_nodes: &[PenNode]) -> (f64, f64, f64, f64) {
     if w.is_none() {
         if let PenNode::Ref(r) = n {
             if let Some(target) = NodeId::new_opt(r.target.clone()) {
-                if let Some(comp) = find_node(all_nodes, &target) {
+                if let Some(comp) = lookup(&target) {
                     w = numeric(comp.width_px());
                     h = numeric(comp.height_px());
                 }
@@ -516,13 +523,49 @@ pub(crate) fn subtree_layout_value(
     Value::Array(layout_children_values(&selected, "", (0.0, 0.0)))
 }
 
+/// Borrow the unchanged page trees while looking up dimensions against the
+/// post-refine top-level root. This is exactly the former `all_after` forest,
+/// but does not clone every unrelated root or clone the refined subtree twice.
+pub(crate) fn subtree_layout_value_refined(
+    refined: &PenNode,
+    all_nodes: &[PenNode],
+    max_depth: u32,
+) -> Value {
+    let roots = std::slice::from_ref(refined);
+    if !all_nodes
+        .iter()
+        .any(|node| node.id_str() == refined.id_str())
+    {
+        return subtree_layout_value(roots, all_nodes, max_depth);
+    }
+    let records = layout_records_with(roots, |id| {
+        all_nodes.iter().find_map(|node| {
+            let node = if node.id_str() == refined.id_str() {
+                refined
+            } else {
+                node
+            };
+            find_node(std::slice::from_ref(node), id)
+        })
+    });
+    let selected: Vec<&LayoutRecord> = records.iter().filter(|r| r.depth <= max_depth).collect();
+    Value::Array(layout_children_values(&selected, "", (0.0, 0.0)))
+}
+
 /// Like [`layout_records`] but with a distinct `all_nodes` scope for ref-node
 /// dim lookup (mirrors TS `computeLayoutTree(roots, allChildren, …)`), so a
 /// subtree can be laid out against the whole page's ref targets.
 fn layout_records_in(roots: &[PenNode], all_nodes: &[PenNode]) -> Vec<LayoutRecord> {
-    fn walk(
+    layout_records_with(roots, |id| find_node(all_nodes, id))
+}
+
+fn layout_records_with<'a>(
+    roots: &[PenNode],
+    lookup: impl Fn(&NodeId) -> Option<&'a PenNode>,
+) -> Vec<LayoutRecord> {
+    fn walk<'a>(
         nodes: &[PenNode],
-        all_nodes: &[PenNode],
+        lookup: &impl Fn(&NodeId) -> Option<&'a PenNode>,
         ancestors: &[String],
         depth: u32,
         parent_x: f64,
@@ -536,7 +579,7 @@ fn layout_records_in(roots: &[PenNode], all_nodes: &[PenNode]) -> Vec<LayoutReco
             // parent's absolute position for document-absolute x/y, exactly as
             // TS `computeLayoutTree`'s `absX = parentX + bounds.x`. (kept f64:
             // TS returns raw numbers, never i32-truncated.)
-            let b = node_bounds(n, all_nodes);
+            let b = node_bounds_with(n, lookup);
             let x = parent_x + b.0;
             let y = parent_y + b.1;
             let id = n.id_str().to_string();
@@ -554,12 +597,12 @@ fn layout_records_in(roots: &[PenNode], all_nodes: &[PenNode]) -> Vec<LayoutReco
             if let Some(children) = n.children() {
                 let mut child_ancestors = ancestors.to_vec();
                 child_ancestors.push(id.clone());
-                walk(children, all_nodes, &child_ancestors, depth + 1, x, y, out);
+                walk(children, lookup, &child_ancestors, depth + 1, x, y, out);
             }
         }
     }
     let mut out = Vec::new();
-    walk(roots, all_nodes, &[], 0, 0.0, 0.0, &mut out);
+    walk(roots, &lookup, &[], 0, 0.0, 0.0, &mut out);
     out
 }
 

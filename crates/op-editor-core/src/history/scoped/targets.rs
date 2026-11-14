@@ -1,6 +1,6 @@
 //! Exact target checkpoints for a host-proven no-document-repair command.
 use super::{patch, ScopedHistoryError};
-use crate::{pen_node_ext::clone_without_children, EditorState, PenNodeExt, SharedNode};
+use crate::{EditorState, PenNodeExt, SharedNode};
 use jian_ops_schema::node::PenNode;
 use std::sync::Arc;
 
@@ -66,7 +66,7 @@ pub(super) fn capture(
             let old = if spec.subtree {
                 SharedNode::capture(node, None)
             } else {
-                SharedNode::capture(&clone_without_children(node), None)
+                SharedNode::capture_header(node)
             };
             Ok(TargetCheckpoint {
                 spec,
@@ -121,7 +121,7 @@ pub(super) fn matches(state: &EditorState, checkpoints: &[TargetCheckpoint]) -> 
         if checkpoint.spec.subtree {
             old.equals_node(current)
         } else {
-            old.equals_node(&clone_without_children(current))
+            old.equals_header(current)
         }
     })
 }
@@ -204,7 +204,7 @@ pub(super) fn compact(
         let same = if checkpoint.spec.subtree {
             old.equals_node(current)
         } else {
-            old.equals_node(&clone_without_children(current))
+            old.equals_header(current)
         };
         if !same {
             out.push(patch::Patch::Node(patch::NodePatch {
@@ -263,4 +263,32 @@ pub(super) fn apply_topology(
         .topology
         .as_mut()
         .map(|pending| pending.apply_direct(state))
+}
+
+/// Only the atomic metadata prepare/apply entry point calls this. No mutable
+/// document borrow escapes between first-ID resolution and this direct write.
+pub(super) fn apply_metadata_direct(
+    state: &mut EditorState,
+    command: &crate::EditorCommand,
+    prepared: &crate::command_node_attrs::bulk::Prepared,
+    checkpoints: &mut [TargetCheckpoint],
+) -> Option<bool> {
+    let [checkpoint] = checkpoints else {
+        return None;
+    };
+    if checkpoint.spec.subtree
+        || checkpoint.spec.splice.is_some()
+        || checkpoint.spec.topology.is_some()
+    {
+        return None;
+    }
+    let node = patch::node_mut(
+        patch::roots_mut(&mut state.doc, &checkpoint.spec.scope).ok()?,
+        &checkpoint.spec.path,
+    )?;
+    let applied = crate::command_node_attrs::bulk::write(node, command, prepared);
+    if applied && crate::command_apply::command_marks_document_dirty(command) {
+        state.mark_document_changed();
+    }
+    Some(applied)
 }

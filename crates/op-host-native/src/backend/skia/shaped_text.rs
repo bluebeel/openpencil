@@ -325,12 +325,17 @@ fn visit_positioned(
     run: &ShapedRun<'_>,
     mut action: impl FnMut(&skia_safe::Font, &[skia_safe::GlyphId], &[skia_safe::Point], f32),
 ) {
-    let character_offsets = run
-        .text
-        .char_indices()
-        .map(|(offset, _)| offset)
-        .collect::<Vec<_>>();
     let use_grid = super::text::uses_advance_grid(run.text, run.kerning, run.font_features);
+    // Only legacy nonzero tracking looks up UTF-8 character ordinals. Grid
+    // tracking uses its shaped cluster map, and zero tracking uses neither.
+    let character_offsets = if run.letter_spacing != 0.0 && !use_grid {
+        run.text
+            .char_indices()
+            .map(|(offset, _)| offset)
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
     let mut advance_correction = 0.0;
     let mut tracking = TrackingClusters::default();
     let mut current_line = None;

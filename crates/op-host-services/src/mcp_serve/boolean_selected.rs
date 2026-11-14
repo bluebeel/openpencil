@@ -102,6 +102,21 @@ pub(super) fn snapshot(
     state: &EditorState,
     args: Option<&BTreeMap<String, String>>,
 ) -> BooleanSelected {
+    snapshot_inner(state, args, false)
+}
+
+pub(super) fn snapshot_cached(
+    state: &EditorState,
+    args: Option<&BTreeMap<String, String>>,
+) -> BooleanSelected {
+    snapshot_inner(state, args, true)
+}
+
+fn snapshot_inner(
+    state: &EditorState,
+    args: Option<&BTreeMap<String, String>>,
+    trusted_authority: bool,
+) -> BooleanSelected {
     let result = (|| {
         // Discovery and invalid selection never derive a layout scene.
         let operation = operation(args)?;
@@ -109,7 +124,7 @@ pub(super) fn snapshot(
         if !state.boolean_operands_are_editable(ids) {
             return Err(BooleanError::Selection { count: ids.len() });
         }
-        prepare(state, operation)
+        prepare(state, operation, trusted_authority)
     })();
     BooleanSelected { result }
 }
@@ -124,8 +139,15 @@ pub(super) fn snapshot(
 fn prepare(
     state: &EditorState,
     operation: BooleanOp,
+    trusted_authority: bool,
 ) -> Result<(BooleanOp, BooleanPathReplacement), BooleanError> {
-    let scene = op_pen_loader::editor_state_to_active_page_layout_scene(state);
+    let scene = if trusted_authority {
+        op_pen_loader::active_query_scene_cached(state)
+    } else {
+        std::sync::Arc::new(op_pen_loader::editor_state_to_active_page_layout_scene(
+            state,
+        ))
+    };
     let selected = state
         .selection
         .set
@@ -162,6 +184,7 @@ fn prepare(
 fn prepare(
     _: &EditorState,
     _: BooleanOp,
+    _: bool,
 ) -> Result<(BooleanOp, BooleanPathReplacement), BooleanError> {
     Err(BooleanError::UnsupportedPlatform)
 }

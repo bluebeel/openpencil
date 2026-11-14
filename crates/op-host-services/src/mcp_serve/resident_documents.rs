@@ -16,7 +16,9 @@ use std::{
 
 use op_editor_core::EditorState;
 
-use super::resident_charge::{resident_charge, resident_charge_cached, ChargeCache};
+use super::resident_charge::{
+    resident_charge_after_commands, resident_charge_cached, ChargeCache, DocumentDelta,
+};
 
 const RESERVATION: usize = 64 * 1024;
 #[path = "resident_limits.rs"]
@@ -142,6 +144,18 @@ pub(super) struct DocumentLease<'a> {
     slot: Arc<Slot>,
 }
 
+/// A request-local filesystem resolution, never a persistent symlink cache.
+#[derive(Clone)]
+pub(super) struct CanonicalPath(PathBuf);
+impl CanonicalPath {
+    pub(super) fn resolve(path: &Path) -> Result<Self, AuthorityError> {
+        canonical_key(path).map(Self)
+    }
+    pub(super) fn as_path(&self) -> &Path {
+        &self.0
+    }
+}
+
 pub(super) struct ActionResult<T> {
     pub value: T,
     pub persisted: bool,
@@ -170,11 +184,19 @@ impl ResidentDocuments {
         }
     }
 
+    #[cfg(test)]
     pub fn acquire(&self, path: &Path) -> Result<DocumentLease<'_>, AuthorityError> {
-        let path = canonical_key(path)?;
+        self.acquire_canonical(&CanonicalPath::resolve(path)?)
+    }
+
+    pub(super) fn acquire_canonical(
+        &self,
+        path: &CanonicalPath,
+    ) -> Result<DocumentLease<'_>, AuthorityError> {
+        let path = &path.0;
         let mut slots = self.slots.lock().map_err(|_| AuthorityError::Poisoned)?;
         let tick = self.tick.fetch_add(1, Ordering::Relaxed);
-        if let Some(slot) = slots.get(&path) {
+        if let Some(slot) = slots.get(path) {
             slot.last_used.store(tick, Ordering::Relaxed);
             return Ok(DocumentLease {
                 hub: self,
@@ -194,7 +216,7 @@ impl ResidentDocuments {
             charge: AtomicUsize::new(RESERVATION),
             last_used: AtomicU64::new(tick),
         });
-        slots.insert(path, Arc::clone(&slot));
+        slots.insert(path.clone(), Arc::clone(&slot));
         Ok(DocumentLease { hub: self, slot })
     }
 
@@ -232,6 +254,10 @@ impl DocumentLease<'_> {
         &self.slot.path
     }
 
+    pub(super) fn accounting_limit(&self) -> usize {
+        self.hub.max_bytes
+    }
+
     /// Lock a save-copy destination without parsing its previous document.
     /// Copy callers coordinate before locking their source, avoiding cycles.
     pub fn with_destination<T>(
@@ -267,6 +293,7 @@ impl DocumentLease<'_> {
         self.with_editor_guarded(create, |editor, stamp, _| action(editor, stamp))
     }
 
+    #[cfg(test)]
     pub fn with_editor_guarded<T>(
         &self,
         create: bool,
@@ -275,6 +302,22 @@ impl DocumentLease<'_> {
             &FileStamp,
             &crate::document_recovery::DocumentRecovery,
         ) -> ActionResult<T>,
+    ) -> Result<T, AuthorityError> {
+        self.with_editor_accounted(create, |editor, stamp, recovery| {
+            (action(editor, stamp, recovery), None)
+        })
+    }
+
+    /// Trusted routed dispatcher only: every canonical mutation must pass its
+    /// observed capture receipt. Arbitrary/public closures use the full ledger.
+    pub(super) fn with_editor_accounted<T>(
+        &self,
+        create: bool,
+        action: impl FnOnce(
+            &mut EditorState,
+            &FileStamp,
+            &crate::document_recovery::DocumentRecovery,
+        ) -> (ActionResult<T>, Option<DocumentDelta>),
     ) -> Result<T, AuthorityError> {
         let mut resident = self.slot.resident.lock().unwrap_or_else(|poison| {
             let resident = poison.into_inner();
@@ -328,15 +371,15 @@ impl DocumentLease<'_> {
                 let editor = super::load_editor_state(self.path())
                     .map_err(|e| io(self.path(), "load", e))?;
                 stamp.verify(self.path())?;
-                let charge = resident_charge(&editor, self.hub.max_bytes).map_err(|_| {
-                    AuthorityError::StateOverBudget {
+                let mut charge_cache = ChargeCache::default();
+                let charge = resident_charge_cached(&editor, self.hub.max_bytes, &mut charge_cache)
+                    .map_err(|_| AuthorityError::StateOverBudget {
                         path: self.path().to_path_buf(),
                         max_bytes: self.hub.max_bytes,
-                    }
-                })?;
-                Ok::<_, AuthorityError>((editor, charge))
+                    })?;
+                Ok::<_, AuthorityError>((editor, charge, charge_cache))
             }));
-            let (editor, charge) = match loaded {
+            let (editor, charge, charge_cache) = match loaded {
                 Ok(result) => result?,
                 Err(_) => {
                     resident.recovery.trip();
@@ -348,6 +391,7 @@ impl DocumentLease<'_> {
             }
             resident.editor = Some(editor);
             resident.stamp = Some(stamp);
+            resident.charge_cache = charge_cache;
             let epoch = resident.recovery.epoch();
             if resident.recovery.required() && !resident.recovery.recovered(epoch) {
                 return Err(AuthorityError::Uncertain);
@@ -362,7 +406,7 @@ impl DocumentLease<'_> {
         let fence = resident.recovery.clone();
         let editor = resident.editor.as_mut().ok_or(AuthorityError::Poisoned)?;
         let before = accounting_marker(editor);
-        let result = {
+        let (result, document_delta) = {
             let operation = fence.watch();
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 action(editor, &expected, &fence)
@@ -404,8 +448,12 @@ impl DocumentLease<'_> {
                 charge_cache,
                 ..
             } = &mut *resident;
-            let charge =
-                resident_charge_cached(editor.as_ref().unwrap(), self.hub.max_bytes, charge_cache);
+            let charge = resident_charge_after_commands(
+                editor.as_ref().unwrap(),
+                self.hub.max_bytes,
+                charge_cache,
+                document_delta,
+            );
             if let Ok(charge) = charge {
                 if self.hub.adopt_charge(&self.slot, charge)? {
                     resident.stamp = current.ok();
@@ -423,8 +471,9 @@ impl DocumentLease<'_> {
     }
 }
 
-fn accounting_marker(state: &EditorState) -> (u64, usize, usize, usize, usize, usize) {
+fn accounting_marker(state: &EditorState) -> (u64, u64, usize, usize, usize, usize, usize) {
     (
+        state.document_generation(),
         state.document_revision(),
         state.clipboard.as_ptr() as usize,
         state.clipboard.len(),

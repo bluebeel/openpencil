@@ -204,10 +204,18 @@ pub(super) fn uniforms(
         corner_uv(uv, 1.0, 1.0),
     ];
     let source_grid = grid.max(1.0);
-    let mut cameras = [Camera::default(); 4];
-    for (index, jitter) in JITTERS.into_iter().enumerate() {
-        cameras[index] = camera(screen, values, source_grid, jitter, grid == 0.0)?;
-    }
+    // Point-camera projection ignores jitter, so all four records are
+    // bit-identical. Keep the public uniform layout unchanged but set it up
+    // once instead of repeating triangle/inverse/edge arithmetic four times.
+    let cameras = if grid == 0.0 {
+        [camera(screen, values, source_grid, JITTERS[0], true)?; 4]
+    } else {
+        let mut cameras = [Camera::default(); 4];
+        for (index, jitter) in JITTERS.into_iter().enumerate() {
+            cameras[index] = camera(screen, values, source_grid, jitter, false)?;
+        }
+        cameras
+    };
     let mut result = [0.0; FLOATS];
     let mut cursor = 0;
     let mut push = |values: &[f32]| {

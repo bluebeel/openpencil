@@ -29,6 +29,18 @@
       ]
     },
     {
+      "family": "document-summary",
+      "execution": "implemented",
+      "role": "leaf",
+      "tools": [
+        "set_active_page",
+        "get_document_info",
+        "count_nodes",
+        "list_node_kinds"
+      ],
+      "scope": "Pinned complete-file count, per-page sum and actor-active-page histogram consistency. Readonly; no save/undo or synthetic document."
+    },
+    {
       "family": "search",
       "execution": "implemented",
       "role": "leaf",

@@ -3,6 +3,9 @@
 use crate::command_node::build_leaf_node;
 use crate::fills::{set_primary_fill_hex, set_primary_stroke_hex};
 use crate::walkers::find_node;
+
+#[path = "host_support_boolean.rs"]
+mod boolean_removal;
 use crate::{EditorState, IdAllocError, IdAllocator, NodeId, Tool};
 use jian_ops_schema::node::image::ImageNode;
 use jian_ops_schema::node::{IconFontNode, PathNode, PenNode, PenNodeBase};
@@ -55,7 +58,7 @@ impl EditorState {
                 init_h.round().max(0.0) as i32,
             ),
         };
-        let mut taken = self.collect_node_ids();
+        let mut taken = allocator.document_collision_ids(&self.doc);
         let id = allocator.allocate(&mut taken)?;
         let Some(mut node) = build_leaf_node(
             kind,
@@ -158,7 +161,7 @@ impl EditorState {
         centre: (f64, f64),
         allocator: &mut dyn IdAllocator,
     ) -> Result<Option<NodeId>, IdAllocError> {
-        let mut taken = self.collect_node_ids();
+        let mut taken = allocator.document_collision_ids(&self.doc);
         let id = allocator.allocate(&mut taken)?;
         let node = PenNode::Image(ImageNode {
             base: PenNodeBase {
@@ -213,7 +216,7 @@ impl EditorState {
             return Ok(None);
         }
         const SIZE: f64 = 32.0;
-        let mut taken = self.collect_node_ids();
+        let mut taken = allocator.document_collision_ids(&self.doc);
         let id = allocator.allocate(&mut taken)?;
         let node = PenNode::IconFont(IconFontNode {
             base: PenNodeBase {
@@ -264,7 +267,7 @@ impl EditorState {
             );
         };
         const SIZE: f64 = 32.0;
-        let mut taken = self.collect_node_ids();
+        let mut taken = allocator.document_collision_ids(&self.doc);
         let id = allocator.allocate(&mut taken)?;
         let icon_id = format!("{}:{icon_name}", family.trim());
         let node = PenNode::Path(PathNode {
@@ -364,7 +367,7 @@ impl EditorState {
             .iter()
             .find_map(|id| find_node(self.active_children(), id).map(boolean_path_style))
             .unwrap_or_default();
-        let mut taken = self.collect_node_ids();
+        let mut taken = allocator.document_collision_ids(&self.doc);
         let id = allocator.allocate(&mut taken)?;
         let node = PenNode::Path(PathNode {
             base: PenNodeBase {
@@ -394,8 +397,10 @@ impl EditorState {
             route: None,
             limits: Default::default(),
         });
-        for source_id in source_ids {
-            crate::walkers::remove_from_children(self.active_children_mut(), source_id);
+        if !boolean_removal::remove_unambiguous_leaves(self.active_children_mut(), source_ids) {
+            for source_id in source_ids {
+                crate::walkers::remove_from_children(self.active_children_mut(), source_id);
+            }
         }
         self.active_children_mut().push(node);
         Ok(Some(id))

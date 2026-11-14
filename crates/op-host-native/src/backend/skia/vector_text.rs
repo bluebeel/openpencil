@@ -84,12 +84,15 @@ fn build_outline(
         if !x.is_finite() || !y.is_finite() {
             return None;
         }
-        let outline = if modern {
-            units::outline_with_metadata(font, glyph, metadata)
-        } else {
-            None
-        };
-        if let Some(outline) = outline.or_else(|| font.get_path(glyph)) {
+        let outline = reuse::glyph_outline(font, glyph, modern, || {
+            let outline = if modern {
+                units::outline_with_metadata(font, glyph, metadata)
+            } else {
+                None
+            };
+            outline.or_else(|| font.get_path(glyph))
+        });
+        if let Some(outline) = outline {
             path.add_path_with_offset(&outline, (x, y), None);
         } else {
             let mut bounds = [Rect::default()];
@@ -156,33 +159,20 @@ pub(super) fn draw_path(canvas: &Canvas, path: &Path, paint: &Paint) -> bool {
     // Polynomial cubic fills use the same bounded fixed4 edge rasterizer
     // after device-error-bounded subdivision. Do not send the resulting
     // polygon back through a second, different platform scan converter.
-    let polygon = if point
-        && paint.style() == skia_safe::PaintStyle::Fill
-        && path
-            .iter()
-            .any(|record| record.verb() == skia_safe::PathVerb::Cubic)
-        && !path
-            .iter()
-            .any(|record| record.verb() == skia_safe::PathVerb::Conic)
-    {
-        let matrix = canvas.local_to_device_as_3x3();
-        reuse::flattened(path, &matrix, || curve::flatten(path, &matrix))
-    } else {
-        None
-    };
+    let verbs = path_verbs(path);
+    let polygon =
+        if point && paint.style() == skia_safe::PaintStyle::Fill && verbs.cubic && !verbs.conic {
+            let matrix = canvas.local_to_device_as_3x3();
+            reuse::flattened(path, &matrix, || curve::flatten(path, &matrix))
+        } else {
+            None
+        };
+    let verbs = polygon.as_ref().map_or(verbs, path_verbs);
     let path = polygon.as_ref().unwrap_or(path);
     // Whole-run context must not select a different edge rule for a flat
     // glyph. The same bounded fan rasterizer handles line-only contours.
     if paint.style() == skia_safe::PaintStyle::Fill
-        && (path
-            .iter()
-            .any(|record| record.verb() == skia_safe::PathVerb::Quad)
-            || path.iter().all(|record| {
-                !matches!(
-                    record.verb(),
-                    skia_safe::PathVerb::Cubic | skia_safe::PathVerb::Conic
-                )
-            }))
+        && (verbs.quad || (!verbs.cubic && !verbs.conic))
         && draw_coverage(canvas, path, paint, point, grid)
     {
         return true;
@@ -325,6 +315,28 @@ pub(super) fn draw_path(canvas: &Canvas, path: &Path, paint: &Paint) -> bool {
     canvas.draw_paint(paint);
     canvas.restore_to_count(saved);
     true
+}
+
+#[derive(Clone, Copy, Default)]
+struct PathVerbs {
+    quad: bool,
+    cubic: bool,
+    conic: bool,
+}
+fn path_verbs(path: &Path) -> PathVerbs {
+    let mut result = PathVerbs::default();
+    for record in path.iter() {
+        match record.verb() {
+            skia_safe::PathVerb::Quad => result.quad = true,
+            skia_safe::PathVerb::Cubic => result.cubic = true,
+            skia_safe::PathVerb::Conic => result.conic = true,
+            _ => (),
+        }
+        if result.quad && result.cubic && result.conic {
+            break;
+        }
+    }
+    result
 }
 
 fn mask_scale(width: i32, height: i32, grid: i32) -> i32 {

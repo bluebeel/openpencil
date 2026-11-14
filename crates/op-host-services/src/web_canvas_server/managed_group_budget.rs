@@ -235,6 +235,24 @@ impl Budget {
         command: &C,
         input: usize,
     ) -> Result<(), Refusal> {
+        self.reserve_inner(state, command, input, None)
+    }
+    pub(super) fn reserve_metadata_target(
+        &mut self,
+        state: &EditorState,
+        command: &C,
+        input: usize,
+        node: &PenNode,
+    ) -> Result<(), Refusal> {
+        self.reserve_inner(state, command, input, Some(node))
+    }
+    fn reserve_inner(
+        &mut self,
+        state: &EditorState,
+        command: &C,
+        input: usize,
+        known_target: Option<&PenNode>,
+    ) -> Result<(), Refusal> {
         self.last = Forecast {
             component_count: state.components.len(),
             ..Forecast::default()
@@ -258,7 +276,9 @@ impl Budget {
                 .forecast_structural_command_edit(command)
                 .ok_or(Refusal::Target)?
         } else {
-            let node = target(state, command).ok_or(Refusal::Target)?;
+            let node = known_target
+                .or_else(|| target(state, command))
+                .ok_or(Refusal::Target)?;
             match command_capture_node_bytes(node, true, LIMIT) {
                 Ok(bytes) => bytes,
                 Err(error) => {

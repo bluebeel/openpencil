@@ -9,6 +9,9 @@ use std::{
     rc::Rc,
 };
 
+#[path = "live_sync_feed_drain.rs"]
+mod drain;
+
 pub(super) fn try_fetch<C: RepaintContext + 'static>(
     inner: &Rc<RefCell<C>>,
     base: &str,
@@ -16,75 +19,7 @@ pub(super) fn try_fetch<C: RepaintContext + 'static>(
     busy: &Rc<Cell<bool>>,
     selection_key: &Rc<RefCell<Option<String>>>,
 ) -> bool {
-    let Some((cursor, version)) = sync.try_borrow().ok().and_then(|sync| {
-        sync.client
-            .change_cursor()
-            .map(|cursor| (cursor.to_owned(), sync.client.applied_version()))
-    }) else {
-        return false;
-    };
-    let Ok(context) = inner.try_borrow() else {
-        return true;
-    };
-    let issued_pair = current_pair(&*context);
-    drop(context);
-    if !sync.borrow().gate.pull_allowed(issued_pair) {
-        return true;
-    }
-    let epoch = crate::identity_epoch::epoch();
-    busy.set(true);
-    let url = format!("{base}/api/mcp/changes?since={cursor}");
-    let inner = Rc::clone(inner);
-    let sync = Rc::clone(sync);
-    let busy_done = Rc::clone(busy);
-    let selection_key = Rc::clone(selection_key);
-    let base = base.to_owned();
-    let response: Rc<dyn Fn(u16, String)> = Rc::new(move |status, body| {
-        if epoch != crate::identity_epoch::epoch()
-            || sync.borrow().client.change_cursor() != Some(cursor.as_str())
-        {
-            busy_done.set(false);
-            return;
-        }
-        if matches!(status, 401 | 403) {
-            super::note_auth_invalid();
-            busy_done.set(false);
-            return;
-        }
-        if !matches!(status, 200 | 404 | 409) {
-            busy_done.set(false); // Transient/fenced errors never become data.
-            return;
-        }
-        let gate_open = inner.try_borrow().ok().is_some_and(|context| {
-            current_pair(&*context) == issued_pair && sync.borrow().gate.pull_allowed(issued_pair)
-        });
-        if !gate_open {
-            busy_done.set(false);
-            return;
-        }
-        if status == 200 {
-            if let Ok(batch) = CommittedMetadata::parse(&body, version) {
-                let structural = batch.changes_structure;
-                if !sync.borrow().client.change_authority_differs(&batch.cursor)
-                    && apply_metadata(&inner, &sync, batch, issued_pair)
-                {
-                    if structural {
-                        *selection_key.borrow_mut() = None;
-                    }
-                    busy_done.set(false);
-                    return;
-                }
-            }
-        }
-        // A newer server may send operations this web build cannot apply. An
-        // expired/replaced cursor also comes here. Retain all data via snapshot.
-        sync.borrow_mut().client.require_change_resync();
-        fetch_snapshot(&inner, &base, &sync, &busy_done, &selection_key);
-    });
-    if !live_sync::get_with_status(&url, response) {
-        busy.set(false);
-    }
-    true
+    drain::start(inner, base, sync, busy, selection_key)
 }
 
 fn apply_metadata<C: RepaintContext + 'static>(

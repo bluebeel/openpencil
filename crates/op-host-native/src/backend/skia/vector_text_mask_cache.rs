@@ -20,15 +20,16 @@ pub(super) struct Key {
 }
 impl Key {
     pub(super) fn new(path: &Path, matrix: &Matrix, clip: IRect, grid: u32) -> Self {
+        let (path, digest) = super::super::reuse::serialized_path(path);
         let mut key = Self {
-            path: path.serialize(),
+            path,
             matrix: std::array::from_fn(|i| matrix[i].to_bits()),
             clip: [clip.left, clip.top, clip.right, clip.bottom],
             grid,
             hash: 0,
         };
         let mut hash = std::collections::hash_map::DefaultHasher::new();
-        key.path.as_bytes().hash(&mut hash);
+        digest.hash(&mut hash);
         key.matrix.hash(&mut hash);
         key.clip.hash(&mut hash);
         key.grid.hash(&mut hash);

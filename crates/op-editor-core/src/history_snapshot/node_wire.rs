@@ -35,7 +35,7 @@ impl<'a, S: Serializer> Serializer for ReplaceChildren<'a, S> {
     type SerializeMap = Map<'a, S::SerializeMap>;
     type SerializeStruct = Struct<'a, S::SerializeStruct>;
     type SerializeStructVariant = S::SerializeStructVariant;
-    forward! {serialize_bool(v:bool);serialize_i8(v:i8);serialize_i16(v:i16);serialize_i32(v:i32);serialize_i64(v:i64);serialize_u8(v:u8);serialize_u16(v:u16);serialize_u32(v:u32);serialize_u64(v:u64);serialize_f32(v:f32);serialize_f64(v:f64);serialize_char(v:char);serialize_str(v:&str);serialize_bytes(v:&[u8]);serialize_none();serialize_unit();serialize_unit_struct(name:&'static str);serialize_unit_variant(name:&'static str,index:u32,variant:&'static str);}
+    forward! {serialize_bool(v:bool);serialize_i8(v:i8);serialize_i16(v:i16);serialize_i32(v:i32);serialize_i64(v:i64);serialize_i128(v:i128);serialize_u8(v:u8);serialize_u16(v:u16);serialize_u32(v:u32);serialize_u64(v:u64);serialize_u128(v:u128);serialize_f32(v:f32);serialize_f64(v:f64);serialize_char(v:char);serialize_str(v:&str);serialize_bytes(v:&[u8]);serialize_none();serialize_unit();serialize_unit_struct(name:&'static str);serialize_unit_variant(name:&'static str,index:u32,variant:&'static str);}
     fn serialize_some<T: ?Sized + Serialize>(self, v: &T) -> Result<Self::Ok, Self::Error> {
         self.inner.serialize_some(v)
     }
