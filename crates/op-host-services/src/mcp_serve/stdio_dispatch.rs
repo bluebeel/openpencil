@@ -40,19 +40,61 @@ pub(super) fn process_message_with_auto_finalize(
                 let revision_before = state.document_revision();
                 let metadata_before =
                     (!agent_owned).then(|| op_pen_loader::EditorMeta::from_state(state));
-                if !state.apply(cmd.clone()) {
+                let capture = cmd.may_change_document().then(|| state.begin_local_edit());
+                let page_ui_before = (!agent_owned
+                    && !cmd.may_change_document()
+                    && matches!(
+                        cmd,
+                        EditorCommand::SetActivePage { .. } | EditorCommand::Batch { .. }
+                    ))
+                .then(|| (state.selection.clone(), state.viewport));
+                // Cut replaces rather than reads the old clipboard. Moving it
+                // aside permits exact failure recovery without a deep clone.
+                let clipboard_before = matches!(cmd, EditorCommand::CutSelected)
+                    .then(|| std::mem::take(&mut state.clipboard));
+                let applied = match capture.as_ref() {
+                    Some(capture) => super::command_apply::apply_command_with_undo_captured(
+                        state,
+                        cmd.clone(),
+                        !annotation_only,
+                        capture,
+                    ),
+                    None => apply_command_with_undo(state, cmd.clone(), !annotation_only),
+                };
+                if !applied {
+                    if let Some(clipboard) = clipboard_before {
+                        state.clipboard = clipboard;
+                    }
                     apply_rejected = true;
                     return false;
                 }
-                if !annotation_only {
-                    repair_after_document_change(state, revision_before);
-                }
                 let document_changed = state.document_revision() != revision_before;
                 let metadata_changed = metadata_before
-                    .is_some_and(|before| before != op_pen_loader::EditorMeta::from_state(state));
+                    .as_ref()
+                    .is_some_and(|before| before != &op_pen_loader::EditorMeta::from_state(state));
                 if document_changed || metadata_changed {
                     if let Err(e) = save_editor_state(state, path) {
-                        applier_failed = Some(format!("save failed: {e}"));
+                        let rollback = if let Some(capture) = capture {
+                            state.abort_local_edit(capture)
+                        } else {
+                            if let Some(metadata) = metadata_before {
+                                op_pen_loader::apply_editor_meta(state, metadata);
+                            }
+                            if let Some((selection, viewport)) = page_ui_before {
+                                state.selection = selection;
+                                state.viewport = viewport;
+                            }
+                            Ok(())
+                        };
+                        if let Some(clipboard) = clipboard_before {
+                            state.clipboard = clipboard;
+                        }
+                        applier_failed = Some(match rollback {
+                            Ok(()) => format!("save failed: {e}"),
+                            Err(rollback) => {
+                                format!("save failed: {e}; rollback failed: {rollback}")
+                            }
+                        });
                         return false;
                     }
                 }

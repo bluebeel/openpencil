@@ -198,10 +198,9 @@ pub(crate) fn process_message_for_file_path_arg_with_contexts(
                                     state.ui.active_page_index,
                                     state.editor_ui.preserve_authored_geometry,
                                 );
-                                if !state.apply(cmd.clone()) {
+                                if !super::apply_command_with_undo(state, cmd.clone(), true) {
                                     return false;
                                 }
-                                super::repair_after_document_change(state, revision);
                                 let needs_save = state.document_revision() != revision
                                     || (!call.arguments.contains_key("agentId")
                                         && meta

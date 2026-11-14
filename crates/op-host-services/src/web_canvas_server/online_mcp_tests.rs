@@ -40,6 +40,40 @@ fn mcp(
 
 const TOOLS_LIST: &str = r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#;
 
+#[test]
+fn in_memory_mcp_raw_insert_round_trips_through_undo_redo() {
+    let registry = registry();
+    let verifier = verifier();
+    let document = || {
+        body(&serve(
+            &registry,
+            &verifier,
+            Request::new("GET", "/api/mcp/document").with_bearer("tokA"),
+        ))["document"]
+            .clone()
+    };
+    let original = document();
+    assert!(original.is_object());
+    let inserted = mcp(
+        &registry,
+        &verifier,
+        "tokA",
+        &mcp_call(
+            "insert_node",
+            r#"{"kind":"rect","name":"Undo probe","x":"0","y":"0","width":"12","height":"8"}"#,
+        ),
+    );
+    assert_ne!(inserted["result"]["isError"], true, "{inserted}");
+    let changed = document();
+    assert_ne!(changed, original);
+    let undone = mcp(&registry, &verifier, "tokA", &mcp_call("undo", "{}"));
+    assert_ne!(undone["result"]["isError"], true, "{undone}");
+    assert_eq!(document(), original);
+    let redone = mcp(&registry, &verifier, "tokA", &mcp_call("redo", "{}"));
+    assert_ne!(redone["result"]["isError"], true, "{redone}");
+    assert_eq!(document(), changed);
+}
+
 /// The text block of a `tools/call` response.
 fn call_text(payload: &serde_json::Value) -> String {
     payload["result"]["content"][0]["text"]

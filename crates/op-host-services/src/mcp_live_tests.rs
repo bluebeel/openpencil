@@ -49,6 +49,57 @@ fn make_live_token_is_nonempty_and_structured() {
 }
 
 #[test]
+fn live_pump_raw_insert_is_undoable_without_double_history() {
+    let (req_tx, req_rx) = mpsc::channel();
+    let (stop_tx, _stop_rx) = mpsc::channel();
+    let mut server = McpLiveServer {
+        port: 0,
+        token: "test-token".into(),
+        quit_flag: Arc::new(AtomicBool::new(false)),
+        req_rx,
+        stop_tx,
+        client_identity: Arc::new(Mutex::new(None)),
+        last_mcp_epoch: 0,
+        pending_design_md: VecDeque::new(),
+    };
+    let mut state = EditorState::new();
+    state.editor_ui.preserve_authored_geometry = true;
+    let original = state.doc.clone();
+    let commands = [
+        EditorCommand::InsertNode {
+            kind: "rect".into(),
+            name: "Live".into(),
+            x: 0,
+            y: 0,
+            width: 12,
+            height: 8,
+            fill_hex: None,
+            target_parent: op_editor_core::NodeId::NONE,
+            page_id: None,
+        },
+        EditorCommand::Undo,
+        EditorCommand::Redo,
+    ];
+    for command in commands {
+        let (ack_tx, ack_rx) = mpsc::sync_channel(1);
+        req_tx
+            .send(UiRequest::Apply {
+                tool_name: "raw-edit-probe".into(),
+                cmd: command,
+                ack: ack_tx,
+            })
+            .unwrap();
+        let result = server.pump(&mut state);
+        assert!(result.repaint);
+        assert!(ack_rx.try_recv().unwrap().applied);
+    }
+    assert_eq!(state.doc.children.len(), 1);
+    assert_eq!(state.history.past.len(), 1);
+    assert!(state.undo());
+    assert_eq!(state.doc, original);
+}
+
+#[test]
 fn live_tcp_accept_handles_repeated_requests_and_stop_wakes_idle_listener() {
     use std::io::{Read, Write};
 

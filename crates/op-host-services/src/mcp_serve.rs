@@ -199,7 +199,9 @@ fn process_message(
     )
 }
 
+mod command_apply;
 mod stdio_dispatch;
+pub(crate) use command_apply::{apply_command_with_undo, apply_command_with_undo_report};
 use stdio_dispatch::process_message_with_auto_finalize;
 
 fn mcp_response_succeeded(response: &str) -> bool {
@@ -779,5 +781,7 @@ mod finalize_tool_advisory_tests;
 mod finalize_tool_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod undo_dispatch_tests;
 #[cfg(test)]
 mod wire_tests;

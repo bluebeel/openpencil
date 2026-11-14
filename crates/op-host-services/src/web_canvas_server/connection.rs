@@ -645,10 +645,8 @@ fn dispatch_inner<S: Read + Write>(
                             return false;
                         }
                         let revision_before = editor.document_revision();
-                        let ok = editor.apply(cmd.clone());
-                        if ok {
-                            crate::mcp_serve::repair_after_document_change(editor, revision_before);
-                        }
+                        let ok =
+                            crate::mcp_serve::apply_command_with_undo(editor, cmd.clone(), true);
                         applied_any |= ok
                             && (!_agent_admission.is_active()
                                 || editor.document_revision() != revision_before);
