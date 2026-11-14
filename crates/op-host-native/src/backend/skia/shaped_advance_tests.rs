@@ -115,3 +115,52 @@ fn common_ligature_tracking_uses_shaped_clusters_for_paint_and_measure() {
         );
     });
 }
+
+#[test]
+fn styled_slice_measure_retains_unvisited_trailing_space_tracking() {
+    jian_skia::with_font_lock(|| {
+        let face = FontMgr::new()
+            .new_from_data(
+                include_bytes!("../../../../op-host-desktop/assets/fonts/SpaceGrotesk-VF.ttf"),
+                None,
+            )
+            .unwrap();
+        let mut provider = TypefaceFontProvider::new();
+        provider.register_typeface(face.clone(), Some("Trailing Cluster Proof"));
+        let resolver = FontResolver::with_default_typeface(provider.into(), Some(face));
+        let mut shaped = ShapedText::new(&resolver);
+        let features = std::collections::BTreeMap::from([("liga".to_string(), 1)]);
+        for (text, clusters) in [("ffi ", 2), ("ffi  ", 3), ("  ", 2), ("ffi fl ", 4)] {
+            let mut run = ShapedRun {
+                text,
+                family: "Trailing Cluster Proof",
+                font_size: 32.,
+                weight: 400,
+                italic: false,
+                kerning: Some(true),
+                letter_spacing: 0.,
+                font_features: Some(&features),
+                line_height: 0.,
+                color: skia_safe::Color::BLACK,
+                source_color: None,
+            };
+            let untracked = shaped.measure(&resolver, &run);
+            run.letter_spacing = 0.75;
+            let tracked = shaped.measure(&resolver, &run);
+            assert!((tracked - untracked - (clusters - 1) as f32 * 0.75).abs() < 0.001);
+            // The caller adds one boundary gap before painting the next run.
+            let next_slice = tracked + run.letter_spacing;
+            assert!((next_slice - untracked - clusters as f32 * 0.75).abs() < 0.001);
+        }
+        let reported = TrackingClusters {
+            last: Some(4),
+            count: 2,
+        };
+        assert_eq!(reported.including_trailing("ffi  "), 2);
+        let unvisited = TrackingClusters {
+            last: Some(0),
+            count: 1,
+        };
+        assert_eq!(unvisited.including_trailing("ffi  "), 3);
+    });
+}

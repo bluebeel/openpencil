@@ -131,7 +131,13 @@ impl ShapedText {
                         run.font_size,
                     );
                     return width
-                        + clusters.get(&0).map_or(0, |c| c.count.saturating_sub(1)) as f32
+                        + clusters
+                            .get(&0)
+                            .map_or_else(
+                                || TrackingClusters::default().including_trailing(run.text),
+                                |c| c.including_trailing(run.text),
+                            )
+                            .saturating_sub(1) as f32
                             * run.letter_spacing;
                 }
             }
@@ -393,6 +399,21 @@ struct TrackingClusters {
     count: usize,
 }
 impl TrackingClusters {
+    fn including_trailing(&self, text: &str) -> usize {
+        // Paragraph's paint visitor can omit trailing whitespace while its
+        // intrinsic advance still includes it. Those source clusters also
+        // separate a following styled slice and must retain their tracking.
+        // Count only the unvisited suffix: visible ligatures keep one cluster,
+        // and whitespace already reported by a different backend stays single.
+        self.count
+            + text
+                .char_indices()
+                .rev()
+                .take_while(|(_, ch)| ch.is_whitespace())
+                .filter(|(offset, _)| self.last.is_none_or(|last| *offset > last as usize))
+                .count()
+    }
+
     fn ordinal(&mut self, cluster: u32) -> usize {
         if self.last != Some(cluster) {
             self.last = Some(cluster);

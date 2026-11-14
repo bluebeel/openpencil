@@ -1,7 +1,7 @@
 //! Font-metric decoration rectangles and descender gaps for one styled slice.
 use super::super::{jian_color_to_color4f, shaped_text::ShapedRun, NativeBackend};
 use op_editor_ui::{Rect, TextDecorationRequest};
-use skia_safe::{Canvas, FontMetrics};
+use skia_safe::{Canvas, ClipOp, FontMetrics, Paint, RRect};
 
 pub(super) fn draw(
     backend: &mut NativeBackend,
@@ -25,8 +25,39 @@ pub(super) fn draw(
         return false;
     };
     for rect in rectangles {
-        backend.fill_rect(canvas, rect, request.color);
+        let modern = request.kerning.is_some() || !request.font_features.is_empty();
+        if !modern || !sampled_rect(canvas, rect, request.color) {
+            backend.fill_rect(canvas, rect, request.color);
+        }
     }
+    true
+}
+
+fn sampled_rect(canvas: &Canvas, rect: Rect, color: op_editor_ui::Color) -> bool {
+    let matrix = canvas.local_to_device_as_3x3();
+    if !matrix.is_finite() || matrix.has_perspective() || matrix.invert().is_none() {
+        return false;
+    }
+    let Some(clip) = canvas.device_clip_bounds() else {
+        return true;
+    };
+    let local = super::super::to_sk_rect(rect);
+    let (mut bounds, _) = matrix.map_rect(local);
+    bounds.outset((1.0, 1.0));
+    if !bounds.is_finite() || !bounds.intersect(skia_safe::Rect::from_irect(clip)) {
+        return bounds.is_finite();
+    }
+    let saved = canvas.save();
+    canvas.reset_matrix();
+    canvas.clip_rect(bounds, ClipOp::Intersect, false);
+    canvas.concat(&matrix);
+    // Evaluate the same half-open rectangle as the outline sample lattice.
+    // An aliased Skia rectangle can discard samples exactly on its top edge.
+    super::super::sampled_clip::clip_rrect(canvas, &RRect::new_rect(local));
+    let mut paint = Paint::new(jian_color_to_color4f(color), None);
+    jian_skia::raster_sampling::configure_final_src_over(&mut paint);
+    canvas.draw_paint(&paint);
+    canvas.restore_to_count(saved);
     true
 }
 

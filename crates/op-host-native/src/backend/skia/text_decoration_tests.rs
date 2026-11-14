@@ -86,11 +86,89 @@ fn decoration_direct_canvas_keeps_local_rounding_before_zoom_rotation_and_alpha(
             canvas.rotate(13.0, None);
         }
         assert!(draw(&mut backend, actual.canvas(), &r));
-        backend.fill_rect(
+        assert!(sampled_rect(
             expected.canvas(),
             Rect::xywh(4.25, 66.5625, 120.0, 0.78125),
-            r.color,
+            r.color
+        ));
+        assert_eq!(
+            actual
+                .image_snapshot()
+                .peek_pixels()
+                .unwrap()
+                .bytes()
+                .unwrap(),
+            expected
+                .image_snapshot()
+                .peek_pixels()
+                .unwrap()
+                .bytes()
+                .unwrap()
         );
+    });
+}
+
+#[test]
+fn decoration_point_samples_include_top_left_and_exclude_bottom_right() {
+    let rect = Rect::xywh(4.3125, 8.5625, 21.53125, 0.78125);
+    let color = Color {
+        r: 0.,
+        g: 0.,
+        b: 0.,
+        a: 0.6,
+    };
+    for (jx, jy) in [
+        (0.625, 0.875),
+        (0.375, 0.125),
+        (0.125, 0.625),
+        (0.875, 0.375),
+    ] {
+        let mut surface = skia_safe::surfaces::raster_n32_premul((64, 32)).unwrap();
+        let canvas = surface.canvas();
+        canvas.clear(skia_safe::Color::WHITE);
+        canvas.translate((0.5 - jx, 0.5 - jy));
+        canvas.scale((2., 2.));
+        jian_skia::raster_sampling::with_point_sampling(|| {
+            assert!(sampled_rect(canvas, rect, color));
+        })
+        .unwrap();
+        let image = surface.image_snapshot();
+        let pixels = image.peek_pixels().unwrap();
+        let pixels = pixels.bytes().unwrap();
+        for y in 0..32 {
+            for x in 0..64 {
+                let local_x = (x as f32 + jx) * 0.5;
+                let local_y = (y as f32 + jy) * 0.5;
+                let inside = local_x >= rect.origin.x
+                    && local_x < rect.origin.x + rect.size.x
+                    && local_y >= rect.origin.y
+                    && local_y < rect.origin.y + rect.size.y;
+                let expected = if inside { 102 } else { 255 };
+                assert_eq!(
+                    pixels[(y * 64 + x) * 4],
+                    expected,
+                    "sample{x},{y} camera{jx},{jy}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn legacy_decoration_retains_native_rectangle_paint() {
+    jian_skia::with_font_lock(|| {
+        let mut backend = NativeBackend::with_dpi(1.0);
+        let features = BTreeMap::new();
+        let mut r = request("Typography", &features);
+        r.kerning = None;
+        let mut actual = skia_safe::surfaces::raster_n32_premul((140, 80)).unwrap();
+        let mut expected = skia_safe::surfaces::raster_n32_premul((140, 80)).unwrap();
+        actual.canvas().clear(skia_safe::Color::WHITE);
+        expected.canvas().clear(skia_safe::Color::WHITE);
+        assert!(draw(&mut backend, actual.canvas(), &r));
+        for rect in geometry(&mut backend, &r).unwrap() {
+            backend.fill_rect(expected.canvas(), rect, r.color);
+        }
         assert_eq!(
             actual
                 .image_snapshot()
