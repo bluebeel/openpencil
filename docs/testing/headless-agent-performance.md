@@ -5,10 +5,12 @@ service. External model/agent processes are excluded; the load generator is
 included in the aggregate memory measurement. Each client sends sequential
 MCP batches, and a bounded request window provides backpressure.
 
-The latest [batched checkpoint](engine-checkpoint-6.md) adds lazy component-cache
-decoding, exact avatar sampling, improved text contours, scoped outline reuse,
-and bounded HTTP ingress/conversion admission. It also records the remaining
-OpenBridge memory and rendering-cost gaps.
+The latest [batched checkpoint](engine-checkpoint-7.md) adds streamed imports,
+improved text/underline parity, faster exact image addressing and shared bulk
+exports below 1 GB on the 101,000-node workload. It also fixes WebP and bulk
+format encoding and records the remaining cold-import and exact-pixel gaps.
+The [previous checkpoint](engine-checkpoint-6.md) adds lazy component-cache
+decoding, exact avatar sampling, scoped outline reuse and bounded HTTP admission.
 The [previous checkpoint](engine-checkpoint-5.md) includes borrowed layout inputs,
 bounded shared geometry reuse, compact imports and streaming CLI saves.
 The [previous checkpoint](engine-checkpoint-4.md) records ID allocation and
