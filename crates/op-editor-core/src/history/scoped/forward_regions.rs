@@ -47,7 +47,10 @@ impl Before {
     /// reconstructs the original baseline even when earlier feed records had
     /// already edited the descendant before its parent was replaced.
     pub(super) fn absorb(&mut self, inner: Before) {
-        let relative = inner.path.strip_prefix(&self.path).expect("covered path");
+        let relative = inner
+            .path
+            .strip_prefix(self.path.as_slice())
+            .expect("covered path");
         match &mut self.data {
             Data::Node(root) => {
                 let node = if relative.is_empty() {

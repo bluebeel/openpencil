@@ -16,13 +16,13 @@ pub fn preview_matching_properties_in_roots(
     if replacements.is_empty() {
         return Ok(0);
     }
-    let found = crate::selection_nodes::resolve(roots, parent_ids);
+    let routes = parent_routes(roots, parent_ids);
     // Source addresses distinguish authored duplicate IDs. They are local
     // identity keys only; no pointer is dereferenced, retained or returned.
     let mut changed: HashMap<usize, PenNode> = HashMap::new();
     let mut count = 0;
     for id in parent_ids.iter().filter(|id| id.is_real()) {
-        let Some(&parent) = found.get(id.as_str()) else {
+        let Some(parent) = routes.get(id.as_str()).and_then(|path| node(roots, path)) else {
             continue;
         };
         let mut pending = vec![parent];
@@ -97,4 +97,13 @@ pub(super) fn node_mut<'a>(roots: &'a mut [PenNode], path: &[usize]) -> Option<&
         return None;
     }
     node_mut(node.children_mut()?, rest)
+}
+
+fn node<'a>(roots: &'a [PenNode], path: &[usize]) -> Option<&'a PenNode> {
+    let (index, rest) = path.split_first()?;
+    let current = roots.get(*index)?;
+    if rest.is_empty() {
+        return Some(current);
+    }
+    node(current.children()?, rest)
 }
