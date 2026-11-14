@@ -631,3 +631,9 @@ fn scoped_component_delete_scopes_source_page_and_active_maintenance() {
         .find_by_id(&NodeId::new("root-a"))
         .is_some());
 }
+
+#[path = "command_metadata_tests.rs"]
+mod metadata;
+
+#[path = "command_structural_tests.rs"]
+mod structural;

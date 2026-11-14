@@ -144,7 +144,12 @@ impl EditorState {
             return false;
         }
         let active = self.ui.variables.active_theme.clone();
-        let Some(def) = self.variables_mut().get_mut(name) else {
+        let Some(def) = self
+            .doc
+            .variables
+            .as_mut()
+            .and_then(|vars| vars.get_mut(name))
+        else {
             return false;
         };
         if !matches!(def.kind, VariableKind::Color) {
@@ -265,7 +270,12 @@ impl EditorState {
         scalar: VariableScalar,
     ) -> bool {
         let active = self.ui.variables.active_theme.clone();
-        let Some(def) = self.variables_mut().get_mut(name) else {
+        let Some(def) = self
+            .doc
+            .variables
+            .as_mut()
+            .and_then(|vars| vars.get_mut(name))
+        else {
             return false;
         };
         if def.kind != expect {
@@ -295,7 +305,12 @@ impl EditorState {
         if !theme_values.iter().any(|value| value == theme_value) {
             return false;
         }
-        let Some(def) = self.variables_mut().get_mut(name) else {
+        let Some(def) = self
+            .doc
+            .variables
+            .as_mut()
+            .and_then(|vars| vars.get_mut(name))
+        else {
             return false;
         };
         if def.kind != expect {

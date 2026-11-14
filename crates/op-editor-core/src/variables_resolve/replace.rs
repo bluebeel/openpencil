@@ -130,9 +130,13 @@ fn replace_in_node(
             }
         }
     }
-    if let Some(children) = node.children_mut() {
-        for child in children {
-            replace_in_node(child, token, new, vars, theme);
+    // The compatibility mutator authors Some(empty); traverse only children
+    // that were actually present, including explicitly empty child vectors.
+    if node.children().is_some() {
+        if let Some(children) = node.children_mut() {
+            for child in children {
+                replace_in_node(child, token, new, vars, theme);
+            }
         }
     }
 }

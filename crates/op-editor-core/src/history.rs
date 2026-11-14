@@ -18,7 +18,7 @@ use std::sync::Arc;
 mod entry;
 mod scoped;
 pub use entry::HistoryEntry;
-pub(crate) use scoped::{PendingScopedSnapshot, Scope};
+pub(crate) use scoped::{contains_header_token, PendingScopedSnapshot, Scope};
 pub use scoped::{ScopedEditorSnapshot, ScopedHistoryError};
 
 /// Document-dependent comparison state. Camera and other view-only state stay
@@ -320,6 +320,7 @@ impl EditorState {
                 let current = self.snapshot_for_history_with_anchor(Some(&previous));
                 self.history.future.push_back(current.into());
                 self.restore(previous);
+                rebase_scoped_prefix(&mut self.history.past, self.document_generation);
                 true
             }
             HistoryEntry::Scoped(previous) => {
@@ -349,6 +350,7 @@ impl EditorState {
                 let current = self.snapshot_for_history_with_anchor(Some(&next));
                 self.history.past.push_back(current.into());
                 self.restore(next);
+                rebase_scoped_prefix(&mut self.history.future, self.document_generation);
                 true
             }
             HistoryEntry::Scoped(next) => {
@@ -366,6 +368,15 @@ impl EditorState {
                 }
             }
         }
+    }
+}
+
+fn rebase_scoped_prefix(entries: &mut VecDeque<HistoryEntry>, generation: u64) {
+    for entry in entries.iter_mut().rev() {
+        let HistoryEntry::Scoped(snapshot) = entry else {
+            break;
+        };
+        ScopedEditorSnapshot::rebase_generation(snapshot, generation);
     }
 }
 

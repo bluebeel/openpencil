@@ -82,7 +82,9 @@ impl EditorState {
     /// (rename) or its resolved concrete value (`None`, delete).
     /// Walks pages AND the single-page fallback children.
     fn replace_refs_in_doc(&mut self, old: &str, new: Option<&str>) {
-        let vars_snapshot = self.doc.variables.clone();
+        // References are read while only the disjoint node forests are
+        // rewritten. Deletion removes the definition after this walk returns.
+        let vars = self.doc.variables.as_ref();
         let theme =
             crate::variables_resolve::effective_theme(&self.doc, &self.ui.variables.active_theme);
         if let Some(pages) = self.doc.pages.as_mut() {
@@ -91,7 +93,7 @@ impl EditorState {
                     &mut page.children,
                     old,
                     new,
-                    vars_snapshot.as_ref(),
+                    vars,
                     &theme,
                 );
             }
@@ -100,7 +102,7 @@ impl EditorState {
             &mut self.doc.children,
             old,
             new,
-            vars_snapshot.as_ref(),
+            vars,
             &theme,
         );
     }

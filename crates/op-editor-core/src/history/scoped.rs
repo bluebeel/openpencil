@@ -1,12 +1,17 @@
-//! Compact trusted page-local history. Complete public snapshots remain separate.
+//! Compact trusted forest/header history. Complete public snapshots remain separate.
 use super::*;
 use crate::history_snapshot::SharedNode;
 use jian_ops_schema::{node::PenNode, page::PenPage};
 use std::{collections::BTreeMap, mem};
+mod header;
+mod header_map;
 mod patch;
+mod token_probe;
+use header::{HeaderPatch, PendingHeader};
 pub(crate) use patch::Scope;
 pub use patch::ScopedHistoryError;
 use patch::{PageHeader, Patch};
+pub(crate) use token_probe::contains as contains_header_token;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ScopedEditorSnapshot {
@@ -15,6 +20,7 @@ pub struct ScopedEditorSnapshot {
     scopes: Vec<Scope>,
     patches: Vec<Patch>,
     page_headers: Vec<PageHeader>,
+    header: Option<HeaderPatch>,
     selection: SelectionState,
     pub active_page_index: usize,
     components: SharedComponents,
@@ -44,6 +50,7 @@ const _: fn(&EditorSnapshot) = |EditorSnapshot {
 pub(crate) struct PendingScopedSnapshot {
     metadata: ScopedEditorSnapshot,
     forests: Vec<CapturedForest>,
+    header: Option<PendingHeader>,
 }
 #[derive(Debug)]
 enum CapturedForest {
@@ -53,6 +60,14 @@ enum CapturedForest {
 impl PendingScopedSnapshot {
     pub(crate) fn scopes(&self) -> Vec<Scope> {
         self.metadata.scopes.clone()
+    }
+    pub(crate) fn captures_header(&self) -> bool {
+        self.header.is_some()
+    }
+    pub(crate) fn matches_header(&self, doc: &jian_ops_schema::PenDocument) -> bool {
+        self.header
+            .as_ref()
+            .is_none_or(|header| header.matches(doc))
     }
     pub(crate) fn revision(&self) -> u64 {
         self.metadata.revision
@@ -67,6 +82,9 @@ impl PendingScopedSnapshot {
                 }
             }
         }
+        if let Some(header) = self.header.take() {
+            header.restore(&mut state.doc);
+        }
         state.selection = self.metadata.selection.clone();
         state.ui.active_page_index = self.metadata.active_page_index;
         state.components = self.metadata.components.materialize();
@@ -78,7 +96,7 @@ impl PendingScopedSnapshot {
         state.sync_dirty_flag();
         Ok(())
     }
-    pub(crate) fn capture(state: &EditorState, scopes: Vec<Scope>) -> Self {
+    pub(crate) fn capture(state: &EditorState, scopes: Vec<Scope>, capture_header: bool) -> Self {
         let forests = scopes
             .iter()
             .map(|scope| match scope {
@@ -92,6 +110,7 @@ impl PendingScopedSnapshot {
         Self {
             metadata: ScopedEditorSnapshot::auxiliary(state, scopes),
             forests,
+            header: capture_header.then(|| PendingHeader::capture(&state.doc)),
         }
     }
     pub(crate) fn compact(
@@ -122,6 +141,7 @@ impl PendingScopedSnapshot {
                 &mut self.metadata.patches,
             );
         }
+        self.metadata.header = self.header.map(|header| header.compact(&state.doc));
         self.metadata.patches.shrink_to_fit();
         self.metadata.page_headers.shrink_to_fit();
         Ok(self.metadata)
@@ -143,6 +163,14 @@ fn page_metadata_matches(a: &PenPage, b: &PenPage) -> bool {
             == crate::history_snapshot::metadata_sensitivity(b)
 }
 impl ScopedEditorSnapshot {
+    /// A Full restore has just installed the exact checkpoint preceding this
+    /// contiguous scoped history segment. Keep the live edit generation
+    /// monotonic without invalidating that segment or mutating cloned editors.
+    pub(super) fn rebase_generation(snapshot: &mut Arc<Self>, generation: u64) {
+        if snapshot.generation != generation {
+            Arc::make_mut(snapshot).generation = generation;
+        }
+    }
     fn auxiliary(state: &EditorState, scopes: Vec<Scope>) -> Self {
         Self {
             generation: state.document_generation,
@@ -150,6 +178,7 @@ impl ScopedEditorSnapshot {
             scopes,
             patches: Vec::new(),
             page_headers: Vec::new(),
+            header: None,
             selection: state.selection.clone(),
             active_page_index: state.ui.active_page_index,
             components: SharedComponents::capture(
@@ -173,6 +202,9 @@ impl ScopedEditorSnapshot {
     }
     pub(crate) fn scopes(&self) -> Vec<Scope> {
         self.scopes.clone()
+    }
+    pub(crate) fn captures_header(&self) -> bool {
+        self.header.is_some()
     }
     pub fn components(&self) -> &SharedComponents {
         &self.components
@@ -219,6 +251,7 @@ impl ScopedEditorSnapshot {
                 .keys()
                 .map(String::capacity)
                 .sum::<usize>();
+        total = total.saturating_add(self.header.as_ref().map_or(0, HeaderPatch::storage_bytes));
         struct Count(usize);
         impl std::io::Write for Count {
             fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
@@ -260,24 +293,29 @@ impl ScopedEditorSnapshot {
         for patch in &self.patches {
             patch.validate(&state.doc)?;
         }
-        let reverse = Self::auxiliary(state, self.scopes.clone());
-        for patch in &mut self.patches {
-            patch.exchange(&mut state.doc);
+        if !self
+            .header
+            .as_ref()
+            .is_none_or(|header| header.validate(&state.doc))
+        {
+            return Err(ScopedHistoryError::DocumentHeaderChanged);
         }
-        let reordered: Vec<_> = self
-            .patches
-            .iter()
-            .filter_map(Patch::order_scope)
-            .cloned()
-            .collect();
+        let reverse = Self::auxiliary(state, self.scopes.clone());
+        let mut reordered = patch::Reorders::default();
         for patch in &mut self.patches {
-            patch.rebase(&state.doc, &reordered);
+            patch.exchange(&mut state.doc, &mut reordered);
+        }
+        for patch in &mut self.patches {
+            patch.rebase(&reordered);
         }
         for header in &mut self.page_headers {
             let current = &mut state.doc.pages.as_mut().unwrap()[header.index];
             let children = mem::take(&mut current.children);
             mem::swap(current, &mut header.old);
             current.children = children;
+        }
+        if let Some(header) = &mut self.header {
+            header.exchange(&mut state.doc);
         }
         state.selection = mem::replace(&mut self.selection, reverse.selection);
         state.ui.active_page_index =

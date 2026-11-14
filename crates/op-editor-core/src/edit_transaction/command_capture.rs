@@ -15,6 +15,7 @@ pub struct CommandEditCapture {
 #[derive(Debug)]
 enum CaptureKind {
     Full(LocalEditCapture),
+    Refused { generation: u64 },
     Scoped(ScopedCapture),
 }
 #[derive(Debug)]
@@ -48,20 +49,28 @@ impl CommandEditCapture {
 impl EditorState {
     /// Capture before an exclusively owned host command. The caller guarantees
     /// synchronous maintenance changes only the original active page; known
-    /// commands also capture their explicitly requested page. Unknown/global
+    /// commands also capture their explicitly requested page. Audited metadata commands capture exact
+    /// header fields too; unclassified global
     /// commands keep the complete existing LocalEditCapture path. Public raw
     /// document writers and arbitrary callbacks must keep begin_local_edit.
     pub fn begin_command_edit(&self, command: &EditorCommand) -> CommandEditCapture {
-        let kind = match command_scope::scopes(self, command) {
-            Some(scopes) => CaptureKind::Scoped(ScopedCapture {
+        let kind = match command_scope::classify(self, command) {
+            command_scope::Classification::Scoped(plan) => CaptureKind::Scoped(ScopedCapture {
                 generation: self.document_generation,
                 revision: self.revision,
-                pending: Some(PendingScopedSnapshot::capture(self, scopes)),
+                pending: Some(PendingScopedSnapshot::capture(
+                    self,
+                    plan.forests,
+                    plan.header,
+                )),
                 completed: None,
                 history: self.history.clone(),
                 active_theme: self.ui.variables.active_theme.clone(),
             }),
-            None => CaptureKind::Full(self.begin_local_edit()),
+            command_scope::Classification::Full => CaptureKind::Full(self.begin_local_edit()),
+            command_scope::Classification::Refused => CaptureKind::Refused {
+                generation: self.document_generation,
+            },
         };
         CommandEditCapture { kind }
     }
@@ -75,6 +84,7 @@ impl EditorState {
         maintain: impl FnOnce(&mut Self),
     ) -> bool {
         match &mut capture.kind {
+            CaptureKind::Refused { .. } => false,
             CaptureKind::Full(full) => self.apply_undoable_captured_then(command, full, maintain),
             CaptureKind::Scoped(captured) => {
                 if captured.generation != self.document_generation
@@ -83,10 +93,15 @@ impl EditorState {
                 {
                     return false;
                 }
-                let Some(scopes) = command_scope::scopes(self, &command) else {
+                let command_scope::Classification::Scoped(plan) =
+                    command_scope::classify(self, &command)
+                else {
                     return false;
                 };
-                if scopes != captured.pending.as_ref().unwrap().scopes() {
+                if plan.forests != captured.pending.as_ref().unwrap().scopes()
+                    || plan.header != captured.pending.as_ref().unwrap().captures_header()
+                    || !captured.pending.as_ref().unwrap().matches_header(&self.doc)
+                {
                     return false;
                 }
                 let mut pending = captured.pending.take().unwrap();
@@ -156,6 +171,9 @@ impl EditorState {
         capture: CommandEditCapture,
     ) -> Result<(), CommandEditError> {
         match capture.kind {
+            CaptureKind::Refused { generation } => self
+                .ensure_local_edit_generation(generation)
+                .map_err(CommandEditError::Full),
             CaptureKind::Full(full) => self.abort_local_edit(full).map_err(CommandEditError::Full),
             CaptureKind::Scoped(captured) => {
                 self.ensure_local_edit_generation(captured.generation)
