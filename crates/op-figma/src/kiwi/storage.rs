@@ -151,6 +151,12 @@ impl<T> PackedVec<T> {
     pub fn capacity(&self) -> usize {
         self.0.values.len()
     }
+    /// This owner's control block and packed elements; allocations owned by
+    /// elements are charged separately by the recursive graph estimator.
+    pub(crate) fn retained_allocation_bytes(&self) -> usize {
+        let header = std::mem::size_of::<Shared<T>>() + 2 * std::mem::size_of::<usize>();
+        header.saturating_add(self.capacity().saturating_mul(std::mem::size_of::<T>()))
+    }
     pub fn shrink_to_fit(&mut self) {}
     pub fn push(&mut self, value: T) {
         self.with_vec(|v| v.push(value));

@@ -238,11 +238,11 @@ fn fig_value_owned_bytes(value: &FigValue) -> usize {
         FigValue::TextEvidence(value) => value.retained_bytes(),
         FigValue::TextLayout(value) => value.retained_bytes(),
         FigValue::Array(values) => {
-            values.capacity() * std::mem::size_of::<FigValue>()
+            values.retained_allocation_bytes()
                 + values.iter().map(fig_value_owned_bytes).sum::<usize>()
         }
         FigValue::Object(pairs) => {
-            pairs.capacity() * std::mem::size_of::<(crate::kiwi::FigKey, FigValue)>()
+            pairs.retained_allocation_bytes()
                 + pairs
                     .iter()
                     .map(|(key, value)| key.retained_bytes() + fig_value_owned_bytes(value))
