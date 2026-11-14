@@ -59,6 +59,7 @@ pub(super) fn ts_update_patch_json_value(value: &Value) -> Result<Option<String>
     };
     let is_rich = obj.is_empty()
         || obj.keys().any(|key| !is_flat_update_data_key(key))
+        || geometry_requires_rich_patch(obj)
         || uses_sizing_keyword(obj)
         || fill_requires_rich_patch(obj);
     if !is_rich {
@@ -74,7 +75,7 @@ pub(super) fn ts_update_patch_json_value(value: &Value) -> Result<Option<String>
 }
 
 /// `UpdateNode` stores width and height as integers, while canonical node data
-/// also accepts content/fill sizing keywords. Keep literal numeric geometry on
+/// also accepts content/fill sizing keywords. Keep integer geometry on
 /// the lightweight command, but route keyword sizing through the rich shallow
 /// patch so serde can preserve its `SizingBehavior` variant.
 fn uses_sizing_keyword(obj: &serde_json::Map<String, Value>) -> bool {
@@ -84,6 +85,17 @@ fn uses_sizing_keyword(obj: &serde_json::Map<String, Value>) -> bool {
             Some(Value::String(value))
                 if matches!(value.as_str(), "fit_content" | "fill_container")
         )
+    })
+}
+
+/// The flat command parses strict i32 strings. Preserve JSON integer literals
+/// in that range, but route floating spellings (including 3.0 and -0.0) and
+/// larger integers through canonical data so no geometry bits are discarded.
+/// Legacy numeric strings deliberately keep their existing parsing behavior.
+fn geometry_requires_rich_patch(obj: &serde_json::Map<String, Value>) -> bool {
+    ["x", "y", "width", "height"].into_iter().any(|key| {
+        matches!(obj.get(key), Some(Value::Number(number))
+            if number.as_i64().is_none_or(|value| i32::try_from(value).is_err()))
     })
 }
 
