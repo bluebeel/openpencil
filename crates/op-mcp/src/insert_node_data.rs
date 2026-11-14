@@ -89,6 +89,9 @@ fn ts_data_node_with_defaults(
     let mut nodes = vec![node];
     let mut _notes = Vec::new();
     super::batch_design::promote_in_slice(&mut nodes, &mut _notes);
+    for node in &mut nodes {
+        super::batch_program_node_parse::mark_new_authored_layout(node);
+    }
     match nodes.into_iter().next() {
         Some(node) => Ok(Some(node)),
         None => Err(ToolOutcome::Err(

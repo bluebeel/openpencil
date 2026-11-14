@@ -4690,6 +4690,7 @@ dependencies = [
  "op-editor-host-core",
  "op-editor-ui",
  "op-figma",
+ "op-host-native",
  "op-hosted-models",
  "op-html",
  "op-i18n",

@@ -29,6 +29,7 @@ pub(super) enum Patch {
     Node(NodePatch),
     Forest(ForestPatch),
     Order(OrderPatch),
+    Splice(super::splice::SplicePatch),
 }
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct OrderPatch {
@@ -354,6 +355,7 @@ impl Patch {
             Self::Node(p) => std::slice::from_ref(&p.old),
             Self::Forest(p) => &p.old,
             Self::Order(p) => &p.old,
+            Self::Splice(p) => &p.old,
         }
     }
     pub(super) fn storage_bytes(&self) -> usize {
@@ -362,6 +364,7 @@ impl Patch {
             Scope::Page { id, .. } => id.capacity(),
         };
         match self {
+            Self::Splice(p) => p.storage_bytes(),
             Self::Node(p) => {
                 scope_bytes(&p.scope)
                     + p.path.len() * mem::size_of::<usize>()
@@ -395,10 +398,12 @@ impl Patch {
             Self::Node(p) => reordered.rebase(&p.scope, &mut p.path),
             Self::Forest(p) => reordered.rebase(&p.scope, &mut p.parent),
             Self::Order(p) => reordered.rebase(&p.scope, &mut p.parent),
+            Self::Splice(p) => reordered.rebase(&p.scope, &mut p.parent),
         }
     }
     pub(super) fn validate(&self, doc: &PenDocument) -> Result<(), ScopedHistoryError> {
         match self {
+            Self::Splice(p) => p.validate(doc)?,
             Self::Node(p) => {
                 let found = node(roots(doc, &p.scope)?, &p.path)
                     .ok_or(ScopedHistoryError::NodePathChanged)?;
@@ -440,6 +445,7 @@ impl Patch {
     /// Called only after all patches have validated, while the authority is locked.
     pub(super) fn exchange(&mut self, doc: &mut PenDocument, reordered: &mut Reorders) {
         match self {
+            Self::Splice(p) => p.exchange(doc),
             Self::Node(p) => {
                 let found = node_mut(roots_mut(doc, &p.scope).unwrap(), &p.path).unwrap();
                 let reverse = if p.metadata_only {

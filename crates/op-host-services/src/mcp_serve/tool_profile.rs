@@ -715,6 +715,8 @@ pub const TOOL_PROFILES: &[ToolProfile] = &[
     ToolProfile::new("set_variables", ToolAccess::Write, ToolSurface::InMemory),
     ToolProfile::new("set_viewport", ToolAccess::Write, ToolSurface::InMemory),
     ToolProfile::new("snapshot_layout", ToolAccess::Read, ToolSurface::InMemory),
+    ToolProfile::new("query_canvas", ToolAccess::Read, ToolSurface::InMemory),
+    ToolProfile::new("boolean_selected", ToolAccess::Write, ToolSurface::InMemory),
     ToolProfile::new("spawn_agents", ToolAccess::Read, ToolSurface::HostProcess),
     ToolProfile::new(
         "toggle_node_selection",

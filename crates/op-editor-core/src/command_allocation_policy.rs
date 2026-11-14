@@ -26,6 +26,7 @@ pub(crate) fn requires_id_seed(command: &C) -> bool {
         | C::DuplicatePage { .. }
         | C::DuplicateSelected { .. }
         | C::GroupSelected
+        | C::ReplacePathsWithSvg(_)
         | C::PasteClipboard { .. }
         | C::ImportSvg { .. }
         | C::PromoteLegacyWidgets => true,

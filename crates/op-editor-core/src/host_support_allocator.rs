@@ -315,10 +315,6 @@ impl EditorState {
         if usable.is_empty() {
             return Ok(None);
         }
-        let style = source_ids
-            .iter()
-            .find_map(|id| find_node(self.active_children(), id).map(boolean_path_style))
-            .unwrap_or_default();
         let bounds = usable.iter().flat_map(|contour| contour.iter()).fold(
             (
                 f64::INFINITY,
@@ -335,13 +331,39 @@ impl EditorState {
             for (index, (x, y)) in contour.iter().enumerate() {
                 let point = (*x - bounds.0, *y - bounds.1);
                 if index == 0 {
-                    d.push_str(&format!("M {:.2} {:.2}", point.0, point.1));
+                    d.push_str(&format!("M {} {}", point.0, point.1));
                 } else {
-                    d.push_str(&format!(" L {:.2} {:.2}", point.0, point.1));
+                    d.push_str(&format!(" L {} {}", point.0, point.1));
                 }
             }
             d.push_str(" Z");
         }
+        self.replace_paths_with_svg_with_allocator(source_ids, d, bounds, allocator)
+    }
+
+    /// Commit a host-computed boolean path without flattening its curves.
+    /// `d` uses local coordinates; bounds describe its document-space extent.
+    /// History and selection stay with the caller, as for the polyline API.
+    pub fn replace_paths_with_svg_with_allocator(
+        &mut self,
+        source_ids: &[NodeId],
+        d: String,
+        bounds: (f64, f64, f64, f64),
+        allocator: &mut dyn IdAllocator,
+    ) -> Result<Option<NodeId>, IdAllocError> {
+        if d.trim().is_empty()
+            || ![bounds.0, bounds.1, bounds.2, bounds.3]
+                .iter()
+                .all(|v| v.is_finite())
+            || bounds.2 < bounds.0
+            || bounds.3 < bounds.1
+        {
+            return Ok(None);
+        }
+        let style = source_ids
+            .iter()
+            .find_map(|id| find_node(self.active_children(), id).map(boolean_path_style))
+            .unwrap_or_default();
         let mut taken = self.collect_node_ids();
         let id = allocator.allocate(&mut taken)?;
         let node = PenNode::Path(PathNode {

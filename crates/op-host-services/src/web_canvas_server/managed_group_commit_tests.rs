@@ -388,5 +388,179 @@ fn unsupported_modes_legacy_contexts_and_nonsetter_tools_stay_isolated() {
     assert!(!audited(&C::CutSelected));
 }
 
+fn property_lines() -> Vec<String> {
+    [
+        ("set_node_hidden", json!({"value":true})),
+        ("set_node_flip", json!({"flip_x":true})),
+        ("add_node_effect", json!({"kind":"shadow"})),
+        ("set_node_stroke_side_width", json!({"side":"left","width":3})),
+    ].into_iter().enumerate().map(|(index,(name,mut arguments))| {
+        arguments["node_id"]=json!(format!("n{index}"));
+        arguments["agentId"]=json!(format!("property{index}"));
+        json!({"jsonrpc":"2.0","id":index,"method":"tools/call","params":{"name":name,"arguments":arguments}}).to_string()
+    }).collect()
+}
+
+#[test]
+fn audited_visibility_flip_effect_and_side_stroke_share_one_durable_save() {
+    let files = Files::new();
+    let state = files.state(false);
+    let authority = ConnAuthority::new(&state.lock().unwrap());
+    let hub = SseHub::default();
+    let original = serde_json::to_vec(&state.lock().unwrap().editor.doc).unwrap();
+    let replies = queued(&ctx(&state, &authority, &hub), &property_lines());
+    assert!(replies
+        .iter()
+        .all(|reply| reply["result"]["isError"] != true && reply.get("error").is_none()));
+    assert_eq!(authority.managed_groups.saves.load(Ordering::Acquire), 1);
+    let mut state = state.lock().unwrap();
+    assert_eq!(state.editor.history.past.len(), 4);
+    for _ in 0..4 {
+        assert!(state.editor.undo());
+    }
+    assert_eq!(serde_json::to_vec(&state.editor.doc).unwrap(), original);
+}
+
+#[test]
+fn extended_property_group_failed_save_restores_every_target_and_undo_step() {
+    let files = Files::new();
+    let state = files.state(true);
+    let authority = ConnAuthority::new(&state.lock().unwrap());
+    let hub = SseHub::default();
+    let original = serde_json::to_vec(&state.lock().unwrap().editor.doc).unwrap();
+    let replies = queued(&ctx(&state, &authority, &hub), &property_lines());
+    assert!(replies
+        .iter()
+        .all(|reply| reply["result"]["isError"] == true || reply.get("error").is_some()));
+    let state = state.lock().unwrap();
+    assert_eq!(serde_json::to_vec(&state.editor.doc).unwrap(), original);
+    assert_eq!(state.editor.history.past.len(), 0);
+    assert!(!state.recovery.required());
+}
+
+#[test]
+fn imported_document_backed_component_catalog_does_not_disable_grouping() {
+    let files = Files::new();
+    let state = files.state(false);
+    {
+        let mut state = state.lock().unwrap();
+        let roots = &mut state.editor.doc.pages.as_mut().unwrap()[0].children;
+        for i in 0..999 {
+            roots.push(serde_json::from_value(json!({"type":"frame","id":format!("component{i}"),"reusable":true,"width":10,"height":10,"children":[]})).unwrap());
+        }
+        let components =
+            op_editor_core::components::ComponentLibrary::from_document(&state.editor.doc);
+        state.editor.components = components;
+        assert_eq!(state.editor.components.len(), 999);
+        assert!(state
+            .editor
+            .components
+            .components
+            .iter()
+            .all(|component| state.editor.components.is_document_backed(&component.id)));
+        crate::doc_io::save_to_path_compact(&state.editor, &files.path()).unwrap();
+    }
+    let authority = ConnAuthority::new(&state.lock().unwrap());
+    let hub = SseHub::default();
+    let replies = queued(
+        &ctx(&state, &authority, &hub),
+        &(0..4).map(|i| line(i, 31 + i as i32)).collect::<Vec<_>>(),
+    );
+    assert!(replies
+        .iter()
+        .all(|reply| reply.get("error").is_none() && reply["result"]["isError"] != true));
+    let metrics = authority.managed_groups.metrics.snapshot();
+    assert_eq!(metrics["durableSaves"], 1);
+    assert_eq!(metrics["committedChanges"], 4);
+    assert_eq!(metrics["savedBatchSizes"]["4"], 1);
+    assert_eq!(metrics["budgetRefusals"]["legacy-components"], 0);
+}
+
+#[test]
+fn eligible_primary_writers_enqueue_while_the_document_mutex_is_busy() {
+    let files = Files::new();
+    let state = files.state(false);
+    let authority = ConnAuthority::new(&state.lock().unwrap());
+    let hub = SseHub::default();
+    let ctx = ctx(&state, &authority, &hub);
+    let held = state.lock().unwrap();
+    let (admitted, replies) = std::thread::scope(|scope| {
+        let handles = (0..4)
+            .map(|i| {
+                let ctx = &ctx;
+                scope.spawn(move || {
+                    let line = line(i, 51 + i as i32);
+                    let admission = ctx
+                        .authority
+                        .agent_contexts
+                        .try_admit(&line, PROFILE)
+                        .unwrap();
+                    dispatch_early(ctx, &line, PROFILE, &admission)
+                        .expect("eligible primary route")
+                        .unwrap()
+                })
+            })
+            .collect::<Vec<_>>();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while authority
+            .managed_groups
+            .metrics
+            .admitted
+            .load(Ordering::Relaxed)
+            < 4
+            && std::time::Instant::now() < deadline
+        {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        let admitted = authority
+            .managed_groups
+            .metrics
+            .admitted
+            .load(Ordering::Relaxed);
+        drop(held);
+        (
+            admitted,
+            handles
+                .into_iter()
+                .map(|handle| handle.join().unwrap())
+                .collect::<Vec<_>>(),
+        )
+    });
+    assert_eq!(
+        admitted, 4,
+        "queue admission must precede the whole-file save lock wait"
+    );
+    assert_eq!(replies.len(), 4);
+    assert_eq!(
+        authority.managed_groups.metrics.snapshot()["committedChanges"],
+        4
+    );
+}
+
+#[test]
+fn cached_primary_binding_is_invalidated_by_replacement_and_uncertainty() {
+    let files = Files::new();
+    let state = files.state(false);
+    let authority = ConnAuthority::new(&state.lock().unwrap());
+    assert!(authority.bound_route().is_some());
+    let mut state = state.lock().unwrap();
+    state.recovery.replaced();
+    assert!(authority.bound_route().is_none());
+    authority.refresh_route(&state);
+    assert!(authority.bound_route().is_some());
+    state.recovery.trip();
+    assert!(authority.bound_route().is_none());
+    assert!(state.reload_authoritative_file().is_ok());
+    assert!(
+        authority.bound_route().is_none(),
+        "old queued generation must not survive recovery"
+    );
+    authority.refresh_route(&state);
+    assert!(authority.bound_route().is_some());
+}
+
 #[path = "managed_group_recovery_tests.rs"]
 mod recovery_controls;
+
+#[path = "managed_group_structural_tests.rs"]
+mod structural_controls;

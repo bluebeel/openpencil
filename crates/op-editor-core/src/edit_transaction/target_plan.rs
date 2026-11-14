@@ -5,6 +5,8 @@ use crate::{
     EditorCommand as C, EditorState, NodeId, PenNodeExt,
 };
 use jian_ops_schema::node::PenNode;
+#[path = "target_splice_plan.rs"]
+mod splice;
 
 pub(super) fn plan(state: &EditorState, command: &C) -> Option<Vec<TargetSpec>> {
     if state.instance_write_virtual_anchor.is_some() {
@@ -22,6 +24,16 @@ fn collect(
     out: &mut Vec<TargetSpec>,
     in_batch: bool,
 ) -> Option<()> {
+    if matches!(
+        command,
+        C::InsertNode { .. } | C::DeleteNode { .. } | C::CopyNode { .. }
+    ) {
+        if in_batch {
+            return None;
+        }
+        out.push(splice::plan(state, command, *active)?);
+        return Some(());
+    }
     let mut subtree = false;
     let (id, page) = match command {
         C::Batch { commands } => {
@@ -100,7 +112,11 @@ fn collect(
         Scope::Root => &state.doc.children,
         Scope::Page { index, .. } => &state.doc.pages.as_ref()?[*index].children,
     };
-    let path = find_path(nodes, id, &mut Vec::new())?;
+    let path = if matches!(command, C::ReplaceNode { .. } | C::ReplaceSubtree { .. }) {
+        find_path(nodes, id, &mut Vec::new())?
+    } else {
+        splice::read_path(nodes, id)?
+    };
     let mut node = nodes.get(path[0])?;
     if matches!(node, PenNode::Ref(_)) {
         return None;
@@ -115,6 +131,7 @@ fn collect(
         scope,
         path: path.into_boxed_slice(),
         subtree,
+        splice: None,
     };
     if !out.contains(&spec) {
         out.push(spec);
@@ -139,4 +156,13 @@ fn find_path(nodes: &[PenNode], id: &NodeId, path: &mut Vec<usize>) -> Option<Ve
         }
     }
     None
+}
+
+pub(super) fn structural_bound(state: &EditorState, command: &C) -> Option<usize> {
+    if state.instance_write_virtual_anchor.is_some() {
+        return None;
+    }
+    splice::plan(state, command, state.ui.active_page_index)?
+        .splice
+        .map(|spec| spec.forecast)
 }

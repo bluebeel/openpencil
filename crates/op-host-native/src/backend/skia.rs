@@ -456,7 +456,7 @@ impl NativeBackend {
         // come out stair-stepped without this. Same call mirrored
         // into stroke_round_rect / stroke_line / stroke_svg_path.
         raster_point::prepare_solid(&mut paint);
-        canvas.draw_round_rect(to_sk_rect(rect), radius, radius, &paint);
+        raster_point::draw_round_rect(canvas, to_sk_rect(rect), radius, radius, &paint);
     }
 
     pub fn fill_round_rect_per_corner(
@@ -470,7 +470,7 @@ impl NativeBackend {
         let rrect = skia_safe::RRect::new_rect_radii(to_sk_rect(rect), &vectors);
         let mut paint = skia_safe::Paint::new(jian_color_to_color4f(color), None);
         raster_point::prepare_solid(&mut paint);
-        canvas.draw_rrect(rrect, &paint);
+        raster_point::draw_rrect(canvas, &rrect, &paint);
     }
 
     /// Drop shadow — a gaussian-blurred filled rounded rectangle.
@@ -515,7 +515,7 @@ impl NativeBackend {
         paint.set_stroke(true);
         paint.set_stroke_width(width);
         raster_point::prepare_solid(&mut paint);
-        canvas.draw_round_rect(to_sk_rect(rect), radius, radius, &paint);
+        raster_point::draw_round_rect(canvas, to_sk_rect(rect), radius, radius, &paint);
     }
 
     pub fn stroke_round_rect_per_corner(
@@ -532,7 +532,7 @@ impl NativeBackend {
         paint.set_stroke(true);
         paint.set_stroke_width(width);
         raster_point::prepare_solid(&mut paint);
-        canvas.draw_rrect(rrect, &paint);
+        raster_point::draw_rrect(canvas, &rrect, &paint);
     }
 
     /// Filled ellipse inscribed in `bounds`. Uses skia's native

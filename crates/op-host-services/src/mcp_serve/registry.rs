@@ -39,6 +39,11 @@ pub(super) fn rebuild_registry(
     register_tool!("open_document", open_document_snapshot(doc));
     register_tool!("save_document", save_document_snapshot(doc));
     register_tool!("get_document_info", document_info_snapshot(doc));
+    register_tool!("query_canvas", canvas_query::snapshot(doc, arguments));
+    register_tool!(
+        "boolean_selected",
+        boolean_selected::snapshot(doc, arguments)
+    );
     if should_register(requested_tool, "get_selection") {
         match arguments {
             Some(args) => r.register(Box::new(op_mcp::selection_snapshot_for_call(doc, args))),

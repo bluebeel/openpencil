@@ -97,7 +97,7 @@ pub(super) fn mark_root_frame_clips(roots: &[PenNode], children: &mut [NodePaylo
 /// origin` stays exported for `op-host-native`'s Canvas Preview tap
 /// translation, which still needs the authored origin as a standalone
 /// value (not baked into a rect).
-pub(super) fn compute_layout_with_measure(
+pub(crate) fn compute_layout_with_measure(
     root: &PenNode,
     out: &mut BTreeMap<String, [f32; 4]>,
     measure: Rc<dyn MeasureBackend>,

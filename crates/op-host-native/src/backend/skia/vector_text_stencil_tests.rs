@@ -7,6 +7,32 @@ fn rectangle() -> Path {
     builder.detach()
 }
 
+#[test]
+fn stencil_projected_extent_does_not_gain_a_row_from_vertex_snapping() {
+    let path = Path::rect(Rect::from_xywh(2.0, 0.501, 8.0, 7.0), None);
+    let pixels = render(&path, Matrix::default(), 0, false, 1.0);
+    assert_eq!(pixels[4], [1.0; 4], "row center precedes the primitive top");
+    assert_eq!(pixels[32 + 4], [1.0, 0.0, 0.0, 1.0]);
+}
+
+#[test]
+fn stencil_projected_extent_is_unchanged_by_a_disjoint_curved_contour() {
+    let path = Path::rect(Rect::from_xywh(2.0, 0.501, 8.0, 7.0), None);
+    let mut builder = PathBuilder::new();
+    builder.add_path(&path, None);
+    builder.move_to((1000.0, -1000.0));
+    builder.quad_to((1004.0, -1010.0), (1008.0, -1000.0));
+    builder.close();
+    let disjoint = builder.detach();
+    for grid in [0, 1, 2] {
+        assert_eq!(
+            render(&path, Matrix::default(), grid, false, 1.0),
+            render(&disjoint, Matrix::default(), grid, false, 1.0),
+            "grid {grid}"
+        );
+    }
+}
+
 fn render(path: &Path, matrix: Matrix, grid: u32, clipped: bool, alpha: f32) -> Vec<[f32; 4]> {
     let info = ImageInfo::new((32, 32), ColorType::RGBAF32, AlphaType::Premul, None);
     let mut surface = skia_safe::surfaces::raster(&info, None, None).unwrap();

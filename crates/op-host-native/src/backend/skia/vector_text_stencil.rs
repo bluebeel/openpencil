@@ -357,8 +357,16 @@ fn raster(triangle: Triangle, camera: &Camera<'_>, target: &mut Target<'_>) -> O
     let sign = if area > 0 { 1 } else { -1 };
     let left = (p.iter().map(|p| p[0]).min()? as f64 / 16.0).ceil() as i32;
     let right = (p.iter().map(|p| p[0]).max()? as f64 / 16.0).floor() as i32 + 1;
-    let top = (-p.iter().map(|p| p[1]).max()? as f64 / 16.0).ceil() as i32;
-    let bottom = (-p.iter().map(|p| p[1]).min()? as f64 / 16.0).floor() as i32 + 1;
+    // Keep the primitive's vertical extent before fixed-point edge setup.
+    // Snapping an extremal vertex across a sample row must not extend that
+    // primitive's scanline range. Edge ownership and interpolation still use
+    // the same fixed4 coordinates below.
+    let top = (-projected
+        .iter()
+        .map(|p| p[1])
+        .fold(f32::NEG_INFINITY, f32::max))
+    .ceil() as i32;
+    let bottom = (-projected.iter().map(|p| p[1]).fold(f32::INFINITY, f32::min)).ceil() as i32;
     let origin_x = bounds.left as i32 * grid;
     let origin_y = bounds.top as i32 * grid;
     let left = left.max(origin_x);

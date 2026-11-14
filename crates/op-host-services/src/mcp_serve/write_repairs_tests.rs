@@ -201,6 +201,95 @@ fn only_explicit_generation_tools_enable_cleanup() {
 }
 
 #[test]
+fn append_only_capture_retains_a_prefix_length_instead_of_old_sibling_ids() {
+    let mut editor = state(AUTHORED);
+    let command = subtree(ICON, "", None);
+    let plan = RepairPlan::capture(&editor, &command, true);
+    assert!(plan.append_only);
+    assert!(matches!(
+        plan.insertions[0].before,
+        BeforeInsertion::Append(2)
+    ));
+    let before = editor.document_revision();
+    assert!(editor.apply(command));
+    plan.apply(&mut editor, before);
+    assert!(matches!(editor.doc.children[2], PenNode::IconFont(_)));
+}
+
+#[test]
+fn root_replacement_and_mixed_batches_keep_identifier_difference_capture() {
+    let editor = state(AUTHORED);
+    let node = serde_json::from_str(ICON).unwrap();
+    let replacement = C::InsertAuthoredSubtree {
+        nodes: vec![node],
+        parent_id: NodeId::NONE,
+        page_id: None,
+    };
+    let plan = RepairPlan::capture(&editor, &replacement, true);
+    assert!(!plan.append_only);
+    assert!(matches!(
+        plan.insertions[0].before,
+        BeforeInsertion::Identifiers(_)
+    ));
+    let mixed = C::Batch {
+        commands: vec![
+            subtree(ICON, "", None),
+            C::SetNodeName {
+                node_id: NodeId::new("screen"),
+                name: "changed".into(),
+            },
+        ],
+    };
+    let plan = RepairPlan::capture(&editor, &mixed, true);
+    assert!(!plan.append_only);
+    assert!(matches!(
+        plan.insertions[0].before,
+        BeforeInsertion::Identifiers(_)
+    ));
+}
+
+#[test]
+fn direct_append_paths_produce_the_exact_legacy_cleanup_document() {
+    let mut by_ids = state(AUTHORED);
+    assert!(by_ids.apply(subtree(ICON, "screen", None)));
+    assert!(by_ids.apply(subtree(
+        r#"{"type":"path","id":"other-new-icon","width":14,"height":14,"d":"M6 9l6 6 6-6"}"#,
+        "",
+        None
+    )));
+    let mut by_paths = by_ids.clone();
+    let ids = HashSet::from(["new-icon".to_string(), "other-new-icon".to_string()]);
+    let expected = repair_selected(&mut by_ids, &ids);
+    let actual = repair_paths(&mut by_paths, vec![vec![0, 4], vec![2]]);
+    assert_eq!(actual, expected);
+    assert_eq!(by_paths.doc, by_ids.doc);
+    assert_eq!(by_paths.ui.active_page_index, by_ids.ui.active_page_index);
+    assert!(matches!(by_paths.doc.children[2], PenNode::IconFont(_)));
+}
+
+#[test]
+fn parent_path_resolution_matches_depth_first_command_lookup_order() {
+    let editor = state(
+        r#"[
+        {"type":"group","id":"outer","children":[{"type":"group","id":"parent","children":[]}]},
+        {"type":"group","id":"parent","children":[]}
+    ]"#,
+    );
+    assert_eq!(
+        insertion_parent_path(&editor.doc.children, &NodeId::new("parent")),
+        Some(vec![0, 0])
+    );
+    assert_eq!(
+        insertion_parent_path(&editor.doc.children, &NodeId::NONE),
+        Some(vec![])
+    );
+    assert_eq!(
+        insertion_parent_path(&editor.doc.children, &NodeId::new("missing")),
+        None
+    );
+}
+
+#[test]
 fn refine_duplicate_id_skips_ambiguous_heuristic_target() {
     let mut editor = state(&format!("[{ICON},{ICON}]"));
     let second = editor.doc.children[1].clone();

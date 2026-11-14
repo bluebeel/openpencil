@@ -37,6 +37,7 @@ use jian_ops_schema::conversion::{ConversionEntry, ConversionKind};
 use jian_ops_schema::variable::{VariableKind, VariableScalar};
 
 mod app_state;
+mod boolean;
 mod helpers;
 
 pub(crate) use helpers::command_marks_document_dirty;
@@ -607,6 +608,7 @@ impl EditorState {
                     false
                 }
             }
+            EditorCommand::ReplacePathsWithSvg(value) => self.cmd_boolean(*value, allocator)?,
             EditorCommand::UngroupSelected => {
                 let snap = self.snapshot_for_undo();
                 if self.ungroup_selected() {

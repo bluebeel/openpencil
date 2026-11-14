@@ -227,6 +227,7 @@ impl EditorState {
         }
 
         // Mutable phase.
+        let preserve_authored_geometry = self.editor_ui.preserve_authored_geometry;
         let Some(node) = find_node_mut(self.active_children_mut(), node_id) else {
             return false;
         };
@@ -346,7 +347,15 @@ impl EditorState {
             _ => false,
         };
         if changed && property_invalidates_preserved_geometry(property) {
-            self.editor_ui.preserve_authored_geometry = false;
+            // Position/clip edits already work from authored rectangles. A
+            // container layout edit opts in only that container, never every
+            // imported frame on every page.
+            if !matches!(property, "x" | "y" | "clipContent")
+                && !mark_container_computed(node)
+                && preserve_authored_geometry
+            {
+                self.editor_ui.preserve_authored_geometry = false;
+            }
         }
         changed
     }
@@ -630,4 +639,15 @@ fn set_node_height(node: &mut PenNode, sb: SizingBehavior) -> bool {
         }
         _ => false,
     }
+}
+
+fn mark_container_computed(node: &mut PenNode) -> bool {
+    let container = match node {
+        PenNode::Frame(n) => &mut n.container,
+        PenNode::Group(n) => &mut n.container,
+        PenNode::Rectangle(n) => &mut n.container,
+        _ => return false,
+    };
+    container.preserve_geometry = Some(false);
+    true
 }

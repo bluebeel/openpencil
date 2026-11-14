@@ -13,10 +13,11 @@ use std::{
 };
 #[path = "document_recovery.rs"]
 pub(super) mod recovery;
-#[cfg(test)]
 use std::sync::atomic::Ordering;
 #[path = "managed_group_budget.rs"]
 mod budget;
+#[path = "managed_group_metrics.rs"]
+mod metrics;
 #[path = "managed_group_queue.rs"]
 mod queue;
 
@@ -42,6 +43,7 @@ enum Reply {
 
 pub(super) struct Groups {
     queue: queue::Queue<Request, Reply>,
+    pub(in crate::web_canvas_server) metrics: metrics::Metrics,
     #[cfg(test)]
     saves: std::sync::atomic::AtomicUsize,
     #[cfg(test)]
@@ -52,12 +54,13 @@ impl Default for Groups {
     fn default() -> Self {
         Self {
             queue: queue::Queue::new(queue::Limits {
-                calls: 32,
-                bytes: 16 * 1024 * 1024,
-                group_calls: 16,
+                calls: 128,
+                bytes: 64 * 1024 * 1024,
+                group_calls: 32,
                 group_bytes: 64 * 1024,
                 wait: Duration::from_millis(2),
             }),
+            metrics: Default::default(),
             #[cfg(test)]
             saves: std::sync::atomic::AtomicUsize::new(0),
             #[cfg(test)]
@@ -130,6 +133,17 @@ fn candidate(line: &str, profile: McpAccessProfile) -> bool {
             | "set_node_stroke_width"
             | "set_node_fill_hex"
             | "set_node_name"
+            | "set_node_hidden"
+            | "set_node_locked"
+            | "set_node_collapsed"
+            | "set_node_flip"
+            | "set_ellipse_arc"
+            | "add_node_effect"
+            | "remove_node_effect"
+            | "set_node_stroke_side_width"
+            | "insert_node"
+            | "delete_node"
+            | "copy_node"
     )
 }
 
@@ -144,7 +158,16 @@ fn audited(command: &C) -> bool {
         | C::SetNodeStrokeHex { .. }
         | C::SetNodeStrokeWidth { .. }
         | C::SetNodeFillHex { .. }
-        | C::SetNodeName { .. } => true,
+        | C::SetNodeName { .. }
+        | C::SetNodeFlag { .. }
+        | C::SetNodeFlip { .. }
+        | C::SetEllipseArc { .. }
+        | C::AddNodeEffect { .. }
+        | C::RemoveNodeEffect { .. }
+        | C::SetNodeStrokeSideWidth { .. }
+        | C::InsertNode { .. }
+        | C::DeleteNode { .. }
+        | C::CopyNode { .. } => true,
         C::PatchNodeData { patch_json, .. } => {
             let Ok(value) = serde_json::from_str::<serde_json::Value>(patch_json) else {
                 return false;
@@ -211,17 +234,15 @@ pub(super) fn dispatch(
         return None;
     }
     let path = path?;
-    let (fence, recovery_epoch, generation) = {
-        let state = ctx.state.lock().unwrap_or_else(|p| p.into_inner());
-        if state.recovery.required() {
-            return Some(Ok(error(line, &GroupError::Unavailable)));
-        }
-        (
-            state.recovery.clone(),
-            state.recovery.epoch(),
-            state.editor.document_generation(),
-        )
-    };
+    let route = ctx.authority.bound_route()?;
+    if route.path.as_deref() != Some(path)
+        || (route.document != document && route.path.as_deref() != Some(document))
+    {
+        return None;
+    }
+    let fence = ctx.authority.recovery.clone();
+    let recovery_epoch = route.epoch;
+    let generation = route.generation;
     let permit = admission.execution_permit(&ctx.authority.agent_contexts, document)?;
     let input = Request {
         line: line.to_owned(),
@@ -238,7 +259,17 @@ pub(super) fn dispatch(
         + input.document.as_os_str().len() * 2
         + MAX_REPLY
         + 2048;
-    let ticket = groups.queue.submit(input, line.len(), charge).ok()?;
+    let ticket = match groups.queue.submit(input, line.len(), charge) {
+        Ok(ticket) => ticket,
+        Err(_) => {
+            groups
+                .metrics
+                .capacity_fallback
+                .fetch_add(1, Ordering::Relaxed);
+            return None;
+        }
+    };
+    groups.metrics.admitted.fetch_add(1, Ordering::Relaxed);
     match ticket.execute(
         |requests| run_group(ctx, groups, requests),
         |_| {
@@ -258,6 +289,46 @@ pub(super) fn dispatch(
     }
 }
 
+/// The bound cache is epoch-checked independently from the writer mutex.
+/// Alternate paths, stale bindings and unusual barriers keep ordinary routing.
+pub(super) fn dispatch_early(
+    ctx: &ConnCtx<'_>,
+    line: &str,
+    profile: McpAccessProfile,
+    admission: &AgentAdmission<'_>,
+) -> Option<Result<String, WebCanvasError>> {
+    if !matches!(ctx.mode, ServeMode::Managed)
+        || ctx.write_barrier.is_some()
+        || !candidate(line, profile)
+    {
+        return None;
+    }
+    let route = ctx.authority.bound_route()?;
+    let path = route.path.as_ref()?;
+    let call = op_mcp::parse_tool_call(line)?;
+    if let Some(raw) = call
+        .arguments
+        .get("filePath")
+        .filter(|raw| !raw.trim().is_empty())
+    {
+        if !matches!(raw.as_str(), "live://canvas" | "live://canvas/current")
+            && Path::new(raw) != path
+            && Path::new(raw) != route.document
+        {
+            return None;
+        }
+    }
+    dispatch(
+        ctx,
+        line,
+        profile,
+        Some(path),
+        &route.document,
+        admission,
+        true,
+    )
+}
+
 struct Pending {
     request: usize,
     capture: CommandEditCapture,
@@ -274,6 +345,7 @@ struct Transaction<'s, 'a, 'q> {
     budget: budget::Budget,
     before_version: u64,
     last_changed: Option<usize>,
+    live_selection: Option<op_editor_core::SelectionState>,
     persisted: bool,
     finished: bool,
 }
@@ -295,6 +367,32 @@ impl Transaction<'_, '_, '_> {
             ))));
             return;
         }
+        let structural = op_mcp::parse_tool_call(&request.line).is_some_and(|call| {
+            matches!(
+                call.tool.as_str(),
+                "insert_node" | "delete_node" | "copy_node"
+            )
+        });
+        if structural && self.live_selection.is_none() {
+            let selection = &self.state.editor.selection;
+            if selection.set.len() > 16_384 {
+                self.replies[index] = Some(Reply::Isolated);
+                return;
+            }
+            let bytes = selection
+                .set
+                .iter()
+                .map(|id| id.as_str().len())
+                .sum::<usize>()
+                + selection.set.len() * std::mem::size_of::<op_editor_core::NodeId>()
+                + selection.anchor.as_str().len()
+                + std::mem::size_of::<op_editor_core::SelectionState>();
+            if bytes > 2 * 1024 * 1024 || self.budget.reserve_live_selection(bytes).is_err() {
+                self.replies[index] = Some(Reply::Isolated);
+                return;
+            }
+            self.live_selection = Some(selection.clone());
+        }
         let policy = self.state.collab_policy();
         let mut capture = None;
         let mut applied = false;
@@ -305,6 +403,7 @@ impl Transaction<'_, '_, '_> {
         let budget = &mut self.budget;
         let before_budget = *budget;
         let fence = self.state.recovery.clone();
+        let metrics = &self.owner.metrics;
         let response = mcp_serve::agent_context::with_agent_context_permit(
             &self.ctx.authority.agent_contexts,
             &request.document,
@@ -329,8 +428,12 @@ impl Transaction<'_, '_, '_> {
                             refused = Some(reason);
                             return false;
                         }
-                        if !audited(command) || !budget.reserve(editor, command, request.line.len())
-                        {
+                        if !audited(command) {
+                            isolated = true;
+                            return false;
+                        }
+                        if let Err(reason) = budget.reserve(editor, command, request.line.len()) {
+                            metrics.refuse(reason);
                             isolated = true;
                             return false;
                         }
@@ -338,6 +441,9 @@ impl Transaction<'_, '_, '_> {
                         let Some(checkpoint) =
                             editor.try_begin_command_edit_without_document_repairs(command)
                         else {
+                            metrics
+                                .strict_capture_fallback
+                                .fetch_add(1, Ordering::Relaxed);
                             isolated = true;
                             return false;
                         };
@@ -398,6 +504,7 @@ impl Transaction<'_, '_, '_> {
         self.replies[index] = Some(if let Some(failure) = failure {
             Reply::Complete(Ok(error(&request.line, &failure)))
         } else if isolated {
+            metrics.isolated.fetch_add(1, Ordering::Relaxed);
             Reply::Isolated
         } else {
             Reply::Complete(
@@ -407,6 +514,7 @@ impl Transaction<'_, '_, '_> {
             )
         });
         if applied {
+            metrics.applied.fetch_add(1, Ordering::Relaxed);
             self.pending.push(Pending {
                 request: index,
                 capture: capture.expect("applied capture"),
@@ -446,6 +554,11 @@ impl Transaction<'_, '_, '_> {
             clean &= restored;
         }
         self.state.version = self.before_version;
+        if clean {
+            if let Some(selection) = self.live_selection.take() {
+                self.state.editor.selection = selection;
+            }
+        }
         if !clean {
             self.state.recovery.trip();
         }
@@ -469,8 +582,10 @@ impl Transaction<'_, '_, '_> {
             let mut source = None;
             let mut saved = false;
             let mut started = false;
+            let changed_count = (self.state.version - self.before_version) as usize;
             let persisted = &mut self.persisted;
             let fence = self.state.recovery.clone();
+            let metrics = &self.owner.metrics;
             #[cfg(test)]
             let owner = self.owner;
             let _ = mcp_serve::agent_context::with_agent_context_permit(
@@ -496,6 +611,11 @@ impl Transaction<'_, '_, '_> {
                         Ok(()) => {
                             saved = true;
                             *persisted = true;
+                            metrics.saves.fetch_add(1, Ordering::Relaxed);
+                            metrics
+                                .committed_changes
+                                .fetch_add(changed_count as u64, Ordering::Relaxed);
+                            metrics.saved_sizes[changed_count - 1].fetch_add(1, Ordering::Relaxed);
                             #[cfg(test)]
                             owner.saves.fetch_add(1, Ordering::AcqRel);
                         }
@@ -571,6 +691,10 @@ impl Drop for Transaction<'_, '_, '_> {
 }
 
 fn run_group(ctx: &ConnCtx<'_>, owner: &Groups, requests: &[Request]) -> Vec<Reply> {
+    owner.metrics.cohorts.fetch_add(1, Ordering::Relaxed);
+    if let Some(index) = requests.len().checked_sub(1) {
+        owner.metrics.claimed_sizes[index].fetch_add(1, Ordering::Relaxed);
+    }
     let mut state = ctx.state.lock().unwrap_or_else(|p| p.into_inner());
     let before_version = state.version;
     let mut transaction = Transaction {
@@ -584,6 +708,7 @@ fn run_group(ctx: &ConnCtx<'_>, owner: &Groups, requests: &[Request]) -> Vec<Rep
         budget: budget::Budget::default(),
         before_version,
         last_changed: None,
+        live_selection: None,
         persisted: false,
         finished: false,
     };

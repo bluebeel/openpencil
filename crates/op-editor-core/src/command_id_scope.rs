@@ -84,6 +84,9 @@ impl IdAllocator for ScopedIdAllocator<'_> {
 pub struct CommandSimulation {
     state: EditorState,
     floor: IdFloor,
+    // Exact live numeric high-water, valid only for this exclusively owned
+    // sequence. Deletions/unknown structural edits discard it before applying.
+    sequential_seed: Option<u64>,
 }
 
 impl CommandSimulation {
@@ -91,6 +94,7 @@ impl CommandSimulation {
         Self {
             state,
             floor: IdFloor::default(),
+            sequential_seed: None,
         }
     }
 
@@ -102,6 +106,9 @@ impl CommandSimulation {
     /// rule. A conservative cached floor is usable only when the program has
     /// already reserved every numeric candidate below that bound.
     pub fn next_program_id_seed(&mut self, minted_high_water: u64) -> Option<u64> {
+        if let Some(seed) = self.sequential_seed {
+            return Some(seed.max(minted_high_water));
+        }
         if self.floor.0.is_some_and(|floor| floor <= minted_high_water) {
             return Some(minted_high_water);
         }
@@ -110,17 +117,27 @@ impl CommandSimulation {
     }
 
     pub fn apply(&mut self, command: EditorCommand) -> bool {
+        let retain_seed = preserves_sequential_seed(&command);
+        if !retain_seed {
+            self.sequential_seed = None;
+        }
         self.floor.prepare(&command);
-        let mut allocator =
-            if crate::command_apply_legacy::allocation_policy::requires_id_seed(&command) {
-                let Ok(allocator) = DocumentIdAllocator::sequential_for_document(&self.state.doc)
-                else {
-                    return false;
-                };
-                allocator
-            } else {
-                DocumentIdAllocator::sequential(1)
+        let allocates = crate::command_apply_legacy::allocation_policy::requires_id_seed(&command);
+        let mut allocator = if allocates {
+            let seed = match self.sequential_seed {
+                Some(seed) => seed,
+                None => {
+                    let Ok(seed) = crate::id_allocator::next_sequential_counter(&self.state.doc)
+                    else {
+                        return false;
+                    };
+                    seed
+                }
             };
+            DocumentIdAllocator::sequential(seed)
+        } else {
+            DocumentIdAllocator::sequential(1)
+        };
         let mut scoped = ScopedIdAllocator {
             inner: &mut allocator,
             floor: std::mem::take(&mut self.floor),
@@ -132,8 +149,49 @@ impl CommandSimulation {
             .apply_with_allocator(command, &mut scoped)
             .unwrap_or(false);
         self.floor = scoped.floor;
+        if allocates && changed && retain_seed {
+            self.sequential_seed = Some(allocator.next_counter());
+        }
         changed
     }
+}
+
+fn preserves_sequential_seed(command: &EditorCommand) -> bool {
+    use EditorCommand as C;
+    matches!(
+        command,
+        C::InsertNode { .. }
+            | C::BatchInsert { .. }
+            | C::CopyNode { .. }
+            | C::DuplicateSelected { .. }
+            | C::GroupSelected
+            | C::PasteClipboard { .. }
+            | C::InstantiateComponent { .. }
+            | C::UpdateNode { .. }
+            | C::MoveNode { .. }
+            | C::SetActivePage { .. }
+            | C::SetSelection { .. }
+            | C::SetSelectionSet { .. }
+            | C::ClearSelection
+            | C::ToggleNodeSelection { .. }
+            | C::SetViewport { .. }
+            | C::CopySelected
+            | C::SetNodeRotation { .. }
+            | C::SetNodeText { .. }
+            | C::SetNodeName { .. }
+            | C::SetNodeFontSize { .. }
+            | C::SetNodeFontWeight { .. }
+            | C::SetNodeFillHex { .. }
+            | C::SetNodeStrokeHex { .. }
+            | C::SetNodeStrokeWidth { .. }
+            | C::SetNodeStrokeSideWidth { .. }
+            | C::SetNodeCornerRadius { .. }
+            | C::SetNodeFlag { .. }
+            | C::SetNodeFlip { .. }
+            | C::NudgeSelected { .. }
+            | C::AlignSelected { .. }
+            | C::SetActiveTool { .. }
+    )
 }
 
 impl std::ops::Deref for CommandSimulation {

@@ -240,6 +240,7 @@ fn build_container_node(
         width,
         height,
         layout,
+        preserve_geometry: None,
         gap,
         padding,
         justify_content,

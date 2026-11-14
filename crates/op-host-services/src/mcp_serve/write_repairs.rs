@@ -11,15 +11,20 @@ pub(crate) fn generated_tool(tool: &str) -> bool {
     )
 }
 
+enum BeforeInsertion {
+    Append(usize),
+    Identifiers(HashSet<String>),
+}
 struct Insertion {
     page: usize,
     parent: NodeId,
-    before: HashSet<String>,
+    before: BeforeInsertion,
 }
 #[derive(Default)]
 pub(super) struct RepairPlan {
     insertions: Vec<Insertion>,
     explicit: Vec<(usize, String)>,
+    append_only: bool,
 }
 impl RepairPlan {
     pub(super) fn is_empty(&self) -> bool {
@@ -31,6 +36,7 @@ impl RepairPlan {
             && !state.editor_ui.preserve_authored_geometry
             && !state.editor_ui.workspace.active
         {
+            plan.append_only = append_only(command);
             let mut active = state.ui.active_page_index;
             plan.collect(state, command, &mut active);
         }
@@ -61,10 +67,17 @@ impl RepairPlan {
                     .iter()
                     .any(|item| item.page == page && item.parent == *parent_id)
                 {
-                    let before = insertion_children(state, page, parent_id)
-                        .iter()
-                        .map(|node| node.id_str().to_owned())
-                        .collect();
+                    let children = insertion_children(state, page, parent_id);
+                    let before = if self.append_only {
+                        BeforeInsertion::Append(children.len())
+                    } else {
+                        BeforeInsertion::Identifiers(
+                            children
+                                .iter()
+                                .map(|node| node.id_str().to_owned())
+                                .collect(),
+                        )
+                    };
                     self.insertions.push(Insertion {
                         page,
                         parent: parent_id.clone(),
@@ -92,10 +105,16 @@ impl RepairPlan {
         if state.document_revision() == before_revision {
             return false;
         }
+        if self.append_only {
+            return self.apply_appended(state);
+        }
         let mut targets: BTreeMap<usize, HashSet<String>> = BTreeMap::new();
         for insertion in self.insertions {
+            let BeforeInsertion::Identifiers(before) = insertion.before else {
+                unreachable!("append plan handled above")
+            };
             for node in insertion_children(state, insertion.page, &insertion.parent) {
-                if !insertion.before.contains(node.id_str()) {
+                if !before.contains(node.id_str()) {
                     targets
                         .entry(insertion.page)
                         .or_default()
@@ -115,6 +134,82 @@ impl RepairPlan {
         state.ui.active_page_index = active;
         layout_changed
     }
+    fn apply_appended(self, state: &mut EditorState) -> bool {
+        let mut targets: BTreeMap<usize, Vec<Vec<usize>>> = BTreeMap::new();
+        for insertion in self.insertions {
+            let BeforeInsertion::Append(before) = insertion.before else {
+                unreachable!("append-only capture")
+            };
+            let roots = roots(state, insertion.page);
+            let Some(parent) = insertion_parent_path(roots, &insertion.parent) else {
+                continue;
+            };
+            let children = insertion_children(state, insertion.page, &insertion.parent);
+            for index in before..children.len() {
+                let mut path = parent.clone();
+                path.push(index);
+                targets.entry(insertion.page).or_default().push(path);
+            }
+        }
+        let active = state.ui.active_page_index;
+        let mut changed = false;
+        for (page, mut paths) in targets {
+            // A generated ancestor owns its generated descendants. Sorting gives
+            // the same authored preorder as the legacy id walk, without walking
+            // any untouched root or descendant to rediscover known positions.
+            paths.sort_unstable();
+            let mut selected: Vec<Vec<usize>> = Vec::with_capacity(paths.len());
+            for path in paths {
+                if selected
+                    .last()
+                    .is_none_or(|parent| !path.starts_with(parent))
+                {
+                    selected.push(path);
+                }
+            }
+            state.ui.active_page_index = page;
+            changed |= repair_paths(state, selected);
+        }
+        state.ui.active_page_index = active;
+        changed
+    }
+}
+
+// These commands only append, and never remove/reorder/remint an existing
+// sibling. The whole Batch must satisfy this proof; mixed programs retain the
+// existing identifier-difference capture. Empty-root replacement is excluded.
+fn append_only(command: &C) -> bool {
+    match command {
+        C::Batch { commands } => commands.iter().all(append_only),
+        C::SetActivePage { .. } | C::InsertAuthoredSubtreePreservingRoots { .. } => true,
+        C::InsertSubtree { parent_id, .. } | C::InsertAuthoredSubtree { parent_id, .. } => {
+            parent_id.is_real()
+        }
+        _ => false,
+    }
+}
+fn insertion_parent_path(nodes: &[PenNode], parent: &NodeId) -> Option<Vec<usize>> {
+    if !parent.is_real() {
+        return Some(Vec::new());
+    }
+    if let Some(index) = nodes
+        .iter()
+        .position(|node| node.id_str() == parent.as_str())
+    {
+        return Some(vec![index]);
+    }
+    for (index, node) in nodes.iter().enumerate() {
+        if let Some(path) = node
+            .children()
+            .and_then(|children| insertion_parent_path(children, parent))
+        {
+            let mut found = Vec::with_capacity(path.len() + 1);
+            found.push(index);
+            found.extend(path);
+            return Some(found);
+        }
+    }
+    None
 }
 
 fn page_index(state: &EditorState, raw: Option<&str>, active: usize) -> Option<usize> {
@@ -172,6 +267,9 @@ fn collect_paths(
     out: &mut Vec<Vec<usize>>,
 ) {
     for (index, node) in nodes.iter().enumerate() {
+        if targets.is_empty() {
+            break;
+        }
         prefix.push(index);
         if targets.remove(node.id_str()) {
             // First authored match, like the command lookup. A selected ancestor
@@ -185,6 +283,9 @@ fn collect_paths(
     }
 }
 fn remove_subtree_targets(node: &PenNode, targets: &mut HashSet<String>) {
+    if targets.is_empty() {
+        return;
+    }
     targets.remove(node.id_str());
     if let Some(children) = node.children() {
         for child in children {
@@ -209,6 +310,9 @@ fn repair_selected(state: &mut EditorState, targets: &HashSet<String>) -> bool {
         &mut Vec::new(),
         &mut paths,
     );
+    repair_paths(state, paths)
+}
+fn repair_paths(state: &mut EditorState, paths: Vec<Vec<usize>>) -> bool {
     if paths.is_empty() {
         return false;
     }

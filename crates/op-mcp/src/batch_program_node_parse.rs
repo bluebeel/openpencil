@@ -4,6 +4,7 @@
 //! deserialisation, and the optional post-process refine.
 
 use jian_ops_schema::node::PenNode;
+use op_editor_core::PenNodeExt;
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -59,7 +60,11 @@ pub(crate) fn parse_node_json(
             ..NodeParseOptions::default()
         },
     )
-    .map(|parsed| parsed.node)
+    .map(|parsed| {
+        let mut node = parsed.node;
+        mark_new_authored_layout(&mut node);
+        node
+    })
 }
 
 pub(crate) fn parse_node_body(raw: &str, options: NodeParseOptions) -> Result<ParsedNode> {
@@ -140,4 +145,34 @@ fn salvage_one_field(value: &Value, notes: &mut Vec<String>) -> Option<PenNode> 
         }
     }
     None
+}
+
+/// Only new explicitly authored I/R/data trees call this. Copy, import and
+/// clipboard paths retain their supplied local geometry policy unchanged.
+/// Keep explicit true/false overrides, including on nested authored frames.
+pub(super) fn mark_new_authored_layout(node: &mut PenNode) {
+    use jian_ops_schema::node::container::LayoutMode;
+    let container = match node {
+        PenNode::Frame(n) => Some(&mut n.container),
+        PenNode::Group(n) => Some(&mut n.container),
+        PenNode::Rectangle(n) => Some(&mut n.container),
+        _ => None,
+    };
+    if let Some(c) = container {
+        if c.preserve_geometry.is_none()
+            && matches!(
+                c.layout.as_ref(),
+                Some(LayoutMode::Horizontal | LayoutMode::Vertical)
+            )
+        {
+            c.preserve_geometry = Some(false);
+        }
+    }
+    // children_mut initializes absent arrays. Borrow only existing arrays, so
+    // authoring a leaf never changes None into an unsolicited empty children.
+    if node.children().is_some() {
+        for child in node.children_mut().expect("existing child array") {
+            mark_new_authored_layout(child);
+        }
+    }
 }

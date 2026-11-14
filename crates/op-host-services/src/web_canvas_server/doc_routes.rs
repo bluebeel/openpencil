@@ -101,6 +101,7 @@ pub(super) fn unbind_current_file(state: &mut WebCanvasState) -> WebReply {
     }
     let unbound = state.current_path.take().is_some();
     if unbound {
+        state.recovery.replaced();
         state.editor.editor_ui.file_name_display = None;
     }
     WebReply {

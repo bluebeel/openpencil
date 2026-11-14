@@ -447,6 +447,7 @@ fn execute_insert(binding: &str, args: &str, ctx: &mut ProgramCtx) -> Result<()>
     )?;
     ctx.warnings.extend(parsed.notes);
     let (mut node, handle_refs) = (parsed.node, parsed.handle_refs);
+    super::batch_program_node_parse::mark_new_authored_layout(&mut node);
     delete_superseded_draft(binding, parent.as_deref(), &node, ctx);
 
     // TS auto-replace: a root-level frame insert replaces the first EMPTY

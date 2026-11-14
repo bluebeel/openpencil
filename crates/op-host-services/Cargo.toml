@@ -53,6 +53,7 @@ op-orchestrator = { path = "../op-orchestrator" }
 op-design-lint = { path = "../op-design-lint" }
 op-pen-loader = { path = "../op-pen-loader" }
 op-render-export = { path = "../op-render-export" }
+op-host-native = { path = "../op-host-native", default-features = false }
 # Shared image-slot detection + result write-back for the MCP
 # `enrich_images` tool (also used by op-host-desktop's search session).
 op-image-enrich = { path = "../op-image-enrich", features = ["net"] }

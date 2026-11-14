@@ -139,6 +139,7 @@ fn plan(
         | C::DeleteSelected
         | C::NudgeSelected { .. }
         | C::GroupSelected
+        | C::ReplacePathsWithSvg(_)
         | C::UngroupSelected
         | C::ReorderSelected { .. }
         | C::SetNodeFlag { .. }

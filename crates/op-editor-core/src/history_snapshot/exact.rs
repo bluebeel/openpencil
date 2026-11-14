@@ -107,7 +107,7 @@ fn fills(a: &Option<Vec<PenFill>>, b: &Option<Vec<PenFill>>) -> bool {
         a.len() == b.len() && a.iter().zip(b).all(|(a, b)| fill(a, b))
     })
 }
-fields!(container,ContainerProps,{width:size,height:size,limits:limits,layout:optional,gap:opacity,padding:optional,justify_content:optional,align_items:optional,clip_content:bools,sticky_children:optional,corner_radius:optional,fill:fills,stroke:optional,effects:optional});
+fields!(container,ContainerProps,{width:size,height:size,limits:limits,layout:optional,preserve_geometry:bools,gap:opacity,padding:optional,justify_content:optional,align_items:optional,clip_content:bools,sticky_children:optional,corner_radius:optional,fill:fills,stroke:optional,effects:optional});
 fields!(rectangle,jian_ops_schema::node::RectangleNode,{base:base,container:container,children:optional,state:optional,bindings:optional,events:optional,lifecycle:optional,semantics:optional,gestures:optional,route:optional});
 #[inline(always)]
 pub(super) fn geometry_matches(a: &PenNode, b: &PenNode) -> Option<bool> {

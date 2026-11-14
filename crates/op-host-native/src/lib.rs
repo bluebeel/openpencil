@@ -58,7 +58,6 @@ pub mod context;
 ))]
 pub mod backend;
 pub use jian_skia::raster_sampling;
-#[cfg(feature = "gl-host")]
 #[cfg(any(
     target_os = "macos",
     target_os = "linux",

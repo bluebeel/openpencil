@@ -423,7 +423,7 @@ impl EditorCommand {
             C::CopyNode { .. } | C::DuplicateSelected { .. } => {
                 A::Document(D::Unsupported(U::Duplicate))
             }
-            C::ReplaceNode { .. } | C::ReplaceSubtree { .. } => {
+            C::ReplaceNode { .. } | C::ReplaceSubtree { .. } | C::ReplacePathsWithSvg(_) => {
                 A::Document(D::Unsupported(U::NodeReplacement))
             }
             C::BatchInsert { .. }

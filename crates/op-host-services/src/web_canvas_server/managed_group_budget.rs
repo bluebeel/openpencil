@@ -6,13 +6,88 @@ use op_editor_core::{
 };
 use std::{io::Write, mem::size_of, sync::Arc};
 
-const LIMIT: usize = 4 * 1024 * 1024;
-const TARGET_JSON: usize = 16 * 1024;
-const AUX_JSON: usize = 8 * 1024;
+const LIMIT: usize = 512 * 1024 * 1024;
+const TARGET_JSON: usize = 512 * 1024;
+const AUX_JSON: usize = 4 * 1024 * 1024;
+const COMPONENT_JSON: usize = 8 * 1024 * 1024;
 const EVICTED_BYTES: usize = 128 * 1024;
 
 #[derive(Default, Clone, Copy)]
-pub(super) struct Budget(usize);
+pub(super) struct Budget {
+    used: usize,
+    components: Option<usize>,
+}
+#[derive(Clone, Copy)]
+#[repr(usize)]
+pub(super) enum Refusal {
+    Workspace,
+    Redo,
+    DocumentState,
+    StateOwners,
+    LegacyComponents,
+    ComponentMetadata,
+    Target,
+    TargetMetadata,
+    Auxiliary,
+    EvictedHistory,
+    CohortCapacity,
+}
+impl Refusal {
+    pub(super) const ALL: [Self; 11] = [
+        Self::Workspace,
+        Self::Redo,
+        Self::DocumentState,
+        Self::StateOwners,
+        Self::LegacyComponents,
+        Self::ComponentMetadata,
+        Self::Target,
+        Self::TargetMetadata,
+        Self::Auxiliary,
+        Self::EvictedHistory,
+        Self::CohortCapacity,
+    ];
+    pub(super) fn code(self) -> &'static str {
+        match self {
+            Self::Workspace => "workspace",
+            Self::Redo => "redo",
+            Self::DocumentState => "document-state",
+            Self::StateOwners => "state-owners",
+            Self::LegacyComponents => "legacy-components",
+            Self::ComponentMetadata => "component-metadata",
+            Self::Target => "target",
+            Self::TargetMetadata => "target-metadata",
+            Self::Auxiliary => "auxiliary",
+            Self::EvictedHistory => "evicted-history",
+            Self::CohortCapacity => "cohort-capacity",
+        }
+    }
+}
+fn component_charge(state: &EditorState) -> Result<usize, Refusal> {
+    let mut total = 0usize;
+    let mut json = 0usize;
+    for component in &state.components.components {
+        if !state.components.is_document_backed(&component.id)
+            || component
+                .root
+                .children()
+                .is_some_and(|children| !children.is_empty())
+        {
+            return Err(Refusal::LegacyComponents);
+        }
+        let bytes = json_bytes(&component.root, COMPONENT_JSON.saturating_sub(json))
+            .ok_or(Refusal::ComponentMetadata)?;
+        json = json.saturating_add(bytes);
+        total = total
+            .saturating_add(bytes.saturating_mul(32))
+            .saturating_add(component.name.len())
+            .saturating_add(component.id.as_str().len())
+            .saturating_add(std::mem::size_of_val(component) * 4);
+        if total > LIMIT {
+            return Err(Refusal::ComponentMetadata);
+        }
+    }
+    Ok(total)
+}
 
 struct Counter {
     bytes: usize,
@@ -53,7 +128,13 @@ fn target<'a>(state: &'a EditorState, command: &C) -> Option<&'a PenNode> {
         | C::SetNodeStrokeHex { node_id, .. }
         | C::SetNodeStrokeWidth { node_id, .. }
         | C::SetNodeFillHex { node_id, .. }
-        | C::SetNodeName { node_id, .. } => (node_id, None),
+        | C::SetNodeName { node_id, .. }
+        | C::SetNodeFlag { node_id, .. }
+        | C::SetNodeFlip { node_id, .. }
+        | C::SetEllipseArc { node_id, .. }
+        | C::AddNodeEffect { node_id, .. }
+        | C::RemoveNodeEffect { node_id, .. }
+        | C::SetNodeStrokeSideWidth { node_id, .. } => (node_id, None),
         _ => return None,
     };
     let pages = state.doc.pages.as_ref().filter(|pages| !pages.is_empty());
@@ -138,26 +219,55 @@ fn small_evicted_entry(state: &EditorState) -> Option<usize> {
 }
 
 impl Budget {
-    pub(super) fn reserve(&mut self, state: &EditorState, command: &C, input: usize) -> bool {
-        // A redo stack or a global app-state ownership map can be large even
-        // when the requested leaf is small. Keep those on isolated dispatch.
-        if state.editor_ui.workspace.active
-            || !state.history.future.is_empty()
-            || state.doc.state.is_some()
-            || !state.app_state_owner.is_empty()
-        {
-            return false;
+    pub(super) fn reserve_live_selection(&mut self, bytes: usize) -> Result<(), Refusal> {
+        if bytes > LIMIT.saturating_sub(self.used) {
+            return Err(Refusal::CohortCapacity);
         }
-        // Legacy component forests can be rebuilt from a stale history anchor
-        // even for no-ops. Only document-backed component metadata is grouped.
-        if !state.components.components.is_empty() {
-            return false;
+        self.used += bytes;
+        Ok(())
+    }
+    pub(super) fn reserve(
+        &mut self,
+        state: &EditorState,
+        command: &C,
+        input: usize,
+    ) -> Result<(), Refusal> {
+        if state.editor_ui.workspace.active {
+            return Err(Refusal::Workspace);
         }
-        let Some(node) = target(state, command) else {
-            return false;
+        if !state.history.future.is_empty() {
+            return Err(Refusal::Redo);
+        }
+        if state.doc.state.is_some() {
+            return Err(Refusal::DocumentState);
+        }
+        if !state.app_state_owner.is_empty() {
+            return Err(Refusal::StateOwners);
+        }
+        let (old, structural) = if matches!(
+            command,
+            C::InsertNode { .. } | C::DeleteNode { .. } | C::CopyNode { .. }
+        ) {
+            (
+                0,
+                state
+                    .forecast_structural_command_edit(command)
+                    .ok_or(Refusal::Target)?,
+            )
+        } else {
+            let node = target(state, command).ok_or(Refusal::Target)?;
+            (
+                json_bytes(node, TARGET_JSON).ok_or(Refusal::TargetMetadata)?,
+                0,
+            )
         };
-        let Some(old) = json_bytes(node, TARGET_JSON) else {
-            return false;
+        let components = match self.components {
+            Some(bytes) => bytes,
+            None => {
+                let bytes = component_charge(state)?;
+                self.components = Some(bytes);
+                bytes
+            }
         };
         let mut aux = state.ui.variables.active_theme.len().saturating_mul(256);
         for (key, value) in &state.ui.variables.active_theme {
@@ -174,34 +284,34 @@ impl Budget {
                     .saturating_mul(size_of::<(NodeId, String)>() * 2),
             );
             if aux > AUX_JSON {
-                return false;
+                return Err(Refusal::Auxiliary);
             }
             for (key, value) in refs {
                 aux = aux
                     .saturating_add(key.as_str().len())
                     .saturating_add(value.capacity());
                 if aux > AUX_JSON {
-                    return false;
+                    return Err(Refusal::Auxiliary);
                 }
             }
         }
         if aux > AUX_JSON {
-            return false;
+            return Err(Refusal::Auxiliary);
         }
-        let Some(evicted) = small_evicted_entry(state) else {
-            return false;
-        };
+        let evicted = small_evicted_entry(state).ok_or(Refusal::EvictedHistory)?;
         let charge = old
             .saturating_add(input)
             .saturating_add(aux)
             .saturating_mul(32)
+            .saturating_add(components)
+            .saturating_add(structural)
             .saturating_add(evicted)
             .saturating_add((state.history.past.len() + 1) * size_of::<HistoryEntry>() * 2)
             .saturating_add(16 * 1024);
-        if charge > LIMIT.saturating_sub(self.0) {
-            return false;
+        if charge > LIMIT.saturating_sub(self.used) {
+            return Err(Refusal::CohortCapacity);
         }
-        self.0 += charge;
-        true
+        self.used += charge;
+        Ok(())
     }
 }

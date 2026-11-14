@@ -667,6 +667,8 @@ pub fn write_mcp_http_response<S: std::io::Write>(
 mod http_response;
 pub(crate) use http_response::write_mcp_http_response_with_origin;
 
+mod boolean_selected;
+mod canvas_query;
 mod registry;
 use registry::rebuild_registry;
 

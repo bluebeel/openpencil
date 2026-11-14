@@ -141,7 +141,7 @@ fn draw_coverage(canvas: &Canvas, path: &Path, paint: &Paint, point: bool, grid:
     true
 }
 
-fn draw_path(canvas: &Canvas, path: &Path, paint: &Paint) -> bool {
+pub(super) fn draw_path(canvas: &Canvas, path: &Path, paint: &Paint) -> bool {
     if path.is_empty() {
         return true;
     }
@@ -153,6 +153,24 @@ fn draw_path(canvas: &Canvas, path: &Path, paint: &Paint) -> bool {
     } else {
         2
     };
+    // Polynomial cubic fills use the same bounded fixed4 edge rasterizer
+    // after device-error-bounded subdivision. Do not send the resulting
+    // polygon back through a second, different platform scan converter.
+    let polygon = if point
+        && paint.style() == skia_safe::PaintStyle::Fill
+        && path
+            .iter()
+            .any(|record| record.verb() == skia_safe::PathVerb::Cubic)
+        && !path
+            .iter()
+            .any(|record| record.verb() == skia_safe::PathVerb::Conic)
+    {
+        let matrix = canvas.local_to_device_as_3x3();
+        reuse::flattened(path, &matrix, || curve::flatten(path, &matrix))
+    } else {
+        None
+    };
+    let path = polygon.as_ref().unwrap_or(path);
     // Whole-run context must not select a different edge rule for a flat
     // glyph. The same bounded fan rasterizer handles line-only contours.
     if paint.style() == skia_safe::PaintStyle::Fill

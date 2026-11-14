@@ -191,6 +191,7 @@ pub(crate) fn execute_replace(binding: &str, args: &str, ctx: &mut ProgramCtx) -
     )?;
     ctx.warnings.extend(parsed.notes);
     let mut node = parsed.node;
+    super::batch_program_node_parse::mark_new_authored_layout(&mut node);
     // Drain node-level `state` BEFORE the probe clone; hold the merge
     // and emit it only after the replace below succeeds (emit applies
     // immediately — emitting the merge first would leak an orphan

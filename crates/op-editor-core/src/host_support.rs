@@ -327,6 +327,25 @@ impl EditorState {
         }
         result
     }
+
+    /// Commit a curve-preserving boolean result with the sequential id policy.
+    pub fn replace_paths_with_svg(
+        &mut self,
+        source_ids: &[NodeId],
+        d: String,
+        bounds: (f64, f64, f64, f64),
+        next_id: &mut u64,
+    ) -> Option<NodeId> {
+        let mut allocator = crate::SequentialIdAllocator::for_document(&self.doc, *next_id).ok()?;
+        let result = self
+            .replace_paths_with_svg_with_allocator(source_ids, d, bounds, &mut allocator)
+            .ok()
+            .flatten();
+        if result.is_some() {
+            *next_id = allocator.next_counter();
+        }
+        result
+    }
 }
 
 #[cfg(test)]

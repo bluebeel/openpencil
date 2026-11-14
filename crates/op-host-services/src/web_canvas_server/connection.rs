@@ -382,12 +382,18 @@ fn dispatch_inner<S: Read + Write>(
             let credential_settings_before = (req.method == "POST"
                 && req.path == "/api/settings/credentials")
                 .then(|| guard.editor.editor_ui.agent_settings.clone());
-            let reply = match pending_push {
+            let mut reply = match pending_push {
                 // The pre-parsed push installs directly; the generic handler
                 // never sees this route's body twice.
                 Some(parsed) => document_push_reply(parsed, &mut guard),
                 None => handle_web_canvas_request(&req.method, &req.path, &req.body, &mut guard),
             };
+            if req.method == "GET" && req.path == "/api/mcp/server" {
+                if let Ok(mut body) = serde_json::from_str::<serde_json::Value>(&reply.body) {
+                    body["durableGroups"] = ctx.authority.managed_groups.metrics.snapshot();
+                    reply.body = body.to_string();
+                }
+            }
             if req.path == "/api/file/reload" && !guard.recovery.required() {
                 state.clear_poison();
             }
@@ -509,11 +515,25 @@ fn dispatch_inner<S: Read + Write>(
             return Ok(false);
         }
     };
-    let current_path = state
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .current_path
-        .clone();
+    // Eligible writes rendezvous before any document mutex wait. Otherwise
+    // each arriving writer would queue behind the previous whole-file save.
+    if let Some(response) =
+        super::managed_group_commit::dispatch_early(ctx, &req.body, mcp_profile, &_agent_admission)
+    {
+        let response = response?;
+        crate::mcp_serve::write_mcp_http_response_with_origin(
+            stream,
+            "200 OK",
+            &response,
+            cors_origin,
+        )?;
+        return Ok(false);
+    }
+    let current_path = {
+        let guard = state.lock().unwrap_or_else(|p| p.into_inner());
+        ctx.authority.refresh_route(&guard);
+        guard.current_path.clone()
+    };
     let document_key = current_path
         .as_ref()
         .map(|path| path.canonicalize().unwrap_or_else(|_| path.clone()))

@@ -149,11 +149,21 @@ impl EditorState {
         if !node_id.is_real() {
             return false;
         }
-        let Ok(serde_json::Value::Object(patch)) =
+        let Ok(serde_json::Value::Object(mut patch)) =
             serde_json::from_str::<serde_json::Value>(patch_json)
         else {
             return false;
         };
+        // Explicit authored layout owns ordinary child flow even when their
+        // old coordinates were saved. Persist that local override in the
+        // same canonical node so existing undo/redo and save/reopen retain it.
+        if !patch.contains_key("preserveGeometry")
+            && ["layout", "gap", "padding", "justifyContent", "alignItems"]
+                .iter()
+                .any(|key| patch.contains_key(*key))
+        {
+            patch.insert("preserveGeometry".into(), serde_json::Value::Bool(false));
+        }
         if !patch.contains_key("children") && !patch.contains_key("type") {
             let Some(current) = walkers::find_node_mut(self.active_children_mut(), node_id) else {
                 return false;

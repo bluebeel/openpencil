@@ -67,6 +67,12 @@ impl CommandEditCapture {
     }
 }
 impl EditorState {
+    /// Forecast the bounded affected structural payload before any owned
+    /// rollback/history clone. None keeps the caller's ordinary isolated path.
+    pub fn forecast_structural_command_edit(&self, command: &EditorCommand) -> Option<usize> {
+        target_plan::structural_bound(self, command)
+    }
+
     /// Capture before an exclusively owned host command. The caller guarantees
     /// synchronous maintenance changes only the original active page; known
     /// commands also capture their explicitly requested page. Audited metadata commands capture exact

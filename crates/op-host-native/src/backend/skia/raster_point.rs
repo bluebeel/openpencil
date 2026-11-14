@@ -7,6 +7,28 @@ use skia_safe::{
     RuntimeEffect, SamplingOptions,
 };
 
+#[path = "raster_round_rect.rs"]
+mod rounded_rect;
+
+pub(super) fn draw_round_rect(
+    canvas: &Canvas,
+    rect: skia_safe::Rect,
+    radius_x: f32,
+    radius_y: f32,
+    paint: &Paint,
+) {
+    let rrect = skia_safe::RRect::new_rect_xy(rect, radius_x, radius_y);
+    if !rounded_rect::draw(canvas, &rrect, paint) {
+        canvas.draw_round_rect(rect, radius_x, radius_y, paint);
+    }
+}
+
+pub(super) fn draw_rrect(canvas: &Canvas, rect: &skia_safe::RRect, paint: &Paint) {
+    if !rounded_rect::draw(canvas, rect, paint) {
+        canvas.draw_rrect(rect, paint);
+    }
+}
+
 pub(super) fn rect(canvas: &Canvas, rect: Rect, color: Color, stroke: Option<f32>) -> bool {
     if !jian_skia::raster_sampling::is_point_sampling() {
         return false;
