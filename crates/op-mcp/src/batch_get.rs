@@ -94,15 +94,15 @@ fn batch_get_result(
                 Err((code, msg)) => return ToolOutcome::Err(code, msg),
             }
         }
-        for id in &node_ids {
-            if seen.contains(id) {
-                continue;
-            }
-            if let Some(nid) = NodeId::new_opt(id) {
-                if let Some(node) = find_node(roots, &nid) {
-                    seen.insert(id.clone());
-                    nodes.push(node);
-                }
+        let requested = if seen.is_empty() {
+            super::requested_nodes::find(roots, &node_ids)
+        } else {
+            let pending: Vec<_> = node_ids.iter().filter(|id| !seen.contains(*id)).collect();
+            super::requested_nodes::find(roots, &pending)
+        };
+        for node in requested {
+            if seen.insert(node.id_str().to_owned()) {
+                nodes.push(node);
             }
         }
     }

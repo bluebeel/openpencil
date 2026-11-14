@@ -3,8 +3,7 @@
 use std::collections::BTreeMap;
 
 use jian_ops_schema::node::PenNode;
-use op_editor_core::walkers::find_node;
-use op_editor_core::{EditorState, NodeId};
+use op_editor_core::EditorState;
 use serde_json::Value;
 
 use super::{McpTool, ToolErrorCode, ToolOutcome};
@@ -67,10 +66,7 @@ fn read_nodes_result(
     };
 
     let selected: Vec<&PenNode> = match node_ids {
-        Some(ids) if !ids.is_empty() => ids
-            .iter()
-            .filter_map(|id| NodeId::new_opt(id).and_then(|nid| find_node(roots, &nid)))
-            .collect(),
+        Some(ids) if !ids.is_empty() => super::requested_nodes::find(roots, &ids),
         _ => roots.iter().collect(),
     };
     let nodes: Vec<Value> = selected

@@ -145,6 +145,7 @@ mod open_document_tests;
 pub mod page_tools;
 pub mod parser;
 pub mod read_nodes;
+mod requested_nodes;
 #[cfg(test)]
 mod read_nodes_tests;
 #[cfg(test)]
