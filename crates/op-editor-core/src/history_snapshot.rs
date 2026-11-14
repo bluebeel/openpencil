@@ -148,6 +148,14 @@ impl SharedDoc {
     pub fn root_children(&self) -> &[Arc<SharedNode>] {
         &self.root_children
     }
+    /// Immutable edge owner for weak-safe snapshot cache identities.
+    pub fn root_children_arc(&self) -> &Arc<Vec<Arc<SharedNode>>> {
+        &self.root_children
+    }
+    /// Immutable page-edge table; each entry independently owns its node edges.
+    pub fn page_children_arcs(&self) -> &Arc<Vec<Arc<Vec<Arc<SharedNode>>>>> {
+        &self.page_children
+    }
 
     /// Borrow snapshot metadata without materializing its shared node trees.
     pub fn document_metadata(&self) -> &PenDocument {

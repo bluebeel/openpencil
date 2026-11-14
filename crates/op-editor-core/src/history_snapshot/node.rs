@@ -15,6 +15,10 @@ impl SharedNode {
     pub fn children(&self) -> Option<&[Arc<Self>]> {
         self.children.as_deref().map(Vec::as_slice)
     }
+    /// Immutable child-edge owner, preserving absent versus present-empty.
+    pub fn children_arc(&self) -> Option<&Arc<Vec<Arc<Self>>>> {
+        self.children.as_ref()
+    }
     pub fn id_str(&self) -> &str {
         self.metadata.id_str()
     }

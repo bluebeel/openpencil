@@ -52,10 +52,11 @@ impl EditorState {
     /// Collaboration hosts pass their session-owned namespaced allocator.
     /// Validation failures remain `Ok(false)`; allocator exhaustion is typed
     /// so the host can roll back the surrounding local edit transaction.
-    pub fn apply_with_allocator(
+    pub(crate) fn apply_with_allocator_checkpoint(
         &mut self,
         cmd: EditorCommand,
         allocator: &mut dyn IdAllocator,
+        checkpoint: Option<&crate::EditorSnapshot>,
     ) -> Result<bool, IdAllocError> {
         let marks_document_dirty = command_marks_document_dirty(&cmd);
         let revision_before = self.revision;
@@ -773,7 +774,7 @@ impl EditorState {
                 replacements,
             } => self.cmd_replace_all_matching_properties(&page_id, &parent_ids, &replacements),
             EditorCommand::Batch { commands } => {
-                self.cmd_batch_with_allocator(commands, allocator)?
+                self.cmd_batch_with_checkpoint(commands, allocator, checkpoint)?
             }
             EditorCommand::MergeAppState { plan_idx, state } => {
                 self.merge_app_state(plan_idx, state)

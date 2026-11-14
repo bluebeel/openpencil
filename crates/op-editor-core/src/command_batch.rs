@@ -149,10 +149,11 @@ impl EditorState {
     /// failure. On success the whole batch lands as a SINGLE undo step
     /// (intermediate history entries pushed by sub-commands are
     /// collapsed into one pre-batch snapshot).
-    pub(crate) fn cmd_batch_with_allocator(
+    pub(crate) fn cmd_batch_with_checkpoint(
         &mut self,
         commands: Vec<EditorCommand>,
         allocator: &mut dyn IdAllocator,
+        checkpoint: Option<&crate::EditorSnapshot>,
     ) -> Result<bool, IdAllocError> {
         if commands.is_empty() {
             return Ok(false);
@@ -165,7 +166,9 @@ impl EditorState {
             return Ok(false);
         }
         let marks_document_dirty = commands.iter().any(command_marks_document_dirty);
-        let pre = self.snapshot_for_history();
+        let pre = checkpoint
+            .cloned()
+            .unwrap_or_else(|| self.snapshot_for_history());
         // Park both stacks, not just their lengths: intermediate pushes used
         // to evict old entries at the cap, which truncate could not recover.
         // An empty scratch history also isolates sub-command snapshot repairs.

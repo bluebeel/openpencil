@@ -1,4 +1,6 @@
-use crate::{test_support::sample, DocumentIdAllocator, EditorCommand, IdAllocError, NodeId};
+use crate::{
+    test_support::sample, DocumentIdAllocator, EditorCommand, IdAllocError, NodeId, PenNodeExt,
+};
 
 fn nudge(dx: i32, dy: i32) -> EditorCommand {
     EditorCommand::NudgeSelected { dx, dy }
@@ -147,4 +149,54 @@ fn allocator_failure_does_not_erase_redo_or_add_history() {
     assert!(state.history.past.is_empty());
     assert_eq!(state.history.future, future);
     assert!(!state.undo_capture_suspended);
+}
+
+#[test]
+fn nested_batch_checkpoint_tracks_unversioned_public_mutation() {
+    let mut state = sample();
+    state.with_history_group(|state| {
+        // Public canonical writes cannot be inferred from a revision counter.
+        state.doc.children[0].base_mut().x = Some(-0.0);
+        let current = serde_json::to_vec(&state.doc).unwrap();
+        assert!(!state.apply_undoable(EditorCommand::Batch {
+            commands: vec![
+                insert(),
+                EditorCommand::DeleteNode {
+                    node_id: NodeId::new("missing"),
+                    page_id: None
+                }
+            ]
+        }));
+        assert_eq!(serde_json::to_vec(&state.doc).unwrap(), current);
+    });
+}
+
+#[test]
+fn failed_nested_batch_in_maintenance_preserves_current_command_prefix() {
+    let mut state = sample();
+    let before = serde_json::to_vec(&state.doc).unwrap();
+    assert!(state.apply_undoable_then(
+        EditorCommand::Batch {
+            commands: vec![insert()]
+        },
+        |state| {
+            let current = serde_json::to_vec(&state.doc).unwrap();
+            assert!(!state.apply_undoable(EditorCommand::Batch {
+                commands: vec![
+                    insert(),
+                    EditorCommand::DeleteNode {
+                        node_id: NodeId::new("missing"),
+                        page_id: None
+                    }
+                ]
+            }));
+            assert_eq!(serde_json::to_vec(&state.doc).unwrap(), current);
+        }
+    ));
+    let after = serde_json::to_vec(&state.doc).unwrap();
+    assert_eq!(state.history.past.len(), 1);
+    assert!(state.undo());
+    assert_eq!(serde_json::to_vec(&state.doc).unwrap(), before);
+    assert!(state.redo());
+    assert_eq!(serde_json::to_vec(&state.doc).unwrap(), after);
 }

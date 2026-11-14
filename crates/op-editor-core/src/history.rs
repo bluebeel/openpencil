@@ -118,10 +118,21 @@ impl EditorState {
         anchor: Option<&EditorSnapshot>,
         operation: impl FnOnce(&mut Self) -> T,
     ) -> T {
+        self.with_history_checkpoint(anchor, |state, _| operation(state))
+    }
+
+    /// The callback receives a checkpoint captured immediately before it runs.
+    /// Only a direct command may forward it to its own rollback path; a nested
+    /// group receives None because an earlier callback may already have edited.
+    pub(crate) fn with_history_checkpoint<T>(
+        &mut self,
+        anchor: Option<&EditorSnapshot>,
+        operation: impl FnOnce(&mut Self, Option<&EditorSnapshot>) -> T,
+    ) -> T {
         // A containing operation already owns the checkpoint. This also keeps
         // nested helper groups from repeatedly capturing the same document.
         if self.undo_capture_suspended {
-            return operation(self);
+            return operation(self, None);
         }
         let before = match anchor {
             Some(anchor) => self.snapshot_for_history_with_anchor(Some(anchor)),
@@ -132,7 +143,9 @@ impl EditorState {
         // state. Give them a sharing anchor without exposing the real stacks.
         self.history.past.push_back(before.clone());
         self.undo_capture_suspended = true;
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| operation(self)));
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            operation(self, Some(&before))
+        }));
         self.undo_capture_suspended = false;
         self.history = history;
         if self.revision != before.revision {

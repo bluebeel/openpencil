@@ -36,6 +36,24 @@ impl EditorState {
     /// Returns `false` on validation or id exhaustion. Collaboration hosts
     /// must call [`Self::apply_with_allocator`] with their session allocator.
     pub fn apply(&mut self, command: EditorCommand) -> bool {
+        self.apply_with_checkpoint(command, None)
+    }
+
+    /// Apply with the caller's document-wide ID policy. Validation returns
+    /// Ok(false); exhausted allocation retains its typed error.
+    pub fn apply_with_allocator(
+        &mut self,
+        command: EditorCommand,
+        allocator: &mut dyn crate::IdAllocator,
+    ) -> Result<bool, crate::IdAllocError> {
+        self.apply_with_allocator_checkpoint(command, allocator, None)
+    }
+
+    pub(crate) fn apply_with_checkpoint(
+        &mut self,
+        command: EditorCommand,
+        checkpoint: Option<&crate::EditorSnapshot>,
+    ) -> bool {
         let mut allocator = if allocation_policy::requires_id_seed(&command) {
             let Ok(allocator) = DocumentIdAllocator::sequential_for_document(&self.doc) else {
                 return false;
@@ -48,10 +66,14 @@ impl EditorState {
             command,
             EditorCommand::InsertNode { .. } | EditorCommand::BatchInsert { .. }
         ) {
-            self.apply_with_allocator(command, &mut LeafHighWaterAllocator(allocator))
-                .unwrap_or(false)
+            self.apply_with_allocator_checkpoint(
+                command,
+                &mut LeafHighWaterAllocator(allocator),
+                checkpoint,
+            )
+            .unwrap_or(false)
         } else {
-            self.apply_with_allocator(command, &mut allocator)
+            self.apply_with_allocator_checkpoint(command, &mut allocator, checkpoint)
                 .unwrap_or(false)
         }
     }

@@ -75,6 +75,10 @@ impl SharedComponents {
     pub fn components(&self) -> &[Arc<SharedComponent>] {
         &self.components
     }
+    /// Immutable component-edge owner for weak-safe resident caches.
+    pub fn components_arc(&self) -> &Arc<Vec<Arc<SharedComponent>>> {
+        &self.components
+    }
     pub fn edge_storage(&self) -> (usize, usize) {
         super::edges::storage(&self.components)
     }

@@ -64,17 +64,17 @@ impl EditorState {
         anchor: Option<&crate::EditorSnapshot>,
     ) -> bool {
         let records_undo = command_marks_document_dirty(&command);
-        let operation = |state: &mut Self| {
-            let applied = state.apply(command);
+        let operation = |state: &mut Self, checkpoint: Option<&crate::EditorSnapshot>| {
+            let applied = state.apply_with_checkpoint(command, checkpoint);
             if applied {
                 maintain(state);
             }
             applied
         };
         if records_undo {
-            self.with_history_group_anchored(anchor, operation)
+            self.with_history_checkpoint(anchor, operation)
         } else {
-            operation(self)
+            operation(self, None)
         }
     }
 
@@ -86,7 +86,9 @@ impl EditorState {
         allocator: &mut dyn IdAllocator,
     ) -> Result<bool, IdAllocError> {
         if command_marks_document_dirty(&command) {
-            self.with_history_group(|state| state.apply_with_allocator(command, allocator))
+            self.with_history_checkpoint(None, |state, checkpoint| {
+                state.apply_with_allocator_checkpoint(command, allocator, checkpoint)
+            })
         } else {
             self.apply_with_allocator(command, allocator)
         }
@@ -96,3 +98,6 @@ impl EditorState {
 #[cfg(test)]
 #[path = "command_undo_tests.rs"]
 mod tests;
+
+#[path = "command_simulation.rs"]
+mod simulation;
