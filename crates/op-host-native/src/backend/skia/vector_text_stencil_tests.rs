@@ -214,3 +214,42 @@ fn stencil_fractional_rectangle_matches_independent_quantized_half_open_edges() 
         }
     }
 }
+
+#[test]
+fn stencil_quadratic_hulls_choose_short_local_diagonals_and_keep_degenerate_split() {
+    let curve = |start: Point, control: Point, end: Point| {
+        let mut path = PathBuilder::new();
+        path.move_to(start);
+        path.quad_to(control, end);
+        path.close();
+        triangles(&path.detach())
+            .unwrap()
+            .into_iter()
+            .filter(|t| !t.interior)
+            .map(|t| t.values)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        curve((0., 0.).into(), (0., 6.).into(), (12., 0.).into()),
+        vec![
+            [CUBIC[0], CUBIC[1], CUBIC[2]],
+            [CUBIC[0], CUBIC[2], CUBIC[3]]
+        ]
+    );
+    assert_eq!(
+        curve((12., 0.).into(), (0., 6.).into(), (0., 0.).into()),
+        vec![
+            [CUBIC[0], CUBIC[1], CUBIC[3]],
+            [CUBIC[1], CUBIC[2], CUBIC[3]]
+        ]
+    );
+    for control in [(6., 6.), (5., 0.)] {
+        assert_eq!(
+            curve((0., 0.).into(), control.into(), (12., 0.).into()),
+            vec![
+                [CUBIC[0], CUBIC[1], CUBIC[3]],
+                [CUBIC[1], CUBIC[2], CUBIC[3]]
+            ]
+        );
+    }
+}

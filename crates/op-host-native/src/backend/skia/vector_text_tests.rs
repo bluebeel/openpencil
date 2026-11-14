@@ -122,67 +122,29 @@ fn vector_text_samples_in_device_space_under_zoom_rotation_and_opacity() {
         } else {
             assert!(draw_path(canvas, &path, &paint));
         }
-        // An unbounded device mask independently checks the bounded mask's
-        // inverse-CTM shader alignment, using the rasterizer's own edge rules.
-        let info = ImageInfo::new(
-            (48 * grid, 48 * grid),
-            ColorType::RGBAF16,
-            AlphaType::Premul,
-            None,
-        );
-        let mut reference = skia_safe::surfaces::raster(&info, None, None).unwrap();
-        reference.canvas().clear(Color::TRANSPARENT);
-        let mut coverage = Paint::default();
-        coverage.set_color4f(Color4f::new(1.0, 1.0, 1.0, 0.25), None);
-        coverage.set_blend_mode(BlendMode::Plus);
-        reference.canvas().scale((grid as f32, grid as f32));
-        for (sx, sy) in [
-            (0.375, 0.125),
-            (0.875, 0.375),
-            (0.125, 0.625),
-            (0.625, 0.875),
-        ] {
-            let saved = reference.canvas().save();
-            reference
-                .canvas()
-                .translate(((0.5 - sx) / grid as f32, (0.5 - sy) / grid as f32));
-            reference.canvas().draw_path(&device, &coverage);
-            reference.canvas().restore_to_count(saved);
-        }
-        let sampling = if grid == 2 {
-            SamplingOptions::new(skia_safe::FilterMode::Linear, skia_safe::MipmapMode::None)
-        } else {
-            SamplingOptions::default()
-        };
-        let shader = reference
-            .image_snapshot()
-            .to_shader(
-                None,
-                sampling,
-                &Matrix::scale((1.0 / grid as f32, 1.0 / grid as f32)),
-            )
-            .unwrap();
-        let mut expected = skia_safe::surfaces::raster_n32_premul((48, 48)).unwrap();
-        expected.canvas().clear(Color::WHITE);
-        expected.canvas().clip_rect(
-            Rect::from_xywh(0.0, 0.0, 37.0, 40.0),
-            skia_safe::ClipOp::Intersect,
-            false,
-        );
-        expected
-            .canvas()
-            .clip_shader(shader, skia_safe::ClipOp::Intersect);
-        expected.canvas().draw_paint(&paint);
-        let expected = expected.image_snapshot();
-        let expected = expected.peek_pixels().unwrap();
+        let corners: Vec<_> = device
+            .iter()
+            .filter_map(|record| match record.verb() {
+                skia_safe::PathVerb::Move => Some(record.points()[0]),
+                skia_safe::PathVerb::Line => Some(record.points()[1]),
+                _ => None,
+            })
+            .collect();
+        let corners: [Point; 4] = corners.try_into().unwrap();
         let image = surface.image_snapshot();
         let pixels = image.peek_pixels().unwrap();
         for y in 0..48 {
             for x in 0..48 {
-                let expected = expected.get_color((x, y));
+                let count = if x < 37 && y < 40 {
+                    quad_sample_count(corners, x, y, grid)
+                } else {
+                    0
+                };
+                let coverage = count as f32 / (4 * grid * grid) as f32;
+                let expected = ((1.0 - coverage * 0.5) * 255.0).round() as u8;
                 let color = pixels.get_color((x, y));
                 assert!(
-                    (i16::from(color.r()) - i16::from(expected.r())).abs() <= 1,
+                    (i16::from(color.r()) - i16::from(expected)).abs() <= 1,
                     "device coverage at {x},{y}, grid{grid}: {color:?} != {expected:?}"
                 );
                 assert_eq!(color.b(), 255, "original paint applies once");
@@ -275,5 +237,101 @@ fn vector_text_curve_coverage_matches_independent_two_times_point_rasters() {
                 "coverage at{x},{y}: {alpha} != {expected}"
             );
         }
+    }
+}
+
+// Independent convex-quad top-left reference in positive device Y. The paint
+// is checked separately; no production stencil/row-span code is called here.
+fn quad_sample_count(corners: [Point; 4], x: i32, y: i32, grid: i32) -> u32 {
+    let mut count = 0;
+    for (jx, jy) in [
+        (0.625, 0.875),
+        (0.375, 0.125),
+        (0.125, 0.625),
+        (0.875, 0.375),
+    ] {
+        let mut q = corners.map(|p| {
+            [
+                ((grid as f32 * p.x - jx) * 16.0).round_ties_even() as i64,
+                ((grid as f32 * p.y - jy) * 16.0).round_ties_even() as i64,
+            ]
+        });
+        let cross = |a: [i64; 2], b: [i64; 2], p: [i64; 2]| {
+            (b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0])
+        };
+        let area = cross(q[0], q[1], q[2]);
+        if area == 0 {
+            continue;
+        }
+        if area < 0 {
+            q.reverse();
+        }
+        for dy in 0..grid {
+            for dx in 0..grid {
+                let sample = [
+                    i64::from((grid * x + dx) * 16),
+                    i64::from((grid * y + dy) * 16),
+                ];
+                let inside = (0..4).all(|i| {
+                    let a = q[i];
+                    let b = q[(i + 1) % 4];
+                    let edge = cross(a, b, sample);
+                    edge > 0 || (edge == 0 && (b[1] < a[1] || (b[1] == a[1] && b[0] > a[0])))
+                });
+                count += u32::from(inside);
+            }
+        }
+    }
+    count
+}
+
+#[test]
+fn vector_text_line_only_outlines_keep_coverage_when_a_disjoint_curve_is_added() {
+    let mut m = PathBuilder::new();
+    m.move_to((4.25, 40.0));
+    for p in [
+        (4.25, 9.25),
+        (8.5, 9.25),
+        (18.75, 29.75),
+        (29.0, 9.25),
+        (33.25, 9.25),
+        (33.25, 40.0),
+        (29.0, 40.0),
+        (29.0, 18.5),
+        (20.5, 36.25),
+        (17.0, 36.25),
+        (8.5, 18.5),
+        (8.5, 40.0),
+    ] {
+        m.line_to(p);
+    }
+    m.close();
+    for flat in [
+        Path::rect(Rect::from_xywh(4.25, 11.03125, 2.3125, 28.25), None),
+        m.detach(),
+    ] {
+        let mut mixed = PathBuilder::new();
+        mixed.add_path(&flat, None);
+        mixed.move_to((1024.0, 10.0));
+        mixed.quad_to((1030.0, -5.0), (1040.0, 10.0));
+        mixed.close();
+        let render = |path: &Path| {
+            let mut surface = skia_safe::surfaces::raster_n32_premul((64, 64)).unwrap();
+            let mut paint = Paint::default();
+            paint.set_color(Color::WHITE);
+            assert!(draw_path(surface.canvas(), path, &paint));
+            surface
+                .image_snapshot()
+                .peek_pixels()
+                .unwrap()
+                .bytes()
+                .unwrap()
+                .to_vec()
+        };
+        assert_eq!(
+            render(&flat),
+            render(&mixed.detach()),
+            "unrelated curve changes line-only coverage"
+        );
     }
 }

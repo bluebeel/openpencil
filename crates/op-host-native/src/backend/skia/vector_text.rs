@@ -106,7 +106,7 @@ fn build_outline(
 }
 
 /// Decorations use the same fixed-point top-left rule as glyph triangles.
-/// Keep this explicit: ordinary line-only glyph paths retain their fallback.
+/// The same bounded fill coverage is shared with ordinary glyph outlines.
 pub(super) fn draw_decoration_rect(canvas: &Canvas, rect: Rect, paint: &Paint) -> bool {
     if paint.style() != skia_safe::PaintStyle::Fill {
         return false;
@@ -153,16 +153,21 @@ fn draw_path(canvas: &Canvas, path: &Path, paint: &Paint) -> bool {
     } else {
         2
     };
-    // Line-only geometry keeps its established scanline edge behavior. The
-    // implicit path specifically replaces subdivided quadratic glyph curves.
+    // Whole-run context must not select a different edge rule for a flat
+    // glyph. The same bounded fan rasterizer handles line-only contours.
     if paint.style() == skia_safe::PaintStyle::Fill
-        && path
+        && (path
             .iter()
             .any(|record| record.verb() == skia_safe::PathVerb::Quad)
+            || path.iter().all(|record| {
+                !matches!(
+                    record.verb(),
+                    skia_safe::PathVerb::Cubic | skia_safe::PathVerb::Conic
+                )
+            }))
+        && draw_coverage(canvas, path, paint, point, grid)
     {
-        if draw_coverage(canvas, path, paint, point, grid) {
-            return true;
-        }
+        return true;
     }
     if point {
         let mut point_paint = paint.clone();

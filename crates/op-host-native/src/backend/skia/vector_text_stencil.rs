@@ -95,18 +95,50 @@ fn triangles(path: &Path) -> Option<Vec<Triangle>> {
                 append(&mut result, [first?, previous?, p[2]], [INTERIOR; 3], true)?;
                 let a = elevated(p[0], p[1]);
                 let b = elevated(p[2], p[1]);
-                append(
-                    &mut result,
-                    [p[0], a, p[2]],
-                    [CUBIC[0], CUBIC[1], CUBIC[3]],
-                    false,
-                )?;
-                append(
-                    &mut result,
-                    [a, b, p[2]],
-                    [CUBIC[1], CUBIC[2], CUBIC[3]],
-                    false,
-                )?;
+                let length2 = |left: Point, right: Point| {
+                    let dx = f64::from(left.x) - f64::from(right.x);
+                    let dy = f64::from(left.y) - f64::from(right.y);
+                    dx * dx + dy * dy
+                };
+                let chord = (
+                    f64::from(p[2].x) - f64::from(p[0].x),
+                    f64::from(p[2].y) - f64::from(p[0].y),
+                );
+                let control = (
+                    f64::from(p[1].x) - f64::from(p[0].x),
+                    f64::from(p[1].y) - f64::from(p[0].y),
+                );
+                // Use the shorter local control-hull diagonal, independent of
+                // render camera. Preserve the old split for collinear curves
+                // and exact length ties; their numerical contract is stable.
+                let nondegenerate = chord.0 * control.1 - chord.1 * control.0 != 0.0;
+                if nondegenerate && length2(p[0], b) < length2(a, p[2]) {
+                    append(
+                        &mut result,
+                        [p[0], a, b],
+                        [CUBIC[0], CUBIC[1], CUBIC[2]],
+                        false,
+                    )?;
+                    append(
+                        &mut result,
+                        [p[0], b, p[2]],
+                        [CUBIC[0], CUBIC[2], CUBIC[3]],
+                        false,
+                    )?;
+                } else {
+                    append(
+                        &mut result,
+                        [p[0], a, p[2]],
+                        [CUBIC[0], CUBIC[1], CUBIC[3]],
+                        false,
+                    )?;
+                    append(
+                        &mut result,
+                        [a, b, p[2]],
+                        [CUBIC[1], CUBIC[2], CUBIC[3]],
+                        false,
+                    )?;
+                }
                 previous = Some(p[2]);
             }
             PathVerb::Close => {
