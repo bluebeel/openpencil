@@ -5,12 +5,18 @@ service. External model/agent processes are excluded; the load generator is
 included in the aggregate memory measurement. Each client sends sequential
 MCP batches, and a bounded request window provides backpressure.
 
-Coverage is [explicitly incomplete](operation-coverage.md): existing concurrency
-runs use generated documents and a 32-request window. The complete real-file
-operation matrix is in progress; selected-frame memory results do not establish
-a full OpenBridge/MUI memory bound.
+Coverage is [explicitly incomplete](operation-coverage.md): earlier context gates
+use generated documents; new full real-file cases add partial results and failures.
+Current multi-client cases use at most 32 active requests. Selected-frame memory
+results do not establish a full OpenBridge/MUI memory bound.
 
-The latest [batched checkpoint](engine-checkpoint-11.md) combines copy and
+The latest [batched checkpoint](engine-checkpoint-12.md) cuts the measured large
+copy-program CPU by 86.7%, improves text/image sampling fidelity, adds shared
+heavy-work admission and configurable headless fonts. It also records slower
+context/undo/Park samples and full-file resource/precision failures. The
+[real-document harness](../../scripts/bench/real-document-operations.py) explicitly
+records incomplete 1/10/100/1,000-client coverage and diagnostic allowances.
+The [previous batched checkpoint](engine-checkpoint-11.md) combines copy and
 component-inheritance fixes, cheaper exact history capture, ID validation and
 ligature/spacing parity before one build. MUI Native SSIM rises to 0.999695;
 copy-program CPU falls about 10% and single-file edit CPU about 15% in matched

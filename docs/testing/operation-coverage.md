@@ -39,6 +39,43 @@ The existing reports do not prove all operations at all agent counts on the
 complete real files. The 1 GB runtime samples do not establish a universal memory
 bound. Full OpenBridge conversion already contradicts such a broad claim.
 
+## Checkpoint-12 real-file outcomes
+
+The new [real-document harness](../../scripts/bench/real-document-operations.py)
+and [27-family coverage manifest](../../scripts/bench/real-document-operations.json)
+ran 11 fresh cases and recorded three startup-prerequisite skips. All workloads
+use at most 32 active requests; 100/1,000-active stress is still unmeasured.
+
+| Full document / scope | 1 client | 10 clients | 100 clients | 1,000 clients |
+| --- | --- | --- | --- | --- |
+| MUI, strict aggregate 1 GB, live + final save | 20 mutations; numeric-bit mismatch | 102 mutations; aggregate limit during undo/redo | 931 mutations; aggregate limit during undo/redo | 1,000 moves; other edit families deferred; numeric-bit mismatch |
+| Bridge, strict aggregate 1 GB | Startup limit | Not run: startup prerequisite failed | Not run: startup prerequisite failed | Not run: startup prerequisite failed |
+| Bridge, 5 GB read/search/UI diagnostic | Pass for subset | Pass for subset | Pass for subset | Pass for subset |
+
+MUI's completed 1/1,000-client cases use 2.20/41.80 service CPU seconds and peak
+889/712 MB service RSS (937/803 MB aggregate). Different operation participation
+makes these unsuitable as an equal-work scaling comparison. The 10/100-client
+stops observe service processes at 964/982 MB while aggregate RSS exceeds 1 GB;
+these do not prove service-only violations or completed 1 GB passes.
+
+Bridge read/search/UI diagnostics use 3.67/3.16/3.39/4.93 service CPU seconds and
+2,637/2,733/2,731/2,638 MB peak service RSS across the four counts. They issue no
+document mutation or save. The diagnostic allowance is not a 1 GB result.
+
+Separate MUI save-after-each-write cases run only 1/10 clients with a 16-mutation
+budget. One client stops during redo; ten clients save 16 mutations but fail
+strict numeric comparison. Three stopped-run commands remain unconfirmed and
+were never replayed. All three completed MUI outputs retain all 56,244 IDs and
+intended edits, but 1,852 unrelated f64 values drift one ULP, with unchanged f32
+bits, plus the requested active-page preference. No epsilon or blanket metadata
+exclusion converted failures to passes. Object map order is unverified because
+the semantic fingerprint sorts keys.
+
+The live catalog has 179 tools. Availability is distinct from execution; every
+unexercised family, resource/budget deferral and missing transport remains in the
+coverage manifest. Full per-phase CPU, memory, latency, participants and intent /
+acknowledgement journals remain in private `real-document-matrix-12/` reports.
+
 ## Required real-file matrix
 
 Use complete imported documents, immutable resource identities and actual
@@ -69,5 +106,5 @@ Operation families requiring explicit coverage include drawing/transforms,
 selection/hit testing/snapping, layout/reflow, vector editing/booleans,
 compositing, typography, component/variable dependencies, queries, pan/zoom and
 redraw, image/SVG/raster/PDF interchange, persistence/recovery and collaboration.
-The new real-document harness and tool inventory are in progress. Operations
+The new real-document harness and tool inventory preserve partial and failed coverage explicitly. Operations
 without a working engine/MCP surface still require implementation.
