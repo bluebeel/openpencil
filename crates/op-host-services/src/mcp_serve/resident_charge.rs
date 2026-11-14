@@ -7,7 +7,7 @@
 use std::{collections::HashSet, io::Write, sync::Arc};
 
 use jian_ops_schema::node::PenNode;
-use op_editor_core::{EditorState, PenNodeExt};
+use op_editor_core::{EditorState, PenDocument, PenNodeExt, SharedComponent, SharedNode};
 use serde::Serialize;
 
 #[path = "charge_cache.rs"]
@@ -18,8 +18,9 @@ use charge_cache::{RootCache, RootCharge};
 
 #[derive(Default)]
 pub(super) struct ChargeCache {
-    nodes: RootCache<PenNode>,
-    components: RootCache<op_editor_core::components::Component>,
+    nodes: RootCache<SharedNode>,
+    documents: RootCache<PenDocument>,
+    components: RootCache<SharedComponent>,
 }
 
 const SERIALIZED_MULTIPLIER: usize = 4;
@@ -56,6 +57,7 @@ struct Ledger {
     nodes: usize,
     limit: usize,
     cache_bytes: usize,
+    shared_storage: usize,
 }
 
 impl Ledger {
@@ -96,6 +98,7 @@ impl Ledger {
     fn total(&self) -> usize {
         RUNTIME_ALLOWANCE
             .saturating_add(self.cache_bytes)
+            .saturating_add(self.shared_storage)
             .saturating_add(self.serialized.bytes.saturating_mul(SERIALIZED_MULTIPLIER))
             .saturating_add(
                 self.nodes
@@ -107,6 +110,7 @@ impl Ledger {
     fn add_root(&mut self, charge: RootCharge) -> Result<(), ChargeError> {
         self.serialized.bytes = self.serialized.bytes.saturating_add(charge.serialized);
         self.nodes = self.nodes.saturating_add(charge.nodes);
+        self.shared_storage = self.shared_storage.saturating_add(charge.shared_bytes);
         if self.total() > self.limit {
             Err(ChargeError::OverLimit)
         } else {
@@ -119,7 +123,7 @@ pub(super) fn resident_charge(state: &EditorState, limit: usize) -> Result<usize
     resident_charge_cached(state, limit, &mut ChargeCache::default())
 }
 
-fn ledger(limit: usize) -> Ledger {
+fn new_ledger(limit: usize) -> Ledger {
     Ledger {
         serialized: Counter {
             bytes: 0,
@@ -129,16 +133,49 @@ fn ledger(limit: usize) -> Ledger {
         nodes: 0,
         limit,
         cache_bytes: 0,
+        shared_storage: 0,
     }
 }
 
-fn measure_root(root: &PenNode, limit: usize) -> Result<RootCharge, ChargeError> {
-    let mut ledger = ledger(limit);
-    ledger.root(root)?;
+fn measure_shared(node: &SharedNode, limit: usize) -> Result<RootCharge, ChargeError> {
+    let mut ledger = new_ledger(limit);
+    ledger.serialize(node.metadata())?;
     Ok(RootCharge {
         serialized: ledger.serialized.bytes,
-        nodes: ledger.nodes,
+        nodes: 0,
+        shared_bytes: node.storage_bytes(),
     })
+}
+fn charge_shared(
+    root: &Arc<SharedNode>,
+    ledger: &mut Ledger,
+    cache: &mut RootCache<SharedNode>,
+    visited: &mut HashSet<usize>,
+    edges: &mut HashSet<usize>,
+) -> Result<(), ChargeError> {
+    if !visited.insert(Arc::as_ptr(root) as usize) {
+        return Ok(());
+    }
+    let charge = match cache.get(root) {
+        Some(charge) => charge,
+        None => {
+            let charge = measure_shared(root, ledger.limit)?;
+            cache.insert(root, charge);
+            charge
+        }
+    };
+    ledger.add_root(charge)?;
+    if let Some((identity, bytes)) = root.child_edge_storage() {
+        if edges.insert(identity) {
+            ledger.shared_storage = ledger.shared_storage.saturating_add(bytes);
+        }
+    }
+    if let Some(children) = root.children() {
+        for child in children {
+            charge_shared(child, ledger, cache, visited, edges)?
+        }
+    }
+    Ok(())
 }
 
 pub(super) fn resident_charge_cached(
@@ -148,7 +185,8 @@ pub(super) fn resident_charge_cached(
 ) -> Result<usize, ChargeError> {
     cache.nodes.prune();
     cache.components.prune();
-    let mut ledger = ledger(limit);
+    cache.documents.prune();
+    let mut ledger = new_ledger(limit);
     ledger.serialize(&state.doc)?;
     ledger.node_storage(&state.doc.children, state.doc.children.capacity())?;
     if let Some(pages) = &state.doc.pages {
@@ -163,48 +201,91 @@ pub(super) fn resident_charge_cached(
     }
     let mut nodes = HashSet::new();
     let mut components = HashSet::new();
+    let mut documents = HashSet::new();
+    let mut backing = HashSet::new();
+    let mut edges = HashSet::new();
     for snapshot in state.history.past.iter().chain(state.history.future.iter()) {
-        ledger.serialize(snapshot.doc.document_metadata())?;
+        ledger.shared_storage = ledger
+            .shared_storage
+            .saturating_add(std::mem::size_of_val(snapshot));
+        for (identity, bytes) in snapshot
+            .doc
+            .edge_storage()
+            .chain(std::iter::once(snapshot.components.edge_storage()))
+        {
+            if edges.insert(identity) {
+                ledger.shared_storage = ledger.shared_storage.saturating_add(bytes);
+            }
+        }
+        let metadata = snapshot.doc.metadata_arc();
+        if documents.insert(Arc::as_ptr(metadata) as usize) {
+            let charge = match cache.documents.get(metadata) {
+                Some(charge) => charge,
+                None => {
+                    let mut count = new_ledger(ledger.limit);
+                    count.serialize(metadata.as_ref())?;
+                    let bytes = snapshot.doc.metadata_storage_bytes();
+                    let charge = RootCharge {
+                        serialized: count.serialized.bytes,
+                        nodes: 0,
+                        shared_bytes: bytes,
+                    };
+                    cache.documents.insert(metadata, charge);
+                    charge
+                }
+            };
+            ledger.add_root(charge)?;
+        }
         for root in snapshot
             .doc
             .root_children()
             .iter()
             .chain((0..).map_while(|i| snapshot.doc.page_children(i)).flatten())
         {
-            if nodes.insert(Arc::as_ptr(root) as usize) {
-                let charge = match cache.nodes.get(root) {
-                    Some(charge) => charge,
-                    None => {
-                        let charge = measure_root(root, limit)?;
-                        cache.nodes.insert(root, charge);
-                        charge
-                    }
-                };
-                ledger.add_root(charge)?;
-            }
+            charge_shared(root, &mut ledger, &mut cache.nodes, &mut nodes, &mut edges)?;
+        }
+        if backing.insert(snapshot.components.backing_identity()) {
+            ledger.shared_storage = ledger
+                .shared_storage
+                .saturating_add(snapshot.components.backing_storage_bytes());
         }
         for component in snapshot.components.components() {
             if components.insert(Arc::as_ptr(component) as usize) {
                 let charge = match cache.components.get(component) {
                     Some(charge) => charge,
                     None => {
-                        let charge = measure_root(&component.root, limit)?;
+                        let mut count = new_ledger(ledger.limit);
+                        count.serialize(&(component.id.as_str(), component.name.as_str()))?;
+                        let charge = RootCharge {
+                            serialized: count.serialized.bytes,
+                            nodes: 0,
+                            shared_bytes: component.storage_bytes(),
+                        };
                         cache.components.insert(component, charge);
                         charge
                     }
                 };
                 ledger.add_root(charge)?;
             }
+            charge_shared(
+                &component.root,
+                &mut ledger,
+                &mut cache.nodes,
+                &mut nodes,
+                &mut edges,
+            )?;
         }
     }
     // A background save can hold roots no longer present in history. The
     // cache must not keep their weak slots after dropping the final owner.
     cache.nodes.retain_visited(&nodes);
     cache.components.retain_visited(&components);
+    cache.documents.retain_visited(&documents);
     ledger.cache_bytes = cache
         .nodes
         .retained_bytes()
-        .saturating_add(cache.components.retained_bytes());
+        .saturating_add(cache.components.retained_bytes())
+        .saturating_add(cache.documents.retained_bytes());
     let charge = ledger.total();
     if charge > limit {
         Err(ChargeError::OverLimit)
@@ -260,3 +341,7 @@ mod tests {
         assert_eq!(cache.nodes.retained_bytes(), 0);
     }
 }
+
+#[cfg(test)]
+#[path = "resident_charge_recursive_tests.rs"]
+mod recursive_tests;

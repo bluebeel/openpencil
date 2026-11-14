@@ -10,12 +10,13 @@ use std::{
     sync::{Arc, Weak},
 };
 
-const MAX_ENTRIES: usize = 1024;
+const MAX_ENTRIES: usize = 16_384;
 
 #[derive(Clone, Copy)]
 pub(super) struct RootCharge {
     pub serialized: usize,
     pub nodes: usize,
+    pub shared_bytes: usize,
 }
 
 struct Entry<T> {
@@ -100,6 +101,7 @@ mod tests {
             RootCharge {
                 serialized: 5000,
                 nodes: 1,
+                shared_bytes: 0,
             },
         );
         assert_eq!(cache.get(&root).unwrap().serialized, 5000);
@@ -120,6 +122,7 @@ mod tests {
                 RootCharge {
                     serialized: 1,
                     nodes: 1,
+                    shared_bytes: 0,
                 },
             );
         }
