@@ -7,7 +7,7 @@
 use skia_safe::{Matrix, Path, PathBuilder, PathVerb, Point};
 
 const MAX_DEVICE_ERROR: f32 = 1.0 / 64.0;
-const MAX_POINTS: usize = 256 * 1024;
+pub(super) const MAX_POINTS: usize = 256 * 1024;
 const MAX_DEPTH: u32 = 16;
 
 pub(super) fn flatten(path: &Path, matrix: &Matrix) -> Option<Path> {
@@ -40,9 +40,7 @@ fn flatten_with_limit(path: &Path, matrix: &Matrix, limit: usize) -> Option<Path
             PathVerb::Close => {
                 output.builder.close();
             }
-            // Rational conics keep the original scan converter. Font outlines
-            // normally contain polynomial quadratic or cubic curves.
-            PathVerb::Conic => return None,
+            PathVerb::Conic => output.conic([p[0], p[1], p[2]], record.conic_weight())?,
         }
     }
     Some(output.builder.detach())
@@ -85,6 +83,68 @@ impl Outline {
         let m = midpoint(a, b);
         self.quad([p[0], a, m], depth + 1)?;
         self.quad([m, b, p[2]], depth + 1)
+    }
+
+    fn conic(&mut self, p: [Point; 3], weight: f32) -> Option<()> {
+        if !weight.is_finite() || weight <= 0.0 {
+            return None;
+        }
+        let h = |point: Point, weight: f64| {
+            [
+                f64::from(point.x) * weight,
+                f64::from(point.y) * weight,
+                weight,
+            ]
+        };
+        self.rational([h(p[0], 1.0), h(p[1], f64::from(weight)), h(p[2], 1.0)], 0)
+    }
+
+    fn rational(&mut self, p: [[f64; 3]; 3], depth: u32) -> Option<()> {
+        let project = |p: [f64; 3]| (p[0] / p[2], p[1] / p[2]);
+        let [(x0, y0), (x1, y1), (x2, y2)] = p.map(project);
+        let device = |x: f64, y: f64| {
+            (
+                x * f64::from(self.x_axis.x) + y * f64::from(self.y_axis.x),
+                x * f64::from(self.x_axis.y) + y * f64::from(self.y_axis.y),
+            )
+        };
+        let (dx, dy) = device(x2 - x0, y2 - y0);
+        let (cx, cy) = device(x1 - x0, y1 - y0);
+        let length = dx * dx + dy * dy;
+        let t = if length > 0.0 {
+            ((cx * dx + cy * dy) / length).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        // Positive rational weights keep the complete curve inside the
+        // projected control triangle. Its distance to the chord segment is a
+        // conservative device-space bound, including collinear overshoot.
+        let error = (cx - t * dx).hypot(cy - t * dy);
+        if !error.is_finite() {
+            return None;
+        }
+        if error <= f64::from(MAX_DEVICE_ERROR) {
+            let end = Point::new(x2 as f32, y2 as f32);
+            if !end.x.is_finite() || !end.y.is_finite() {
+                return None;
+            }
+            return self.line(end);
+        }
+        if depth >= MAX_DEPTH {
+            return None;
+        }
+        let mid = |a: [f64; 3], b: [f64; 3]| {
+            [
+                (a[0] + b[0]) * 0.5,
+                (a[1] + b[1]) * 0.5,
+                (a[2] + b[2]) * 0.5,
+            ]
+        };
+        let a = mid(p[0], p[1]);
+        let b = mid(p[1], p[2]);
+        let center = mid(a, b);
+        self.rational([p[0], a, center], depth + 1)?;
+        self.rational([center, b, p[2]], depth + 1)
     }
 
     fn cubic(&mut self, p: [Point; 4], depth: u32) -> Option<()> {

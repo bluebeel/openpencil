@@ -29,6 +29,58 @@ pub(super) fn draw_rrect(canvas: &Canvas, rect: &skia_safe::RRect, paint: &Paint
     }
 }
 
+/// Point cameras must use one vector edge rule regardless of whether the
+/// source was a glyph, editable path, polygon or a gradient silhouette. Normal
+/// Native rendering and filtered/path-effect paints keep their existing draw.
+pub(super) fn draw_path(canvas: &Canvas, path: &skia_safe::Path, paint: &Paint) {
+    if jian_skia::raster_sampling::is_point_sampling()
+        && paint.mask_filter().is_none()
+        && paint.image_filter().is_none()
+        && paint.path_effect().is_none()
+        && super::vector_text::draw_path(canvas, path, paint)
+    {
+        return;
+    }
+    canvas.draw_path(path, paint);
+}
+
+pub(super) fn clip_path(canvas: &Canvas, path: &skia_safe::Path) {
+    if jian_skia::raster_sampling::is_point_sampling()
+        && super::vector_text::clip_path(canvas, path)
+    {
+        return;
+    }
+    canvas.clip_path(
+        path,
+        skia_safe::ClipOp::Intersect,
+        jian_skia::raster_sampling::geometry_antialias(),
+    );
+}
+
+pub(super) fn draw_line(
+    canvas: &Canvas,
+    from: op_editor_ui::Point2D,
+    to: op_editor_ui::Point2D,
+    paint: &Paint,
+) {
+    if jian_skia::raster_sampling::is_point_sampling() {
+        let mut path = skia_safe::PathBuilder::new();
+        path.move_to((from.x, from.y));
+        path.line_to((to.x, to.y));
+        draw_path(canvas, &path.detach(), paint);
+    } else {
+        canvas.draw_line((from.x, from.y), (to.x, to.y), paint);
+    }
+}
+
+pub(super) fn draw_oval(canvas: &Canvas, bounds: skia_safe::Rect, paint: &Paint) {
+    if jian_skia::raster_sampling::is_point_sampling() {
+        draw_path(canvas, &skia_safe::Path::oval(bounds, None), paint);
+    } else {
+        canvas.draw_oval(bounds, paint);
+    }
+}
+
 pub(super) fn rect(canvas: &Canvas, rect: Rect, color: Color, stroke: Option<f32>) -> bool {
     if !jian_skia::raster_sampling::is_point_sampling() {
         return false;
@@ -144,7 +196,7 @@ pub(super) fn mesh(
     paint.set_shader(shader);
     paint.set_alpha_f(opacity.clamp(0.0, 1.0));
     jian_skia::raster_sampling::configure_paint(&mut paint);
-    canvas.draw_round_rect(to_sk_rect(rect), radius, radius, &paint);
+    draw_round_rect(canvas, to_sk_rect(rect), radius, radius, &paint);
     true
 }
 

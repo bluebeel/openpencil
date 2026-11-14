@@ -412,11 +412,7 @@ impl NativeBackend {
             builder.line_to((point.x, point.y));
         }
         builder.close();
-        canvas.clip_path(
-            &builder.detach(),
-            skia_safe::ClipOp::Intersect,
-            jian_skia::raster_sampling::geometry_antialias(),
-        );
+        raster_point::clip_path(canvas, &builder.detach());
     }
 
     /// Stroke a single line segment. Step 4 visual lift addition —
@@ -438,7 +434,7 @@ impl NativeBackend {
         paint.set_stroke_width(width);
         raster_point::prepare_solid(&mut paint);
         paint.set_stroke_cap(skia_safe::PaintCap::Round);
-        canvas.draw_line((from.x, from.y), (to.x, to.y), &paint);
+        raster_point::draw_line(canvas, from, to, &paint);
     }
 
     /// Filled rounded rectangle — used for shadcn-style chip / panel /
@@ -540,7 +536,7 @@ impl NativeBackend {
     pub fn fill_oval(&self, canvas: &skia_safe::Canvas, bounds: Rect, color: Color) {
         let mut paint = skia_safe::Paint::new(jian_color_to_color4f(color), None);
         raster_point::prepare_solid(&mut paint);
-        canvas.draw_oval(to_sk_rect(bounds), &paint);
+        raster_point::draw_oval(canvas, to_sk_rect(bounds), &paint);
     }
 
     /// Stroked ellipse inscribed in `bounds`.
@@ -549,7 +545,7 @@ impl NativeBackend {
         raster_point::prepare_solid(&mut paint);
         paint.set_stroke(true);
         paint.set_stroke_width(width);
-        canvas.draw_oval(to_sk_rect(bounds), &paint);
+        raster_point::draw_oval(canvas, to_sk_rect(bounds), &paint);
     }
 
     /// Fill a closed polygon outlined by `points`. Builds a fresh
@@ -570,7 +566,7 @@ impl NativeBackend {
         let path = builder.detach();
         let mut paint = skia_safe::Paint::new(jian_color_to_color4f(color), None);
         raster_point::prepare_solid(&mut paint);
-        canvas.draw_path(&path, &paint);
+        raster_point::draw_path(canvas, &path, &paint);
     }
 
     /// Stroke a closed polygon as ONE antialiased path with round joins.
@@ -601,7 +597,7 @@ impl NativeBackend {
         paint.set_stroke_width(width);
         paint.set_stroke_join(skia_safe::PaintJoin::Round);
         paint.set_stroke_cap(skia_safe::PaintCap::Round);
-        canvas.draw_path(&path, &paint);
+        raster_point::draw_path(canvas, &path, &paint);
     }
 
     /// Fill a batch of identical round dots in one draw call.

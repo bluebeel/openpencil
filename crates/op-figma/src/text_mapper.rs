@@ -370,7 +370,7 @@ fn parse_font_weight(style: &str) -> Option<u32> {
     }
 }
 
-/// Line height → unitless multiplier (3-decimal rounded).
+/// Line height → unitless multiplier, retaining the authored numeric precision.
 fn map_line_height(node: &FigValue) -> Option<f64> {
     let lh = node.get("lineHeight")?;
     let value = lh.get_f64("value")?;
@@ -384,7 +384,7 @@ fn map_line_height(node: &FigValue) -> Option<f64> {
         "RAW" => value,
         _ => return None,
     };
-    Some((mul * 1000.0).round() / 1000.0)
+    Some(mul)
 }
 
 /// Letter spacing → pixels (percent units resolved against font size).
@@ -398,7 +398,7 @@ fn map_letter_spacing(node: &FigValue) -> Option<f64> {
         "PIXELS" => Some(value),
         "PERCENT" => {
             let font_size = node.get_f64("fontSize").unwrap_or(14.0);
-            Some(((font_size * value / 100.0) * 100.0).round() / 100.0)
+            Some(font_size * value / 100.0)
         }
         _ => None,
     }

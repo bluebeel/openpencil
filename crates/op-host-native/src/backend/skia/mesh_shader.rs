@@ -9,7 +9,7 @@
 //! documented parity gap). Carved into a sibling file per the 800-line
 //! cap, same as `gradient.rs`.
 
-use super::{jian_color_to_color4f, to_sk_rect, NativeBackend};
+use super::{jian_color_to_color4f, raster_point, to_sk_rect, NativeBackend};
 use op_editor_ui::{Color, Rect};
 
 impl NativeBackend {
@@ -83,6 +83,7 @@ impl NativeBackend {
         // white and Modulate (white × vertex == vertex) so the vertex
         // colours pass through unchanged; `opacity` rides in the alpha.
         let restore_count = canvas.save();
+        raster_point::prepare_solid(&mut paint);
         if radius > 0.0 {
             let rrect = skia_safe::RRect::new_rect_xy(to_sk_rect(rect), radius, radius);
             canvas.clip_rrect(rrect, None, Some(true));
@@ -139,9 +140,10 @@ impl NativeBackend {
                 paint.set_color4f(c, None);
             }
         }
+        raster_point::prepare_solid(&mut paint);
         if radius > 0.0 {
             let rrect = skia_safe::RRect::new_rect_xy(to_sk_rect(rect), radius, radius);
-            canvas.draw_rrect(rrect, &paint);
+            raster_point::draw_rrect(canvas, &rrect, &paint);
         } else {
             canvas.draw_rect(to_sk_rect(rect), &paint);
         }

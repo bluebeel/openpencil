@@ -1,5 +1,5 @@
 use super::svg_raster_cache::{SvgRasterCacheEntry, SvgRasterKey};
-use super::{jian_color_to_color4f, to_sk_rect, NativeBackend};
+use super::{jian_color_to_color4f, raster_point, to_sk_rect, NativeBackend};
 use op_editor_ui::{Color, Point2D, Rect};
 use std::hash::{Hash, Hasher};
 
@@ -188,7 +188,7 @@ impl NativeBackend {
         jian_skia::raster_sampling::configure_geometry(&mut paint);
         paint.set_stroke_cap(skia_safe::PaintCap::Round);
         paint.set_stroke_join(skia_safe::PaintJoin::Round);
-        canvas.draw_path(&path, &paint);
+        raster_point::draw_path(canvas, &path, &paint);
     }
 
     /// Stroke an arbitrary document SVG path fitted into `rect` by
@@ -213,7 +213,7 @@ impl NativeBackend {
         jian_skia::raster_sampling::configure_geometry(&mut paint);
         paint.set_stroke_cap(skia_safe::PaintCap::Round);
         paint.set_stroke_join(skia_safe::PaintJoin::Round);
-        canvas.draw_path(&path, &paint);
+        raster_point::draw_path(canvas, &path, &paint);
     }
 
     /// Fill an SVG path scaled from `viewbox x viewbox` to
@@ -287,7 +287,7 @@ impl NativeBackend {
         }
         let mut paint = skia_safe::Paint::new(jian_color_to_color4f(color), None);
         jian_skia::raster_sampling::configure_geometry(&mut paint);
-        canvas.draw_path(&path, &paint);
+        raster_point::draw_path(canvas, &path, &paint);
     }
 
     /// Fill an arbitrary document SVG path fitted into `rect` by its
@@ -333,11 +333,7 @@ impl NativeBackend {
         if even_odd {
             path.set_fill_type(skia_safe::PathFillType::EvenOdd);
         }
-        canvas.clip_path(
-            &path,
-            skia_safe::ClipOp::Intersect,
-            jian_skia::raster_sampling::geometry_antialias(),
-        );
+        raster_point::clip_path(canvas, &path);
     }
 
     fn fill_svg_path_in_rect_impl(
@@ -358,7 +354,7 @@ impl NativeBackend {
         }
         let mut paint = skia_safe::Paint::new(jian_color_to_color4f(color), None);
         jian_skia::raster_sampling::configure_geometry(&mut paint);
-        canvas.draw_path(&path, &paint);
+        raster_point::draw_path(canvas, &path, &paint);
     }
 
     /// Fill a document SVG path (fitted into `rect`) with a linear
@@ -546,7 +542,7 @@ impl NativeBackend {
             ),
         };
         jian_skia::raster_sampling::configure_geometry(&mut paint);
-        canvas.draw_path(path, &paint);
+        raster_point::draw_path(canvas, path, &paint);
     }
 
     /// Paint an inset (inner) shadow for a document SVG path fitted
@@ -627,11 +623,7 @@ impl NativeBackend {
         };
 
         canvas.save();
-        canvas.clip_path(
-            &path,
-            skia_safe::ClipOp::Intersect,
-            jian_skia::raster_sampling::geometry_antialias(),
-        );
+        raster_point::clip_path(canvas, &path);
         canvas.save_layer(&skia_safe::canvas::SaveLayerRec::default());
 
         let mut fill = skia_safe::Paint::new(jian_color_to_color4f(color), None);

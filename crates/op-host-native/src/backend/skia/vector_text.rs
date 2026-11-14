@@ -144,6 +144,33 @@ fn draw_coverage(canvas: &Canvas, path: &Path, paint: &Paint, point: bool, grid:
     true
 }
 
+/// The same binary point-camera path geometry can clip painted content.
+/// Image circle clips retain their separate analytic ellipse contract.
+pub(super) fn clip_path(canvas: &Canvas, path: &Path) -> bool {
+    if !jian_skia::raster_sampling::is_point_sampling() {
+        return false;
+    }
+    let matrix = canvas.local_to_device_as_3x3();
+    let Some(clip) = canvas.device_clip_bounds() else {
+        return true;
+    };
+    let verbs = path_verbs(path);
+    let flattened = if verbs.cubic || verbs.conic {
+        reuse::flattened(path, &matrix, || curve::flatten(path, &matrix))
+    } else {
+        None
+    };
+    if (verbs.cubic || verbs.conic) && flattened.is_none() {
+        return false;
+    }
+    let path = flattened.as_ref().unwrap_or(path);
+    let Some((shader, _)) = stencil::coverage(path, &matrix, clip, 0) else {
+        return false;
+    };
+    canvas.clip_shader(shader, skia_safe::ClipOp::Intersect);
+    true
+}
+
 pub(super) fn draw_path(canvas: &Canvas, path: &Path, paint: &Paint) -> bool {
     if path.is_empty() {
         return true;
@@ -156,12 +183,43 @@ pub(super) fn draw_path(canvas: &Canvas, path: &Path, paint: &Paint) -> bool {
     } else {
         2
     };
-    // Polynomial cubic fills use the same bounded fixed4 edge rasterizer
+    if point && paint.style() != skia_safe::PaintStyle::Fill {
+        // Expand a positive-width stroke once, with Skia's existing caps,
+        // joins/miter and transform-dependent resolution. Rasterize that exact
+        // silhouette with the same point edge rule as a filled path. Hairlines
+        // keep their device-space platform contract.
+        if paint.stroke_width().is_finite()
+            && paint.stroke_width() > 0.0
+            // Bound expansion before Skia allocates the stroked silhouette.
+            // Join/cap output is then subject to the normal point/depth caps.
+            && path.count_points() <= curve::MAX_POINTS / 16
+            && paint.mask_filter().is_none()
+            && paint.image_filter().is_none()
+            && paint.path_effect().is_none()
+        {
+            let matrix = canvas.local_to_device_as_3x3();
+            if matrix.is_finite() && !matrix.has_perspective() {
+                let mut outline = PathBuilder::new();
+                if skia_safe::path_utils::fill_path_with_paint(
+                    path,
+                    paint,
+                    &mut outline,
+                    None,
+                    matrix,
+                ) {
+                    let mut source = paint.clone();
+                    source.set_style(skia_safe::PaintStyle::Fill);
+                    return draw_path(canvas, &outline.detach(), &source);
+                }
+            }
+        }
+    }
+    // Polynomial cubic and positive-weight rational fills use the same bounded fixed4 edge rasterizer
     // after device-error-bounded subdivision. Do not send the resulting
     // polygon back through a second, different platform scan converter.
     let verbs = path_verbs(path);
     let polygon =
-        if point && paint.style() == skia_safe::PaintStyle::Fill && verbs.cubic && !verbs.conic {
+        if point && paint.style() == skia_safe::PaintStyle::Fill && (verbs.cubic || verbs.conic) {
             let matrix = canvas.local_to_device_as_3x3();
             reuse::flattened(path, &matrix, || curve::flatten(path, &matrix))
         } else {

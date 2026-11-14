@@ -8,7 +8,7 @@
 //! `pub(super)` so the parent's tests module (`skia/tests.rs`) can
 //! exercise them without re-exporting.
 
-use super::{to_sk_rect, NativeBackend};
+use super::{raster_point, to_sk_rect, NativeBackend};
 use op_editor_ui::{Color, Rect};
 
 #[path = "gradient_cache.rs"]
@@ -46,7 +46,7 @@ impl NativeBackend {
         let mut paint = skia_safe::Paint::default();
         jian_skia::raster_sampling::configure_geometry(&mut paint);
         paint.set_shader(shader);
-        canvas.draw_round_rect(to_sk_rect(rect), radius, radius, &paint);
+        raster_point::draw_round_rect(canvas, to_sk_rect(rect), radius, radius, &paint);
     }
 
     /// Fill a (round-)rectangle with a radial gradient. `cx_frac` /
@@ -89,7 +89,7 @@ impl NativeBackend {
         let mut paint = skia_safe::Paint::default();
         jian_skia::raster_sampling::configure_geometry(&mut paint);
         paint.set_shader(shader);
-        canvas.draw_round_rect(to_sk_rect(rect), radius, radius, &paint);
+        raster_point::draw_round_rect(canvas, to_sk_rect(rect), radius, radius, &paint);
     }
 
     /// Fill a (round-)rectangle with a Gouraud-interpolated mesh
@@ -265,7 +265,7 @@ impl NativeBackend {
                 paint.set_alpha_f(1.0);
             }
         }
-        canvas.draw_round_rect(to_sk_rect(rect), radius, radius, &paint);
+        raster_point::draw_round_rect(canvas, to_sk_rect(rect), radius, radius, &paint);
     }
 
     /// Distinct SkSL programs compiled so far — exposed for the
