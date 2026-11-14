@@ -249,7 +249,7 @@ impl EditorState {
                 }
             }
         }
-        let mut taken = self.collect_node_ids();
+        let mut taken = allocator.document_collision_ids(&self.doc);
         // Clone the owned subtree before re-borrowing the tree mutably.
         let mut clone = {
             let children = self.active_children();
@@ -301,7 +301,7 @@ impl EditorState {
                 return Ok(false);
             }
         }
-        let mut taken = self.collect_node_ids();
+        let mut taken = allocator.document_collision_ids(&self.doc);
         let new_id = allocator.allocate(&mut taken)?;
         let Some(mut replacement) =
             build_leaf_node(kind, new_id.as_str(), name, x, y, width, height)
@@ -343,7 +343,7 @@ impl EditorState {
                 return Ok(false);
             }
         }
-        let mut taken = self.collect_node_ids();
+        let mut taken = allocator.document_collision_ids(&self.doc);
         let mut nodes = vec![node];
         remap_subtree_ids_with_allocator(&mut nodes, allocator, &mut taken)?;
         let mut slot = nodes.pop();
@@ -433,7 +433,7 @@ impl EditorState {
             }
         }
         // Allocate fresh ids for the whole incoming forest.
-        let mut taken: HashSet<NodeId> = self.collect_node_ids();
+        let mut taken: HashSet<NodeId> = allocator.document_collision_ids(&self.doc);
         let mut nodes = nodes;
         let replacement = crate::command_root_replace::prepare_root_frame_replacement(
             self.active_children(),
@@ -532,7 +532,7 @@ impl EditorState {
                 _ => return Ok(None),
             }
         }
-        let mut taken: HashSet<NodeId> = self.collect_node_ids();
+        let mut taken: HashSet<NodeId> = allocator.document_collision_ids(&self.doc);
         let mut nodes = nodes;
         let replacement = replace_empty_root
             .then(|| {

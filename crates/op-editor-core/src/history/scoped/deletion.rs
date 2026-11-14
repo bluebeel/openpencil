@@ -28,6 +28,7 @@ struct Removed {
 pub(super) struct PendingDeletion {
     scope: Scope,
     selection: SelectionState,
+    cut: bool,
     removed: Vec<Removed>,
 }
 pub(crate) fn forecast(state: &EditorState, command: &C) -> Option<usize> {
@@ -66,11 +67,14 @@ impl PendingDeletion {
         Some(Self {
             scope: plan.scope,
             selection: state.selection.clone(),
+            cut: matches!(command, C::CutSelected),
             removed,
         })
     }
     pub(super) fn request_matches(&self, state: &EditorState, command: &C) -> bool {
-        matches!(command, C::DeleteSelected) && state.selection == self.selection
+        ((self.cut && matches!(command, C::CutSelected))
+            || (!self.cut && matches!(command, C::DeleteSelected)))
+            && state.selection == self.selection
     }
     pub(super) fn matches(&self, state: &EditorState) -> bool {
         patch::roots(&state.doc, &self.scope).is_ok_and(|roots| {

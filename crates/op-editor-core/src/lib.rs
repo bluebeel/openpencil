@@ -66,6 +66,7 @@ pub use sparse_atomic::{validate_sparse_atomic_commands, SparseAtomicValidation}
 mod command_id_scope;
 mod node_json;
 pub use command_id_scope::{AtomicCommandSimulation, CommandSimulation};
+pub use edit_transaction::{AtomicAuthorityEdit, AtomicAuthorityError};
 pub use node_json::map_subtree_json;
 pub mod command_font_replace;
 pub mod command_layout_prop;

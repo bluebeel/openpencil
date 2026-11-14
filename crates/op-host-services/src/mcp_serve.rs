@@ -180,7 +180,7 @@ mod stdio_dispatch;
 pub(crate) mod write_repairs;
 pub(crate) use command_apply::{
     apply_command_with_command_capture, apply_command_with_undo, apply_command_with_undo_report,
-    begin_command_capture,
+    begin_command_capture, begin_command_capture_moving_clipboard,
 };
 use stdio_dispatch::process_message_with_auto_finalize;
 
@@ -213,8 +213,11 @@ where
 }
 
 mod profiled_dispatch;
+pub(crate) use atomic_tools::AuthorityAction;
 pub use profiled_dispatch::process_message_with_applier_profiled;
-pub(crate) use profiled_dispatch::process_message_with_bound_authority_profiled;
+pub(crate) use profiled_dispatch::{
+    process_message_with_bound_authority_actions, process_message_with_bound_authority_profiled,
+};
 
 /// Dispatch one already-classified tool call through a caller-provided
 /// registry. Live hosts use this seam for tools whose complete snapshot is

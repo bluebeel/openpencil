@@ -10,7 +10,9 @@ use crate::history::{EditorSnapshot, History};
 use crate::state::EditorState;
 use jian_ops_schema::PenDocument;
 use std::collections::BTreeMap;
+mod atomic_authority;
 mod command_capture;
+pub use atomic_authority::{AtomicAuthorityEdit, AtomicAuthorityError};
 pub use command_capture::{CommandEditCapture, CommandEditError};
 
 /// Source of a document edit or install.

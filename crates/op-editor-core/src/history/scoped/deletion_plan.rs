@@ -53,7 +53,7 @@ fn list_bytes(nodes: &[PenNode], extra: usize) -> Option<usize> {
     Some(bytes)
 }
 pub(super) fn build<'a>(state: &'a EditorState, command: &C) -> Option<Plan<'a>> {
-    if !matches!(command, C::DeleteSelected)
+    if !matches!(command, C::DeleteSelected | C::CutSelected)
         || state.editor_ui.workspace.active
         || state.instance_write_virtual_anchor.is_some()
     {
@@ -139,6 +139,27 @@ pub(super) fn build<'a>(state: &'a EditorState, command: &C) -> Option<Plan<'a>>
         }
         if let Some(parent) = stack.last_mut() {
             parent.unlocked &= completed.unlocked;
+        }
+    }
+    if matches!(command, C::CutSelected) {
+        // The old clipboard remains retained until durable completion. Copy's
+        // output includes protected selections and caller duplicates as before.
+        let old = crate::history_snapshot::command_capture_value_bytes(
+            &state.clipboard,
+            LIMIT.checked_sub(bytes)?,
+        )
+        .ok()?;
+        add(&mut bytes, old)?;
+        for id in &state.selection.set {
+            if let Some(candidate) = found.get(id.as_str()) {
+                let output = crate::history_snapshot::command_capture_node_bytes(
+                    candidate.target.node,
+                    false,
+                    LIMIT.checked_sub(bytes)?,
+                )
+                .ok()?;
+                add(&mut bytes, output)?;
+            }
         }
     }
     let mut candidates = found

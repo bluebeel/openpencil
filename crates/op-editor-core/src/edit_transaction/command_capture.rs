@@ -12,10 +12,29 @@ mod metadata;
 #[path = "target_plan.rs"]
 mod target_plan;
 
+/// Authority-only classification; no command executes and no full fallback
+/// capture is allocated. Unknown/unstable scopes remain on legacy dispatch.
+pub(crate) fn incremental_atomic_scope(
+    state: &EditorState,
+    command: &EditorCommand,
+) -> Option<(Vec<crate::history::Scope>, bool)> {
+    match command_scope::classify(state, command) {
+        command_scope::Classification::Scoped(plan) => Some((plan.forests, plan.header)),
+        _ => None,
+    }
+}
+
 #[derive(Debug)]
 pub struct CommandEditCapture {
     kind: CaptureKind,
     batch_actor: Option<crate::command_batch::actor::BatchActorSnapshot>,
+    // Abort-only actor state: ordinary undo/redo deliberately leaves clipboard.
+    rollback_clipboard: Option<ClipboardRollback>,
+}
+#[derive(Debug)]
+enum ClipboardRollback {
+    Copy(Vec<jian_ops_schema::node::PenNode>),
+    Moved(Vec<jian_ops_schema::node::PenNode>),
 }
 #[derive(Debug)]
 enum CaptureKind {
@@ -46,6 +65,7 @@ struct HistoryCapture {
 }
 #[derive(Debug)]
 pub enum CommandEditError {
+    ClipboardContextChanged,
     Full(LocalEditError),
     Scoped(ScopedHistoryError),
     IncompleteScopedCapture,
@@ -53,6 +73,9 @@ pub enum CommandEditError {
 impl std::fmt::Display for CommandEditError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::ClipboardContextChanged => f.write_str(
+                "the cut clipboard checkpoint belongs to a different document or actor context",
+            ),
             Self::Full(error) => write!(f, "{error}"),
             Self::Scoped(error) => write!(f, "{error}"),
             Self::IncompleteScopedCapture => f.write_str(
@@ -94,6 +117,20 @@ impl CommandEditCapture {
         }
     }
 
+    fn clipboard_context_matches(&self, state: &EditorState) -> bool {
+        self.rollback_clipboard.is_none()
+            || match &self.kind {
+                CaptureKind::Scoped(captured) => {
+                    captured.generation == state.document_generation()
+                        && captured.history.actor() == state.history.actor()
+                }
+                _ => false,
+            }
+    }
+    /// This command owns its actor's prior clipboard until commit/abort.
+    pub fn owns_replaced_clipboard_rollback(&self) -> bool {
+        self.rollback_clipboard.is_some()
+    }
     pub fn is_scoped(&self) -> bool {
         matches!(self.kind, CaptureKind::Scoped(_) | CaptureKind::History(_))
     }
@@ -140,6 +177,7 @@ impl EditorState {
         };
         CommandEditCapture {
             kind,
+            rollback_clipboard: None,
             batch_actor: crate::command_batch::actor::BatchActorSnapshot::for_command(
                 self, command,
             ),
@@ -162,10 +200,54 @@ impl EditorState {
         &self,
         command: &EditorCommand,
     ) -> Option<CommandEditCapture> {
+        self.try_begin_command_edit_inner(command, true, false)
+    }
+    /// Synchronous hosts may move the actor clipboard into the checkpoint
+    /// instead of deep-cloning it. Apply immediately or explicitly abort this
+    /// capture under the same actor context; an unapplied capture must not drop.
+    pub fn try_begin_command_edit_transferring_clipboard(
+        &mut self,
+        command: &EditorCommand,
+    ) -> Option<CommandEditCapture> {
+        self.try_begin_transferring_clipboard_inner(command, false)
+    }
+    /// Known synchronous hosts may preserve catalog state for audited child
+    /// metadata. Definition roots, owned prototypes and structural commands
+    /// retain complete catalog checkpoints. Maintenance must not mutate the
+    /// catalog; arbitrary/public callback paths keep the default constructor.
+    /// Cut also transfers its old clipboard: apply immediately or abort under
+    /// the same actor context, as with the explicit transfer factory.
+    pub fn try_begin_command_edit_preserving_components(
+        &mut self,
+        command: &EditorCommand,
+    ) -> Option<CommandEditCapture> {
+        self.try_begin_transferring_clipboard_inner(command, true)
+    }
+    fn try_begin_transferring_clipboard_inner(
+        &mut self,
+        command: &EditorCommand,
+        preserve_components: bool,
+    ) -> Option<CommandEditCapture> {
+        let mut capture = self.try_begin_command_edit_inner(command, false, preserve_components)?;
+        if matches!(command, EditorCommand::CutSelected)
+            && matches!(&capture.kind, CaptureKind::Scoped(_))
+        {
+            capture.rollback_clipboard =
+                Some(ClipboardRollback::Moved(mem::take(&mut self.clipboard)));
+        }
+        Some(capture)
+    }
+    fn try_begin_command_edit_inner(
+        &self,
+        command: &EditorCommand,
+        clone_clipboard: bool,
+        preserve_components: bool,
+    ) -> Option<CommandEditCapture> {
         let plan = match command_scope::classify(self, command) {
             command_scope::Classification::Scoped(plan) => plan,
             command_scope::Classification::Refused => {
                 return Some(CommandEditCapture {
+                    rollback_clipboard: None,
                     batch_actor: None,
                     kind: CaptureKind::Refused {
                         generation: self.document_generation,
@@ -174,9 +256,15 @@ impl EditorState {
             }
             command_scope::Classification::Full => return None,
         };
-        if matches!(command, EditorCommand::DeleteSelected) {
+        if matches!(
+            command,
+            EditorCommand::DeleteSelected | EditorCommand::CutSelected
+        ) {
             let pending = PendingScopedSnapshot::capture_deletion(self, plan.forests, command)?;
             return Some(CommandEditCapture {
+                rollback_clipboard: (clone_clipboard
+                    && matches!(command, EditorCommand::CutSelected))
+                .then(|| ClipboardRollback::Copy(self.clipboard.clone())),
                 batch_actor: None,
                 kind: CaptureKind::Scoped(ScopedCapture {
                     targeted: true,
@@ -192,6 +280,7 @@ impl EditorState {
         if matches!(command, EditorCommand::ReplacePathsWithSvg(_)) {
             let pending = PendingScopedSnapshot::capture_boolean(self, plan.forests, command)?;
             return Some(CommandEditCapture {
+                rollback_clipboard: None,
                 batch_actor: None,
                 kind: CaptureKind::Scoped(ScopedCapture {
                     targeted: true,
@@ -213,6 +302,7 @@ impl EditorState {
             }
             let pending = PendingScopedSnapshot::capture_clones(self, plan.forests, command)?;
             return Some(CommandEditCapture {
+                rollback_clipboard: None,
                 batch_actor: None,
                 kind: CaptureKind::Scoped(ScopedCapture {
                     targeted: true,
@@ -227,6 +317,7 @@ impl EditorState {
         }
         if matches!(command, EditorCommand::Undo | EditorCommand::Redo) {
             return Some(CommandEditCapture {
+                rollback_clipboard: None,
                 batch_actor: None,
                 kind: CaptureKind::History(HistoryCapture {
                     actor_selective: self
@@ -245,12 +336,19 @@ impl EditorState {
         let Some(specs) = target_plan::plan(self, command) else {
             return None;
         };
-        let Ok(pending) =
+        let keep_catalog = preserve_components
+            && !plan.header
+            && crate::command_node_attrs::bulk::prepare(command).is_some()
+            && target_plan::metadata_target(self, &specs)
+                .is_some_and(|target| self.metadata_target_preserves_components(target));
+        let pending = if keep_catalog {
+            PendingScopedSnapshot::capture_targets_preserving_components(self, plan.forests, specs)
+        } else {
             PendingScopedSnapshot::capture_targets(self, plan.forests, plan.header, specs)
-        else {
-            return None;
-        };
+        }
+        .ok()?;
         Some(CommandEditCapture {
+            rollback_clipboard: None,
             batch_actor: crate::command_batch::actor::BatchActorSnapshot::for_command(
                 self, command,
             ),
@@ -274,7 +372,20 @@ impl EditorState {
         capture: &mut CommandEditCapture,
         maintain: impl FnOnce(&mut Self),
     ) -> bool {
-        self.apply_command_edit_inner(command, capture, maintain, None)
+        if !capture.clipboard_context_matches(self) {
+            return false;
+        }
+        let restore_rejected_transfer = matches!(
+            &capture.rollback_clipboard,
+            Some(ClipboardRollback::Moved(_))
+        ) && matches!(&capture.kind,CaptureKind::Scoped(captured) if captured.revision==self.revision);
+        let applied = self.apply_command_edit_inner(command, capture, maintain, None);
+        if !applied && restore_rejected_transfer {
+            if let Some(ClipboardRollback::Moved(clipboard)) = capture.rollback_clipboard.take() {
+                self.clipboard = clipboard;
+            }
+        }
+        applied
     }
     fn apply_command_edit_inner(
         &mut self,
@@ -428,7 +539,21 @@ impl EditorState {
         &mut self,
         capture: CommandEditCapture,
     ) -> Result<(), CommandEditError> {
-        let CommandEditCapture { kind, batch_actor } = capture;
+        if !capture.clipboard_context_matches(self) {
+            return Err(CommandEditError::ClipboardContextChanged);
+        }
+        let CommandEditCapture {
+            kind,
+            batch_actor,
+            rollback_clipboard,
+        } = capture;
+        // The actor/generation guard above makes this independent auxiliary
+        // restore safe even if the canonical inverse subsequently needs recovery.
+        if let Some(ClipboardRollback::Copy(clipboard) | ClipboardRollback::Moved(clipboard)) =
+            rollback_clipboard
+        {
+            self.clipboard = clipboard;
+        }
         let result = match kind {
             CaptureKind::Refused { generation } => self
                 .ensure_local_edit_generation(generation)
@@ -496,3 +621,11 @@ mod tests;
 #[cfg(test)]
 #[path = "target_capture_tests.rs"]
 mod target_tests;
+
+/// Reuse the strict physical target/splice proof before an atomic write.
+pub(crate) fn incremental_atomic_targets(
+    state: &EditorState,
+    command: &crate::EditorCommand,
+) -> Option<Vec<crate::history::TargetSpec>> {
+    target_plan::plan(state, command)
+}

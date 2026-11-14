@@ -267,12 +267,28 @@ fn snapshot_inner(
     let result = (|| {
         // Discovery is cheap, and malformed calls never build a scene.
         let queries = queries(arguments.ok_or(QueryError::InvalidField("query"))?)?;
-        let scene = if trusted {
-            op_pen_loader::active_query_scene_cached(state)
-        } else {
-            Arc::new(op_pen_loader::editor_state_to_active_page_layout_scene(
+        // A parent-only snap batch needs its complete containing layout roots,
+        // not every unrelated board on the active page. Point/rect/global snap
+        // requests retain the complete scene and their existing lookup rules.
+        let parents: Option<Vec<String>> = queries
+            .iter()
+            .map(|query| match query {
+                Query::Snap {
+                    parent: Some(parent),
+                    ..
+                } if !parent.is_empty() => Some(parent.clone()),
+                _ => None,
+            })
+            .collect();
+        let scene = match (trusted, parents) {
+            (true, Some(parents)) => op_pen_loader::active_query_items_scene_cached(state, parents),
+            (true, None) => op_pen_loader::active_query_scene_cached(state),
+            (false, Some(parents)) => Arc::new(
+                op_pen_loader::editor_state_to_active_items_layout_scene(state, &parents),
+            ),
+            (false, None) => Arc::new(op_pen_loader::editor_state_to_active_page_layout_scene(
                 state,
-            ))
+            )),
         };
         let page_id = scene
             .active_page()

@@ -205,6 +205,10 @@ impl std::ops::Deref for CommandSimulation {
     }
 }
 
+#[path = "atomic_command_allocator.rs"]
+mod atomic_allocator;
+pub(crate) use atomic_allocator::AtomicCommandAllocator;
+
 #[path = "atomic_command_simulation.rs"]
 mod atomic;
 pub use atomic::AtomicCommandSimulation;

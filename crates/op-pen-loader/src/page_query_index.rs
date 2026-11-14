@@ -16,6 +16,7 @@ pub(crate) struct PageIndex {
     locations: Vec<Location>,
     key_heap: usize,
     pub(crate) unique: bool,
+    independent: bool,
 }
 impl PageIndex {
     pub(crate) fn roots(state: &EditorState, page: usize) -> Option<&[PenNode]> {
@@ -31,13 +32,24 @@ impl PageIndex {
             locations: Vec::new(),
             key_heap: 0,
             unique: true,
+            independent: true,
         };
         for (index, root) in roots.iter().enumerate() {
+            out.independent &= root.base().mask_type.is_none()
+                && root
+                    .base()
+                    .blend_mode
+                    .as_ref()
+                    .is_none_or(|mode| *mode == jian_ops_schema::style::BlendMode::Normal);
             out.push(root, NONE, 0, index.try_into().ok()?)?;
         }
         Some(out)
     }
     fn push(&mut self, node: &PenNode, parent: u32, child: u32, root: u32) -> Option<()> {
+        self.independent &= !matches!(node, PenNode::Ref(_))
+            && !node.base().explain.as_deref().is_some_and(|explain| {
+                explain.starts_with(op_editor_core::table_filter_contract::TABLE_MARKER)
+            });
         let ordinal: u32 = self
             .locations
             .len()
@@ -74,6 +86,28 @@ impl PageIndex {
             + self.locations.capacity() * size_of::<Location>()
             + self.by_id.capacity() * (size_of::<(String, u32)>() + 1) * 2
             + self.key_heap
+    }
+    /// Exact whole-layout-root selection for a trusted unchanged page. The
+    /// proof shares this index's existing32MiB capacity/retired-Arc ledger.
+    pub(crate) fn independent_roots(
+        &self,
+        root_count: usize,
+        ids: &[String],
+    ) -> Option<Vec<usize>> {
+        if !self.independent || !self.unique || ids.is_empty() {
+            return None;
+        }
+        let mut roots = Vec::with_capacity(ids.len());
+        for id in ids {
+            if id.is_empty() || id.contains("__") {
+                return None;
+            }
+            let ordinal = *self.by_id.get(id)?;
+            roots.push(self.locations.get(ordinal as usize)?.root as usize);
+        }
+        roots.sort_unstable();
+        roots.dedup();
+        (roots.len() < root_count).then_some(roots)
     }
     pub(crate) fn contains_unique(&self, id: &str) -> bool {
         self.by_id.get(id).is_some_and(|index| *index != NONE)

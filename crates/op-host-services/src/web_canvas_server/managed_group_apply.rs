@@ -48,7 +48,7 @@ pub(super) fn apply(
         metrics.refuse(reason);
         return Outcome::Isolated;
     }
-    let Some(checkpoint) = editor.try_begin_command_edit_without_document_repairs(command) else {
+    let Some(checkpoint) = editor.try_begin_command_edit_preserving_components(command) else {
         metrics
             .strict_capture_fallback
             .fetch_add(1, Ordering::Relaxed);

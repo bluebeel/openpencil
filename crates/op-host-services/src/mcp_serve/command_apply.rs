@@ -10,6 +10,9 @@ pub(crate) struct PreparedCommandEdit {
     repairs: Option<RepairPlan>,
 }
 impl PreparedCommandEdit {
+    pub(crate) fn owns_replaced_clipboard_rollback(&self) -> bool {
+        self.capture.owns_replaced_clipboard_rollback()
+    }
     pub(crate) fn visit_metadata_changes(
         &self,
         state: &EditorState,
@@ -39,6 +42,32 @@ pub(crate) fn begin_command_capture(
     let repairs = RepairPlan::capture(state, command, repair);
     let capture = if repairs.is_empty() {
         state.begin_command_edit_without_document_repairs(command)
+    } else {
+        state.begin_command_edit(command)
+    };
+    PreparedCommandEdit {
+        capture,
+        repairs: Some(repairs),
+    }
+}
+
+/// Production synchronous paths transfer Cut's prior actor clipboard into
+/// its checkpoint. The immutable constructor remains available to callers that
+/// only prepare a checkpoint without immediately applying it. Proven ordinary
+/// header edits may also leave the document-backed catalog untouched.
+pub(crate) fn begin_command_capture_moving_clipboard(
+    state: &mut EditorState,
+    command: &EditorCommand,
+    repair: bool,
+) -> PreparedCommandEdit {
+    if repair {
+        return super::begin_command_capture(state, command, repair);
+    }
+    let repairs = RepairPlan::capture(state, command, repair);
+    let capture = if repairs.is_empty() {
+        state
+            .try_begin_command_edit_preserving_components(command)
+            .unwrap_or_else(|| state.begin_command_edit(command))
     } else {
         state.begin_command_edit(command)
     };
@@ -80,7 +109,7 @@ pub(crate) fn apply_command_with_undo_report(
             layout_repaired,
         };
     }
-    let mut capture = begin_command_capture(state, &command, repair);
+    let mut capture = begin_command_capture_moving_clipboard(state, &command, repair);
     apply_prepared(state, command, &mut capture)
 }
 

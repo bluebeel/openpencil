@@ -5,6 +5,31 @@ use crate::command_node_attrs::bulk::{self, Prepared};
 use crate::PenNodeExt;
 use jian_ops_schema::node::PenNode;
 impl EditorState {
+    /// Exact conservative catalog authority for a node-header-only writer.
+    /// Definition roots and externally owned prototypes keep full checkpoints.
+    /// Document-backed child metadata resolves through canonical Doc instead of
+    /// the compatibility root's deliberately absent child payload.
+    pub fn metadata_target_preserves_components(&self, node: &PenNode) -> bool {
+        if self.editor_ui.workspace.active || self.instance_write_virtual_anchor.is_some() {
+            return false;
+        }
+        !matches!(node,PenNode::Frame(frame) if frame.reusable==Some(true))
+            && self.components.components.iter().all(|component| {
+                component.id.as_str() != node.id_str()
+                    && self.components.is_document_backed(&component.id)
+            })
+    }
+    /// A request-local proof for the live atomic driver, consumed before any
+    /// unsupported command runs. It owns no routes or catalog snapshots.
+    pub(crate) fn metadata_command_preserves_components(&self, command: &EditorCommand) -> bool {
+        if bulk::prepare(command).is_none() {
+            return false;
+        }
+        target_plan::plan(self, command)
+            .as_ref()
+            .and_then(|specs| target_plan::metadata_target(self, specs))
+            .is_some_and(|node| self.metadata_target_preserves_components(node))
+    }
     /// Apply one supported metadata command with one first-ID resolution.
     /// `admit` sees borrowed input BEFORE any owned capture. None leaves the
     /// output slot empty and applies nothing, permitting ordinary fallback.
@@ -36,9 +61,14 @@ impl EditorState {
         if !admit(self, target) {
             return None;
         }
-        let pending =
-            PendingScopedSnapshot::capture_targets(self, plan.forests, plan.header, specs).ok()?;
+        let pending = if self.metadata_target_preserves_components(target) {
+            PendingScopedSnapshot::capture_targets_preserving_components(self, plan.forests, specs)
+        } else {
+            PendingScopedSnapshot::capture_targets(self, plan.forests, plan.header, specs)
+        }
+        .ok()?;
         *capture = Some(CommandEditCapture {
+            rollback_clipboard: None,
             batch_actor: None,
             kind: CaptureKind::Scoped(ScopedCapture {
                 targeted: true,
@@ -93,8 +123,12 @@ impl EditorState {
         )
         .ok()?;
         let spec = specs.first()?.clone();
-        let pending =
-            PendingScopedSnapshot::capture_targets(self, plan.forests, false, specs).ok()?;
+        let pending = if self.metadata_target_preserves_components(target) {
+            PendingScopedSnapshot::capture_targets_preserving_components(self, plan.forests, specs)
+        } else {
+            PendingScopedSnapshot::capture_targets(self, plan.forests, false, specs)
+        }
+        .ok()?;
         let roots = match spec.scope {
             crate::history::Scope::Root => &mut self.doc.children,
             crate::history::Scope::Page { index, .. } => {

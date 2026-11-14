@@ -33,12 +33,36 @@ pub(super) fn process_message_with_auto_finalize(
         line,
         profile,
         |state| {
-            process_message_with_bound_authority_profiled(
+            process_message_with_bound_authority_actions(
                 state,
                 line,
                 profile,
                 true,
-                |tool, state, cmd| {
+                |tool, state, action| {
+                    let cmd = match action {
+                        AuthorityAction::Command(command) => command,
+                        AuthorityAction::AuthorizeAtomic(_) => return true,
+                        AuthorityAction::CommitAtomic(summary) => {
+                            if summary.document_changed(state) || summary.editor_metadata_changed {
+                                if let Err(error) = save_editor_state(state, path) {
+                                    // The outer atomic edit still owns its
+                                    // complete inverse; no command is replayed.
+                                    applier_failed = Some(format!("save failed: {error}"));
+                                    return false;
+                                }
+                            }
+                            if summary.document_changed(state) {
+                                if let Some(auto_finalize) = auto_finalize.as_deref_mut() {
+                                    auto_finalize.note_write(Instant::now());
+                                }
+                            }
+                            return true;
+                        }
+                        AuthorityAction::AtomicUncertain(reason) => {
+                            applier_failed = Some(format!("atomic recovery required: {reason}"));
+                            return false;
+                        }
+                    };
                     // `EditorState::apply` runs the pre-validate-then-mutate
                     // discipline; `false` means the command rejected and the
                     // document was NOT changed.
@@ -48,7 +72,7 @@ pub(super) fn process_message_with_auto_finalize(
                     let repair = !annotation_only && super::write_repairs::generated_tool(tool);
                     let mut capture = (cmd.may_change_document()
                         || matches!(cmd, EditorCommand::Batch { .. }))
-                    .then(|| super::begin_command_capture(state, cmd, repair));
+                    .then(|| super::begin_command_capture_moving_clipboard(state, cmd, repair));
                     let page_ui_before = (!agent_owned
                         && !cmd.may_change_document()
                         && matches!(
@@ -56,10 +80,13 @@ pub(super) fn process_message_with_auto_finalize(
                             EditorCommand::SetActivePage { .. } | EditorCommand::Batch { .. }
                         ))
                     .then(|| (state.selection.clone(), state.viewport));
-                    // Cut replaces rather than reads the old clipboard. Moving it
-                    // aside permits exact failure recovery without a deep clone.
-                    let clipboard_before = matches!(cmd, EditorCommand::CutSelected)
-                        .then(|| std::mem::take(&mut state.clipboard));
+                    // Targeted Cut checkpoints already own this actor value;
+                    // broad captures retain the legacy move-aside recovery.
+                    let clipboard_before = (matches!(cmd, EditorCommand::CutSelected)
+                        && capture
+                            .as_ref()
+                            .is_none_or(|capture| !capture.owns_replaced_clipboard_rollback()))
+                    .then(|| std::mem::take(&mut state.clipboard));
                     let applied = match capture.as_mut() {
                         Some(capture) => {
                             super::apply_command_with_command_capture(state, cmd.clone(), capture)

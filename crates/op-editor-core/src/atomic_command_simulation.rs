@@ -1,51 +1,29 @@
 //! One owned simulation with exactly one Batch allocator for the whole plan.
 
-use super::{IdFloor, ScopedIdAllocator};
-use crate::{DocumentIdAllocator, EditorCommand, EditorState, IdAllocError};
+use super::AtomicCommandAllocator;
+use crate::{EditorCommand, EditorState, IdAllocError};
 
 pub struct AtomicCommandSimulation {
     state: EditorState,
-    allocator: DocumentIdAllocator,
-    floor: IdFloor,
-    seed_error: Option<IdAllocError>,
+    allocator: AtomicCommandAllocator,
 }
 
 impl AtomicCommandSimulation {
     pub fn new(source: &EditorState) -> Self {
-        let (allocator, seed_error) = match source.standalone_id_allocator() {
-            Ok(allocator) => (allocator, None),
-            Err(error) => (DocumentIdAllocator::sequential(1), Some(error)),
-        };
+        let allocator = AtomicCommandAllocator::new(source);
         let mut state = source.clone_for_command_simulation();
         // Reads observe the pre-transaction history, not the empty scratch
         // history of the DSL simulator. Undo capture stays suspended, so
         // staged commands do not invent intermediate history entries.
         state.history = source.history.clone();
-        Self {
-            allocator,
-            seed_error,
-            state,
-            floor: IdFloor::default(),
-        }
+        Self { allocator, state }
     }
 
     /// The caller has already checked supports_atomic_batch. Keep the allocator
     /// cursor across deletion and authored-id steps just as the final Batch
     /// does, rather than re-seeding from each intermediate document.
     pub fn apply(&mut self, command: EditorCommand) -> Result<bool, IdAllocError> {
-        if crate::command_apply_legacy::allocation_policy::requires_id_seed(&command) {
-            if let Some(error) = self.seed_error {
-                return Err(error);
-            }
-        }
-        let mut allocator = ScopedIdAllocator {
-            inner: &mut self.allocator,
-            floor: std::mem::take(&mut self.floor),
-        };
-        allocator.prepare(&command);
-        let result = self.state.apply_with_allocator(command, &mut allocator);
-        self.floor = allocator.floor;
-        result
+        self.allocator.apply(&mut self.state, command)
     }
 }
 

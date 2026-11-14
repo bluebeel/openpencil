@@ -11,6 +11,7 @@ use std::path::Path;
 #[derive(Debug)]
 enum CommitError {
     AuthorityChanged,
+    AtomicRecovery(String),
     Save {
         source: DocIoError,
         rollback: Option<CommandEditError>,
@@ -23,6 +24,7 @@ impl std::fmt::Display for CommitError {
             Self::AuthorityChanged => f.write_str(
                 "managed primary changed while routing this write; no command was applied",
             ),
+            Self::AtomicRecovery(reason) => write!(f, "atomic recovery required: {reason}"),
             Self::Save { source, rollback } => {
                 write!(f, "managed primary save failed: {source}")?;
                 if let Some(error) = rollback {
@@ -58,11 +60,12 @@ fn apply_command(
     };
     let operation = fence.watch();
     let revision = editor.document_revision();
-    let mut capture = mcp_serve::begin_command_capture(editor, command, repair);
-    // Cut replaces its clipboard; move the old value aside instead of cloning
-    // a potentially large tree. The checkpoint deliberately excludes it.
-    let clipboard = matches!(command, EditorCommand::CutSelected)
-        .then(|| std::mem::take(&mut editor.clipboard));
+    let mut capture = mcp_serve::begin_command_capture_moving_clipboard(editor, command, repair);
+    // Targeted Cut checkpoints already own this actor value. Broad repair or
+    // unsupported captures keep the legacy move-aside rollback contract.
+    let clipboard = (matches!(command, EditorCommand::CutSelected)
+        && !capture.owns_replaced_clipboard_rollback())
+    .then(|| std::mem::take(&mut editor.clipboard));
     let applied =
         mcp_serve::apply_command_with_command_capture(editor, command.clone(), &mut capture);
     if !applied {
@@ -129,6 +132,10 @@ pub(super) fn dispatch(
     let policy = state.collab_policy();
     let mut refused = None;
     let mut failed = None;
+    let atomic_watch = (managed
+        && commit_path.is_some()
+        && op_mcp::parse_tool_call(line).is_some_and(|call| call.tool == "batch_tools"))
+    .then(|| fence.watch());
     let response = mcp_serve::agent_context::with_agent_context(
         &ctx.authority.agent_contexts,
         document_key,
@@ -136,15 +143,56 @@ pub(super) fn dispatch(
         line,
         profile,
         |editor| {
-            mcp_serve::process_message_with_bound_authority_profiled(
+            mcp_serve::process_message_with_bound_authority_actions(
                 editor,
                 line,
                 profile,
                 managed && commit_path.is_some(),
-                |tool, editor, command| {
-                    if failed.is_some() {
+                |tool, editor, action| {
+                    if failed.is_some()
+                        && !matches!(action, mcp_serve::AuthorityAction::AtomicUncertain(_))
+                    {
                         return false;
                     }
+                    let command = match action {
+                        mcp_serve::AuthorityAction::Command(command) => command,
+                        mcp_serve::AuthorityAction::AuthorizeAtomic(command) => {
+                            if let Err(reason) =
+                                policy.check_command(command, op_editor_core::CollabEditSource::Mcp)
+                            {
+                                refused = Some(reason);
+                                return false;
+                            }
+                            return true;
+                        }
+                        mcp_serve::AuthorityAction::CommitAtomic(summary) => {
+                            if summary.document_changed(editor) {
+                                if let Some(path) = commit_path.as_deref() {
+                                    if let Err(source) =
+                                        crate::doc_io::save_to_path_compact(editor, path)
+                                    {
+                                        failed = Some(CommitError::Save {
+                                            source,
+                                            rollback: None,
+                                        });
+                                        return false;
+                                    }
+                                }
+                                // Mixed structure keeps the existing reset
+                                // changefeed contract rather than claiming a
+                                // metadata-only forward record.
+                                committed_changes.unsupported();
+                            }
+                            applied_any |= summary.command_count != 0
+                                && (!agent_owned || summary.document_changed(editor));
+                            return true;
+                        }
+                        mcp_serve::AuthorityAction::AtomicUncertain(reason) => {
+                            fence.trip();
+                            failed = Some(CommitError::AtomicRecovery(reason.into()));
+                            return false;
+                        }
+                    };
                     if let Err(reason) =
                         policy.check_command(command, op_editor_core::CollabEditSource::Mcp)
                     {
@@ -175,6 +223,9 @@ pub(super) fn dispatch(
         },
     )?
     .unwrap_or_default();
+    if let Some(watch) = atomic_watch {
+        watch.complete();
+    }
     state.ensure_document_available()?;
     if let Some(reason) = refused {
         state.editor.editor_ui.collab.set_notice(

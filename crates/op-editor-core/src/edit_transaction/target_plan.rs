@@ -194,7 +194,7 @@ pub(super) fn structural_bound(state: &EditorState, command: &C) -> Option<usize
     if matches!(command, C::NudgeSelected { .. } | C::AlignSelected { .. }) {
         return selection::plan(state, command, state.ui.active_page_index).map(|(_, bytes)| bytes);
     }
-    if matches!(command, C::DeleteSelected) {
+    if matches!(command, C::DeleteSelected | C::CutSelected) {
         return crate::history::deletion_command_bound(state, command);
     }
     if matches!(command, C::ReplacePathsWithSvg(_)) {

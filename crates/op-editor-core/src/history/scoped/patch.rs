@@ -639,3 +639,7 @@ mod owned_compact;
 pub(super) use owned_compact::{
     header as compact_owned_header, list as compact_owned_list, node as compact_owned_node,
 };
+
+#[path = "incremental_compact.rs"]
+mod incremental_compact;
+pub(super) use incremental_compact::compact_incremental_roots;

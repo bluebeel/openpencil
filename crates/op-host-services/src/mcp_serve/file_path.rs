@@ -205,12 +205,71 @@ pub(crate) fn process_message_for_file_path_arg_with_contexts(
                             profile,
                             |state| {
                                 let operation = fence.watch();
-                                let result = super::process_message_with_bound_authority_profiled(
+                                let result = super::process_message_with_bound_authority_actions(
                                     state,
                                     line,
                                     profile,
                                     true,
-                                    |tool, state, cmd| {
+                                    |tool, state, action| {
+                                        let cmd = match action {
+                                            super::AuthorityAction::Command(command) => command,
+                                            super::AuthorityAction::AuthorizeAtomic(_) => {
+                                                if let Err(error) = stamp.verify(lease.path()) {
+                                                    write_failure = Some(error.to_string());
+                                                    invalidate = true;
+                                                    return false;
+                                                }
+                                                return true;
+                                            }
+                                            super::AuthorityAction::CommitAtomic(summary) => {
+                                                document_delta.observe(
+                                                    (
+                                                        summary.previous_generation,
+                                                        summary.previous_revision,
+                                                    ),
+                                                    state,
+                                                    None,
+                                                    lease.accounting_limit(),
+                                                );
+                                                let needs_save = summary.document_changed(state)
+                                                    || (!call.arguments.contains_key("agentId")
+                                                        && (summary.previous_active_page
+                                                            != state.ui.active_page_index
+                                                            || summary.previous_preserve_geometry
+                                                                != state
+                                                                    .editor_ui
+                                                                    .preserve_authored_geometry));
+                                                if !needs_save {
+                                                    return true;
+                                                }
+                                                let saved = stamp
+                                                    .verify(lease.path())
+                                                    .map_err(|error| {
+                                                        McpServeError::Document(error.to_string())
+                                                    })
+                                                    .and_then(|_| {
+                                                        super::save_editor_state(
+                                                            state,
+                                                            lease.path(),
+                                                        )
+                                                    });
+                                                if let Err(error) = saved {
+                                                    write_failure = Some(error.to_string());
+                                                    invalidate = true;
+                                                    return false;
+                                                }
+                                                persisted = true;
+                                                return true;
+                                            }
+                                            super::AuthorityAction::AtomicUncertain(reason) => {
+                                                fence.trip();
+                                                invalidate = true;
+                                                write_failure = Some(format!(
+                                                    "atomic recovery required: {reason}"
+                                                ));
+                                                return false;
+                                            }
+                                        };
                                         if let Err(error) = stamp.verify(lease.path()) {
                                             write_failure = Some(error.to_string());
                                             invalidate = true;
@@ -225,7 +284,11 @@ pub(crate) fn process_message_for_file_path_arg_with_contexts(
                                         let repair = super::write_repairs::generated_tool(tool);
                                         let mut capture = (cmd.may_change_document()
                                             || matches!(cmd, EditorCommand::Batch { .. }))
-                                        .then(|| super::begin_command_capture(state, cmd, repair));
+                                        .then(|| {
+                                            super::begin_command_capture_moving_clipboard(
+                                                state, cmd, repair,
+                                            )
+                                        });
                                         let page_ui_before = (!cmd.may_change_document()
                                             && matches!(
                                                 cmd,
@@ -234,8 +297,11 @@ pub(crate) fn process_message_for_file_path_arg_with_contexts(
                                             ))
                                         .then(|| (state.selection.clone(), state.viewport));
                                         let clipboard_before =
-                                            matches!(cmd, EditorCommand::CutSelected)
-                                                .then(|| std::mem::take(&mut state.clipboard));
+                                            (matches!(cmd, EditorCommand::CutSelected)
+                                                && capture.as_ref().is_none_or(|capture| {
+                                                    !capture.owns_replaced_clipboard_rollback()
+                                                }))
+                                            .then(|| std::mem::take(&mut state.clipboard));
                                         let applied = match capture.as_mut() {
                                             Some(capture) => {
                                                 super::apply_command_with_command_capture(

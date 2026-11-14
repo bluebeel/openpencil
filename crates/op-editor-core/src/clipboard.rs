@@ -21,12 +21,18 @@ impl EditorState {
         }
         let selected =
             crate::mutators::selection_nodes::resolve(self.active_children(), &self.selection.set);
-        let buf: Vec<PenNode> = self
+        let count = self
             .selection
             .set
             .iter()
-            .filter_map(|id| selected.get(id.as_str()).map(|node| (*node).clone()))
-            .collect();
+            .filter(|id| selected.contains_key(id.as_str()))
+            .count();
+        let mut buf = Vec::with_capacity(count);
+        for id in &self.selection.set {
+            if let Some(node) = selected.get(id.as_str()) {
+                buf.push((*node).clone());
+            }
+        }
         if buf.is_empty() {
             return false;
         }
@@ -37,12 +43,23 @@ impl EditorState {
     /// `Cmd+X`: copy the selection then delete it. Atomic — a
     /// failed delete restores the prior clipboard.
     pub fn cut_selected(&mut self) -> bool {
+        if self.selection.set.is_empty() {
+            return false;
+        }
+        let deletion = crate::mutators::selection_nodes::prepare_delete(self);
+        if deletion.as_ref().is_some_and(|plan| plan.is_empty()) {
+            return false;
+        }
         let saved = std::mem::take(&mut self.clipboard);
         if !self.copy_selected() {
             self.clipboard = saved;
             return false;
         }
-        if self.delete_selected() {
+        let deleted = match deletion {
+            Some(plan) => crate::mutators::selection_nodes::delete_prepared(self, plan),
+            None => self.delete_selected(),
+        };
+        if deleted {
             return true;
         }
         self.clipboard = saved;

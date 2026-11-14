@@ -2877,6 +2877,7 @@ version = "0.0.1"
 dependencies = [
  "jian-ops-schema",
  "jian-widgets",
+ "kurbo",
 ]
 
 [[package]]

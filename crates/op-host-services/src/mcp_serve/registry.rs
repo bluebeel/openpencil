@@ -143,7 +143,7 @@ pub(super) fn rebuild_registry_with_authority(
     register_tool!(
         "export_nodes",
         if requested_tool.is_some() {
-            export_tool::export_nodes_snapshot_admitted(doc)
+            export_tool::export_nodes_snapshot_admitted(doc, arguments)
         } else {
             export_nodes_snapshot(doc)
         }

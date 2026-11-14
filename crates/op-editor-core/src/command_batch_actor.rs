@@ -37,6 +37,16 @@ impl BatchActorSnapshot {
         }
     }
 
+    pub(crate) fn capture_clipboard_before(
+        &mut self,
+        state: &EditorState,
+        command: &EditorCommand,
+    ) {
+        if self.clipboard.is_none() && command.changes_clipboard() {
+            self.clipboard = Some(state.clipboard.clone());
+        }
+    }
+
     pub(crate) fn restore(self, state: &mut EditorState) {
         state.ui = self.ui;
         state.tool = self.tool;

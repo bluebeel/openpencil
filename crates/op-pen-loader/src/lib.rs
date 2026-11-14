@@ -35,9 +35,11 @@ mod effects;
 mod full_content_snapshot;
 mod initial_text_snapshot;
 mod item_scene;
+mod selected_scene;
 pub use computed_geometry::{
     editor_state_to_page_item_geometry, editor_state_to_page_parent_geometry, ComputedGeometry,
 };
+pub use selected_scene::editor_state_to_active_items_layout_scene;
 #[cfg(test)]
 mod item_scene_tests;
 mod layout_repair;
@@ -65,9 +67,9 @@ mod query_scene_cache;
 mod scene_cache;
 mod scene_inputs;
 pub use query_scene_cache::{
-    active_query_scene_cached, prepare_export_scene_cached, query_scene_cache_stats,
-    query_snap_index_cached, CachedExportScene, ExportScenePolicy, ExportSceneUnavailable,
-    QuerySceneCacheStats,
+    active_query_items_scene_cached, active_query_scene_cached, prepare_export_scene_cached,
+    query_scene_cache_stats, query_snap_index_cached, CachedExportScene, ExportScenePolicy,
+    ExportSceneUnavailable, QuerySceneCacheStats,
 };
 mod shader_preset;
 #[cfg(test)]

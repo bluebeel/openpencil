@@ -25,6 +25,7 @@ pub(crate) struct Budget {
     components: Option<usize>,
     retained: Option<usize>,
     shared_charged: bool,
+    components_charged: bool,
     last: Forecast,
 }
 #[derive(Clone, Copy)]
@@ -219,7 +220,7 @@ impl Budget {
         // A successful command that did not advance revision adds no history
         // anchor. Its pending capture may therefore retain another component
         // owner; this headroom was reserved before that capture was created.
-        self.used = self.used.saturating_add(self.components.unwrap_or(0));
+        self.used = self.used.saturating_add(self.last.components);
         debug_assert!(self.used <= LIMIT);
     }
     pub(crate) fn reserve_live_selection(&mut self, bytes: usize) -> Result<(), Refusal> {
@@ -272,6 +273,7 @@ impl Budget {
                 | C::GroupSelected
                 | C::UngroupSelected
                 | C::DeleteSelected
+                | C::CutSelected
                 | C::ReplacePathsWithSvg(_)
                 | C::NudgeSelected { .. }
                 | C::AlignSelected { .. }
@@ -292,18 +294,26 @@ impl Budget {
             }
         };
         self.last.target = target;
-        let components = match self.components {
-            Some(bytes) => bytes,
-            None => match component_charge(state, LIMIT) {
-                Ok(bytes) => {
-                    self.components = Some(bytes);
-                    bytes
-                }
-                Err(error) => {
-                    self.last.components = self.size_error(error);
-                    return Err(Refusal::ComponentMetadata);
-                }
-            },
+        // This exact borrowed target came from Core's lexical metadata path.
+        // Definition/external/prototype and structural captures stay complete.
+        let preserves_components =
+            known_target.is_some_and(|node| state.metadata_target_preserves_components(node));
+        let components = if preserves_components {
+            0
+        } else {
+            match self.components {
+                Some(bytes) => bytes,
+                None => match component_charge(state, LIMIT) {
+                    Ok(bytes) => {
+                        self.components = Some(bytes);
+                        bytes
+                    }
+                    Err(error) => {
+                        self.last.components = self.size_error(error);
+                        return Err(Refusal::ComponentMetadata);
+                    }
+                },
+            }
         };
         self.last.components = components;
         let retained = match self.retained {
@@ -322,11 +332,13 @@ impl Budget {
         self.last.retained = retained;
         let auxiliary = auxiliary_bytes(state);
         self.last.auxiliary = auxiliary;
-        let shared = if self.shared_charged {
-            0
-        } else {
-            components.saturating_add(retained)
-        };
+        let shared = (if self.shared_charged { 0 } else { retained }).saturating_add(
+            if self.components_charged {
+                0
+            } else {
+                components
+            },
+        );
         let charge = target
             .saturating_add(input.saturating_mul(8))
             .saturating_add(auxiliary)
@@ -340,6 +352,7 @@ impl Budget {
         }
         self.used += charge;
         self.shared_charged = true;
+        self.components_charged |= !preserves_components;
         Ok(())
     }
 }

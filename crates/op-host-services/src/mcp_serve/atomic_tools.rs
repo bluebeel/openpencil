@@ -16,8 +16,34 @@ use super::tool_profile::{self, McpAccessProfile, ToolAccess, ToolSurface};
 mod ids;
 #[path = "atomic_tools_input.rs"]
 mod input;
+#[path = "atomic_tools_live.rs"]
+mod live;
 #[path = "atomic_tools_sparse.rs"]
 mod sparse;
+pub(super) use live::try_execute;
+
+/// Only the explicitly bound host path supplies these callbacks. Legacy and
+/// arbitrary appliers retain the complete isolated prepare/replay behavior.
+#[derive(Clone, Copy)]
+pub(crate) enum AuthorityAction<'a> {
+    Command(&'a EditorCommand),
+    AuthorizeAtomic(&'a EditorCommand),
+    CommitAtomic(&'a AtomicCommit),
+    AtomicUncertain(&'a str),
+}
+pub(crate) struct AtomicCommit {
+    pub previous_revision: u64,
+    pub previous_generation: u64,
+    pub previous_active_page: usize,
+    pub previous_preserve_geometry: bool,
+    pub editor_metadata_changed: bool,
+    pub command_count: usize,
+}
+impl AtomicCommit {
+    pub fn document_changed(&self, state: &EditorState) -> bool {
+        self.previous_revision != state.document_revision()
+    }
+}
 
 const MAX_RESULT_BYTES: usize = 4 * 1024 * 1024;
 const MAX_COMMANDS: usize = 1024;

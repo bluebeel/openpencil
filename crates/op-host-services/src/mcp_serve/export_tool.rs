@@ -146,11 +146,18 @@ pub(crate) fn export_nodes_from_scene(scene: LayoutScene) -> ExportNodes {
     export_nodes_from_snapshot(RasterSnapshot::from_scene(scene))
 }
 
-pub(crate) fn export_nodes_snapshot_admitted(state: &EditorState) -> ExportNodes {
+pub(crate) fn export_nodes_snapshot_admitted(
+    state: &EditorState,
+    arguments: Option<&BTreeMap<String, String>>,
+) -> ExportNodes {
+    let ids = arguments
+        .and_then(|args| args.get("nodeIds"))
+        .map(|ids| parse_string_array(ids))
+        .unwrap_or_default();
     export_nodes_from_snapshot(RasterSnapshot::capture_http(
         state,
-        op_pen_loader::ExportScenePolicy::ActiveCanvas,
-        || op_pen_loader::editor_state_to_active_page_layout_scene(state),
+        op_pen_loader::ExportScenePolicy::ActiveItems(ids.clone()),
+        || op_pen_loader::editor_state_to_active_items_layout_scene(state, &ids),
     ))
 }
 

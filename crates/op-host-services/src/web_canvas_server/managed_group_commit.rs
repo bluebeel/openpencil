@@ -146,6 +146,7 @@ fn candidate(line: &str, profile: McpAccessProfile) -> bool {
             | "group_selected"
             | "ungroup_selected"
             | "delete_selected"
+            | "cut_selected"
             | "boolean_selected"
             | "nudge_selected"
             | "align_selected"
@@ -180,6 +181,7 @@ fn audited(command: &C) -> bool {
         | C::GroupSelected
         | C::UngroupSelected
         | C::DeleteSelected
+        | C::CutSelected
         | C::ReplacePathsWithSvg(_)
         | C::NudgeSelected { .. }
         | C::AlignSelected { .. } => true,
@@ -357,6 +359,7 @@ impl Transaction<'_, '_, '_> {
                     | "group_selected"
                     | "ungroup_selected"
                     | "delete_selected"
+                    | "cut_selected"
                     | "boolean_selected"
                     | "nudge_selected"
                     | "align_selected"

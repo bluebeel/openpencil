@@ -449,6 +449,24 @@ pub fn active_query_scene_cached(state: &EditorState) -> Arc<LayoutScene> {
         Value::Snap(_) => unreachable!("cache key kind"),
     }
 }
+/// Trusted parent-scoped snap requests share exact scenes under the same
+/// owner/resource key and existing byte/retired-pin accounting. Broader or
+/// unproved scopes use the ordinary whole active-page query cache.
+pub fn active_query_items_scene_cached(state: &EditorState, ids: Vec<String>) -> Arc<LayoutScene> {
+    let policy = ExportScenePolicy::ActiveItems(ids).normalized(state);
+    if policy == ExportScenePolicy::ActiveCanvas {
+        return active_query_scene_cached(state);
+    }
+    let key = SceneInputs::capture(state).map(|input| Key::Export {
+        input,
+        policy: policy.clone(),
+        selected: None,
+    });
+    match get_or_build(key, || Value::Scene(Arc::new(policy.build(state)))) {
+        Value::Scene(scene) => scene,
+        Value::Snap(_) => unreachable!("scene cache key kind"),
+    }
+}
 /// Reuse the real editor SnapIndex for this exact immutable scene allocation.
 /// This key cannot alias a different scene even after an editor revision expires.
 pub fn query_snap_index_cached(

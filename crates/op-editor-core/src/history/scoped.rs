@@ -18,6 +18,8 @@ mod forward_structure;
 mod header;
 mod header_map;
 mod identity;
+mod incremental;
+mod incremental_regions;
 mod metadata_changes;
 mod patch;
 mod splice;
@@ -55,6 +57,7 @@ pub struct ScopedEditorSnapshot {
     selection: SelectionState,
     pub active_page_index: usize,
     components: SharedComponents,
+    captures_components: bool,
     app_state_owner: BTreeMap<String, usize>,
     fill_refs: HashMap<NodeId, String>,
     stroke_refs: HashMap<NodeId, String>,
@@ -92,6 +95,7 @@ pub(crate) struct PendingScopedSnapshot {
 #[derive(Debug)]
 enum CapturedForest {
     Root(Vec<PenNode>),
+    Regions(incremental_regions::PendingRegions),
     Page { index: usize, page: PenPage },
 }
 impl PendingScopedSnapshot {
@@ -217,8 +221,40 @@ impl PendingScopedSnapshot {
         capture_header: bool,
         specs: Vec<TargetSpec>,
     ) -> Result<Self, ScopedHistoryError> {
+        Self::capture_targets_with_components(state, scopes, capture_header, specs, true)
+    }
+    /// Only lexical, audited node-header writers without catalog maintenance.
+    pub(crate) fn capture_targets_preserving_components(
+        state: &EditorState,
+        scopes: Vec<Scope>,
+        specs: Vec<TargetSpec>,
+    ) -> Result<Self, ScopedHistoryError> {
+        let [spec] = specs.as_slice() else {
+            return Err(ScopedHistoryError::NodePathChanged);
+        };
+        if spec.subtree || spec.splice.is_some() || spec.topology.is_some() {
+            return Err(ScopedHistoryError::NodePathChanged);
+        }
+        let target = patch::node(patch::roots(&state.doc, &spec.scope)?, &spec.path)
+            .ok_or(ScopedHistoryError::NodePathChanged)?;
+        if !state.metadata_target_preserves_components(target) {
+            return Err(ScopedHistoryError::NodePathChanged);
+        }
+        Self::capture_targets_with_components(state, scopes, false, specs, false)
+    }
+    fn capture_targets_with_components(
+        state: &EditorState,
+        scopes: Vec<Scope>,
+        capture_header: bool,
+        specs: Vec<TargetSpec>,
+        capture_components: bool,
+    ) -> Result<Self, ScopedHistoryError> {
         Ok(Self {
-            metadata: ScopedEditorSnapshot::auxiliary(state, scopes),
+            metadata: ScopedEditorSnapshot::auxiliary_with_components(
+                state,
+                scopes,
+                capture_components,
+            ),
             forests: Vec::new(),
             targets: targets::capture(state, specs)?,
             targeted: true,
@@ -236,6 +272,7 @@ impl PendingScopedSnapshot {
         for forest in mem::take(&mut self.forests) {
             match forest {
                 CapturedForest::Root(nodes) => state.doc.children = nodes,
+                CapturedForest::Regions(regions) => regions.restore(state)?,
                 CapturedForest::Page { index, page } => {
                     state.doc.pages.as_mut().unwrap()[index] = page
                 }
@@ -256,7 +293,9 @@ impl PendingScopedSnapshot {
         }
         state.selection = self.metadata.selection.clone();
         state.ui.active_page_index = self.metadata.active_page_index;
-        state.components = self.metadata.components.materialize();
+        if self.metadata.captures_components {
+            state.components = self.metadata.components.materialize();
+        }
         state.app_state_owner = self.metadata.app_state_owner.clone();
         state.ui.variables.fill_refs = self.metadata.fill_refs.clone();
         state.ui.variables.stroke_refs = self.metadata.stroke_refs.clone();
@@ -266,6 +305,26 @@ impl PendingScopedSnapshot {
         Ok(())
     }
     pub(crate) fn capture(state: &EditorState, scopes: Vec<Scope>, capture_header: bool) -> Self {
+        Self::capture_with_components(state, scopes, capture_header, true)
+    }
+    /// The live atomic driver must upgrade before the first command that is
+    /// not proven catalog-preserving, while the original catalog is unchanged.
+    pub(crate) fn capture_incremental_preserving_components(state: &EditorState) -> Self {
+        Self::capture_with_components(state, Vec::new(), false, false)
+    }
+    /// Caller has admitted the complete catalog allocation before this upgrade.
+    pub(crate) fn upgrade_component_checkpoint(&mut self, state: &EditorState) {
+        if !self.metadata.captures_components {
+            self.metadata.components = captured_components_checkpoint(state);
+            self.metadata.captures_components = true;
+        }
+    }
+    fn capture_with_components(
+        state: &EditorState,
+        scopes: Vec<Scope>,
+        capture_header: bool,
+        capture_components: bool,
+    ) -> Self {
         let forests = scopes
             .iter()
             .map(|scope| match scope {
@@ -277,7 +336,11 @@ impl PendingScopedSnapshot {
             })
             .collect();
         Self {
-            metadata: ScopedEditorSnapshot::auxiliary(state, scopes),
+            metadata: ScopedEditorSnapshot::auxiliary_with_components(
+                state,
+                scopes,
+                capture_components,
+            ),
             forests,
             targets: Vec::new(),
             targeted: false,
@@ -303,6 +366,10 @@ impl PendingScopedSnapshot {
         for forest in self.forests {
             let (scope, old) = match forest {
                 CapturedForest::Root(nodes) => (Scope::Root, nodes),
+                CapturedForest::Regions(regions) => {
+                    regions.compact(state, &mut self.metadata.patches)?;
+                    continue;
+                }
                 CapturedForest::Page { index, mut page } => {
                     let current = &state.doc.pages.as_ref().unwrap()[index];
                     let children = mem::take(&mut page.children);
@@ -342,7 +409,7 @@ impl PendingScopedSnapshot {
             }
         }
         self.metadata.header = self.header.map(|header| header.compact(&state.doc));
-        let components_unchanged = self.targeted || {
+        let components_unchanged = !self.metadata.captures_components || self.targeted || {
             let current =
                 SharedComponents::capture(&state.components, Some(&self.metadata.components));
             Arc::ptr_eq(
@@ -362,6 +429,30 @@ impl PendingScopedSnapshot {
         self.metadata.page_headers.shrink_to_fit();
         Ok(self.metadata)
     }
+}
+fn captured_components_checkpoint(state: &EditorState) -> SharedComponents {
+    SharedComponents::capture(
+        &state.components,
+        state
+            .history
+            .future
+            .iter()
+            .rev()
+            .chain(state.history.past.iter().rev())
+            .find_map(|entry| match entry {
+                HistoryEntry::Full(snapshot) => Some(&snapshot.components),
+                HistoryEntry::Scoped(snapshot) if snapshot.captures_components => {
+                    Some(snapshot.components())
+                }
+                HistoryEntry::Scoped(_) => None,
+            }),
+    )
+}
+// All non-owning entries share this immutable empty retained-owner marker;
+// neither undo nor compaction interprets it as live catalog contents.
+fn preserved_components_checkpoint() -> SharedComponents {
+    static EMPTY: std::sync::OnceLock<SharedComponents> = std::sync::OnceLock::new();
+    EMPTY.get_or_init(SharedComponents::default).clone()
 }
 fn page_metadata(page: &PenPage) -> PenPage {
     PenPage {
@@ -388,6 +479,13 @@ impl ScopedEditorSnapshot {
         }
     }
     fn auxiliary(state: &EditorState, scopes: Vec<Scope>) -> Self {
+        Self::auxiliary_with_components(state, scopes, true)
+    }
+    fn auxiliary_with_components(
+        state: &EditorState,
+        scopes: Vec<Scope>,
+        captures_components: bool,
+    ) -> Self {
         Self {
             history_tag: super::HistoryTag::capture(state.history.actor()),
             actor_safe: false,
@@ -399,18 +497,12 @@ impl ScopedEditorSnapshot {
             header: None,
             selection: state.selection.clone(),
             active_page_index: state.ui.active_page_index,
-            components: SharedComponents::capture(
-                &state.components,
-                state
-                    .history
-                    .future
-                    .back()
-                    .or_else(|| state.history.past.back())
-                    .map(|entry| match entry {
-                        HistoryEntry::Full(snapshot) => &snapshot.components,
-                        HistoryEntry::Scoped(snapshot) => snapshot.components(),
-                    }),
-            ),
+            components: if captures_components {
+                captured_components_checkpoint(state)
+            } else {
+                preserved_components_checkpoint()
+            },
+            captures_components,
             app_state_owner: state.app_state_owner.clone(),
             fill_refs: state.ui.variables.fill_refs.clone(),
             stroke_refs: state.ui.variables.stroke_refs.clone(),
@@ -427,8 +519,14 @@ impl ScopedEditorSnapshot {
     pub(crate) fn captures_header(&self) -> bool {
         self.header.is_some()
     }
+    /// Retained catalog checkpoint; empty when this entry deliberately leaves
+    /// catalog state untouched. Default snapshots and arbitrary-maintenance
+    /// constructors retain complete catalog ownership.
     pub fn components(&self) -> &SharedComponents {
         &self.components
+    }
+    pub fn captures_components(&self) -> bool {
+        self.captures_components
     }
     pub fn retained_roots(&self) -> impl Iterator<Item = &Arc<SharedNode>> {
         self.patches.iter().flat_map(Patch::retained_roots)
@@ -527,7 +625,8 @@ impl ScopedEditorSnapshot {
         {
             return Err(ScopedHistoryError::DocumentHeaderChanged);
         }
-        let reverse = Self::auxiliary(state, self.scopes.clone());
+        let reverse =
+            Self::auxiliary_with_components(state, self.scopes.clone(), self.captures_components);
         let mut reordered = patch::Reorders::default();
         if let Some(splices) = splices {
             splices.exchange(&mut state.doc, &mut self.patches);
@@ -551,8 +650,10 @@ impl ScopedEditorSnapshot {
         state.selection = mem::replace(&mut self.selection, reverse.selection);
         state.ui.active_page_index =
             mem::replace(&mut self.active_page_index, reverse.active_page_index);
-        state.components = self.components.materialize();
-        self.components = reverse.components;
+        if self.captures_components {
+            state.components = self.components.materialize();
+            self.components = reverse.components;
+        }
         state.app_state_owner = mem::replace(&mut self.app_state_owner, reverse.app_state_owner);
         state.ui.variables.fill_refs = mem::replace(&mut self.fill_refs, reverse.fill_refs);
         state.ui.variables.stroke_refs = mem::replace(&mut self.stroke_refs, reverse.stroke_refs);

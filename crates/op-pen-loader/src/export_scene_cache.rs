@@ -5,21 +5,41 @@ use super::*;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ExportScenePolicy {
     ActiveCanvas,
+    ActiveItems(Vec<String>),
     ActivePresentation,
     FullDocument,
     FullContentActive,
     Item(String),
 }
 impl ExportScenePolicy {
+    pub(super) fn normalized(self, state: &EditorState) -> Self {
+        match self {
+            Self::ActiveItems(mut ids) => {
+                ids.sort_unstable();
+                ids.dedup();
+                if crate::selected_scene::active_can_push_down(state, &ids) {
+                    Self::ActiveItems(ids)
+                } else {
+                    Self::ActiveCanvas
+                }
+            }
+            other => other,
+        }
+    }
     pub(super) fn bytes(&self) -> usize {
         match self {
             Self::Item(id) => id.capacity(),
+            Self::ActiveItems(ids) => {
+                ids.capacity() * size_of::<String>()
+                    + ids.iter().map(String::capacity).sum::<usize>()
+            }
             _ => 0,
         }
     }
-    fn build(&self, state: &EditorState) -> LayoutScene {
+    pub(super) fn build(&self, state: &EditorState) -> LayoutScene {
         match self {
             Self::ActiveCanvas => crate::editor_state_to_active_page_layout_scene(state),
+            Self::ActiveItems(ids) => crate::editor_state_to_active_items_layout_scene(state, ids),
             Self::ActivePresentation => {
                 crate::editor_state_to_active_page_export_layout_scene(state)
             }
@@ -67,6 +87,7 @@ pub fn prepare_export_scene_cached(
     state: &EditorState,
     policy: ExportScenePolicy,
 ) -> CachedExportScene {
+    let policy = policy.normalized(state);
     let selected = matches!(
         policy,
         ExportScenePolicy::ActivePresentation | ExportScenePolicy::FullContentActive

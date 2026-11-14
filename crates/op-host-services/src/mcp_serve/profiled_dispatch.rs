@@ -9,12 +9,22 @@ pub fn process_message_with_applier_profiled<F>(
     state: &mut EditorState,
     line: &str,
     profile: tool_profile::McpAccessProfile,
-    apply: F,
+    mut apply: F,
 ) -> Result<Option<String>, McpServeError>
 where
     F: FnMut(&str, &mut EditorState, &EditorCommand) -> bool,
 {
-    dispatch(state, line, profile, false, apply)
+    dispatch(
+        state,
+        line,
+        profile,
+        false,
+        false,
+        |tool, state, action| match action {
+            AuthorityAction::Command(command) => apply(tool, state, command),
+            _ => false,
+        },
+    )
 }
 
 /// Only file-backed hosts holding their complete writer/actor authority may
@@ -26,12 +36,38 @@ pub(crate) fn process_message_with_bound_authority_profiled<F>(
     line: &str,
     profile: tool_profile::McpAccessProfile,
     bound_authority: bool,
-    apply: F,
+    mut apply: F,
 ) -> Result<Option<String>, McpServeError>
 where
     F: FnMut(&str, &mut EditorState, &EditorCommand) -> bool,
 {
-    dispatch(state, line, profile, bound_authority, apply)
+    dispatch(
+        state,
+        line,
+        profile,
+        bound_authority,
+        false,
+        |tool, state, action| match action {
+            AuthorityAction::Command(command) => apply(tool, state, command),
+            _ => false,
+        },
+    )
+}
+
+/// Bound hosts explicitly distinguish command apply from durable commit of an
+/// already-executed atomic edit. Commit false must mean no durable write was
+/// acknowledged; uncertain IO/panics trip recovery and are never retried.
+pub(crate) fn process_message_with_bound_authority_actions<F>(
+    state: &mut EditorState,
+    line: &str,
+    profile: tool_profile::McpAccessProfile,
+    bound_authority: bool,
+    apply: F,
+) -> Result<Option<String>, McpServeError>
+where
+    F: FnMut(&str, &mut EditorState, AuthorityAction<'_>) -> bool,
+{
+    dispatch(state, line, profile, bound_authority, true, apply)
 }
 
 fn dispatch<F>(
@@ -39,10 +75,11 @@ fn dispatch<F>(
     line: &str,
     profile: tool_profile::McpAccessProfile,
     bound_authority: bool,
+    live_atomic: bool,
     mut apply: F,
 ) -> Result<Option<String>, McpServeError>
 where
-    F: FnMut(&str, &mut EditorState, &EditorCommand) -> bool,
+    F: FnMut(&str, &mut EditorState, AuthorityAction<'_>) -> bool,
 {
     let trimmed = line.trim();
     if trimmed.is_empty() {
@@ -87,6 +124,19 @@ where
             )));
         }
     }
+    if bound_authority && live_atomic {
+        if let Some(call) = call.as_ref().filter(|call| call.tool == "batch_tools") {
+            if let Some(tool) =
+                atomic_tools::try_execute(state, &call.arguments, profile, |state, action| {
+                    apply("batch_tools", state, action)
+                })?
+            {
+                let mut registry = op_mcp::ToolRegistry::default();
+                registry.register(tool);
+                return process_tool_message_with_registry(&registry, line, |_, _| false);
+            }
+        }
+    }
     let requested_tool = call.as_ref().map(|call| call.tool.as_str());
     let arguments = call.as_ref().map(|call| &call.arguments);
     let mut registry = if bound_authority {
@@ -107,6 +157,6 @@ where
         }
     }
     process_tool_message_with_registry(&registry, line, |tool_name, cmd| {
-        apply(tool_name, state, cmd)
+        apply(tool_name, state, AuthorityAction::Command(cmd))
     })
 }

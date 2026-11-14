@@ -37,7 +37,20 @@ pub(crate) fn resolve<'a>(
 
 /// Linear delete for unambiguous selected IDs. Duplicate selected identities
 /// keep the legacy resolver/removal order rather than choosing a new authority.
-pub(crate) fn delete(state: &mut crate::EditorState) -> Option<bool> {
+pub(crate) struct DeletePlan {
+    deletable: HashSet<String>,
+    kept: Vec<NodeId>,
+}
+impl DeletePlan {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.deletable.is_empty()
+    }
+}
+
+/// The caller must not mutate the canonical forest or selection before apply.
+/// Copying the selection to the clipboard does neither, so Cut can reuse this
+/// exact plan and avoid cloning a fully protected selection just to reject it.
+pub(crate) fn prepare_delete(state: &crate::EditorState) -> Option<DeletePlan> {
     struct Frame<'a> {
         id: Option<&'a str>,
         children: std::slice::Iter<'a, PenNode>,
@@ -88,8 +101,16 @@ pub(crate) fn delete(state: &mut crate::EditorState) -> Option<bool> {
             .collect::<HashSet<_>>();
         (deletable, kept)
     };
+    Some(DeletePlan { deletable, kept })
+}
+pub(crate) fn delete(state: &mut crate::EditorState) -> Option<bool> {
+    let plan = prepare_delete(state)?;
+    Some(delete_prepared(state, plan))
+}
+pub(crate) fn delete_prepared(state: &mut crate::EditorState, plan: DeletePlan) -> bool {
+    let DeletePlan { deletable, kept } = plan;
     if deletable.is_empty() {
-        return Some(false);
+        return false;
     }
     fn remove(nodes: &mut Vec<PenNode>, ids: &HashSet<String>) -> bool {
         let mut removed = false;
@@ -112,7 +133,7 @@ pub(crate) fn delete(state: &mut crate::EditorState) -> Option<bool> {
         state.selection.set = kept;
         state.selection.anchor = state.selection.set.last().cloned().unwrap_or(NodeId::NONE);
     }
-    Some(removed)
+    removed
 }
 
 /// Replace the active-page selection after one requested-ID lookup.
