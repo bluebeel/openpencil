@@ -33,7 +33,7 @@ pub(super) fn process_message_with_auto_finalize(
         line,
         profile,
         |state| {
-            process_message_with_applier_profiled(state, line, profile, |_, state, cmd| {
+            process_message_with_applier_profiled(state, line, profile, |tool, state, cmd| {
                 // `EditorState::apply` runs the pre-validate-then-mutate
                 // discipline; `false` means the command rejected and the
                 // document was NOT changed.
@@ -56,10 +56,14 @@ pub(super) fn process_message_with_auto_finalize(
                     Some(capture) => super::command_apply::apply_command_with_undo_captured(
                         state,
                         cmd.clone(),
-                        !annotation_only,
+                        !annotation_only && super::write_repairs::generated_tool(tool),
                         capture,
                     ),
-                    None => apply_command_with_undo(state, cmd.clone(), !annotation_only),
+                    None => apply_command_with_undo(
+                        state,
+                        cmd.clone(),
+                        !annotation_only && super::write_repairs::generated_tool(tool),
+                    ),
                 };
                 if !applied {
                     if let Some(clipboard) = clipboard_before {

@@ -281,7 +281,11 @@ impl McpLiveServer {
                     // is a targeted property tweak, not a "generation").
                     let ids_before = (tool_name == "batch_design")
                         .then(|| crate::design_agent_tools::collect_active_node_ids(state));
-                    let result = crate::mcp_serve::apply_command_with_undo_report(state, cmd, true);
+                    let result = crate::mcp_serve::apply_command_with_undo_report(
+                        state,
+                        cmd,
+                        crate::mcp_serve::write_repairs::generated_tool(&tool_name),
+                    );
                     let applied = result.applied;
                     if applied {
                         if let Some(ids_before) = ids_before {

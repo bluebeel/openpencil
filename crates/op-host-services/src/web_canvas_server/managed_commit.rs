@@ -42,12 +42,13 @@ fn apply_command(
     editor: &mut EditorState,
     command: &EditorCommand,
     path: Option<&Path>,
+    repair: bool,
 ) -> Result<bool, CommitError> {
     let Some(path) = path.filter(|_| command.may_change_document()) else {
         return Ok(mcp_serve::apply_command_with_undo(
             editor,
             command.clone(),
-            true,
+            repair,
         ));
     };
     let revision = editor.document_revision();
@@ -56,8 +57,12 @@ fn apply_command(
     // a potentially large tree. The checkpoint deliberately excludes it.
     let clipboard = matches!(command, EditorCommand::CutSelected)
         .then(|| std::mem::take(&mut editor.clipboard));
-    let applied =
-        mcp_serve::apply_command_with_command_capture(editor, command.clone(), true, &mut capture);
+    let applied = mcp_serve::apply_command_with_command_capture(
+        editor,
+        command.clone(),
+        repair,
+        &mut capture,
+    );
     if !applied {
         if let Some(clipboard) = clipboard {
             editor.clipboard = clipboard;
@@ -117,7 +122,7 @@ pub(super) fn dispatch(
                 editor,
                 line,
                 profile,
-                |_, editor, command| {
+                |tool, editor, command| {
                     if failed.is_some() {
                         return false;
                     }
@@ -128,7 +133,12 @@ pub(super) fn dispatch(
                         return false;
                     }
                     let revision = editor.document_revision();
-                    match apply_command(editor, command, commit_path.as_deref()) {
+                    match apply_command(
+                        editor,
+                        command,
+                        commit_path.as_deref(),
+                        mcp_serve::write_repairs::generated_tool(tool),
+                    ) {
                         Ok(applied) => {
                             applied_any |=
                                 applied && (!agent_owned || editor.document_revision() != revision);

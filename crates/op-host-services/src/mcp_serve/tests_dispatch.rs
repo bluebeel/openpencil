@@ -148,39 +148,6 @@ fn file_backed_agent_context_keeps_selection_zoom_and_cross_file_clipboard_separ
 }
 
 #[test]
-fn ui_commands_skip_document_repairs_but_writes_keep_them() {
-    let doc = jian_ops_schema::load_str(
-        r#"{
-        "version":"1.0.0","children":[{"type":"rectangle","id":"slot",
-        "width":24,"height":16,"fill":[{"type":"image","url":""}]}]
-    }"#,
-    )
-    .unwrap();
-    let mut state = EditorState::from_document(doc.value);
-    let original = state.doc.clone();
-    let revision = state.document_revision();
-    assert!(state.apply(EditorCommand::SetViewport {
-        pan_x: Some(10),
-        pan_y: None,
-        zoom_percent: Some(125),
-    }));
-    assert!(!repair_after_document_change(&mut state, revision));
-    assert_eq!(state.doc, original, "zoom must not materialize image slots");
-
-    let revision = state.document_revision();
-    assert!(state.apply(EditorCommand::PatchNodeData {
-        node_id: op_editor_core::NodeId::new("slot"),
-        patch_json: r#"{"name":"Edited slot"}"#.into(),
-        page_id: None,
-    }));
-    assert!(repair_after_document_change(&mut state, revision));
-    assert!(matches!(
-        state.active_children()[0],
-        jian_ops_schema::node::PenNode::Image(_)
-    ));
-}
-
-#[test]
 fn preserve_mode_edits_do_not_rewrite_authored_chrome_paths_or_image_containers() {
     let document = jian_ops_schema::load_str(
         r##"{
@@ -196,13 +163,16 @@ fn preserve_mode_edits_do_not_rewrite_authored_chrome_paths_or_image_containers(
     .value;
     let mut state = EditorState::from_document(document);
     state.editor_ui.preserve_authored_geometry = true;
-    let revision = state.document_revision();
-    assert!(state.apply(EditorCommand::SetNodeName {
-        node_id: op_editor_core::NodeId::new("screen"),
-        name: "Explicit edit".into(),
-    }));
-    let edited = state.doc.clone();
-    assert!(!repair_after_document_change(&mut state, revision));
+    let mut edited = state.doc.clone();
+    edited.children[0].base_mut().name = Some("Explicit edit".into());
+    assert!(apply_command_with_undo(
+        &mut state,
+        EditorCommand::SetNodeName {
+            node_id: op_editor_core::NodeId::new("screen"),
+            name: "Explicit edit".into(),
+        },
+        true
+    ));
     assert_eq!(
         state.doc, edited,
         "only the explicit edit may change an authored import"

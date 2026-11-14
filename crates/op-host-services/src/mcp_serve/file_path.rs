@@ -187,7 +187,7 @@ pub(crate) fn process_message_for_file_path_arg_with_contexts(
                             state,
                             line,
                             profile,
-                            |_, state, cmd| {
+                            |tool, state, cmd| {
                                 if let Err(error) = stamp.verify(lease.path()) {
                                     write_failure = Some(error.to_string());
                                     invalidate = true;
@@ -198,7 +198,11 @@ pub(crate) fn process_message_for_file_path_arg_with_contexts(
                                     state.ui.active_page_index,
                                     state.editor_ui.preserve_authored_geometry,
                                 );
-                                if !super::apply_command_with_undo(state, cmd.clone(), true) {
+                                if !super::apply_command_with_undo(
+                                    state,
+                                    cmd.clone(),
+                                    super::write_repairs::generated_tool(tool),
+                                ) {
                                     return false;
                                 }
                                 let needs_save = state.document_revision() != revision

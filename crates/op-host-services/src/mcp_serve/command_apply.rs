@@ -39,10 +39,9 @@ pub(crate) fn apply_command_with_command_capture(
     capture: &mut op_editor_core::CommandEditCapture,
 ) -> bool {
     let before = state.document_revision();
+    let plan = super::write_repairs::RepairPlan::capture(state, &command, repair);
     state.apply_command_edit_then(command, capture, |state| {
-        if repair {
-            super::repair_after_document_change(state, before);
-        }
+        plan.apply(state, before);
     })
 }
 
@@ -53,11 +52,10 @@ fn apply_command_impl(
     capture: Option<&op_editor_core::LocalEditCapture>,
 ) -> CommandApplyReport {
     let before = state.document_revision();
+    let plan = super::write_repairs::RepairPlan::capture(state, &command, repair);
     let mut layout_repaired = false;
     let maintain = |state: &mut EditorState| {
-        if repair {
-            layout_repaired = super::repair_after_document_change(state, before);
-        }
+        layout_repaired = plan.apply(state, before);
     };
     let applied = match capture {
         Some(capture) => state.apply_undoable_captured_then(command, capture, maintain),

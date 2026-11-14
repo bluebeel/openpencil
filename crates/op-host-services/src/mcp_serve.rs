@@ -159,29 +159,6 @@ pub(crate) fn normalize_icon_paths_after_apply(
     report
 }
 
-/// Maintain generated-document output after a bare-MCP write, before save.
-/// Preserve-mode imports keep their authored content outside the explicit edit.
-pub(crate) fn run_write_repairs_after_apply(state: &mut EditorState) -> bool {
-    // Preserve-mode imports carry authored screen chrome, paths and container
-    // choices. Heuristics for generated documents must not rewrite unrelated
-    // imported content after an explicit edit, nor scan that whole document.
-    if state.editor_ui.preserve_authored_geometry {
-        return false;
-    }
-    normalize_mobile_screens_after_apply(state);
-    normalize_icon_paths_after_apply(state);
-    let mobile_nav_reflowed = op_orchestrator::repair_mobile_trailing_nav_reflow(state);
-    let image_slots_materialized =
-        op_orchestrator::cleanup_image_slots::materialize_empty_image_fill_slots(state);
-    mobile_nav_reflowed || image_slots_materialized
-}
-
-/// UI-only commands must not traverse or normalize document content. Undo and
-/// redo are detected through the actual revision change, just like writes.
-pub(crate) fn repair_after_document_change(state: &mut EditorState, before: u64) -> bool {
-    state.document_revision() != before && run_write_repairs_after_apply(state)
-}
-
 /// Process one JSON-RPC message line against the editor state.
 #[cfg(test)]
 fn process_message(
@@ -200,6 +177,7 @@ fn process_message(
 
 mod command_apply;
 mod stdio_dispatch;
+pub(crate) mod write_repairs;
 pub(crate) use command_apply::{
     apply_command_with_command_capture, apply_command_with_undo, apply_command_with_undo_report,
 };
