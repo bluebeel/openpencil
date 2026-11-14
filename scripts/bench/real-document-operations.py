@@ -83,6 +83,17 @@ def semantic_hash(value):
     return digest.hexdigest()
 
 
+def expect_saved_active_page(document, index):
+    """Model only the host's explicit editorMeta save extension, not UI drops."""
+    assert isinstance(index, int) and not isinstance(index, bool) and index >= 0
+    if 'editorMeta' not in document:
+        # A fresh workcopy has no legacy sidecar. The source loader's absent
+        # metadata default is false; Save always emits this typed extension.
+        document['editorMeta'] = {'preserveAuthoredGeometry': False}
+    assert isinstance(document['editorMeta'], dict)
+    document['editorMeta']['activePageIndex'] = index
+
+
 class Rejected(Exception):
     pass
 
@@ -94,6 +105,7 @@ class Case:
         self.process = self.sampler = self.observer = None
         self.port, self.serial, self.writes = None, 0, 0
         self.current, self.expected, self.uncertain = None, {}, {}
+        self.accepted_active_pages, self.saved_active_page = {}, None
         self.report = {'status': 'starting', 'logicalClients': clients,
             'requestedActiveConcurrency': inflight, 'oneSharedService': True,
             'fullDocument': True, 'fixture': fixture, 'binaryPin': pin,
@@ -101,7 +113,9 @@ class Case:
             'requestRetryPolicy': 'none; no ambiguous write is replayed',
             'writeBudgetRequests': args.write_budget, 'renderBudgetRequests': args.render_budget,
             'persistenceMode': args.persistence,
-            'persistenceContract': 'Live mutation RPC and explicit save RPC are separate; durable workflow mode waits for save after each confirmed mutation. It is not atomic mutation+save in one RPC.',
+            'persistenceContract': ('Bound Managed primary command edits save atomically before success; the final explicit save is a verification checkpoint. No fsync/power-loss guarantee or automatic durability for every REST/direct filesystem mutator is claimed.' if args.managed_primary_save_before_ack else 'Live mutation RPC and explicit save RPC are separate; durable workflow mode waits for save after each confirmed mutation. It is not atomic mutation+save in one RPC.'),
+            'managedPrimarySaveBeforeAckConfigured': args.managed_primary_save_before_ack,
+            'perAcknowledgementCrashRecoveryTested': False,
             'memoryTargetBytes': 1_000_000_000, 'memoryAllowanceBytes': args.max_bytes,
             'diagnosticAllowance': args.max_bytes > 1_000_000_000,
             'latencyScope': 'Workflow latency includes its setup, verification and cleanup calls; per-tool samples are also reported.',
@@ -165,6 +179,11 @@ class Case:
                 raise Rejected(text[:1200])
             value = json.loads(text) if text else {}
             row['accepted'] = True
+            if tool == 'set_active_page':
+                index = int(arguments['index'])
+                assert 0 <= index < self.fixture['pageCount']
+                self.accepted_active_pages[agent] = index
+                row['acceptedActivePageIndex'] = index
             return value
         except Rejected as error:
             row.update(accepted=False, rejected=str(error))
@@ -420,6 +439,8 @@ class Case:
                 node.update(self.expected[node['id']])
                 found.add(node['id'])
         assert found == self.expected.keys()
+        assert self.saved_active_page is not None, 'No accepted save actor page observation'
+        expect_saved_active_page(expected, self.saved_active_page)
         expected_hash = semantic_hash(expected)
         del expected, before_nodes, ids
         gc.collect()
@@ -434,7 +455,9 @@ class Case:
             'actualWholeDocumentSemanticSha256': actual_hash,
             'exactWholeDocumentSemantics': actual_hash == expected_hash,
             'scope': 'Every field/array and numeric f64 bits, including images and unknown retained JSON. Object key order is normalized; no field dropping.',
-            'originalNodeIdsUnchanged': True, 'expectedMutatedNodes': len(self.expected)}
+            'originalNodeIdsUnchanged': True, 'expectedMutatedNodes': len(self.expected),
+            'expectedEditorMetaActivePageIndex': self.saved_active_page,
+            'editorMetadataRule': 'Only activePageIndex is changed to the accepted save actor observation; all existing editorMeta fields remain. If absent, the documented save extension adds default preserveAuthoredGeometry=false.'}
         self.report['durability'] = result
         assert result['exactWholeDocumentSemantics'], 'Unexpected full-document canonical change; retained for diagnosis'
 
@@ -520,7 +543,16 @@ class Case:
                 self.current = 'save'
                 shared.phase('save')
                 self.report['phases']['save'] = {'requests': []}
+                observed = await self.call('get_editor_state', {}, agent=0)
+                active_page = int(observed['active_page_index'])
+                assert 0 <= active_page < self.fixture['pageCount']
+                assert self.accepted_active_pages.get(0, active_page) == active_page
+                self.report['saveActorPageObservation'] = {
+                    'agent': 0, 'activePageIndex': active_page,
+                    'lastAcceptedSetActivePage': self.accepted_active_pages.get(0),
+                    'source': 'accepted get_editor_state immediately before final save; same agent context'}
                 saved = await self.call('save_document', {'filePath': str(document)}, write=False)
+                self.saved_active_page = active_page
                 self.report['saveResponse'] = saved
             self.report['status'] = 'operations-completed'
         except asyncio.CancelledError:
@@ -635,6 +667,7 @@ def main():
     parser.add_argument('--server-sha', required=True)
     parser.add_argument('--font-environment', type=Path, nargs='+')
     parser.add_argument('--persistence', choices=['live-final-save', 'save-after-each-write'], default='live-final-save')
+    parser.add_argument('--managed-primary-save-before-ack', action='store_true', help='Label a pinned service whose Managed bound command writes save before success; not a request to change service behavior')
     parser.add_argument('--fixture', type=Path, nargs='+', required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--clients', type=int, nargs='+', default=[1, 10, 100, 1000])
