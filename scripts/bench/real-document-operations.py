@@ -27,7 +27,7 @@ if (HERE.parent / 'headless-agents.py').exists():
     ENGINE = HERE.parents[2]
     ROOT = ENGINE.parents[1]
 else:
-    ROOT = HERE.parents[3]
+    ROOT = next(parent for parent in HERE.parents if (parent / 'engines/openpencil/scripts/bench/headless-agents.py').exists())
     ENGINE = ROOT / 'engines/openpencil'
 
 
@@ -40,6 +40,8 @@ def module(name, path):
 
 shared = module('real_document_shared', ENGINE / 'scripts/bench/headless-agents.py')
 pixels = module('real_document_pixels', ENGINE / 'scripts/bench/operation-matrix.py')
+families = module('real_document_families', HERE.with_name('real-document-families.py'))
+plan = module('real_document_plan', HERE.with_name('real-document-plan.py'))
 
 
 def checkpoint(path, value):
@@ -98,7 +100,7 @@ class Rejected(Exception):
     pass
 
 
-class Case:
+class Case(families.FamilyWorkflows):
     def __init__(self, args, fixture, clients, inflight, out, manifest, pin):
         self.args, self.fixture, self.clients = args, fixture, clients
         self.inflight, self.out, self.manifest, self.pin = inflight, out, manifest, pin
@@ -111,8 +113,13 @@ class Case:
             'fullDocument': True, 'fixture': fixture, 'binaryPin': pin,
             'externalLlmProcesses': 0, 'phases': {}, 'coverage': {},
             'requestRetryPolicy': 'none; no ambiguous write is replayed',
-            'writeBudgetRequests': args.write_budget, 'renderBudgetRequests': args.render_budget,
+            'writeBudgetRequests': args.write_budget if args.write_budget_scope == 'global' else None,
+            'renderBudgetRequests': args.render_budget,
             'persistenceMode': args.persistence,
+            'writeBudgetScope': args.write_budget_scope,
+            'perFamilyWriteBudget': args.family_write_budget,
+            'familyBudgetDefault': 'Explicit family mode reserves clients × workflow writes independently; default global mode preserves the earlier64-request budget',
+            'historicalFamilyRemainders': manifest.get('historicalFamilyRemainders', []),
             'persistenceContract': ('Bound Managed primary command edits save atomically before success; the final explicit save is a verification checkpoint. No fsync/power-loss guarantee or automatic durability for every REST/direct filesystem mutator is claimed.' if args.managed_primary_save_before_ack else 'Live mutation RPC and explicit save RPC are separate; durable workflow mode waits for save after each confirmed mutation. It is not atomic mutation+save in one RPC.'),
             'managedPrimarySaveBeforeAckConfigured': args.managed_primary_save_before_ack,
             'perAcknowledgementCrashRecoveryTested': False,
@@ -128,6 +135,8 @@ class Case:
             invocations = collections.Counter(row['tool'] for phase in self.report['phases'].values() for row in phase.get('requests', []))
             self.report['liveToolInvocationCounts'] = {name: invocations[name] for name in sorted(self.catalog)}
             self.report['liveToolsNotInvoked'] = sorted(self.catalog - invocations.keys())
+            self.report['mutationParticipation'] = plan.participation([
+                row for phase in self.report['phases'].values() for row in phase.get('requests', [])])
         checkpoint(self.out / 'report.json', self.report)
 
     def event(self, name, **values):
@@ -241,6 +250,8 @@ class Case:
                 'centerPixel': pixels.center_pixel(data)}
 
     async def workflow(self, family, target, agent):
+        if family in families.FAMILIES:
+            return await self.extra_workflow(family, target, agent)
         identifier = target['id']
         token = f'real-bench-{family}-{agent}'
         if family == 'read':
@@ -355,17 +366,15 @@ class Case:
             self.report['coverage'][family] = {'status': 'available-not-benchmarked' if matches else 'no-matching-mcp-tool',
                 'reason': spec['reason'], 'catalogMatches': matches}
             return
-        targets = self.fixture['worksets'].get(spec['role'], [])
+        metadata = spec['role'] == 'document-metadata'
+        targets = [self.fixture] if metadata else self.fixture['worksets'].get(spec['role'], [])
         if spec['family'] in ('image-export', 'node-export'):
             targets = [node for node in targets if all(isinstance(node.get(key), (int, float)) and 0 < node[key] <= self.args.max_raster_edge for key in ('width', 'height'))]
         if not targets:
             self.report['coverage'][family] = {'status': 'fixture-workset-missing', 'role': spec['role']}
             return
-        count = self.clients
-        if spec.get('writes'):
-            count = min(count, len(targets), (self.args.write_budget - self.writes) // spec['writes'])
-        if spec.get('render'):
-            count = min(count, self.args.render_budget)
+        count, family_budget = plan.admission(spec, self.clients, self.clients if metadata else len(targets), self.args.render_budget,
+            self.args.write_budget_scope, self.args.write_budget, self.writes, self.args.family_write_budget)
         if not count:
             self.report['coverage'][family] = {'status': 'budget-deferred', 'logicalClients': self.clients,
                                               'attemptedClients': 0, 'writeRequestsSoFar': self.writes}
@@ -374,11 +383,13 @@ class Case:
         self.current = family
         shared.phase(family)
         self.event('phase-start', phase=family, serverPid=self.process.pid)
-        row = {'logicalClients': self.clients, 'attemptedClients': count,
+        row = {'logicalClients': self.clients, 'attemptedClients': 0,
             'distinctTargets': min(count, len(targets)), 'distinctTargetsAvailable': len(targets), 'targetRole': spec['role'],
-            'targetSelectionPolicy': 'Distinct original targets for mutations; read-only clients may share original targets round-robin with distinctTargets reported.',
+            'targetSelectionPolicy': ('One full-document metadata authority; each writer owns distinct variable/axis names' if metadata else 'Distinct original targets for mutations; read-only clients may share original targets round-robin with distinctTargets reported.'),
             'maxInflight': min(count, 1 if spec.get('serialized') else self.inflight),
             'requests': [], 'acceptedWorkflows': 0, 'rejectedWorkflows': 0,
+            'scheduledClients': count, 'startedClients': 0, 'writeBudgetRequests': family_budget,
+            'acceptedWorkflowAgentIds': [], 'rejectedWorkflowAgentIds': [], 'cancelledWorkflows': 0,
             'workflowSamples': [], 'correctnessFailures': [], 'peakInflight': 0}
         self.report['phases'][family] = row
         self.save()
@@ -391,22 +402,37 @@ class Case:
             nonlocal active
             async with semaphore:
                 active += 1
+                row['startedClients'] += 1
+                row['attemptedClients'] = row['startedClients']
+                self.event('workflow-start', phase=family, agent=agent)
                 row['peakInflight'] = max(row['peakInflight'], active)
                 began = time.perf_counter()
                 try:
                     await self.workflow(family, targets[agent % len(targets)], agent)
                     row['acceptedWorkflows'] += 1
+                    row['acceptedWorkflowAgentIds'].append(agent)
                 except Rejected as error:
                     row['rejectedWorkflows'] += 1
+                    row['rejectedWorkflowAgentIds'].append(agent)
                     row.setdefault('rejections', []).append({'agent': agent, 'message': str(error)})
+                except asyncio.CancelledError:
+                    row['cancelledWorkflows'] += 1
+                    raise
                 except Exception as error:
                     row['correctnessFailures'].append({'agent': agent, 'error': f'{type(error).__name__}: {error}'})
                     raise
                 finally:
                     active -= 1
                     row['workflowSamples'].append(time.perf_counter() - began)
+        tasks = [asyncio.create_task(client(agent)) for agent in range(count)]
         try:
-            await asyncio.gather(*(client(agent) for agent in range(count)))
+            await asyncio.gather(*tasks)
+        except BaseException:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
         finally:
             after = shared.usage(self.process.pid)
             row['elapsedSeconds'] = time.perf_counter() - start
@@ -419,8 +445,10 @@ class Case:
             row['acceptedRequests'] = sum(x.get('accepted', False) for x in row['requests'])
             row['rejectedRequests'] = sum('rejected' in x for x in row['requests'])
             row['unconfirmedRequests'] = sum('transportOrUncertainError' in x for x in row['requests'])
-            self.report['coverage'][family] = {'status': 'failed-correctness' if row['correctnessFailures'] else 'measured' if count == self.clients else 'partial-budget-or-targets',
-                'attemptedClients': count, 'logicalClients': self.clients,
+            row.update(plan.participation(row['requests']))
+            row['distinctTargets'] = min(row['startedClients'], len(targets))
+            self.report['coverage'][family] = {'status': plan.completion(row, self.clients),
+                'attemptedClients': row['startedClients'], 'scheduledClients': count, 'logicalClients': self.clients,
                 'acceptedWorkflows': row['acceptedWorkflows'], 'rejectedWorkflows': row['rejectedWorkflows']}
             self.save()
 
@@ -465,6 +493,10 @@ class Case:
         self.out.mkdir(parents=True, exist_ok=False)
         shutil.copyfile(Path(__file__), self.out / 'harness.py')
         shutil.copyfile(Path(__file__).with_suffix('.json'), self.out / 'coverage.json')
+        shutil.copyfile(Path(__file__).with_name('real-document-families.py'), self.out / 'families.py')
+        shutil.copyfile(Path(__file__).with_name('real-document-plan.py'), self.out / 'plan.py')
+        self.report['familyWorkflowSha256'] = shared.sha(self.out / 'families.py')
+        self.report['admissionPlanSha256'] = shared.sha(self.out / 'plan.py')
         self.report['harnessSha256'] = shared.sha(self.out / 'harness.py')
         self.report['coverageManifestSha256'] = shared.sha(self.out / 'coverage.json')
         source = Path(self.fixture['document']['path']).resolve()
@@ -600,6 +632,8 @@ class Case:
         if shared.USAGE_API:
             self.report['highestObservedServicePhysicalBytes'] = max([self.report.get('peakServicePhysicalFootprintBytes', 0)] + [row['servicePhysicalBytes'] for row in phase_peaks])
         self.report['allRequestedClientWorkflowsAccepted'] = all(row.get('acceptedWorkflows') == row.get('logicalClients') for name, row in self.report['phases'].items() if name not in ('startup-invariants', 'save'))
+        if self.report['status'] == 'passed' and any(row.get('rejectedWorkflows') for row in self.report['phases'].values()):
+            self.report['status'] = 'completed-with-refusals'
         self.report['documentVersionInvariant'] = 'Not observed: current bounded MCP metadata lacks version; no whole-document fetch or extra SSE subscription was added.'
         self.report['allOperationsMeasured'] = all(x.get('status') == 'measured' for x in self.report['coverage'].values())
         self.report['strictOneGbBudgetPassed'] = self.report['status'] == 'passed' and self.args.max_bytes <= 1_000_000_000
@@ -616,7 +650,7 @@ async def main_async(args):
     assert shared.sha(args.binary) == args.server_sha == build['outputs']['server']['sha256']
     pin = {'manifest': str(args.build_manifest.resolve()), 'engineCommit': args.engine_commit,
            'jianCommit': build['jianCommit'], 'serverSha256': args.server_sha}
-    manifest = json.loads(Path(__file__).with_suffix('.json').read_text())
+    manifest = plan.manifest(HERE.with_suffix('.json'))
     args.font_contracts = {value['fixture']: value for path in (args.font_environment or []) for value in [json.loads(path.read_text())]}
     fixtures = []
     for path in args.fixture:
@@ -662,6 +696,7 @@ async def main_async(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    family_choices = [row['family'] for row in plan.manifest(HERE.with_suffix('.json'))['families']]
     parser.add_argument('--build-manifest', type=Path, required=True)
     parser.add_argument('--engine-commit', required=True)
     parser.add_argument('--server-sha', required=True)
@@ -673,8 +708,10 @@ def main():
     parser.add_argument('--clients', type=int, nargs='+', default=[1, 10, 100, 1000])
     parser.add_argument('--max-inflight', type=int, default=32)
     parser.add_argument('--requested-count-stress', action='store_true')
-    parser.add_argument('--family', nargs='+')
-    parser.add_argument('--write-budget', type=int, default=64)
+    parser.add_argument('--family', nargs='+', choices=family_choices, help='Select bounded named families; unselected families remain explicitly not-requested')
+    parser.add_argument('--write-budget', type=int, help='Global mutation request cap (default64); unavailable in family mode')
+    parser.add_argument('--write-budget-scope', choices=['family', 'global'], default='global')
+    parser.add_argument('--family-write-budget', type=int, help='Per-family mutation request cap; default is enough to schedule every logical writer for its whole workflow')
     parser.add_argument('--render-budget', type=int, default=4)
     parser.add_argument('--max-raster-edge', type=int, default=1024)
     parser.add_argument('--max-bytes', type=int, default=1_000_000_000)
@@ -683,11 +720,17 @@ def main():
     parser.add_argument('--profile-rendezvous', type=float, default=0)
     parser.add_argument('--startup-timeout', type=float, default=45)
     args = parser.parse_args()
+    if args.write_budget_scope == 'family' and args.write_budget is not None:
+        parser.error('--write-budget is global; use --family-write-budget in family mode')
+    if args.write_budget_scope == 'global' and args.family_write_budget is not None:
+        parser.error('--family-write-budget requires --write-budget-scope family')
+    args.write_budget = 64 if args.write_budget is None else args.write_budget
     assert all(1 <= n <= 1000 for n in args.clients) and 1 <= args.max_inflight <= 1000
     assert 1 <= args.max_bytes <= 5_000_000_000 and 1 <= args.timeout <= 180
-    assert not args.readonly_no_save or args.write_budget == 0
+    assert not args.readonly_no_save or (args.write_budget_scope == 'global' and args.write_budget == 0) or (args.write_budget_scope == 'family' and args.family_write_budget == 0)
     assert 0 <= args.profile_rendezvous <= 5
     assert 0 <= args.write_budget <= 10000 and 0 <= args.render_budget <= 1000
+    assert args.family_write_budget is None or 0 <= args.family_write_budget <= 100000
     args.output = args.output.resolve()
     reports = asyncio.run(main_async(args))
     sys.exit(0 if all(row['status'] == 'passed' for row in reports) else 1)
