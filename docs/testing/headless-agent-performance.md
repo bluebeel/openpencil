@@ -5,9 +5,12 @@ service. External model/agent processes are excluded; the load generator is
 included in the aggregate memory measurement. Each client sends sequential
 MCP batches, and a bounded request window provides backpressure.
 
-The latest [batched checkpoint](engine-checkpoint-5.md) includes borrowed layout
-inputs, bounded shared geometry reuse, compact imports, streaming CLI saves,
-and faster correlated rendering with a measured shadow correction.
+The latest [batched checkpoint](engine-checkpoint-6.md) adds lazy component-cache
+decoding, exact avatar sampling, improved text contours, scoped outline reuse,
+and bounded HTTP ingress/conversion admission. It also records the remaining
+OpenBridge memory and rendering-cost gaps.
+The [previous checkpoint](engine-checkpoint-5.md) includes borrowed layout inputs,
+bounded shared geometry reuse, compact imports and streaming CLI saves.
 The [previous checkpoint](engine-checkpoint-4.md) records ID allocation and
 authored-content preservation improvements.
 The [previous checkpoint](engine-checkpoint-3.md) covers bounded worker reuse
