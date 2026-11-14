@@ -18,7 +18,12 @@ use serde::{Serialize, Serializer};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
+mod capture_budget;
 mod components;
+pub use capture_budget::{
+    command_capture_node_bytes, command_capture_value_bytes, CaptureSizeError,
+    COMMAND_CAPTURE_ALLOWANCE,
+};
 mod edges;
 mod exact;
 mod node;

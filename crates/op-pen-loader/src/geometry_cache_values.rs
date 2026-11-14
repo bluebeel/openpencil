@@ -1,17 +1,23 @@
 //! Mixed geometry/rectangle cache values, including evicted live Arc accounting.
 use super::*;
 
+#[path = "page_query_index.rs"]
+mod page_query_index;
+pub(crate) use page_query_index::PageIndex;
+
 pub(super) type RootRectangles = BTreeMap<String, [f32; 4]>;
 
 #[derive(Clone)]
 enum Value {
     Geometry(Arc<Vec<ComputedGeometry>>),
     Rectangles(Arc<RootRectangles>),
+    PageIndex(Option<Arc<PageIndex>>),
 }
 impl Value {
     fn bytes(&self) -> usize {
         64usize.saturating_add(match self {
             Self::Geometry(nodes) => geometry_bytes(nodes),
+            Self::PageIndex(index) => index.as_ref().map_or(0, |index| index.storage_bytes()),
             Self::Rectangles(rects) => {
                 // A root BTree node can be sparse. Other nodes have at least
                 // five entries;128 extra bytes per occupied key conservatively
@@ -27,6 +33,7 @@ impl Value {
         match self {
             Self::Geometry(value) => WeakValue::Geometry(Arc::downgrade(value)),
             Self::Rectangles(value) => WeakValue::Rectangles(Arc::downgrade(value)),
+            Self::PageIndex(value) => WeakValue::PageIndex(value.as_ref().map(Arc::downgrade)),
         }
     }
 }
@@ -34,12 +41,16 @@ impl Value {
 enum WeakValue {
     Geometry(Weak<Vec<ComputedGeometry>>),
     Rectangles(Weak<RootRectangles>),
+    PageIndex(Option<Weak<PageIndex>>),
 }
 impl WeakValue {
     fn live(&self) -> bool {
         match self {
             Self::Geometry(value) => value.strong_count() != 0,
             Self::Rectangles(value) => value.strong_count() != 0,
+            Self::PageIndex(value) => value
+                .as_ref()
+                .is_some_and(|value| value.strong_count() != 0),
         }
     }
 }
@@ -186,7 +197,9 @@ pub(super) fn get_or_compute(
 ) -> Arc<Vec<ComputedGeometry>> {
     match get_or_compute_value(store, key, || Value::Geometry(Arc::new(compute()))) {
         Value::Geometry(value) => value,
-        Value::Rectangles(_) => unreachable!("geometry/rectangle key kinds must be separate"),
+        Value::Rectangles(_) | Value::PageIndex(_) => {
+            unreachable!("cache key kinds must be separate")
+        }
     }
 }
 
@@ -205,7 +218,9 @@ pub(super) fn get_rectangles(
 ) -> Arc<RootRectangles> {
     match get_or_compute_value(store, key, || Value::Rectangles(Arc::new(compute()))) {
         Value::Rectangles(value) => value,
-        Value::Geometry(_) => unreachable!("geometry/rectangle key kinds must be separate"),
+        Value::Geometry(_) | Value::PageIndex(_) => {
+            unreachable!("cache key kinds must be separate")
+        }
     }
 }
 
@@ -217,4 +232,17 @@ pub(crate) fn root_rectangles_cached(
     compute: impl FnOnce() -> RootRectangles,
 ) -> Arc<RootRectangles> {
     get_rectangles(shared_store(), rectangle_key(state, page, parent), compute)
+}
+
+/// Opt-in trusted host only. Raw id/location data depends on authority,
+/// generation, revision and exact page-root scope, not UI/font/component state.
+pub(crate) fn page_index_cached(state: &EditorState, page: usize) -> Option<Arc<PageIndex>> {
+    let roots = PageIndex::roots(state, page)?;
+    let key = Key::for_page_index(state, page, roots);
+    match get_or_compute_value(shared_store(), Some(key), || {
+        Value::PageIndex(PageIndex::build(roots).map(Arc::new))
+    }) {
+        Value::PageIndex(index) => index,
+        _ => unreachable!("page index has an exclusive cache key kind"),
+    }
 }

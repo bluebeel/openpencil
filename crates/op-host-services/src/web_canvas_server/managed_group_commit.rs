@@ -21,7 +21,7 @@ mod metrics;
 #[path = "managed_group_queue.rs"]
 mod queue;
 
-const MAX_BODY: usize = 16 * 1024;
+const MAX_BODY: usize = 16 * 1024 * 1024;
 const MAX_REPLY: usize = 256 * 1024;
 
 struct Request {
@@ -55,9 +55,9 @@ impl Default for Groups {
         Self {
             queue: queue::Queue::new(queue::Limits {
                 calls: 128,
-                bytes: 64 * 1024 * 1024,
+                bytes: 128 * 1024 * 1024,
                 group_calls: 32,
-                group_bytes: 64 * 1024,
+                group_bytes: 32 * 1024 * 1024,
                 wait: Duration::from_millis(2),
             }),
             metrics: Default::default(),
@@ -432,7 +432,9 @@ impl Transaction<'_, '_, '_> {
                             isolated = true;
                             return false;
                         }
-                        if let Err(reason) = budget.reserve(editor, command, request.line.len()) {
+                        let reservation = budget.reserve(editor, command, request.line.len());
+                        metrics.observe_forecast(budget.forecast());
+                        if let Err(reason) = reservation {
                             metrics.refuse(reason);
                             isolated = true;
                             return false;
@@ -488,6 +490,9 @@ impl Transaction<'_, '_, '_> {
                     applied = false;
                     changed = false;
                     *budget = before_budget;
+                }
+                if applied && !changed {
+                    budget.retain_unanchored_components();
                 }
                 operation.complete();
                 result

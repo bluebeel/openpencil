@@ -6,7 +6,8 @@ use op_mcp::{McpTool, ToolErrorCode, ToolOutcome};
 
 use super::raster_snapshot::RasterSnapshot;
 use crate::export::{RasterFormat, RasterSampling, SharedRasterTarget};
-use crate::export_pdf::{render_node_on_page_pdf_bytes, render_page_pdf_bytes};
+use crate::export_pdf::{render_node_on_page_pdf_bytes_scaled, render_page_pdf_bytes_scaled};
+use op_render_export::{render_node_on_page_svg_bytes, render_page_svg_bytes};
 
 pub struct ExportItem {
     scene: RasterSnapshot,
@@ -27,7 +28,7 @@ impl McpTool for ExportItem {
             _ => {
                 return ToolOutcome::Err(
                     ToolErrorCode::MissingArgument,
-                    "format is required (png|jpeg|webp|pdf)".into(),
+                    "format is required (png|jpeg|webp|pdf|svg)".into(),
                 );
             }
         };
@@ -40,7 +41,7 @@ impl McpTool for ExportItem {
                 return ToolOutcome::Err(ToolErrorCode::InvalidArgument, error.to_string())
             }
         };
-        if format == "pdf" && sampling != RasterSampling::Native {
+        if matches!(format, "pdf" | "svg") && sampling != RasterSampling::Native {
             return ToolOutcome::Err(
                 ToolErrorCode::InvalidArgument,
                 "rasterSampling applies only to PNG/JPEG/WebP exports".into(),
@@ -97,7 +98,8 @@ impl McpTool for ExportItem {
                         scale,
                         sampling,
                     ),
-                    "pdf" => render_page_pdf_bytes(page),
+                    "pdf" => render_page_pdf_bytes_scaled(page, scale),
+                    "svg" => render_page_svg_bytes(page, scale),
                     other => return unsupported_format(other),
                 };
                 (result, "page")
@@ -135,7 +137,8 @@ impl McpTool for ExportItem {
                         scale,
                         sampling,
                     ),
-                    "pdf" => render_node_on_page_pdf_bytes(page, item_id),
+                    "pdf" => render_node_on_page_pdf_bytes_scaled(page, item_id, scale),
+                    "svg" => render_node_on_page_svg_bytes(page, item_id, scale),
                     other => return unsupported_format(other),
                 };
                 (result, "node")
@@ -172,7 +175,7 @@ fn canonical_format(format: &str) -> &str {
 fn unsupported_format(format: &str) -> ToolOutcome {
     ToolOutcome::Err(
         ToolErrorCode::InvalidArgument,
-        format!("unknown format {format:?}: must be one of png, jpeg, webp, pdf"),
+        format!("unknown format {format:?}: must be one of png, jpeg, webp, pdf, svg"),
     )
 }
 

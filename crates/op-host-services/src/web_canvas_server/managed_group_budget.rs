@@ -1,21 +1,31 @@
-//! Conservative additive staging budget. Ineligible calls keep isolated dispatch.
-//! This bounds extra group retention, not the complete engine's allocator RSS.
+//! Bounded whole-cohort admission. Metadata graphs are charged once and
+//! unchanged component owners remain shared across audited command snapshots.
 use jian_ops_schema::node::PenNode;
-use op_editor_core::{
-    EditorCommand as C, EditorState, HistoryEntry, NodeId, PenNodeExt, SharedNode,
+use op_editor_core::history_snapshot::{
+    command_capture_node_bytes, CaptureSizeError, COMMAND_CAPTURE_ALLOWANCE,
 };
-use std::{io::Write, mem::size_of, sync::Arc};
-
-const LIMIT: usize = 512 * 1024 * 1024;
-const TARGET_JSON: usize = 512 * 1024;
-const AUX_JSON: usize = 4 * 1024 * 1024;
-const COMPONENT_JSON: usize = 8 * 1024 * 1024;
-const EVICTED_BYTES: usize = 128 * 1024;
-
+use op_editor_core::{EditorCommand as C, EditorState, NodeId, PenNodeExt};
+use std::mem::size_of;
+#[path = "managed_group_retention.rs"]
+mod retention;
+const LIMIT: usize = COMMAND_CAPTURE_ALLOWANCE;
+#[derive(Default, Clone, Copy)]
+pub(super) struct Forecast {
+    pub component_count: usize,
+    pub components: usize,
+    pub target: usize,
+    pub auxiliary: usize,
+    pub retained: usize,
+    pub projected: usize,
+    pub error: usize,
+}
 #[derive(Default, Clone, Copy)]
 pub(super) struct Budget {
     used: usize,
     components: Option<usize>,
+    retained: Option<usize>,
+    shared_charged: bool,
+    last: Forecast,
 }
 #[derive(Clone, Copy)]
 #[repr(usize)]
@@ -62,56 +72,85 @@ impl Refusal {
         }
     }
 }
-fn component_charge(state: &EditorState) -> Result<usize, Refusal> {
-    let mut total = 0usize;
-    let mut json = 0usize;
+fn component_charge(state: &EditorState, limit: usize) -> Result<usize, CaptureSizeError> {
+    let mut bytes = state.components.components.len() * (size_of::<usize>() * 4 + 256);
     for component in &state.components.components {
-        if !state.components.is_document_backed(&component.id)
-            || component
-                .root
-                .children()
-                .is_some_and(|children| !children.is_empty())
-        {
-            return Err(Refusal::LegacyComponents);
-        }
-        let bytes = json_bytes(&component.root, COMPONENT_JSON.saturating_sub(json))
-            .ok_or(Refusal::ComponentMetadata)?;
-        json = json.saturating_add(bytes);
-        total = total
-            .saturating_add(bytes.saturating_mul(32))
-            .saturating_add(component.name.len())
-            .saturating_add(component.id.as_str().len())
-            .saturating_add(std::mem::size_of_val(component) * 4);
-        if total > LIMIT {
-            return Err(Refusal::ComponentMetadata);
+        bytes = bytes.saturating_add(8 * (component.id.as_str().len() + component.name.len()));
+        let mut pending = vec![&component.root];
+        while let Some(node) = pending.pop() {
+            let header = command_capture_node_bytes(node, true, limit.saturating_sub(bytes))
+                .map_err(|error| match error {
+                    CaptureSizeError::Capacity { attempted, .. } => CaptureSizeError::Capacity {
+                        attempted: bytes.saturating_add(attempted),
+                        limit,
+                    },
+                    error => error,
+                })?;
+            bytes = bytes.saturating_add(header);
+            if let Some(children) = node.children() {
+                bytes = bytes.saturating_add(
+                    children.len() * (size_of::<PenNode>() + size_of::<usize>() * 4),
+                );
+                if bytes > limit {
+                    return Err(CaptureSizeError::Capacity {
+                        attempted: bytes,
+                        limit,
+                    });
+                }
+                pending.extend(children);
+            }
         }
     }
-    Ok(total)
-}
-
-struct Counter {
-    bytes: usize,
-    limit: usize,
-}
-impl Write for Counter {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        self.bytes = self.bytes.saturating_add(bytes.len());
-        if self.bytes > self.limit {
-            return Err(std::io::ErrorKind::OutOfMemory.into());
-        }
-        Ok(bytes.len())
-    }
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
+    if bytes > limit {
+        Err(CaptureSizeError::Capacity {
+            attempted: bytes,
+            limit,
+        })
+    } else {
+        Ok(bytes)
     }
 }
-
-fn json_bytes(value: &impl serde::Serialize, limit: usize) -> Option<usize> {
-    let mut count = Counter { bytes: 0, limit };
-    serde_json::to_writer(&mut count, value).ok()?;
-    Some(count.bytes)
+fn auxiliary_bytes(state: &EditorState) -> usize {
+    let mut bytes = 16 * 1024
+        + state.ui.variables.active_theme.len() * 1024
+        + state
+            .ui
+            .variables
+            .active_theme
+            .iter()
+            .map(|(key, value)| 8 * (key.len() + value.len()))
+            .sum::<usize>()
+        + state.app_state_owner.len() * 512
+        + state
+            .app_state_owner
+            .keys()
+            .map(|key| 8 * key.len())
+            .sum::<usize>();
+    for refs in [
+        &state.ui.variables.fill_refs,
+        &state.ui.variables.stroke_refs,
+    ] {
+        bytes = bytes
+            .saturating_add(refs.capacity() * (size_of::<(NodeId, String)>() + 32) * 2)
+            .saturating_add(
+                refs.iter()
+                    .map(|(key, value)| 8 * (key.as_str().len() + value.len()))
+                    .sum::<usize>(),
+            );
+    }
+    bytes = bytes
+        .saturating_add(state.selection.set.len() * (size_of::<NodeId>() + 64))
+        .saturating_add(
+            state
+                .selection
+                .set
+                .iter()
+                .map(|id| 8 * id.as_str().len())
+                .sum::<usize>(),
+        )
+        .saturating_add(8 * state.selection.anchor.as_str().len());
+    bytes.saturating_add(retention::clone_bytes(state))
 }
-
 fn target<'a>(state: &'a EditorState, command: &C) -> Option<&'a PenNode> {
     let (id, page) = match command {
         C::UpdateNode {
@@ -154,71 +193,35 @@ fn target<'a>(state: &'a EditorState, command: &C) -> Option<&'a PenNode> {
         }
     };
     let node = op_editor_core::walkers::find_node(nodes, id)?;
-    if matches!(node, PenNode::Ref(_))
-        || node.children().is_some_and(|children| !children.is_empty())
-    {
+    if matches!(node, PenNode::Ref(_)) {
         return None;
     }
     Some(node)
 }
 
-fn small_evicted_entry(state: &EditorState) -> Option<usize> {
-    if state.history.past.len() < op_editor_core::history::HISTORY_CAP {
-        return Some(0);
-    }
-    let first = state.history.past.front()?.scoped_snapshot()?;
-    let last = state.history.past.back()?;
-    let components = match last {
-        HistoryEntry::Full(snapshot) => &snapshot.components,
-        HistoryEntry::Scoped(snapshot) => snapshot.components(),
-    };
-    // Different component owners could keep a large obsolete prototype forest
-    // alive solely through a pending capture. Let the isolated writer evict it.
-    if first.components().backing_identity() != components.backing_identity()
-        || !Arc::ptr_eq(
-            first.components().components_arc(),
-            components.components_arc(),
-        )
-    {
-        return None;
-    }
-    let mut bytes = first.storage_bytes();
-    if bytes > EVICTED_BYTES {
-        return None;
-    }
-    let mut pending: Vec<&Arc<SharedNode>> = first.retained_roots().take(129).collect();
-    if pending.len() > 128 {
-        return None;
-    }
-    let mut nodes = 0usize;
-    while let Some(node) = pending.pop() {
-        nodes += 1;
-        if nodes > 128 {
-            return None;
-        }
-        bytes = bytes.checked_add(node.storage_bytes())?;
-        bytes = bytes.checked_add(
-            json_bytes(node.metadata(), EVICTED_BYTES.saturating_sub(bytes))?.saturating_mul(32),
-        )?;
-        if let Some(children) = node.children_arc() {
-            bytes = bytes.checked_add(
-                children
-                    .capacity()
-                    .saturating_mul(size_of::<Arc<SharedNode>>() * 2),
-            )?;
-            if children.len() > 128usize.saturating_sub(nodes) {
-                return None;
-            }
-            pending.extend(children.iter());
-        }
-        if bytes > EVICTED_BYTES {
-            return None;
-        }
-    }
-    Some(bytes)
-}
-
 impl Budget {
+    pub(super) fn forecast(&self) -> Forecast {
+        self.last
+    }
+    fn size_error(&mut self, error: CaptureSizeError) -> usize {
+        match error {
+            CaptureSizeError::Capacity { attempted, .. } => {
+                self.last.error = 1;
+                attempted
+            }
+            CaptureSizeError::Serialization => {
+                self.last.error = 2;
+                0
+            }
+        }
+    }
+    pub(super) fn retain_unanchored_components(&mut self) {
+        // A successful command that did not advance revision adds no history
+        // anchor. Its pending capture may therefore retain another component
+        // owner; this headroom was reserved before that capture was created.
+        self.used = self.used.saturating_add(self.components.unwrap_or(0));
+        debug_assert!(self.used <= LIMIT);
+    }
     pub(super) fn reserve_live_selection(&mut self, bytes: usize) -> Result<(), Refusal> {
         if bytes > LIMIT.saturating_sub(self.used) {
             return Err(Refusal::CohortCapacity);
@@ -232,86 +235,79 @@ impl Budget {
         command: &C,
         input: usize,
     ) -> Result<(), Refusal> {
+        self.last = Forecast {
+            component_count: state.components.len(),
+            ..Forecast::default()
+        };
         if state.editor_ui.workspace.active {
             return Err(Refusal::Workspace);
         }
-        if !state.history.future.is_empty() {
-            return Err(Refusal::Redo);
-        }
-        if state.doc.state.is_some() {
-            return Err(Refusal::DocumentState);
-        }
-        if !state.app_state_owner.is_empty() {
-            return Err(Refusal::StateOwners);
-        }
-        let (old, structural) = if matches!(
+        let target = if matches!(
             command,
             C::InsertNode { .. } | C::DeleteNode { .. } | C::CopyNode { .. }
         ) {
-            (
-                0,
-                state
-                    .forecast_structural_command_edit(command)
-                    .ok_or(Refusal::Target)?,
-            )
+            state
+                .forecast_structural_command_edit(command)
+                .ok_or(Refusal::Target)?
         } else {
             let node = target(state, command).ok_or(Refusal::Target)?;
-            (
-                json_bytes(node, TARGET_JSON).ok_or(Refusal::TargetMetadata)?,
-                0,
-            )
-        };
-        let components = match self.components {
-            Some(bytes) => bytes,
-            None => {
-                let bytes = component_charge(state)?;
-                self.components = Some(bytes);
-                bytes
-            }
-        };
-        let mut aux = state.ui.variables.active_theme.len().saturating_mul(256);
-        for (key, value) in &state.ui.variables.active_theme {
-            aux = aux
-                .saturating_add(key.capacity())
-                .saturating_add(value.capacity());
-        }
-        for refs in [
-            &state.ui.variables.fill_refs,
-            &state.ui.variables.stroke_refs,
-        ] {
-            aux = aux.saturating_add(
-                refs.capacity()
-                    .saturating_mul(size_of::<(NodeId, String)>() * 2),
-            );
-            if aux > AUX_JSON {
-                return Err(Refusal::Auxiliary);
-            }
-            for (key, value) in refs {
-                aux = aux
-                    .saturating_add(key.as_str().len())
-                    .saturating_add(value.capacity());
-                if aux > AUX_JSON {
-                    return Err(Refusal::Auxiliary);
+            match command_capture_node_bytes(node, true, LIMIT) {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    self.last.target = self.size_error(error);
+                    return Err(Refusal::TargetMetadata);
                 }
             }
-        }
-        if aux > AUX_JSON {
-            return Err(Refusal::Auxiliary);
-        }
-        let evicted = small_evicted_entry(state).ok_or(Refusal::EvictedHistory)?;
-        let charge = old
-            .saturating_add(input)
-            .saturating_add(aux)
-            .saturating_mul(32)
-            .saturating_add(components)
-            .saturating_add(structural)
-            .saturating_add(evicted)
-            .saturating_add((state.history.past.len() + 1) * size_of::<HistoryEntry>() * 2)
-            .saturating_add(16 * 1024);
-        if charge > LIMIT.saturating_sub(self.used) {
+        };
+        self.last.target = target;
+        let components = match self.components {
+            Some(bytes) => bytes,
+            None => match component_charge(state, LIMIT) {
+                Ok(bytes) => {
+                    self.components = Some(bytes);
+                    bytes
+                }
+                Err(error) => {
+                    self.last.components = self.size_error(error);
+                    return Err(Refusal::ComponentMetadata);
+                }
+            },
+        };
+        self.last.components = components;
+        let retained = match self.retained {
+            Some(bytes) => bytes,
+            None => match retention::retained_bytes(state, LIMIT.saturating_sub(components)) {
+                Ok(bytes) => {
+                    self.retained = Some(bytes);
+                    bytes
+                }
+                Err(error) => {
+                    self.last.retained = self.size_error(error);
+                    return Err(Refusal::EvictedHistory);
+                }
+            },
+        };
+        self.last.retained = retained;
+        let auxiliary = auxiliary_bytes(state);
+        self.last.auxiliary = auxiliary;
+        let shared = if self.shared_charged {
+            0
+        } else {
+            components.saturating_add(retained)
+        };
+        let charge = target
+            .saturating_add(input.saturating_mul(8))
+            .saturating_add(auxiliary)
+            .saturating_add(shared);
+        // Reserve one transient component capture/materialization peak, without
+        // charging that unchanged immutable owner once for every writer.
+        let peak = charge.saturating_add(components);
+        self.last.projected = self.used.saturating_add(peak);
+        if peak > LIMIT.saturating_sub(self.used) {
             return Err(Refusal::CohortCapacity);
         }
         self.used += charge;
+        self.shared_charged = true;
         Ok(())
     }
 }

@@ -15,8 +15,8 @@
 //!
 //! Raster (png/jpeg/webp): delegates to `render_node_raster_bytes` (the
 //! same shared render core that `get_screenshot` uses).
-//! PDF: delegates to `render_nodes_pdf_bytes` (node-scoped, one page per
-//! requested node, cropped to that node's painted bounds).
+//! PDF defaults to one cropped file per node. pdfMode=combined returns one
+//! multipage document once, with a nodeIds list rather than duplicate blobs.
 
 use std::collections::BTreeMap;
 
@@ -72,7 +72,7 @@ impl McpTool for ExportNodes {
             _ => {
                 return ToolOutcome::Err(
                     ToolErrorCode::MissingArgument,
-                    "format is required (png|jpeg|webp|pdf)".into(),
+                    "format is required (png|jpeg|webp|pdf|svg)".into(),
                 )
             }
         };
@@ -85,7 +85,13 @@ impl McpTool for ExportNodes {
 
         // --- render ---
         match format_str {
-            "pdf" => render_pdf(&self.scene, &node_ids, scale),
+            "pdf" => render_pdf(
+                &self.scene,
+                &node_ids,
+                scale,
+                args.get("pdfMode").map_or("separate", String::as_str),
+            ),
+            "svg" => render_svg(&self.scene, &node_ids, scale),
             fmt => {
                 let raster_fmt = match fmt {
                     "png" => RasterFormat::Png,
@@ -95,7 +101,7 @@ impl McpTool for ExportNodes {
                         return ToolOutcome::Err(
                             ToolErrorCode::InvalidArgument,
                             format!(
-                                "unknown format {other:?}: must be one of png, jpeg, webp, pdf"
+                                "unknown format {other:?}: must be one of png, jpeg, webp, pdf, svg"
                             ),
                         )
                     }
@@ -169,88 +175,75 @@ fn render_raster(
     ToolOutcome::OkJson(serde_json::json!({ "files": files }).to_string())
 }
 
-/// Render each requested node as one PDF page and return a single base64
-/// blob. Because a PDF is a multi-page document, all requested nodes
-/// (that are found and paintable) land in one PDF file; each `files`
-/// entry shares that same `bytes_base64` value but carries its own
-/// `nodeId`.  Nodes that are unknown or paint nothing are reported with
-/// an `error` field and no bytes.
-fn render_pdf(scene: &LayoutScene, node_ids: &[String], scale: f32) -> ToolOutcome {
-    // Separate valid vs invalid ids up front so we can report per-id errors.
-    let page_opt = scene.active_page();
-
-    // Build per-id result: if a node is unknown we record an error entry.
-    // The PDF renderer skips unknowns internally, so we reconstruct the
-    // correspondence by checking page.find() ourselves first.
-    let page = match page_opt {
-        Some(p) => p,
-        None => {
-            // No active page at all — every id fails with the same error.
-            let files: Vec<serde_json::Value> = node_ids
-                .iter()
-                .map(|id| {
-                    serde_json::json!({
-                        "nodeId": id,
-                        "error": "no active page",
-                        "format": "pdf",
-                    })
-                })
-                .collect();
-            return ToolOutcome::OkJson(serde_json::json!({ "files": files }).to_string());
-        }
+fn render_svg(scene: &LayoutScene, node_ids: &[String], scale: f32) -> ToolOutcome {
+    let Some(page) = scene.active_page() else {
+        return ToolOutcome::Err(ToolErrorCode::ToolFailed, "no active page".into());
     };
+    let batch = op_render_export::NodeSvgBatch::new(page, node_ids);
+    let files: Vec<_> = node_ids.iter().map(|id| {
+        match batch.render(id, scale) {
+            Ok(bytes) => serde_json::json!({"nodeId":id,"format":"svg", "bytes_base64":base64::engine::general_purpose::STANDARD.encode(bytes)}),
+            Err(error) => serde_json::json!({"nodeId":id,"format":"svg","error":error.to_string()}),
+        }
+    }).collect();
+    ToolOutcome::OkJson(serde_json::json!({"files":files}).to_string())
+}
 
-    let mut valid_ids: Vec<&str> = Vec::new();
-    let mut id_errors: BTreeMap<&str, String> = BTreeMap::new();
+/// Per-node PDF output is linear in requested content. Combined mode emits
+/// one shared document once, avoiding a full multipage blob copied per node.
+fn render_pdf(scene: &LayoutScene, node_ids: &[String], scale: f32, mode: &str) -> ToolOutcome {
+    let Some(page) = scene.active_page() else {
+        let files: Vec<_> = node_ids
+            .iter()
+            .map(|id| {
+                serde_json::json!({
+                    "nodeId":id,"format":"pdf","error":"no active page"
+                })
+            })
+            .collect();
+        return ToolOutcome::OkJson(serde_json::json!({"files":files}).to_string());
+    };
+    if mode == "separate" {
+        let files: Vec<_> = node_ids
+            .iter()
+            .map(|id| {
+                match crate::export_pdf::render_node_on_page_pdf_bytes_scaled(page, id, scale) {
+                    Ok(bytes) => serde_json::json!({"nodeId":id,"format":"pdf",
+                    "bytes_base64":base64::engine::general_purpose::STANDARD.encode(bytes)}),
+                    Err(error) => {
+                        serde_json::json!({"nodeId":id,"format":"pdf","error":error.to_string()})
+                    }
+                }
+            })
+            .collect();
+        return ToolOutcome::OkJson(serde_json::json!({"files":files}).to_string());
+    }
+    if mode != "combined" {
+        return ToolOutcome::Err(
+            ToolErrorCode::InvalidArgument,
+            "pdfMode must be separate or combined".into(),
+        );
+    }
+    let mut valid = Vec::new();
+    let mut errors = Vec::new();
     for id in node_ids {
-        if page.find(id).is_some() {
-            valid_ids.push(id.as_str());
-        } else {
-            id_errors.insert(
-                id.as_str(),
-                format!("node {id} not found on the active page"),
-            );
+        match page.find(id) {
+            Some(node) if !node.hidden => valid.push(id.as_str()),
+            _ => errors.push(serde_json::json!({"nodeId":id,"format":"pdf",
+                "error":format!("node {id} is missing or hidden on the active page")})),
         }
     }
-
-    // Call the shared PDF renderer with valid ids only.
-    // `NoNodeIdsRequested` is exactly this case in the shared renderer's
-    // vocabulary, but its wording is the renderer's; this tool has always
-    // reported its own sentence here, so keep the message and only the
-    // message.
-    let pdf_result = if valid_ids.is_empty() {
-        Err("no valid node ids to render".to_string())
-    } else {
-        render_nodes_pdf_bytes(scene, &valid_ids, scale).map_err(|e| e.to_string())
-    };
-
-    match pdf_result {
+    if valid.is_empty() {
+        return ToolOutcome::OkJson(serde_json::json!({"files":errors}).to_string());
+    }
+    match render_nodes_pdf_bytes(scene, &valid, scale) {
         Ok(bytes) => {
-            let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
-            let files: Vec<serde_json::Value> = node_ids
-                .iter()
-                .map(|id| {
-                    if let Some(e) = id_errors.get(id.as_str()) {
-                        serde_json::json!({
-                            "nodeId": id,
-                            "error": e,
-                            "format": "pdf",
-                        })
-                    } else {
-                        serde_json::json!({
-                            "nodeId": id,
-                            "bytes_base64": b64,
-                            "format": "pdf",
-                        })
-                    }
-                })
-                .collect();
-            ToolOutcome::OkJson(serde_json::json!({ "files": files }).to_string())
+            let mut files = vec![serde_json::json!({"nodeIds":valid,"format":"pdf",
+                "bytes_base64":base64::engine::general_purpose::STANDARD.encode(bytes)})];
+            files.extend(errors);
+            ToolOutcome::OkJson(serde_json::json!({"files":files}).to_string())
         }
-        Err(e) => {
-            // Rendering failed for all valid ids — surface as tool error.
-            ToolOutcome::Err(ToolErrorCode::ToolFailed, e)
-        }
+        Err(error) => ToolOutcome::Err(ToolErrorCode::ToolFailed, error.to_string()),
     }
 }
 
@@ -401,7 +394,7 @@ mod tests {
         }
     }
 
-    /// PDF: both nodes produce a shared PDF blob that starts with %PDF-.
+    /// PDF: each node produces its own tightly cropped PDF file.
     #[test]
     fn export_two_nodes_pdf_returns_files_with_pdf_magic() {
         let tool = tool_from_scene(two_node_scene());

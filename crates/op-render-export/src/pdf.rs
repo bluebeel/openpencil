@@ -22,17 +22,27 @@ const PDF_MARGIN: f32 = 16.0;
 
 fn render_pdf_item(
     bounds: Rect,
+    scale: f32,
     paint: impl FnOnce(&skia_safe::Canvas),
 ) -> Result<Vec<u8>, ExportError> {
+    let width = (bounds.size.x + PDF_MARGIN * 2.0) * scale;
+    let height = (bounds.size.y + PDF_MARGIN * 2.0) * scale;
+    if !scale.is_finite()
+        || scale <= 0.0
+        || !width.is_finite()
+        || !height.is_finite()
+        || width <= 0.0
+        || height <= 0.0
+    {
+        return Err(ExportError::NonFiniteOutputSize);
+    }
     let mut buf = Vec::new();
     {
         let mut pdf = skia_safe::pdf::new_document(&mut buf, None);
-        let page_size = skia_safe::Size::new(
-            bounds.size.x + PDF_MARGIN * 2.0,
-            bounds.size.y + PDF_MARGIN * 2.0,
-        );
+        let page_size = skia_safe::Size::new(width, height);
         let mut page = pdf.begin_page(page_size, None);
         let canvas = page.canvas();
+        canvas.scale((scale, scale));
         canvas.translate((PDF_MARGIN - bounds.origin.x, PDF_MARGIN - bounds.origin.y));
         paint(canvas);
         pdf = page.end_page();
@@ -47,16 +57,30 @@ fn render_pdf_item(
 
 /// Render one resolved page as a single tightly cropped PDF page.
 pub fn render_page_pdf_bytes(page: &ScenePage) -> Result<Vec<u8>, ExportError> {
+    render_page_pdf_bytes_scaled(page, 1.0)
+}
+
+pub fn render_page_pdf_bytes_scaled(page: &ScenePage, scale: f32) -> Result<Vec<u8>, ExportError> {
     let bounds = crate::page_bounds(page).ok_or_else(|| ExportError::PageEmpty {
         page_id: page.id.clone(),
     })?;
-    render_pdf_item(bounds, |canvas| crate::paint_nodes(canvas, &page.children))
+    render_pdf_item(bounds, scale, |canvas| {
+        crate::paint_nodes(canvas, &page.children)
+    })
 }
 
 /// Render one node from its resolved containing page as a single PDF page.
 pub fn render_node_on_page_pdf_bytes(
     page: &ScenePage,
     node_id: &str,
+) -> Result<Vec<u8>, ExportError> {
+    render_node_on_page_pdf_bytes_scaled(page, node_id, 1.0)
+}
+
+pub fn render_node_on_page_pdf_bytes_scaled(
+    page: &ScenePage,
+    node_id: &str,
+    scale: f32,
 ) -> Result<Vec<u8>, ExportError> {
     let node = page
         .find(node_id)
@@ -76,7 +100,7 @@ pub fn render_node_on_page_pdf_bytes(
         .ok_or_else(|| ExportError::NodePaintsNothing {
             node_id: node_id.to_string(),
         })?;
-    render_pdf_item(bounds, |canvas| crate::paint_node(canvas, node))
+    render_pdf_item(bounds, scale, |canvas| crate::paint_node(canvas, node))
 }
 
 /// In-memory PDF variant: render each requested node as one PDF page
@@ -89,8 +113,11 @@ pub fn render_node_on_page_pdf_bytes(
 pub fn render_nodes_pdf_bytes(
     scene: &LayoutScene,
     node_ids: &[&str],
-    _scale: f32,
+    scale: f32,
 ) -> Result<Vec<u8>, ExportError> {
+    if !scale.is_finite() || scale <= 0.0 {
+        return Err(ExportError::NonFiniteOutputSize);
+    }
     let page = scene.active_page().ok_or(ExportError::NoActivePage)?;
     if node_ids.is_empty() {
         return Err(ExportError::NoNodeIdsRequested);
@@ -110,23 +137,23 @@ pub fn render_nodes_pdf_bytes(
     if pairs.is_empty() {
         return Err(ExportError::NoRequestedNodesPaint);
     }
-    // Find a common page size: the largest single-node bounds + margin on each
-    // side, so every page in the PDF is the same dimensions.
-    let (page_w, page_h) = {
-        let mut max_w = 0.0_f32;
-        let mut max_h = 0.0_f32;
-        for (_, b) in &pairs {
-            max_w = max_w.max(b.size.x);
-            max_h = max_h.max(b.size.y);
-        }
-        (max_w + PDF_MARGIN * 2.0, max_h + PDF_MARGIN * 2.0)
-    };
+    // Each selected node keeps its own page extent instead of inheriting the
+    // largest sibling's dimensions. No raster surface is allocated for scale.
+    if pairs.iter().any(|(_, b)| {
+        !((b.size.x + PDF_MARGIN * 2.0) * scale).is_finite()
+            || !((b.size.y + PDF_MARGIN * 2.0) * scale).is_finite()
+    }) {
+        return Err(ExportError::NonFiniteOutputSize);
+    }
     let mut buf: Vec<u8> = Vec::new();
     {
         let mut pdf = skia_safe::pdf::new_document(&mut buf, None);
         for (node, bounds) in &pairs {
+            let page_w = (bounds.size.x + PDF_MARGIN * 2.0) * scale;
+            let page_h = (bounds.size.y + PDF_MARGIN * 2.0) * scale;
             let mut on_page = pdf.begin_page(skia_safe::Size::new(page_w, page_h), None);
             let canvas = on_page.canvas();
+            canvas.scale((scale, scale));
             // Position the node's content with PDF_MARGIN inset from the page
             // edges, the same translation strategy as the multi-page exporter.
             canvas.translate((PDF_MARGIN - bounds.origin.x, PDF_MARGIN - bounds.origin.y));

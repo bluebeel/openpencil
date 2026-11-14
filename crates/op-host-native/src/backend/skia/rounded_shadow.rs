@@ -5,6 +5,49 @@ use op_editor_ui::{RoundRectShadowOptions, ShadowBlurKernel};
 use skia_safe::{Canvas, Paint, RRect};
 
 impl NativeBackend {
+    /// Eliminate only source samples known to be overwritten by a later
+    /// opaque fill. PointCamera clips are binary; an arbitrary shader/AA clip
+    /// could otherwise leave a fraction of the earlier shadow visible.
+    pub fn push_opaque_shadow_exclusion(
+        &self,
+        canvas: &Canvas,
+        rect: op_editor_ui::Rect,
+        max_radius: f32,
+    ) -> bool {
+        if !jian_skia::raster_sampling::is_point_sampling()
+            || !canvas.is_clip_rect()
+            || !max_radius.is_finite()
+            || max_radius < 0.0
+        {
+            return false;
+        }
+        let matrix = canvas.local_to_device_as_3x3();
+        if matrix.has_perspective() || !matrix.is_finite() {
+            return false;
+        }
+        let Some(inverse) = matrix.invert().filter(skia_safe::Matrix::is_finite) else {
+            return false;
+        };
+        let norm = (inverse.scale_x().abs() + inverse.skew_x().abs())
+            .max(inverse.skew_y().abs() + inverse.scale_y().abs());
+        let bounds = to_sk_rect(rect);
+        // The complete corner hull lies in its radius-square. Stay another
+        // two physical pixels away from that hull and from non-AA clip setup.
+        let magnitude = [bounds.left, bounds.top, bounds.right, bounds.bottom]
+            .into_iter()
+            .map(f32::abs)
+            .fold(1.0_f32, f32::max);
+        let guard = (2.0 * norm).max(magnitude * (16.0 * f32::EPSILON));
+        let inset = max_radius + guard;
+        let interior = bounds.with_inset((inset, inset));
+        if !guard.is_finite() || !interior.is_finite() || interior.is_empty() {
+            return false;
+        }
+        canvas.save();
+        canvas.clip_rect(interior, skia_safe::ClipOp::Difference, false);
+        true
+    }
+
     pub fn fill_round_rect_shadow(
         &mut self,
         canvas: &Canvas,

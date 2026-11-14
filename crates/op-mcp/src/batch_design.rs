@@ -305,6 +305,9 @@ pub(crate) fn parse_operations(input: &str) -> Result<ParsedOperations, Operatio
     // promotion drops the marked frame's children (widget nodes are leaves).
     let mut promoted = Vec::new();
     promote_in_slice(&mut nodes, &mut promoted);
+    for node in &mut nodes {
+        super::batch_program_node_parse::mark_new_authored_layout(node);
+    }
     let count = count_forest(&nodes);
     Ok(ParsedOperations::Insert {
         parent_id,

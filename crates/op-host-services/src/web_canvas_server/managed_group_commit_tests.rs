@@ -286,7 +286,7 @@ fn structural_patch_falls_back_before_any_command_is_applied() {
 }
 
 #[test]
-fn large_authored_text_is_rejected_before_target_capture_clones_it() {
+fn large_authored_text_uses_the_total_capture_allowance() {
     let files = Files::new();
     let state = files.state(false);
     let mut guard = state.lock().unwrap();
@@ -301,18 +301,26 @@ fn large_authored_text_is_rejected_before_target_capture_clones_it() {
     .to_string();
     let admission = authority.agent_contexts.try_admit(&input, PROFILE).unwrap();
     let before = state.lock().unwrap().editor.document_revision();
-    assert!(dispatch(
+    let response = dispatch(
         &ctx(&state, &authority, &hub),
         &input,
         PROFILE,
         Some(&files.path()),
         &files.path(),
         &admission,
-        true
+        true,
     )
-    .is_none());
-    assert_eq!(state.lock().unwrap().editor.document_revision(), before);
-    assert!(state.lock().unwrap().editor.history.past.is_empty());
+    .expect("large text fits the approved total allowance")
+    .unwrap();
+    let response: Value = serde_json::from_str(&response).unwrap();
+    assert!(response.get("error").is_none() && response["result"]["isError"] != true);
+    let state = state.lock().unwrap();
+    assert!(state.editor.document_revision() > before);
+    assert_eq!(state.editor.history.past.len(), 1);
+    assert_eq!(
+        serde_json::to_value(&state.editor.doc).unwrap()["pages"][0]["children"][1]["content"],
+        "small"
+    );
 }
 
 #[test]

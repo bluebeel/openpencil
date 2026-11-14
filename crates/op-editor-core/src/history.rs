@@ -394,3 +394,67 @@ mod tests {
         assert!(!h.can_redo());
     }
 }
+
+impl EditorSnapshot {
+    /// Heap copied by History::clone; document/component/workspace owners are
+    /// immutable Arc graphs and are accounted separately by the group ledger.
+    pub fn command_clone_bytes(&self) -> usize {
+        let ids = |selection: &SelectionState| {
+            selection.set.len() * std::mem::size_of::<NodeId>()
+                + selection
+                    .set
+                    .iter()
+                    .map(|id| 64 + 8 * id.as_str().len())
+                    .sum::<usize>()
+                + 64
+                + 8 * selection.anchor.as_str().len()
+        };
+        let refs = |map: &HashMap<NodeId, String>| {
+            map.capacity() * (std::mem::size_of::<(NodeId, String)>() + 32) * 2
+                + map
+                    .iter()
+                    .map(|(key, value)| 64 + 8 * (key.as_str().len() + value.len()))
+                    .sum::<usize>()
+        };
+        std::mem::size_of::<Self>()
+            + ids(&self.selection)
+            + refs(&self.fill_refs)
+            + refs(&self.stroke_refs)
+            + self.app_state_owner.len() * 128
+            + self
+                .app_state_owner
+                .keys()
+                .map(|key| 64 + key.len() * 8)
+                .sum::<usize>()
+    }
+    pub fn command_workspace_identity(&self) -> Option<usize> {
+        self.workspace_directions
+            .as_ref()
+            .map(|workspace| Arc::as_ptr(&workspace.variants) as usize)
+    }
+    pub fn command_workspace_retention(
+        &self,
+        limit: usize,
+    ) -> Result<Option<(usize, usize)>, crate::history_snapshot::CaptureSizeError> {
+        let Some(workspace) = &self.workspace_directions else {
+            return Ok(None);
+        };
+        let mut bytes = std::mem::size_of_val(workspace.variants.as_ref());
+        for variant in workspace.variants.iter() {
+            let metadata = (
+                &variant.name,
+                &variant.style_guide,
+                &variant.style_label,
+                &variant.name_prefix,
+                &variant.root_ids,
+                &variant.variables,
+                &variant.themes,
+            );
+            bytes = bytes.saturating_add(crate::history_snapshot::command_capture_value_bytes(
+                &metadata,
+                limit.saturating_sub(bytes),
+            )?);
+        }
+        Ok(Some((Arc::as_ptr(&workspace.variants) as usize, bytes)))
+    }
+}

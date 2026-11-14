@@ -43,6 +43,11 @@ impl<'a> RenderBackend for NativeFrameBackend<'a> {
         self.inner.clip_rect(self.canvas, rect);
     }
 
+    fn push_opaque_shadow_exclusion(&mut self, rect: Rect, max_radius: f32) -> bool {
+        self.inner
+            .push_opaque_shadow_exclusion(self.canvas, rect, max_radius)
+    }
+
     fn clip_round_rect(&mut self, rect: Rect, radius: f32) {
         self.inner.clip_round_rect(self.canvas, rect, radius);
     }

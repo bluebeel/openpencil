@@ -68,12 +68,24 @@ fn try_geometry_internal(
     };
     // Duplicate IDs have shared layout lookup and last-raw-metadata semantics.
     // Preserve that complete path instead of guessing which duplicate survives.
-    let mut ids = HashSet::new();
-    if !unique(raw, &mut ids) || !ids.contains(parent) {
-        return None;
+    let index = reuse
+        .then(|| crate::geometry_cache::values::page_index_cached(state, page))
+        .flatten();
+    if let Some(index) = &index {
+        if !index.unique || !index.contains_unique(parent) {
+            return None;
+        }
+    } else {
+        let mut ids = HashSet::new();
+        if !unique(raw, &mut ids) || !ids.contains(parent) {
+            return None;
+        }
     }
-    drop(ids); // Do not keep the full raw-ID inventory during layout.
-    let (page_meta, roots) = crate::item_scene::selected_page_roots(state, page, Some(parent))?;
+    let (page_meta, roots) = if reuse {
+        crate::item_scene::selected_page_roots_cached(state, page, Some(parent))?
+    } else {
+        crate::item_scene::selected_page_roots(state, page, Some(parent))?
+    };
     if roots.len() != 1 {
         return None;
     }
@@ -86,8 +98,11 @@ fn try_geometry_internal(
     {
         return None;
     }
-    let mut path = Vec::new();
-    if !path_to(root, parent, &mut path) || path.len() > 128 {
+    let mut path = index
+        .as_ref()
+        .and_then(|index| index.path(root, parent))
+        .unwrap_or_default();
+    if (path.is_empty() && !path_to(root, parent, &mut path)) || path.len() > 128 {
         return None; // Unknown/virtual IDs retain the old page/scene fallback.
     }
     let target = *path.last()?;

@@ -16,11 +16,13 @@ use crate::node_id::NodeId;
 use crate::pen_node_ext::PenNodeExt;
 use crate::state::EditorState;
 use crate::walkers;
-use jian_ops_schema::conversion::ConversionKind;
 use jian_ops_schema::node::PenNode;
 use jian_ops_schema::PenDocument;
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
+
+#[path = "component_document_index.rs"]
+mod document_index;
 
 /// One reusable design fragment.
 ///
@@ -208,61 +210,7 @@ impl ComponentLibrary {
     /// document tree as component definitions; this keeps loaded `.op`
     /// files addressable even though the registry itself is transient.
     pub fn from_document(doc: &PenDocument) -> Self {
-        fn walk(
-            nodes: &[PenNode],
-            page_index: Option<usize>,
-            path: &mut Vec<usize>,
-            lib: &mut ComponentLibrary,
-            positions: &mut HashMap<NodeId, usize>,
-        ) {
-            for (index, node) in nodes.iter().enumerate() {
-                path.push(index);
-                if let PenNode::Frame(frame) = node {
-                    if frame.reusable == Some(true) {
-                        let id = NodeId::new(frame.base.id.clone());
-                        let name = frame
-                            .base
-                            .name
-                            .clone()
-                            .unwrap_or_else(|| frame.base.id.clone());
-                        lib.insert_document_backed_indexed(
-                            Component {
-                                id,
-                                name,
-                                root: shallow_root(node),
-                            },
-                            DocumentNodeLocation {
-                                page_index,
-                                child_path: path.clone().into_boxed_slice(),
-                            },
-                            positions,
-                        );
-                    }
-                }
-                if let Some(children) = node.children() {
-                    walk(children, page_index, path, lib, positions);
-                }
-                path.pop();
-            }
-        }
-
-        let mut lib = ComponentLibrary::default();
-        let mut path = Vec::new();
-        let mut positions = HashMap::new();
-        if let Some(pages) = doc.pages.as_ref() {
-            for (page_index, page) in pages.iter().enumerate() {
-                walk(
-                    &page.children,
-                    Some(page_index),
-                    &mut path,
-                    &mut lib,
-                    &mut positions,
-                );
-            }
-        }
-        walk(&doc.children, None, &mut path, &mut lib, &mut positions);
-        add_conversion_components(doc, &mut lib, &mut positions);
-        lib
+        document_index::from_document(doc)
     }
 
     fn insert_document_backed(&mut self, component: Component, location: DocumentNodeLocation) {
@@ -313,44 +261,6 @@ impl ComponentLibrary {
             location,
         );
         true
-    }
-}
-
-fn add_conversion_components(
-    doc: &PenDocument,
-    lib: &mut ComponentLibrary,
-    positions: &mut HashMap<NodeId, usize>,
-) {
-    let Some(spec) = doc.conversion.as_ref() else {
-        return;
-    };
-    for entry in &spec.entries {
-        if entry.kind != ConversionKind::Component {
-            continue;
-        }
-        let Some(node_id) = entry.node_id.as_deref().filter(|id| !id.is_empty()) else {
-            continue;
-        };
-        let Some((root, location)) = find_node_and_location(doc, node_id) else {
-            continue;
-        };
-        if !is_component_root(root) {
-            continue;
-        }
-        let name = root
-            .base()
-            .name
-            .clone()
-            .unwrap_or_else(|| entry.key.clone());
-        lib.insert_document_backed_indexed(
-            Component {
-                id: NodeId::new(node_id),
-                name,
-                root: shallow_root(root),
-            },
-            location,
-            positions,
-        );
     }
 }
 

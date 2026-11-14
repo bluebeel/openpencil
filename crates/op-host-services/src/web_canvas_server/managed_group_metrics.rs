@@ -15,8 +15,29 @@ pub(in crate::web_canvas_server) struct Metrics {
     pub isolated: AtomicU64,
     pub strict_capture_fallback: AtomicU64,
     refusals: [AtomicU64; 11],
+    component_count: AtomicU64,
+    component_bytes: AtomicU64,
+    target_bytes: AtomicU64,
+    auxiliary_bytes: AtomicU64,
+    retained_bytes: AtomicU64,
+    projected_bytes: AtomicU64,
+    last_size_error: AtomicU64,
 }
 impl Metrics {
+    pub(super) fn observe_forecast(&self, forecast: budget::Forecast) {
+        for (counter, value) in [
+            (&self.component_count, forecast.component_count),
+            (&self.component_bytes, forecast.components),
+            (&self.target_bytes, forecast.target),
+            (&self.auxiliary_bytes, forecast.auxiliary),
+            (&self.retained_bytes, forecast.retained),
+            (&self.projected_bytes, forecast.projected),
+        ] {
+            counter.fetch_max(value as u64, Ordering::Relaxed);
+        }
+        self.last_size_error
+            .store(forecast.error as u64, Ordering::Relaxed);
+    }
     pub(super) fn refuse(&self, reason: budget::Refusal) {
         self.refusals[reason as usize].fetch_add(1, Ordering::Relaxed);
     }
@@ -54,8 +75,17 @@ impl Metrics {
             "isolated":self.isolated.load(Ordering::Relaxed),
             "strictCaptureFallback":self.strict_capture_fallback.load(Ordering::Relaxed),
             "budgetRefusals":refusals,
-            "queueCallsLimit":128,"queueAccountedBytesLimit":67108864,
-            "cohortCallsLimit":32,"cohortCaptureForecastLimit":536870912
+            "admissionForecastPeaks":{
+                "componentCount":self.component_count.load(Ordering::Relaxed),
+                "componentGraphBytes":self.component_bytes.load(Ordering::Relaxed),
+                "targetBytes":self.target_bytes.load(Ordering::Relaxed),
+                "auxiliaryBytes":self.auxiliary_bytes.load(Ordering::Relaxed),
+                "retainedHistoryBytes":self.retained_bytes.load(Ordering::Relaxed),
+                "projectedCohortPeakBytes":self.projected_bytes.load(Ordering::Relaxed)
+            },
+            "lastSizingError":match self.last_size_error.load(Ordering::Relaxed) {1=>"capacity",2=>"serialization",_=>"none"},
+            "queueCallsLimit":128,"queueAccountedBytesLimit":134217728,
+            "cohortCallsLimit":32,"cohortCaptureForecastLimit":2147483648
         })
     }
 }

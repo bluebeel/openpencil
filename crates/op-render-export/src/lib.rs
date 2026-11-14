@@ -55,7 +55,10 @@ pub use shared_raster::{
     SharedRasterWorker,
 };
 pub use shared_work::{shared_work_gate, SharedWorkGate, SharedWorkLease};
-pub use svg::{export_node_svg, export_svg, render_node_svg_bytes, render_svg_bytes};
+pub use svg::{
+    export_node_svg, export_svg, render_node_on_page_svg_bytes, render_node_svg_bytes,
+    render_page_svg_bytes, render_svg_bytes, NodeSvgBatch,
+};
 
 const MARGIN: f32 = 0.0;
 

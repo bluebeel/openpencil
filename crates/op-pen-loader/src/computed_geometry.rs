@@ -93,10 +93,30 @@ pub fn editor_state_to_page_item_geometry(
     page_index: usize,
     item_id: Option<&str>,
 ) -> Vec<ComputedGeometry> {
+    item_geometry(state, page_index, item_id, false)
+}
+
+pub(crate) fn editor_state_to_page_item_geometry_with_cached_scope(
+    state: &EditorState,
+    page_index: usize,
+    item_id: Option<&str>,
+) -> Vec<ComputedGeometry> {
+    item_geometry(state, page_index, item_id, true)
+}
+
+fn item_geometry(
+    state: &EditorState,
+    page_index: usize,
+    item_id: Option<&str>,
+    cached: bool,
+) -> Vec<ComputedGeometry> {
     if !state.editor_ui.workspace.visible {
-        if let Some((page, roots)) =
+        let selected = if cached {
+            crate::item_scene::selected_page_roots_cached(state, page_index, item_id)
+        } else {
             crate::item_scene::selected_page_roots(state, page_index, item_id)
-        {
+        };
+        if let Some((page, roots)) = selected {
             let payload = crate::editor_scene::roots_to_page_payload(
                 state, roots, &page, page_index, false, false,
             );
@@ -151,6 +171,7 @@ pub(crate) fn editor_state_to_page_parent_geometry_with_rect_reuse(
     page: usize,
     parent: &str,
 ) -> Vec<ComputedGeometry> {
-    bounded_geometry::try_geometry_with_rect_reuse(state, page, parent)
-        .unwrap_or_else(|| editor_state_to_page_item_geometry(state, page, Some(parent)))
+    bounded_geometry::try_geometry_with_rect_reuse(state, page, parent).unwrap_or_else(|| {
+        editor_state_to_page_item_geometry_with_cached_scope(state, page, Some(parent))
+    })
 }

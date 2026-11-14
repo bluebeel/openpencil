@@ -206,3 +206,16 @@ pub(crate) fn selected_page_roots<'a>(
         selected,
     ))
 }
+
+/// Explicit trusted-host counterpart; fresh builders above never use this index.
+pub(crate) fn selected_page_roots_cached<'a>(
+    state: &'a EditorState,
+    page: usize,
+    item: Option<&str>,
+) -> Option<(ScenePage, &'a [PenNode])> {
+    let (meta, roots) = selected_page_roots(state, page, None)?;
+    match crate::geometry_cache::values::page_index_cached(state, page) {
+        Some(index) => Some((meta, index.select(roots, item))),
+        None => selected_page_roots(state, page, item),
+    }
+}

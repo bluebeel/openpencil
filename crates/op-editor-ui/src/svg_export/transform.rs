@@ -10,6 +10,17 @@ pub(super) struct AncestorClip {
     xform: glam::Affine2,
 }
 
+impl AncestorClip {
+    pub(super) fn for_node(node: &SceneNode, xform: glam::Affine2) -> Self {
+        Self {
+            id: format!("ancestor-clip-{}", svg_id(&node.id)),
+            bounds: normalize_rect(node.bounds),
+            corner_radius: node.corner_radius.max(0.0),
+            xform,
+        }
+    }
+}
+
 pub(super) fn find_node_with_ancestor_context<'a>(
     nodes: &'a [SceneNode],
     node_id: &str,
@@ -33,12 +44,7 @@ fn find_node_inner<'a>(
             && node.bounds.size.x != 0.0
             && node.bounds.size.y != 0.0;
         if clips_children {
-            clips.push(AncestorClip {
-                id: format!("ancestor-clip-{}", svg_id(&node.id)),
-                bounds: normalize_rect(node.bounds),
-                corner_radius: node.corner_radius.max(0.0),
-                xform: child_xform,
-            });
+            clips.push(AncestorClip::for_node(node, child_xform));
         }
         if let Some(found) = find_node_inner(&node.children, node_id, child_xform, clips) {
             return Some(found);

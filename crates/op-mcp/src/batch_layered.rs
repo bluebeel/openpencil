@@ -106,6 +106,9 @@ pub(crate) fn dispatch_design_skeleton(args: &BTreeMap<String, String>) -> ToolO
         ),
     );
     let mut nodes = vec![root];
+    for node in &mut nodes {
+        super::batch_program_node_parse::mark_new_authored_layout(node);
+    }
     let hoist = super::batch_design::hoist_generation_state(&mut nodes);
     ToolOutcome::OkWithCommand(
         out,
@@ -179,6 +182,9 @@ pub(crate) fn dispatch_design_content(args: &BTreeMap<String, String>) -> ToolOu
     out.insert("warnings".into(), warnings_json);
     out.insert("postProcessed".into(), post_processed.to_string());
     out.insert("postProcessFixes".into(), post_process_fixes.to_string());
+    for node in &mut parsed.nodes {
+        super::batch_program_node_parse::mark_new_authored_layout(node);
+    }
     let hoist = super::batch_design::hoist_generation_state(&mut parsed.nodes);
     ToolOutcome::OkWithCommand(
         out,

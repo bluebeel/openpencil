@@ -116,12 +116,15 @@ impl ShapedText {
                         .iter()
                         .enumerate()
                         .map(|(line, metrics)| {
-                            jian_skia::advance_grid::quantize_advance(
-                                metrics.width as f32
-                                    + corrections.get(&line).copied().unwrap_or(0.0),
-                                run.font_size,
-                            ) + clusters.get(&line).map_or(0, |c| c.count.saturating_sub(1)) as f32
-                                * run.letter_spacing
+                            jian_skia::advance_grid::tracked_position(
+                                jian_skia::advance_grid::quantize_advance(
+                                    metrics.width as f32
+                                        + corrections.get(&line).copied().unwrap_or(0.0),
+                                    run.font_size,
+                                ),
+                                clusters.get(&line).map_or(0, |c| c.count.saturating_sub(1)),
+                                run.letter_spacing,
+                            )
                         })
                         .fold(0.0, f32::max);
                     return width;
@@ -130,15 +133,17 @@ impl ShapedText {
                         width + corrections.get(&0).copied().unwrap_or(0.0),
                         run.font_size,
                     );
-                    return width
-                        + clusters
+                    return jian_skia::advance_grid::tracked_position(
+                        width,
+                        clusters
                             .get(&0)
                             .map_or_else(
                                 || TrackingClusters::default().including_trailing(run.text),
                                 |c| c.including_trailing(run.text),
                             )
-                            .saturating_sub(1) as f32
-                            * run.letter_spacing;
+                            .saturating_sub(1),
+                        run.letter_spacing,
+                    );
                 }
             }
             width + run.text.chars().count().saturating_sub(1) as f32 * run.letter_spacing
@@ -372,7 +377,15 @@ fn visit_positioned(
                         character_offsets.partition_point(|start| *start < *offset as usize)
                     };
                     skia_safe::Point::new(
-                        position.x + character as f32 * run.letter_spacing,
+                        if use_grid {
+                            jian_skia::advance_grid::tracked_position(
+                                position.x,
+                                character,
+                                run.letter_spacing,
+                            )
+                        } else {
+                            position.x + character as f32 * run.letter_spacing
+                        },
                         position.y,
                     )
                 })

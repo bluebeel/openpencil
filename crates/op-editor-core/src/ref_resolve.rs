@@ -23,8 +23,7 @@
 //! and never persisted, so the extra depth only ever ADDS rendered
 //! content.
 
-use std::cell::OnceCell;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
 
 use crate::components::ComponentLibrary;
 use jian_ops_schema::node::PenNode;
@@ -38,80 +37,9 @@ pub(crate) fn instance_child_virtual_id(ref_id: &str, child_id: &str) -> String 
     format!("{ref_id}__{child_id}")
 }
 
-/// Borrowed document-wide id index used during one render-resolution pass.
-/// Building it once changes component target lookup from O(refs × nodes) to
-/// O(nodes + refs), while the index disappears as soon as the active page has
-/// been prepared.
-struct NodeLookup<'a> {
-    by_id: HashMap<&'a str, &'a PenNode>,
-    fallback_document: Option<&'a PenDocument>,
-    fallback_by_id: OnceCell<HashMap<&'a str, &'a PenNode>>,
-}
-
-impl<'a> NodeLookup<'a> {
-    fn index_document(doc: &'a PenDocument) -> HashMap<&'a str, &'a PenNode> {
-        fn walk<'a>(nodes: &'a [PenNode], by_id: &mut HashMap<&'a str, &'a PenNode>) {
-            for node in nodes {
-                let id = crate::pen_node_ext::PenNodeExt::base(node).id.as_str();
-                // Match the old depth-first lookup: duplicate ids resolve to
-                // the first document-order node.
-                by_id.entry(id).or_insert(node);
-                if let Some(children) = crate::pen_node_ext::PenNodeExt::children(node) {
-                    walk(children, by_id);
-                }
-            }
-        }
-
-        let mut by_id = HashMap::new();
-        if let Some(pages) = doc.pages.as_ref() {
-            for page in pages {
-                walk(&page.children, &mut by_id);
-            }
-        }
-        walk(&doc.children, &mut by_id);
-        by_id
-    }
-
-    fn from_document(doc: &'a PenDocument) -> Self {
-        Self {
-            by_id: Self::index_document(doc),
-            fallback_document: None,
-            fallback_by_id: OnceCell::new(),
-        }
-    }
-
-    fn from_components_with_document_fallback(
-        components: &'a ComponentLibrary,
-        document: &'a PenDocument,
-    ) -> Self {
-        let mut by_id = HashMap::with_capacity(components.len());
-        for component in &components.components {
-            let root = if components.is_document_backed(&component.id) {
-                components.root_at_stored_location(document, &component.id)
-            } else {
-                Some(&component.root)
-            };
-            if let Some(root) = root {
-                by_id.entry(component.id.as_str()).or_insert(root);
-            }
-        }
-        Self {
-            by_id,
-            fallback_document: Some(document),
-            fallback_by_id: OnceCell::new(),
-        }
-    }
-
-    fn find(&self, id: &str) -> Option<&'a PenNode> {
-        self.by_id.get(id).copied().or_else(|| {
-            let document = self.fallback_document?;
-            self.fallback_by_id
-                .get_or_init(|| Self::index_document(document))
-                .get(id)
-                .copied()
-        })
-    }
-}
+#[path = "ref_resolve_lookup.rs"]
+mod request_lookup;
+use request_lookup::NodeLookup;
 
 /// Expand every `Ref` node in `doc` into its resolved component
 /// subtree. Unresolvable refs (unknown target, cycle) are dropped —
@@ -591,19 +519,19 @@ mod tests {
         let components = ComponentLibrary::from_document(&doc);
         let lookup = NodeLookup::from_components_with_document_fallback(&components, &doc);
 
-        assert!(lookup.fallback_by_id.get().is_none());
+        assert_eq!(lookup.indexed_document_ids(), 0);
         assert!(std::ptr::eq(
             lookup.find("master").expect("registered master"),
             &doc.children[0],
         ));
         assert!(
-            lookup.fallback_by_id.get().is_none(),
+            lookup.indexed_document_ids() == 0,
             "registered component hits must not index the full document"
         );
         assert!(lookup.find("legacy-target").is_some());
         assert!(
-            lookup.fallback_by_id.get().is_some(),
-            "a non-component target keeps the document-wide compatibility fallback"
+            lookup.indexed_document_ids() == 2,
+            "a non-component target keeps first-document-order compatibility lookup"
         );
     }
 

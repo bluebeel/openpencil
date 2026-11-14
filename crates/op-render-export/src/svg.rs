@@ -4,7 +4,7 @@
 //! so desktop and web export the same vector markup. This module keeps
 //! the desktop API focused on writing the generated SVG to disk.
 
-use op_editor_ui::layout_scene::LayoutScene;
+use op_editor_ui::layout_scene::{LayoutScene, ScenePage};
 use std::path::Path as StdPath;
 
 use crate::ExportError;
@@ -21,6 +21,43 @@ pub fn render_node_svg_bytes(scene: &LayoutScene, node_id: &str) -> Result<Vec<u
     op_editor_ui::svg_export::serialize_node_svg(scene, node_id)
         .map(String::into_bytes)
         .map_err(|e| ExportError::SvgSerialize(e.to_string()))
+}
+
+/// Serialize one borrowed page, sharing the already resolved scene.
+pub fn render_page_svg_bytes(page: &ScenePage, scale: f32) -> Result<Vec<u8>, ExportError> {
+    op_editor_ui::svg_export::serialize_page_svg(page, scale)
+        .map(String::into_bytes)
+        .map_err(|e| ExportError::SvgSerialize(e.to_string()))
+}
+
+/// Serialize a node on an explicitly resolved page, including ancestor clips.
+pub fn render_node_on_page_svg_bytes(
+    page: &ScenePage,
+    node_id: &str,
+    scale: f32,
+) -> Result<Vec<u8>, ExportError> {
+    op_editor_ui::svg_export::serialize_node_on_page_svg(page, node_id, scale)
+        .map(String::into_bytes)
+        .map_err(|e| ExportError::SvgSerialize(e.to_string()))
+}
+
+/// Borrowed, request-scoped SVG lookup shared across a multi-node export.
+/// Payloads are serialized one at a time; this owns no scene or SVG buffers.
+pub struct NodeSvgBatch<'a> {
+    prepared: op_editor_ui::svg_export::SvgNodeBatch<'a>,
+}
+impl<'a> NodeSvgBatch<'a> {
+    pub fn new(page: &'a ScenePage, node_ids: &[String]) -> Self {
+        Self {
+            prepared: op_editor_ui::svg_export::SvgNodeBatch::new(page, node_ids),
+        }
+    }
+    pub fn render(&self, node_id: &str, scale: f32) -> Result<Vec<u8>, ExportError> {
+        self.prepared
+            .serialize(node_id, scale)
+            .map(String::into_bytes)
+            .map_err(|e| ExportError::SvgSerialize(e.to_string()))
+    }
 }
 
 /// Serialize the scene's active page to an SVG file at `target`.

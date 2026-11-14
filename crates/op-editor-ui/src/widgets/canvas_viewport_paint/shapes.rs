@@ -31,6 +31,13 @@ pub(super) fn paint_drop_shadows(
     } else {
         node.corner_radius * zoom
     };
+    let cover_radius = node.corner_radii.map_or(radius, |radii| {
+        radii.into_iter().fold(0.0_f32, f32::max) * zoom
+    });
+    let exclude = opaque_fill_covers_shadow(node)
+        && cx
+            .backend
+            .push_opaque_shadow_exclusion(world_rect, cover_radius);
     for effect in &node.effects {
         let Effect::DropShadow(s) = effect else {
             continue;
@@ -49,6 +56,46 @@ pub(super) fn paint_drop_shadows(
             continue;
         }
         paint_round_shadow(cx, s, world_rect, radius, zoom);
+    }
+    if exclude {
+        cx.backend.restore();
+    }
+}
+
+fn opaque_fill_covers_shadow(node: &SceneNode) -> bool {
+    use crate::layout_scene::{SceneFillLayer, SceneFillType};
+    use crate::ImageBlendMode;
+    let opaque = |color: crate::Color| {
+        color.a == 1.0 && [color.r, color.g, color.b].into_iter().all(f32::is_finite)
+    };
+    if !matches!(node.kind, NodeKind::Frame | NodeKind::Rect)
+        || node.opacity != 1.0
+        || node.blend_mode != ImageBlendMode::Normal
+        || node
+            .effects
+            .iter()
+            .any(|e| !matches!(e, Effect::DropShadow(_)))
+        || !node
+            .effects
+            .iter()
+            .any(|e| matches!(e, Effect::DropShadow(s) if !s.inner))
+    {
+        return false;
+    }
+    if node.fill_layers.is_empty() {
+        node.fill_type == SceneFillType::Solid
+            && node.image_src.is_none()
+            && node.gradient.is_none()
+            && node.shader.is_none()
+            && node.fill.is_some_and(opaque)
+    } else {
+        node.fill_layers
+            .iter()
+            .all(|layer| layer.blend_mode() == ImageBlendMode::Normal)
+            && node.fill_layers.iter().any(|layer| {
+                matches!(layer,
+                SceneFillLayer::Solid { color, .. } if opaque(*color))
+            })
     }
 }
 

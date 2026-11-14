@@ -7,6 +7,9 @@ use crate::layout_scene::{
 use crate::{Color, Rect};
 use std::fmt::Write as _;
 
+mod batch;
+pub use batch::SvgNodeBatch;
+
 mod composite;
 #[cfg(test)]
 mod composite_tests;
@@ -47,6 +50,7 @@ pub enum SvgExportError {
     NodeNotFound(String),
     /// The requested node exists but paints no geometry.
     NodePaintsNothing(String),
+    InvalidScale,
 }
 
 impl std::fmt::Display for SvgExportError {
@@ -58,6 +62,7 @@ impl std::fmt::Display for SvgExportError {
                 write!(f, "node {id} not found on the active page")
             }
             SvgExportError::NodePaintsNothing(id) => write!(f, "node {id} paints nothing"),
+            SvgExportError::InvalidScale => write!(f, "SVG scale must be finite and positive"),
         }
     }
 }
@@ -75,34 +80,62 @@ pub fn serialize_active_page_svg(scene: &LayoutScene) -> Result<String, SvgExpor
     let Some(page) = scene.active_page() else {
         return Err(SvgExportError::NoActivePage);
     };
+    serialize_page_svg(page, 1.0)
+}
+
+/// Serialize a borrowed page without copying the containing scene. Scaling
+/// changes the output viewport; document geometry and the viewBox stay exact.
+pub fn serialize_page_svg(page: &ScenePage, scale: f32) -> Result<String, SvgExportError> {
     serialize_svg(
         &page.children,
         page_bounds(page).ok_or(SvgExportError::NothingToExport)?,
         MARGIN,
         glam::Affine2::IDENTITY,
         &[],
+        scale,
     )
 }
 
 /// Serialize one active-page node and subtree, tightly cropped to its painted bounds.
 pub fn serialize_node_svg(scene: &LayoutScene, node_id: &str) -> Result<String, SvgExportError> {
     let page = scene.active_page().ok_or(SvgExportError::NoActivePage)?;
+    serialize_node_on_page_svg(page, node_id, 1.0)
+}
+
+/// Serialize a borrowed containing-page node with its ancestor transforms and
+/// clips. This also supports arbitrary-page headless export without scene clones.
+pub fn serialize_node_on_page_svg(
+    page: &ScenePage,
+    node_id: &str,
+    scale: f32,
+) -> Result<String, SvgExportError> {
     let (node, ancestor_xform, ancestor_clips) =
         find_node_with_ancestor_context(&page.children, node_id)
             .ok_or_else(|| SvgExportError::NodeNotFound(node_id.to_string()))?;
+    serialize_node_context(node, node_id, ancestor_xform, &ancestor_clips, scale)
+}
+
+fn serialize_node_context(
+    node: &SceneNode,
+    node_id: &str,
+    ancestor_xform: glam::Affine2,
+    ancestor_clips: &[AncestorClip],
+    scale: f32,
+) -> Result<String, SvgExportError> {
     let mut acc = BoundsAcc::new();
     collect_bounds(node, ancestor_xform, &mut acc);
     let painted_bounds = acc
         .into_rect()
         .ok_or_else(|| SvgExportError::NodePaintsNothing(node_id.to_string()))?;
-    let bounds = apply_ancestor_clip_bounds(painted_bounds, &ancestor_clips)
+    let bounds = apply_ancestor_clip_bounds(painted_bounds, ancestor_clips)
         .ok_or_else(|| SvgExportError::NodePaintsNothing(node_id.to_string()))?;
     serialize_svg(
         std::slice::from_ref(node),
         bounds,
         0.0,
         ancestor_xform,
-        &ancestor_clips,
+        ancestor_clips,
+        scale,
     )
 }
 
@@ -112,6 +145,7 @@ fn serialize_svg(
     margin: f32,
     root_xform: glam::Affine2,
     ancestor_clips: &[AncestorClip],
+    scale: f32,
 ) -> Result<String, SvgExportError> {
     let view_x = bounds.origin.x - margin;
     let view_y = bounds.origin.y - margin;
@@ -120,10 +154,15 @@ fn serialize_svg(
     if view_w <= 0.0 || view_h <= 0.0 {
         return Err(SvgExportError::NothingToExport);
     }
+    let output_w = view_w * scale;
+    let output_h = view_h * scale;
+    if !scale.is_finite() || scale <= 0.0 || !output_w.is_finite() || !output_h.is_finite() {
+        return Err(SvgExportError::InvalidScale);
+    }
     let mut svg = String::with_capacity(4096);
     let _ = write!(
         svg,
-        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="{view_x} {view_y} {view_w} {view_h}" width="{view_w}" height="{view_h}">"#
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="{view_x} {view_y} {view_w} {view_h}" width="{output_w}" height="{output_h}">"#
     );
     emit_defs(&mut svg, nodes, ancestor_clips);
     emit_ancestor_clip_groups_start(&mut svg, ancestor_clips);

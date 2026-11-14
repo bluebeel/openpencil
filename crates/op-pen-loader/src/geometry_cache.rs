@@ -1,5 +1,7 @@
 //! Explicit trusted-host reuse of computed geometry; public fresh builders remain fresh.
-use crate::{computed_geometry::ComputedGeometry, editor_state_to_page_item_geometry};
+use crate::computed_geometry::ComputedGeometry;
+#[cfg(test)]
+use crate::editor_state_to_page_item_geometry;
 use op_editor_core::EditorState;
 use std::{
     collections::BTreeMap,
@@ -18,6 +20,7 @@ struct Key {
     scope: (usize, usize),
     parent_query: Option<String>,
     root_rectangles: bool,
+    page_index: bool,
     preserve: bool,
     workspace: bool,
     preview: bool,
@@ -36,7 +39,7 @@ impl Key {
         let roots = if state.editor_ui.workspace.visible {
             crate::item_scene::selected_page_roots(state, page, None)?.1
         } else {
-            crate::item_scene::selected_page_roots(state, page, item)?.1
+            crate::item_scene::selected_page_roots_cached(state, page, item)?.1
         };
         let mut components = Vec::new();
         if state.document_revision() == 0 {
@@ -58,6 +61,7 @@ impl Key {
             scope: (roots.as_ptr() as usize, roots.len()),
             parent_query: None,
             root_rectangles: false,
+            page_index: false,
             preserve: state.editor_ui.preserve_authored_geometry,
             workspace: state.editor_ui.workspace.visible,
             preview: state.editor_ui.preview.mode,
@@ -67,6 +71,29 @@ impl Key {
             components,
         })
     }
+    fn for_page_index(
+        state: &EditorState,
+        page: usize,
+        roots: &[jian_ops_schema::node::PenNode],
+    ) -> Self {
+        Self {
+            owner: state.derived_cache_owner(),
+            generation: state.document_generation(),
+            revision: state.document_revision(),
+            page,
+            scope: (roots.as_ptr() as usize, roots.len()),
+            parent_query: None,
+            root_rectangles: false,
+            page_index: true,
+            preserve: false,
+            workspace: false,
+            preview: false,
+            active_page: 0,
+            theme: BTreeMap::new(),
+            font_generation: 0,
+            components: Vec::new(),
+        }
+    }
     fn matches(&self, other: &Self) -> bool {
         Weak::ptr_eq(&self.owner, &other.owner)
             && self.generation == other.generation
@@ -75,6 +102,7 @@ impl Key {
             && self.scope == other.scope
             && self.parent_query == other.parent_query
             && self.root_rectangles == other.root_rectangles
+            && self.page_index == other.page_index
             && self.preserve == other.preserve
             && self.workspace == other.workspace
             && self.preview == other.preview
@@ -123,7 +151,11 @@ pub fn editor_state_to_page_item_geometry_cached(
     get_or_compute(
         shared_store(),
         Key::new(state, page, item, crate::current_font_generation()),
-        || editor_state_to_page_item_geometry(state, page, item),
+        || {
+            crate::computed_geometry::editor_state_to_page_item_geometry_with_cached_scope(
+                state, page, item,
+            )
+        },
     )
 }
 

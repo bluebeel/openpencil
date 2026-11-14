@@ -431,16 +431,29 @@ impl NativeBackend {
                         } else {
                             1.0
                         };
-                        let mut cursor = 0.0;
-                        let positions: Vec<_> = widths
-                            .into_iter()
-                            .map(|width| {
-                                let point = skia_safe::Point::new(cursor, 0.0);
-                                cursor += quantize_advance(width * factor, run.font_size)
-                                    + layout.letter_spacing();
-                                point
-                            })
-                            .collect();
+                        let precise = jian_skia::advance_grid::position_nominal_advances(
+                            &widths,
+                            run.font_size,
+                            layout.letter_spacing(),
+                            factor,
+                        );
+                        let (positions, cursor) = if let Some(run) = precise {
+                            (run.positions, run.advance)
+                        } else {
+                            // Preserve the established platform fallback for
+                            // nonfinite or out-of-range font metrics.
+                            let mut cursor = 0.0;
+                            let positions = widths
+                                .into_iter()
+                                .map(|width| {
+                                    let point = skia_safe::Point::new(cursor, 0.0);
+                                    cursor += quantize_advance(width * factor, run.font_size)
+                                        + layout.letter_spacing();
+                                    point
+                                })
+                                .collect::<Vec<_>>();
+                            (positions, cursor)
+                        };
                         if !super::vector_text::draw(
                             canvas,
                             &font,
