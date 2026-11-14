@@ -17,6 +17,7 @@ struct Key {
     page: usize,
     scope: (usize, usize),
     parent_query: Option<String>,
+    root_rectangles: bool,
     preserve: bool,
     workspace: bool,
     preview: bool,
@@ -56,6 +57,7 @@ impl Key {
             page,
             scope: (roots.as_ptr() as usize, roots.len()),
             parent_query: None,
+            root_rectangles: false,
             preserve: state.editor_ui.preserve_authored_geometry,
             workspace: state.editor_ui.workspace.visible,
             preview: state.editor_ui.preview.mode,
@@ -72,6 +74,7 @@ impl Key {
             && self.page == other.page
             && self.scope == other.scope
             && self.parent_query == other.parent_query
+            && self.root_rectangles == other.root_rectangles
             && self.preserve == other.preserve
             && self.workspace == other.workspace
             && self.preview == other.preview
@@ -88,48 +91,10 @@ impl Key {
             + self.theme.iter().map(|(k,v)| 1024+k.capacity()+v.capacity()).sum::<usize>()
     }
 }
-struct Entry {
-    key: Key,
-    value: Arc<Vec<ComputedGeometry>>,
-    bytes: usize,
-}
-struct Store {
-    entries: Vec<Entry>,
-    bytes: usize,
-}
-impl Store {
-    fn new() -> Self {
-        Self {
-            entries: Vec::with_capacity(MAX_ENTRIES),
-            bytes: 0,
-        }
-    }
-    fn base_bytes(&self) -> usize {
-        size_of::<Self>() + self.entries.capacity() * size_of::<Entry>()
-    }
-    fn take_dead(&mut self, dead: &mut Vec<Entry>) {
-        let mut i = 0;
-        while i < self.entries.len() {
-            if self.entries[i].key.owner.strong_count() == 0 {
-                let old = self.entries.remove(i);
-                self.bytes -= old.bytes;
-                dead.push(old);
-            } else {
-                i += 1;
-            }
-        }
-    }
-    fn hit(&mut self, key: &Key) -> Option<Arc<Vec<ComputedGeometry>>> {
-        let index = self
-            .entries
-            .iter()
-            .position(|entry| entry.key.matches(key))?;
-        let entry = self.entries.remove(index);
-        let value = Arc::clone(&entry.value);
-        self.entries.push(entry);
-        Some(value)
-    }
-}
+#[path = "geometry_cache_values.rs"]
+pub(crate) mod values;
+use values::{get_or_compute, Store};
+
 fn shared_store() -> &'static Mutex<Store> {
     static STORE: OnceLock<Mutex<Store>> = OnceLock::new();
     STORE.get_or_init(|| Mutex::new(Store::new()))
@@ -148,57 +113,6 @@ fn geometry_bytes(nodes: &Vec<ComputedGeometry>) -> usize {
             })
             .sum::<usize>()
 }
-fn get_or_compute(
-    store: &Mutex<Store>,
-    key: Option<Key>,
-    compute: impl FnOnce() -> Vec<ComputedGeometry>,
-) -> Arc<Vec<ComputedGeometry>> {
-    let Some(key) = key else {
-        return Arc::new(compute());
-    };
-    let mut dead = Vec::new();
-    let hit = {
-        let mut store = store.lock().unwrap_or_else(|e| e.into_inner());
-        store.take_dead(&mut dead);
-        store.hit(&key)
-    };
-    drop(dead);
-    if let Some(value) = hit {
-        return value;
-    }
-    // No cache/writer lock crosses layout, font measurement or payload conversion.
-    let value = Arc::new(compute());
-    let bytes = 64usize
-        .saturating_add(key.bytes())
-        .saturating_add(geometry_bytes(&value));
-    let mut evicted = Vec::new();
-    let result = {
-        let mut store = store.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(existing) = store.hit(&key) {
-            existing
-        } else if bytes.saturating_add(store.base_bytes()) > MAX_BYTES {
-            Arc::clone(&value)
-        } else {
-            while store.entries.len() >= MAX_ENTRIES
-                || store.bytes + bytes + store.base_bytes() > MAX_BYTES
-            {
-                let old = store.entries.remove(0);
-                store.bytes -= old.bytes;
-                evicted.push(old);
-            }
-            store.bytes += bytes;
-            store.entries.push(Entry {
-                key,
-                value: Arc::clone(&value),
-                bytes,
-            });
-            Arc::clone(&value)
-        }
-    };
-    drop(evicted);
-    result
-}
-
 /// Opt-in only for hosts that mark every canonical edit/reload with the editor's
 /// generation/revision contract. Direct-field-mutating callers use the fresh API.
 pub fn editor_state_to_page_item_geometry_cached(
@@ -231,6 +145,8 @@ pub fn editor_state_to_page_parent_geometry_cached(
             key
         });
     get_or_compute(shared_store(), key, || {
-        crate::computed_geometry::editor_state_to_page_parent_geometry(state, page, parent)
+        crate::computed_geometry::editor_state_to_page_parent_geometry_with_rect_reuse(
+            state, page, parent,
+        )
     })
 }

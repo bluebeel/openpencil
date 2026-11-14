@@ -144,3 +144,13 @@ pub fn editor_state_to_page_parent_geometry(
     bounded_geometry::try_geometry(state, page, parent)
         .unwrap_or_else(|| editor_state_to_page_item_geometry(state, page, Some(parent)))
 }
+
+/// Internal trusted-host variant; never used by the fresh public factory.
+pub(crate) fn editor_state_to_page_parent_geometry_with_rect_reuse(
+    state: &EditorState,
+    page: usize,
+    parent: &str,
+) -> Vec<ComputedGeometry> {
+    bounded_geometry::try_geometry_with_rect_reuse(state, page, parent)
+        .unwrap_or_else(|| editor_state_to_page_item_geometry(state, page, Some(parent)))
+}

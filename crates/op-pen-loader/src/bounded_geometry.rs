@@ -41,6 +41,23 @@ pub(super) fn try_geometry(
     page: usize,
     parent: &str,
 ) -> Option<Vec<ComputedGeometry>> {
+    try_geometry_internal(state, page, parent, false)
+}
+
+pub(super) fn try_geometry_with_rect_reuse(
+    state: &EditorState,
+    page: usize,
+    parent: &str,
+) -> Option<Vec<ComputedGeometry>> {
+    try_geometry_internal(state, page, parent, true)
+}
+
+fn try_geometry_internal(
+    state: &EditorState,
+    page: usize,
+    parent: &str,
+    reuse: bool,
+) -> Option<Vec<ComputedGeometry>> {
     if state.editor_ui.workspace.visible || parent.contains("__") {
         return None;
     }
@@ -95,11 +112,16 @@ pub(super) fn try_geometry(
         metadata.children_mut()?.push(spine);
         spine = metadata;
     }
-    let payload = crate::adapter::pages::bounded_root_payload(
-        root,
-        &spine,
-        state.editor_ui.preserve_authored_geometry,
-    );
+    let preserve = state.editor_ui.preserve_authored_geometry;
+    let payload = if reuse {
+        let rects =
+            crate::geometry_cache::values::root_rectangles_cached(state, page, parent, || {
+                crate::adapter::pages::root_layout_rectangles(root, preserve)
+            });
+        crate::adapter::pages::bounded_root_payload_from_rects(&spine, &rects)
+    } else {
+        crate::adapter::pages::bounded_root_payload(root, &spine, preserve)
+    };
     Some(vec![ComputedGeometry::from_payload(payload)])
 }
 

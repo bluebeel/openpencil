@@ -145,7 +145,7 @@ fn shared_lru_has_global_entry_and_byte_bounds() {
     }
     {
         let locked = store.lock().unwrap();
-        assert_eq!(locked.entries.len(), MAX_ENTRIES);
+        assert_eq!(locked.entries.len() + locked.retired.len(), MAX_ENTRIES);
         assert!(locked.bytes + locked.base_bytes() <= MAX_BYTES);
     }
     assert!(
@@ -171,3 +171,6 @@ fn bounded_parent_cache_never_aliases_complete_root_or_another_parent() {
         &editor_state_to_page_item_geometry_cached(&s, 0, Some("a"))
     ));
 }
+
+#[path = "geometry_preparation_cache_tests.rs"]
+mod preparation_reuse;
