@@ -5,9 +5,11 @@ service. External model/agent processes are excluded; the load generator is
 included in the aggregate memory measurement. Each client sends sequential
 MCP batches, and a bounded request window provides backpressure.
 
-The latest [batched checkpoint](engine-checkpoint-4.md) includes faster ID
-allocation and computed-layout queries, smaller imports, authored-content
-preservation and an opt-in correlated renderer with measured limitations.
+The latest [batched checkpoint](engine-checkpoint-5.md) includes borrowed layout
+inputs, bounded shared geometry reuse, compact imports, streaming CLI saves,
+and faster correlated rendering with a measured shadow correction.
+The [previous checkpoint](engine-checkpoint-4.md) records ID allocation and
+authored-content preservation improvements.
 The [previous checkpoint](engine-checkpoint-3.md) covers bounded worker reuse
 and the earlier rendering and query improvements.
 The [earlier optimized checkpoint](optimized-engine-checkpoint.md) also includes
