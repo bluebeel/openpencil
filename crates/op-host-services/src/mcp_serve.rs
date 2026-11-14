@@ -58,8 +58,7 @@ use op_mcp::{
     set_variable_string_snapshot, set_variables_snapshot, set_viewport_snapshot,
     snapshot_layout_snapshot, spawn_agents_snapshot, toggle_node_selection_snapshot,
     tool_search_snapshot, undo_snapshot, ungroup_selected_snapshot, update_node_snapshot,
-    upsert_component_snapshot, upsert_screen_snapshot, upsert_variables_snapshot, McpTool,
-    ToolRegistry,
+    upsert_component_snapshot, upsert_screen_snapshot, upsert_variables_snapshot, ToolRegistry,
 };
 #[cfg(feature = "mcp-debug-tools")]
 use op_mcp::{
@@ -779,6 +778,8 @@ mod enrich_images_tool_tests;
 mod finalize_tool_advisory_tests;
 #[cfg(test)]
 mod finalize_tool_tests;
+#[cfg(test)]
+mod prepared_dispatch_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]

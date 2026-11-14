@@ -27,14 +27,13 @@ pub(super) fn rebuild_registry(
         };
     }
 
-    if requested_tool
-        .map(|name| name.starts_with("add_"))
-        .unwrap_or(true)
-    {
+    if let Some(name) = requested_tool {
+        if let Some(tool) = op_mcp::element_tools::insert_kit_component_tool_for_name(doc, name) {
+            r.register(Box::new(tool));
+        }
+    } else {
         for tool in op_mcp::element_tools::insert_kit_component_tools(doc) {
-            if should_register(requested_tool, tool.name()) {
-                r.register(Box::new(tool));
-            }
+            r.register(Box::new(tool));
         }
     }
     register_tool!("open_document", open_document_snapshot(doc));

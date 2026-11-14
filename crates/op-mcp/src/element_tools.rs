@@ -19,15 +19,15 @@ use super::{McpTool, ToolErrorCode, ToolOutcome};
 /// Sanitize a `kit-id` / `component-id` for embedding in a tool name
 /// — MCP tool names are `[a-zA-Z0-9_]+`, so dashes become underscores.
 fn sanitize(s: &str) -> String {
-    s.chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '_' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect()
+    s.chars().map(sanitize_char).collect()
+}
+
+fn sanitize_char(c: char) -> char {
+    if c.is_ascii_alphanumeric() || c == '_' {
+        c
+    } else {
+        '_'
+    }
 }
 
 /// The MCP tool name for a kit component: `insert_<comp_sanitized>`.
@@ -104,12 +104,17 @@ fn parse_optional_f64(
     match args.get(key) {
         None => Ok(None),
         Some(v) if v.is_empty() => Ok(None),
-        Some(v) => v.parse::<f64>().map(Some).map_err(|_| {
-            ToolOutcome::Err(
+        Some(v) => match v.parse::<f64>() {
+            Ok(value) if value.is_finite() => Ok(Some(value)),
+            Ok(_) => Err(ToolOutcome::Err(
+                ToolErrorCode::InvalidArgument,
+                format!("{key} must be a finite number"),
+            )),
+            Err(_) => Err(ToolOutcome::Err(
                 ToolErrorCode::InvalidArgument,
                 format!("{key} must be a number"),
-            )
-        }),
+            )),
+        },
     }
 }
 
@@ -127,6 +132,33 @@ pub fn insert_kit_component_tools(state: &EditorState) -> Vec<InsertKitComponent
         })
         .collect()
 }
+
+/// Resolve one advertised component name without building every tool. Reverse
+/// order preserves the registry's last-registration-wins collision behavior.
+pub fn insert_kit_component_tool_for_name(
+    state: &EditorState,
+    name: &str,
+) -> Option<InsertKitComponent> {
+    let suffix = name.strip_prefix("insert_")?;
+    for kit in state.ui_kits.iter().rev() {
+        if let Some(component) = kit
+            .components
+            .iter()
+            .rev()
+            .find(|component| component.id.chars().map(sanitize_char).eq(suffix.chars()))
+        {
+            return Some(InsertKitComponent::new(
+                kit.id.clone(),
+                component.id.clone(),
+            ));
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+#[path = "element_tools_lookup_tests.rs"]
+mod lookup_tests;
 
 /// JSON-encoded `tools/list` schema for one element tool. The host
 /// concatenates this into the `tools/list` response next to the static
