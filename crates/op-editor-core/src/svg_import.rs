@@ -1,25 +1,15 @@
 //! SVG import — parse an SVG document into canonical `PenNode`s and
 //! insert them onto the active page.
 //!
-//! TS parity with `apps/web/src/.../svg-parser.ts`. v1 scope:
+//! Imports basic shapes, inherited fill/stroke styles and nested groups.
+//! SVG path commands remain compound SVG d data, preserving elliptical arcs
+//! and fill rules. The legacy editable path reader supports every standard
+//! command with f64 coordinates; quadratic/arc segments become cubic handles.
+//! Definitions, CSS stylesheets, masks/filters and transform attributes are
+//! still outside this importer's implemented feature set.
 //!
-//!   - Shape elements: `<rect>` / `<circle>` / `<ellipse>` / `<line>` /
-//!     `<polyline>` / `<polygon>`.
-//!   - `<path>` — the `M L H V C S Q T Z` command subset (absolute +
-//!     relative). Cubic / quadratic curves keep their bezier handles
-//!     (`Q`/`T` are promoted to cubics); `A` (elliptical arc) degrades
-//!     to a straight segment to its endpoint.
-//!   - `fill` attribute — `#rgb` / `#rrggbb` + a small named-colour
-//!     table; `none` leaves the node unfilled.
-//!
-//! Out of scope for v1 (skipped, not an error): `<g>` grouping,
-//! `transform` attributes, CSS `<style>`, `<defs>` / gradients,
-//! `stroke` styling. Elements are scanned flat, so a shape nested in a
-//! `<g>` still imports — just without the group's transform.
-//!
-//! The parser is hand-rolled (no XML / SVG crate) so `op-editor-core`
-//! stays dependency-light + wasm32-clean, matching the hand-rolled
-//! JSON parser discipline in `op-mcp`.
+//! The XML scanner is hand-rolled; path grammar and arc subdivision use the
+//! existing wasm-clean svgtypes/Kurbo dependencies.
 //!
 //! ### Module layout
 //!

@@ -4420,12 +4420,14 @@ dependencies = [
  "jian-core",
  "jian-ops-schema",
  "jian-widgets",
+ "kurbo",
  "op-ai",
  "op-i18n",
  "op-orchestrator",
  "op-util",
  "serde",
  "serde_json",
+ "svgtypes",
  "tracing",
 ]
 

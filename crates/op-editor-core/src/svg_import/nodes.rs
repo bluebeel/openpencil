@@ -52,37 +52,30 @@ pub(super) fn element_to_node_ctx(
             route: None,
         })));
     }
-    // Convert via the legacy element builder, then scale + apply
-    // inherited fill/stroke.
-    let legacy = SvgElement {
-        tag: el.tag.clone(),
-        attrs: el.attrs.clone(),
-    };
-    // Scale the geometry by writing scaled values back into the
-    // element's attrs (so existing `element_to_node` sees scaled
-    // numbers). For `<path>` we tokenise the `d` string + scale
-    // every coord — TS parity with `scaleSvgPath`.
-    let mut scaled = legacy;
-    apply_scale_to_attrs(&mut scaled, scale);
-    // Preserve `<path d>` as SVG path data. That keeps arcs and
-    // compound subpaths in the same representation the TS renderer
-    // sends to CanvasKit.
-    let fill_hex = resolve_svg_fill_hex(&scaled.attrs, &ctx);
-    let stroke = resolve_svg_stroke(&scaled.attrs, &ctx, scale);
-    if scaled.tag == "path" {
-        if let Some(d) = scaled.attr("d") {
+    // Parse/scale/localize a path only once. Preserve arcs and compound
+    // subpaths in d; do not build an intermediate scaled path string.
+    if el.tag == "path" {
+        if let Some(d) = el.attr("d") {
             let id = allocator.allocate(taken)?;
             return Ok(path_node_from_svg_d(
                 id,
                 el.attr("id").unwrap_or("Path"),
                 d,
+                scale,
                 offset,
-                fill_hex,
-                stroke,
+                resolve_svg_fill_hex(&el.attrs, &ctx),
+                resolve_svg_stroke(&el.attrs, &ctx, scale),
                 ctx.fill_rule,
             ));
         }
     }
+    let mut scaled = SvgElement {
+        tag: el.tag.clone(),
+        attrs: el.attrs.clone(),
+    };
+    apply_scale_to_attrs(&mut scaled, scale);
+    let fill_hex = resolve_svg_fill_hex(&scaled.attrs, &ctx);
+    let stroke = resolve_svg_stroke(&scaled.attrs, &ctx, scale);
     let id = allocator.allocate(taken)?;
     let Some(mut node) = element_to_node(&scaled, id, offset) else {
         return Ok(None);
@@ -171,13 +164,11 @@ fn element_to_node(el: &SvgElement, id: NodeId, offset: (f64, f64)) -> Option<Pe
             path_node_from_anchors(id, "Path", &pts, el.tag == "polygon")?
         }
         "path" => {
-            // Multi-subpath handling lives in `element_to_node_ctx`
-            // where we have the id allocator + can build a Group;
-            // this legacy single-id path serves only the first subpath
-            // so existing callers keep working.
+            // The style-aware importer preserves compound d as one node.
+            // This legacy single-contour builder retains its editable-anchor
+            // contract and intentionally returns only the first contour.
             let d = el.attr("d")?;
-            let mut subpaths = parse_path_d(d, offset);
-            let (anchors, closed) = subpaths.drain(..).next()?;
+            let (anchors, closed) = parse_path_d(d, offset).into_iter().next()?;
             if anchors.len() < 2 {
                 return None;
             }
@@ -256,16 +247,24 @@ fn path_node_from_pen_anchors(
     }))
 }
 
+// Geometry, placement and inherited paint are independent import inputs.
+#[allow(clippy::too_many_arguments)]
 fn path_node_from_svg_d(
     id: NodeId,
     name: &str,
     d: &str,
+    scale: f64,
     offset: (f64, f64),
     fill_hex: Option<String>,
     stroke: Option<PenStroke>,
     fill_rule: Option<PathFillRule>,
 ) -> Option<PenNode> {
-    let (local_d, bounds) = crate::svg_path_data::localize_svg_path(d)?;
+    let (local_d, bounds) = if scale == 1.0 {
+        crate::svg_path_data::localize_svg_path(d)?
+    } else {
+        crate::svg_path_data::localize_svg_path_scaled(d, scale)?
+    };
+    let closed = local_d.contains('Z');
     Some(PenNode::Path(PathNode {
         base: PenNodeBase {
             id: id.into(),
@@ -275,9 +274,9 @@ fn path_node_from_svg_d(
             ..Default::default()
         },
         icon_id: None,
-        d: Some(local_d.clone()),
+        d: Some(local_d),
         anchors: None,
-        closed: Some(local_d.contains('Z') || local_d.contains('z')),
+        closed: Some(closed),
         fill_rule,
         mask: None,
         width: Some(SizingBehavior::Number(bounds.w)),
