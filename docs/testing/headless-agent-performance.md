@@ -5,7 +5,12 @@ service. External model/agent processes are excluded; the load generator is
 included in the aggregate memory measurement. Each client sends sequential
 MCP batches, and a bounded request window provides backpressure.
 
-The latest [batched checkpoint](engine-checkpoint-8.md) improves text/shadow parity,
+The latest [batched checkpoint](engine-checkpoint-9.md) integrates recursive undo
+sharing, failed-save recovery, indexed imports and rounded-shadow profiles.
+Cold OpenBridge exports now fit below 1 GB in the measured suite; standalone
+undo, contexts, bulk exports and operation gates pass. Undo and shadow CPU
+regressions are measured and remain optimization targets.
+The [previous checkpoint](engine-checkpoint-8.md) improves text/shadow parity,
 reduces importer memory, fixes atomic-batch undo and motion saves, and removes
 live-MCP accept polling. It records matched live-ping and undo-stage gains,
 unchanged agent/bulk invariants, and remaining cold-import and exact-pixel gaps.
@@ -31,6 +36,17 @@ python3 scripts/bench/headless-agents.py \
   --binary target/debug/op-host-web-server \
   --clients 10 100 1000 --max-inflight 32 \
   --max-bytes 1000000000 --output /tmp/openpencil-agent-benchmark
+```
+
+The standalone history gate exercises 100 individual edits, 100 undos, 100 redos
+and four PNG exports inside one 10,000-node frame. It checks every acknowledged
+saved document, including unrelated child-field presence, and exact restored PNGs.
+
+```sh
+python3 scripts/bench/undo-history.py \
+  --binary target/debug/op-host-web-server \
+  --leaves 10000 --edits 100 --max-bytes 1000000000 \
+  --output /tmp/openpencil-undo-benchmark
 ```
 
 Use a new output directory. The benchmark creates its own synthetic document;
