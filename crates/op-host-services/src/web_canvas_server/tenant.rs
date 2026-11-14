@@ -196,6 +196,7 @@ pub struct Tenant {
     shared_with: Mutex<BTreeSet<String>>,
     /// Live leases. Non-zero means "do not evict".
     leases: AtomicUsize,
+    maintenance: AtomicUsize,
     /// Unix seconds of the last lease acquire or release.
     last_active_unix: AtomicU64,
 }
@@ -218,6 +219,7 @@ impl Tenant {
             hub: SseHub::default(),
             shared_with: Mutex::new(shared_with),
             leases: AtomicUsize::new(0),
+            maintenance: AtomicUsize::new(0),
             last_active_unix: AtomicU64::new(now_unix),
         }
     }
@@ -321,11 +323,11 @@ impl TenantLease {
 
 impl Drop for TenantLease {
     fn drop(&mut self) {
-        self.tenant.leases.fetch_sub(1, Ordering::AcqRel);
-        // Idleness is measured from the last release, not the last acquire:
-        // a tenant that just finished a 20-minute SSE stream has been active
-        // the whole time.
+        // Publish the final-use timestamp BEFORE making the tenant evictable.
+        // An acquire load observing zero also observes this last release time.
+        // A just-finished long SSE stream must not look idle in between them.
         self.tenant.touch(now_unix());
+        self.tenant.leases.fetch_sub(1, Ordering::AcqRel);
     }
 }
 
@@ -399,6 +401,10 @@ impl Drop for WritePass<'_> {
 /// Every live tenant, keyed by verified account id.
 pub struct TenantRegistry {
     tenants: Mutex<HashMap<String, Arc<Tenant>>>,
+    transitions: Mutex<HashMap<String, Arc<store_coord::Transition>>>,
+    // Preserve the old one-cold-document memory bound, without holding the
+    // registry mutex while decoding or touching any document/ACL filesystem.
+    cold_load: Mutex<()>,
     limits: TenantLimits,
     /// Reported by `GET /api/mcp/server`; the same bound port for everyone.
     port: u16,
@@ -421,6 +427,8 @@ impl TenantRegistry {
     ) -> Self {
         Self {
             tenants: Mutex::new(HashMap::new()),
+            transitions: Mutex::new(HashMap::new()),
+            cold_load: Mutex::new(()),
             limits,
             port,
             allow_origins,
@@ -526,7 +534,8 @@ impl TenantRegistry {
     /// non-resident tenant, which is the fail-closed direction — the share was
     /// never durable in the first place.
     fn admits_visitor(&self, owner_id: &str, visitor: &str) -> bool {
-        if let Some(tenant) = self.lock().get(owner_id) {
+        let resident = self.lock().get(owner_id).cloned();
+        if let Some(tenant) = resident {
             return tenant.admits(visitor);
         }
         self.store.load_acl(owner_id).contains(visitor)
@@ -539,102 +548,18 @@ impl TenantRegistry {
     /// working with are resident by definition, and the visitor can always
     /// open a share they were told about directly.
     pub fn shared_with_visitor(&self, visitor: &str) -> Vec<String> {
-        let tenants = self.lock();
-        let mut owners: Vec<String> = tenants
+        let tenants: Vec<_> = self
+            .lock()
             .iter()
+            .map(|(id, tenant)| (id.clone(), Arc::clone(tenant)))
+            .collect();
+        let mut owners: Vec<String> = tenants
+            .into_iter()
             .filter(|(owner, tenant)| owner.as_str() != visitor && tenant.admits(visitor))
-            .map(|(owner, _)| owner.clone())
+            .map(|(owner, _)| owner)
             .collect();
         owners.sort_unstable();
         owners
-    }
-
-    fn lease_tenant(&self, user_id: &str) -> Result<TenantLease, TenantError> {
-        let now = now_unix();
-        let mut tenants = self.lock();
-        let tenant = match tenants.get(user_id) {
-            Some(existing) => Arc::clone(existing),
-            None => {
-                if tenants.len() >= self.limits.max_tenants {
-                    return Err(TenantError::TooManyTenants);
-                }
-                let created = Arc::new(Tenant::new(
-                    self.port,
-                    &self.allow_origins,
-                    self.restore_editor(user_id),
-                    self.store.load_acl(user_id),
-                    now,
-                ));
-                tenants.insert(user_id.to_string(), Arc::clone(&created));
-                created
-            }
-        };
-        if tenant.lease_count() >= self.limits.max_conns_per_tenant {
-            return Err(TenantError::TooManyConnections);
-        }
-        // Both this increment and `evict_idle`'s zero-check run under the
-        // registry lock, so a tenant can never be evicted between being
-        // resolved above and being leased here.
-        tenant.leases.fetch_add(1, Ordering::AcqRel);
-        tenant.touch(now);
-        Ok(TenantLease {
-            tenant,
-            user_id: user_id.to_string(),
-        })
-    }
-
-    /// The document to open a tenant with.
-    ///
-    /// A stored document that will not load has already been moved aside by
-    /// the store, so the account gets a starter rather than a failed request —
-    /// losing a document is bad, but refusing to serve the account at all
-    /// because of it is worse.
-    fn restore_editor(&self, user_id: &str) -> EditorState {
-        match self.store.load_document(user_id) {
-            Ok(state) => state,
-            Err(super::tenant_store::TenantStoreError::Disabled)
-            | Err(super::tenant_store::TenantStoreError::NotStored) => EditorState::starter(),
-            Err(error) => {
-                eprintln!(
-                    "openpencil --serve-web --online: starting a fresh document for an \
-                     account whose stored one could not be loaded ({error})"
-                );
-                EditorState::starter()
-            }
-        }
-    }
-
-    /// Write every resident tenant to disk.
-    ///
-    /// Called on controlled shutdown. Eviction is the only other writer, and
-    /// a daemon that is asked to stop has by definition not waited out anyone's
-    /// idle timer — so without this, every account that was active at the
-    /// moment of a deploy loses whatever it had not had evicted.
-    ///
-    /// Returns how many were written. Tenants are NOT removed: the process is
-    /// going away regardless, and removing them would only race the requests
-    /// still draining.
-    pub fn flush_all(&self) -> usize {
-        if !self.store.is_enabled() {
-            return 0;
-        }
-        let tenants = self.lock();
-        let mut written = 0;
-        for (id, tenant) in tenants.iter() {
-            let guard = tenant.state.lock().unwrap_or_else(|p| p.into_inner());
-            // Held across the write, exactly as `update_acl` does: otherwise a
-            // grant landing mid-flush is written by one path and overwritten
-            // by the other, and the user's share silently disappears.
-            let shared = tenant.shared_with_guard();
-            match self.store.save(id, &guard.editor, &shared) {
-                Ok(()) => written += 1,
-                Err(error) => eprintln!(
-                    "openpencil --serve-web --online: could not flush a tenant on shutdown \
-                     ({error})"
-                ),
-            }
-        }
-        written
     }
 
     /// Apply one access-list change and persist the result atomically.
@@ -695,54 +620,6 @@ impl TenantRegistry {
         }
     }
 
-    /// Reclaim tenants that hold no lease and have been idle past the limit.
-    ///
-    /// Returns how many were reclaimed. The removal is a compare-and-remove
-    /// against the exact `Arc` that was chosen (see the module docs): M4
-    /// writes the document to disk between the choice and the removal, and
-    /// that write must not race a concurrent `lease_for` re-creating the
-    /// same account.
-    pub fn evict_idle(&self, now_unix: u64) -> usize {
-        let mut tenants = self.lock();
-        let victims: Vec<(String, Arc<Tenant>)> = tenants
-            .iter()
-            .filter(|(_, tenant)| {
-                tenant.lease_count() == 0
-                    && tenant.idle_secs(now_unix) >= self.limits.idle_evict_secs
-            })
-            .map(|(id, tenant)| (id.clone(), Arc::clone(tenant)))
-            .collect();
-        let mut evicted = 0;
-        for (id, victim) in victims {
-            // Write BEFORE the compare-and-remove, so at no instant is the
-            // tenant both absent from the map and absent from disk: a request
-            // arriving mid-eviction either finds the resident tenant (the
-            // registry lock is held, so it waits) or, afterwards, the file.
-            if self.store.is_enabled() {
-                let guard = victim.state.lock().unwrap_or_else(|p| p.into_inner());
-                let shared = victim.shared_with_guard();
-                if let Err(error) = self.store.save(&id, &guard.editor, &shared) {
-                    // A tenant that cannot be written is kept resident. Evicting
-                    // it anyway would discard the document to reclaim memory,
-                    // which is the wrong trade for the user whose work it is.
-                    eprintln!(
-                        "openpencil --serve-web --online: keeping a tenant resident because \
-                         it could not be persisted ({error})"
-                    );
-                    continue;
-                }
-            }
-            let still_the_same = tenants
-                .get(&id)
-                .is_some_and(|current| Arc::ptr_eq(current, &victim));
-            if still_the_same && victim.lease_count() == 0 {
-                tenants.remove(&id);
-                evicted += 1;
-            }
-        }
-        evicted
-    }
-
     fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, Arc<Tenant>>> {
         self.tenants.lock().unwrap_or_else(|p| p.into_inner())
     }
@@ -755,6 +632,9 @@ pub fn now_unix() -> u64 {
         .map(|d| d.as_secs())
         .unwrap_or(0)
 }
+
+#[path = "tenant_store_coord.rs"]
+mod store_coord;
 
 #[cfg(test)]
 #[path = "tenant_tests.rs"]
