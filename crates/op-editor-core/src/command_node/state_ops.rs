@@ -233,12 +233,13 @@ impl EditorState {
         if !node_id.is_real() {
             return Ok(false);
         }
-        // Validate source + target up front.
-        {
+        // Validate and retain the borrowed source until clone preparation is
+        // complete, avoiding a second whole-page search for the same node.
+        let mut clone = {
             let children = self.active_children();
-            if walkers::find_node(children, node_id).is_none() {
+            let Some(src) = walkers::find_node(children, node_id) else {
                 return Ok(false);
-            }
+            };
             if target_parent.is_real() {
                 let Some(target) = walkers::find_node(children, target_parent) else {
                     return Ok(false);
@@ -248,12 +249,7 @@ impl EditorState {
                     return Ok(false);
                 }
             }
-        }
-        let mut taken = allocator.document_collision_ids(&self.doc);
-        // Clone the owned subtree before re-borrowing the tree mutably.
-        let mut clone = {
-            let children = self.active_children();
-            let src = walkers::find_node(children, node_id).expect("validated");
+            let mut taken = allocator.document_collision_ids(&self.doc);
             walkers::deep_clone_with_allocator(src, allocator, &mut taken)?
         };
         if !apply_copy_overrides(&mut clone, overrides_json) {
