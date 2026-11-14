@@ -121,10 +121,6 @@ fn update_node_i32_integer_literals_keep_the_lightweight_command() {
                 ("data".into(), format!(r#"{{"{key}":{value}}}"#)),
             ]);
             let outcome = update_node_snapshot().call(&args);
-            if matches!(key, "width" | "height") && value < 0 {
-                assert!(matches!(outcome, ToolOutcome::Err(_, _)));
-                continue;
-            }
             let ToolOutcome::OkWithCommand(
                 _,
                 EditorCommand::UpdateNode {
