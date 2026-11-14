@@ -21,9 +21,12 @@ struct Key {
     italic: bool,
     kerning: Option<bool>,
     features: Option<BTreeMap<String, u32>>,
-    color: u32,
+    color: [u8; 4],
     source: Option<[u32; 4]>,
     fitted: bool,
+}
+fn color(run: &ShapedRun<'_>) -> [u8; 4] {
+    [run.color.a(), run.color.r(), run.color.g(), run.color.b()]
 }
 fn floats(run: &ShapedRun<'_>) -> [u32; 3] {
     [
@@ -52,7 +55,7 @@ impl Key {
             italic: run.italic,
             kerning: run.kerning,
             features: run.font_features.cloned(),
-            color: u32::from(run.color),
+            color: color(run),
             source: source(run),
             fitted,
         }
@@ -65,7 +68,7 @@ impl Key {
             && self.italic == run.italic
             && self.kerning == run.kerning
             && self.features.as_ref() == run.font_features
-            && self.color == u32::from(run.color)
+            && self.color == color(run)
             && self.source == source(run)
             && self.fitted == fitted
     }
@@ -79,7 +82,7 @@ fn hash(run: &ShapedRun<'_>, fitted: bool) -> u64 {
     run.italic.hash(&mut hash);
     run.kerning.hash(&mut hash);
     run.font_features.hash(&mut hash);
-    u32::from(run.color).hash(&mut hash);
+    color(run).hash(&mut hash);
     source(run).hash(&mut hash);
     fitted.hash(&mut hash);
     hash.finish()
