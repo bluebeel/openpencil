@@ -112,12 +112,12 @@ impl ScrollNode for PenNode {
             PenNode::Frame(node) => (
                 &node.container,
                 node.base.role.as_deref(),
-                node.events.as_ref(),
+                node.events.as_deref(),
             ),
             PenNode::Group(node) => (
                 &node.container,
                 node.base.role.as_deref(),
-                node.events.as_ref(),
+                node.events.as_deref(),
             ),
             _ => return None,
         };

@@ -83,6 +83,12 @@ impl Ledger {
         // Retained empty capacity still owns PenNode-sized allocation slots.
         self.nodes = self.nodes.saturating_add(capacity);
         for node in nodes {
+            // Sparse optional groups no longer occupy inline PenNode slots.
+            // Keep the same conservative storage reserve for their owned boxes;
+            // nested strings/arrays remain covered by serialized accounting.
+            self.shared_storage = self
+                .shared_storage
+                .saturating_add(node.boxed_optional_storage_bytes().saturating_mul(2));
             if let Some(children) = node.children() {
                 self.node_storage(children, children.capacity())?;
             }
@@ -409,3 +415,7 @@ mod recursive_tests;
 #[cfg(test)]
 #[path = "history_charge_tests.rs"]
 mod history_charge_tests;
+
+#[cfg(test)]
+#[path = "resident_charge_boxed_tests.rs"]
+mod boxed_tests;

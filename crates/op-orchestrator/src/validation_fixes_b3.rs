@@ -82,7 +82,7 @@ fn parse_interactivity(
 ) -> (
     Option<jian_ops_schema::state::StateSchema>,
     Option<jian_ops_schema::events::Bindings>,
-    Option<jian_ops_schema::events::EventHandlers>,
+    Option<Box<jian_ops_schema::events::EventHandlers>>,
 ) {
     let state = obj
         .get("state")

@@ -120,7 +120,7 @@ fn visit_import_stroke(
 }
 
 fn visit_import_states(
-    states: &Option<jian_ops_schema::state_override::WidgetStates>,
+    states: &Option<Box<jian_ops_schema::state_override::WidgetStates>>,
     f: &mut impl FnMut(&str),
 ) {
     let Some(states) = states else { return };
@@ -141,7 +141,7 @@ fn visit_import_states(
 fn visit_import_widget_style(
     fills: &Option<Vec<jian_ops_schema::style::PenFill>>,
     stroke: &Option<jian_ops_schema::style::PenStroke>,
-    states: &Option<jian_ops_schema::state_override::WidgetStates>,
+    states: &Option<Box<jian_ops_schema::state_override::WidgetStates>>,
     f: &mut impl FnMut(&str),
 ) {
     visit_import_fills(fills, f);

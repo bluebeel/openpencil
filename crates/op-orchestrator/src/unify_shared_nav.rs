@@ -654,6 +654,7 @@ fn clear_position_metadata(node: &mut PenNode) {
 }
 
 fn set_events(node: &mut PenNode, events: Option<jian_ops_schema::events::EventHandlers>) {
+    let events = events.map(Box::new);
     match node {
         PenNode::Frame(n) => n.events = events,
         PenNode::Group(n) => n.events = events,

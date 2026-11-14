@@ -53,7 +53,10 @@ impl SharedNode {
     /// Fixed node storage and sensitivity payload. Shared child-edge allocations
     /// are exposed separately so the resident ledger can deduplicate them.
     pub fn storage_bytes(&self) -> usize {
-        std::mem::size_of::<Self>() + 2 * std::mem::size_of::<usize>() + self.sensitivity.len()
+        std::mem::size_of::<Self>()
+            + 2 * std::mem::size_of::<usize>()
+            + self.sensitivity.len()
+            + self.metadata.boxed_optional_storage_bytes()
     }
     pub fn child_edge_storage(&self) -> Option<(usize, usize)> {
         self.children.as_ref().map(super::edges::storage)
