@@ -136,6 +136,10 @@ pub use payload::{
     load_canonical, normalize_video_alias, write_normalized_source_with_current_schema, DocPayload,
     NodePayload, NormalizedWriteError, PagePayload, StrokePayload,
 };
+#[cfg(not(target_arch = "wasm32"))]
+pub use payload::{
+    load_canonical_file_with_compatibility, CanonicalFileLoad, CanonicalFileLoadError,
+};
 pub use variables::{var_table_from_payload, var_table_to_payload, VarTablePayload};
 
 /// Build a shell-core [`VariableTable`] that reflects an

@@ -4878,6 +4878,7 @@ dependencies = [
  "jian-ops-schema",
  "jian-scene",
  "jian-skia",
+ "memmap2",
  "op-editor-core",
  "op-html",
  "op-util",

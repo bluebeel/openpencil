@@ -43,3 +43,6 @@ op-html = { path = "../op-html" }
 # backend, so the CanvasKit web build links no skia-safe.
 default = ["skia-measure"]
 skia-measure = ["dep:jian-skia"]
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+memmap2 = "0.9"

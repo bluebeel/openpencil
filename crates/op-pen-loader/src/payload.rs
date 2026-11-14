@@ -14,11 +14,18 @@
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
+mod canonical_stream;
 mod compatibility;
+#[cfg(test)]
 mod fast_load;
 mod legacy_normalize;
 mod paint_payloads;
 mod video_alias;
+
+#[cfg(not(target_arch = "wasm32"))]
+pub use canonical_stream::{
+    load_canonical_file_with_compatibility, CanonicalFileLoad, CanonicalFileLoadError,
+};
 
 // Re-exported so every `crate::payload::…` import path stays stable across
 // the split.
@@ -381,12 +388,15 @@ pub fn load_canonical(
 pub fn load_canonical_with_compatibility(
     src: &str,
 ) -> Result<CanonicalLoad, jian_ops_schema::OpsSchemaError> {
-    if let Some(loaded) = fast_load::try_load_preserve(src) {
-        return Ok(CanonicalLoad {
-            loaded,
-            compatibility: CompatibilityReport::default(),
-        });
+    if let Some(loaded) = canonical_stream::try_load_source(src) {
+        return Ok(loaded);
     }
+    load_canonical_dom_with_compatibility(src)
+}
+
+fn load_canonical_dom_with_compatibility(
+    src: &str,
+) -> Result<CanonicalLoad, jian_ops_schema::OpsSchemaError> {
     if looks_deeply_nested(src) {
         return load_canonical_deep(src);
     }

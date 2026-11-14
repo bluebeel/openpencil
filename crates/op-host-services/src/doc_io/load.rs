@@ -46,33 +46,27 @@ pub fn load_editor_state_with_report(
     locale: op_editor_core::Locale,
 ) -> Result<LoadedEditorState, DocIoError> {
     let file = std::fs::File::open(path).map_err(|e| DocIoError::Io(e.to_string()))?;
-    let file_len = file
-        .metadata()
-        .map_err(|e| DocIoError::Io(e.to_string()))?
-        .len();
-    if file_len == 0 {
-        let (state, embedded_meta, report) = parse_editor_state_source("", locale)?;
-        return Ok(finish_loaded_state_with_report(
-            state,
-            embedded_meta,
-            report,
-            path,
-        ));
-    }
-    // SAFETY: The map is read-only and lives through this synchronous parse.
-    // OpenPencil atomically replaces its own files rather than truncating the
-    // mapped inode in place.
-    let bytes = unsafe { memmap2::MmapOptions::new().map(&file) }
-        .map_err(|e| DocIoError::Io(e.to_string()))?;
-    let src = std::str::from_utf8(bytes.as_ref()).map_err(|error| {
-        // `op_i18n` owns this sentence; it is end-user copy, so it is carried
-        // through verbatim with its placeholder already substituted.
-        DocIoError::InvalidUtf8Document(
-            op_i18n::translate(locale, "dialog.loadErrorInvalidUtf8")
-                .replace("{{detail}}", &error.to_string()),
-        )
-    })?;
-    let (state, embedded_meta, report) = parse_editor_state_source(src, locale)?;
+    use op_pen_loader::payload::CanonicalFileLoadError;
+    let loaded =
+        op_pen_loader::payload::load_canonical_file_with_compatibility(&file).map_err(|error| {
+            match error {
+                CanonicalFileLoadError::Io(error) => DocIoError::Io(error.to_string()),
+                CanonicalFileLoadError::InvalidUtf8(error) => DocIoError::InvalidUtf8Document(
+                    op_i18n::translate(locale, "dialog.loadErrorInvalidUtf8")
+                        .replace("{{detail}}", &error.to_string()),
+                ),
+                CanonicalFileLoadError::Schema {
+                    legacy_doc_payload: true,
+                    ..
+                } => DocIoError::LegacyFormat(
+                    op_i18n::translate(locale, "dialog.loadErrorOldVersion").to_string(),
+                ),
+                CanonicalFileLoadError::Schema { error, .. } => {
+                    DocIoError::Schema(error.to_string())
+                }
+            }
+        })?;
+    let (state, embedded_meta, report) = state_from_canonical(loaded.canonical, loaded.editor_meta);
     Ok(finish_loaded_state_with_report(
         state,
         embedded_meta,
@@ -107,6 +101,13 @@ fn parse_editor_state_source(
             return Err(DocIoError::Schema(error.to_string()));
         }
     };
+    Ok(state_from_canonical(canonical, embedded))
+}
+
+fn state_from_canonical(
+    canonical: op_pen_loader::payload::CanonicalLoad,
+    embedded: Option<op_pen_loader::EditorMetaExtraction>,
+) -> (EditorState, Option<EditorMeta>, DocumentLoadReport) {
     let loaded = canonical.loaded;
     if skip_thumbnails() {
         // Drop the pending thumbnail seed BEFORE `EditorState::from_document`
@@ -141,11 +142,11 @@ fn parse_editor_state_source(
         used_legacy_sidecar: false,
         rewrite_blocked_by_schema_warning,
     };
-    Ok((
+    (
         EditorState::from_document(loaded.value),
         embedded.map(|extraction| extraction.meta),
         report,
-    ))
+    )
 }
 
 fn finish_loaded_state_with_report(
