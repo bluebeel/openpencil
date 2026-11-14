@@ -57,12 +57,22 @@ impl EditorState {
                 return Ok(false);
             }
         }
-        if target_parent.is_real() {
-            match walkers::find_node(self.active_children(), target_parent) {
-                Some(parent) if parent.is_container() => {}
-                _ => return Ok(false),
+        let scope = self.command_lookup_active_scope();
+        let destination = if target_parent.is_real() {
+            match self.command_insertion_path(&scope, target_parent) {
+                Some(Ok(path)) => Some(path),
+                Some(Err(())) => return Ok(false),
+                None => {
+                    match walkers::find_node(self.active_children(), target_parent) {
+                        Some(parent) if parent.is_container() => {}
+                        _ => return Ok(false),
+                    }
+                    None
+                }
             }
-        }
+        } else {
+            None
+        };
         let mut taken = allocator.document_collision_ids(&self.doc);
         let new_id = allocator.allocate(&mut taken)?;
         let Some(mut node) = build_leaf_node(kind, new_id.as_str(), name, x, y, width, height)
@@ -71,6 +81,9 @@ impl EditorState {
         };
         if let Some(hex) = fill_hex {
             set_primary_fill_hex(&mut node, hex);
+        }
+        if let Some(path) = destination {
+            return Ok(self.command_append_at(&scope, &path, node).is_ok());
         }
         if target_parent.is_real() {
             let root = self.active_children_mut();
@@ -447,12 +460,22 @@ impl EditorState {
             return Ok(false);
         }
         // Validate the parent up front (when not the page root).
-        if parent_id.is_real() {
-            match walkers::find_node(self.active_children(), parent_id) {
-                Some(p) if p.is_container() => {}
-                _ => return Ok(false), // missing or non-container
+        let scope = self.command_lookup_active_scope();
+        let destination = if parent_id.is_real() {
+            match self.command_insertion_path(&scope, parent_id) {
+                Some(Ok(path)) => Some(path),
+                Some(Err(())) => return Ok(false),
+                None => {
+                    match walkers::find_node(self.active_children(), parent_id) {
+                        Some(p) if p.is_container() => {}
+                        _ => return Ok(false),
+                    }
+                    None
+                }
             }
-        }
+        } else {
+            None
+        };
         // Allocate fresh ids for the whole incoming forest.
         let mut taken: HashSet<NodeId> = allocator.document_collision_ids(&self.doc);
         let mut nodes = nodes;
@@ -463,6 +486,9 @@ impl EditorState {
         );
         remap_subtree_ids_with_allocator(&mut nodes, allocator, &mut taken)?;
         // All validation + allocation passed — now mutate.
+        if let Some(path) = destination {
+            return Ok(self.command_extend_at(&scope, &path, nodes).is_ok());
+        }
         if parent_id.is_real() {
             let root = self.active_children_mut();
             let Some(parent) = walkers::find_node_mut(root, parent_id) else {

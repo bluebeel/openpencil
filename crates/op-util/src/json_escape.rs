@@ -31,21 +31,62 @@ pub fn push_json_quoted(out: &mut String, s: &str) {
 
 /// Append canonical JSON string contents without surrounding quotes.
 pub fn push_escaped(out: &mut String, s: &str) {
-    // Every special byte is ASCII and therefore a UTF-8 boundary. Copy long
-    // ordinary spans (including all Unicode) at once, avoiding per-character
-    // UTF-8 decoding and pushes for base64 images and large JSON replies.
+    push_escaped_depth(out, s, false);
+}
+
+/// Append one complete JSON string literal as contents of another JSON string.
+/// The caller owns the outer quotes. This emits both escaping layers in one
+/// pass, without first allocating the inner JSON string.
+pub fn push_json_quoted_nested(out: &mut String, s: &str) {
+    out.push_str("\\\"");
+    push_escaped_depth(out, s, true);
+    out.push_str("\\\"");
+}
+fn push_escaped_depth(out: &mut String, s: &str, nested: bool) {
+    // All special bytes are ASCII UTF-8 boundaries; ordinary spans include
+    // untouched Unicode and copy directly into the final wire buffer.
     let mut start = 0;
     for (at, byte) in s.bytes().enumerate() {
         let escape = match byte {
-            b'"' => "\\\"",
-            b'\\' => "\\\\",
-            b'\n' => "\\n",
-            b'\r' => "\\r",
-            b'\t' => "\\t",
+            b'"' => {
+                if nested {
+                    "\\\\\\\""
+                } else {
+                    "\\\""
+                }
+            }
+            b'\\' => {
+                if nested {
+                    "\\\\\\\\"
+                } else {
+                    "\\\\"
+                }
+            }
+            b'\n' => {
+                if nested {
+                    "\\\\n"
+                } else {
+                    "\\n"
+                }
+            }
+            b'\r' => {
+                if nested {
+                    "\\\\r"
+                } else {
+                    "\\r"
+                }
+            }
+            b'\t' => {
+                if nested {
+                    "\\\\t"
+                } else {
+                    "\\t"
+                }
+            }
             byte if byte < 0x20 => {
                 out.push_str(&s[start..at]);
                 const HEX: &[u8; 16] = b"0123456789abcdef";
-                out.push_str("\\u00");
+                out.push_str(if nested { "\\\\u00" } else { "\\u00" });
                 out.push(HEX[(byte >> 4) as usize] as char);
                 out.push(HEX[(byte & 15) as usize] as char);
                 start = at + 1;

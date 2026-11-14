@@ -17,7 +17,10 @@ pub(super) fn process(
             response = op_mcp::ToolResponse::Err {
                 id: id.clone(),
                 code: op_mcp::ToolErrorCode::Internal,
-                message: format!("host rejected command: {command:?}"),
+                message: format!(
+                    "host rejected command: {}",
+                    op_util::bounded_debug::summary(command, 1024)
+                ),
             };
         }
     }

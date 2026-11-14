@@ -25,7 +25,7 @@ pub(crate) fn preserves(state: &EditorState, command: &C) -> bool {
                 .iter()
                 .map(|id| id.as_str().to_owned())
                 .collect();
-            let index = lookup::Index::new(roots, wanted);
+            let index = lookup::Index::for_state(state, wanted);
             for id in &state.selection.set {
                 if index.ambiguous(id.as_str()) {
                     return false;
@@ -50,7 +50,7 @@ pub(crate) fn preserves(state: &EditorState, command: &C) -> bool {
                 .filter(|node| reusable(node))
                 .map(|node| node.id_str().to_owned())
                 .collect();
-            let index = lookup::Index::new(roots, wanted);
+            let index = lookup::Index::for_state(state, wanted);
             for node in &state.clipboard {
                 let existing = reusable(node)
                     && !index.ambiguous(node.id_str())

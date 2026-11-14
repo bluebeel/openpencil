@@ -39,7 +39,7 @@ pub(super) fn remove_path(nodes: &[PenNode], id: &NodeId) -> Option<Vec<usize>> 
     }
     None
 }
-fn indexed_read_path(
+pub(super) fn indexed_read_path(
     state: &EditorState,
     scope: &Scope,
     roots: &[PenNode],

@@ -1,5 +1,5 @@
 //! Borrowed target lookup. Only requested identities retain structural paths.
-use crate::{NodeId, PenNodeExt};
+use crate::{EditorState, NodeId, PenNodeExt};
 use jian_ops_schema::node::PenNode;
 use std::{
     cmp::Ordering,
@@ -59,6 +59,37 @@ impl Index {
         index.populate(roots);
         index
     }
+    pub(super) fn for_state(state: &EditorState, wanted: HashSet<String>) -> Self {
+        if wanted.is_empty() {
+            return Self {
+                wanted,
+                original: HashMap::new(),
+            };
+        }
+        let scope = state.command_lookup_active_scope();
+        let mut original = HashMap::with_capacity(wanted.len());
+        for id in &wanted {
+            let Some((preorder, sibling_first, count)) = state.command_lookup_variants(&scope, id)
+            else {
+                return Self::new(state.active_children(), wanted);
+            };
+            if count == 0 {
+                continue;
+            }
+            let (Some(preorder), Some(sibling_first)) = (preorder, sibling_first) else {
+                return Self::new(state.active_children(), wanted);
+            };
+            original.insert(
+                id.clone(),
+                Original {
+                    preorder,
+                    sibling_first,
+                    count,
+                },
+            );
+        }
+        Self { wanted, original }
+    }
     fn populate(&mut self, roots: &[PenNode]) {
         if self.wanted.is_empty() {
             return;
@@ -84,8 +115,26 @@ impl Index {
             }
         });
     }
-    pub(super) fn resolve_extra(&mut self, roots: &[PenNode], id: &NodeId) {
+    pub(super) fn resolve_extra(&mut self, state: &EditorState, roots: &[PenNode], id: &NodeId) {
         if self.wanted.insert(id.as_str().into()) {
+            if let Some((preorder, sibling_first, count)) =
+                state.command_lookup_variants(&state.command_lookup_active_scope(), id.as_str())
+            {
+                if count == 0 {
+                    return;
+                }
+                if let (Some(preorder), Some(sibling_first)) = (preorder, sibling_first) {
+                    self.original.insert(
+                        id.as_str().to_owned(),
+                        Original {
+                            preorder,
+                            sibling_first,
+                            count,
+                        },
+                    );
+                    return;
+                }
+            }
             // Paste may resolve one additional parent identity after locating
             // its leaf anchor. This is one borrowed pass, never per payload.
             walk(roots, |node, path| {

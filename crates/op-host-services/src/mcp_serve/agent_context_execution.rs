@@ -105,6 +105,55 @@ pub(crate) fn with_agent_context_permit(
     permit: &AgentExecutionPermit,
     action: impl FnOnce(&mut EditorState) -> Result<Option<String>, McpServeError>,
 ) -> Result<Option<String>, McpServeError> {
+    with_permit_phase(
+        contexts,
+        document,
+        state,
+        line,
+        profile,
+        permit,
+        Phase::Request,
+        action,
+    )
+}
+
+/// Continue an already-admitted command's save/rollback in its original actor
+/// context. This is not another tool execution: redo may have consumed its last
+/// future entry, undo its last past entry, and Cut may have changed selection.
+/// The original permit, owner/path/profile, checkout and UI/clipboard accounting
+/// are still validated. Only execution preconditions and history-error draining
+/// are skipped; this helper never executes or replays the tool command.
+pub(crate) fn with_agent_context_for_commit(
+    contexts: &AgentContexts,
+    document: &Path,
+    state: &mut EditorState,
+    line: &str,
+    profile: McpAccessProfile,
+    permit: &AgentExecutionPermit,
+    action: impl FnOnce(&mut EditorState) -> Result<Option<String>, McpServeError>,
+) -> Result<Option<String>, McpServeError> {
+    with_permit_phase(
+        contexts,
+        document,
+        state,
+        line,
+        profile,
+        permit,
+        Phase::Commit,
+        action,
+    )
+}
+
+fn with_permit_phase(
+    contexts: &AgentContexts,
+    document: &Path,
+    state: &mut EditorState,
+    line: &str,
+    profile: McpAccessProfile,
+    permit: &AgentExecutionPermit,
+    phase: Phase,
+    action: impl FnOnce(&mut EditorState) -> Result<Option<String>, McpServeError>,
+) -> Result<Option<String>, McpServeError> {
     let Some(call) = op_mcp::parse_tool_call(line.trim()) else {
         return Err(McpServeError::Dispatch(
             "group admission requires a parsed tool call".into(),
@@ -122,6 +171,7 @@ pub(crate) fn with_agent_context_permit(
         line,
         profile,
         Some(permit),
+        phase,
         action,
     )
 }

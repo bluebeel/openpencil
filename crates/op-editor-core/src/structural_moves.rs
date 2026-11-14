@@ -9,7 +9,7 @@ struct Routes {
     target: Option<Box<[usize]>>,
     ambiguous: bool,
 }
-fn routes(roots: &[PenNode], source: &str, target: Option<&str>) -> Routes {
+fn walk_routes(roots: &[PenNode], source: &str, target: Option<&str>) -> Routes {
     let mut found = Routes {
         source: None,
         target: None,
@@ -51,6 +51,32 @@ fn routes(roots: &[PenNode], source: &str, target: Option<&str>) -> Routes {
         }
     }
     found
+}
+fn routes(state: &EditorState, source: &NodeId, target: Option<&NodeId>) -> Routes {
+    let scope = state.command_lookup_active_scope();
+    if let Some(source_path) = state.command_lookup_unique(&scope, source) {
+        let target_path = target.map(|target| state.command_lookup_unique(&scope, target));
+        if let Some(None) = target_path {
+            return walk_routes(
+                state.active_children(),
+                source.as_str(),
+                target.map(NodeId::as_str),
+            );
+        }
+        let ambiguous = source_path.is_err() || matches!(&target_path, Some(Some(Err(_))));
+        return Routes {
+            source: source_path.ok().flatten(),
+            target: target_path
+                .and_then(|path| path.and_then(Result::ok))
+                .flatten(),
+            ambiguous,
+        };
+    }
+    walk_routes(
+        state.active_children(),
+        source.as_str(),
+        target.map(NodeId::as_str),
+    )
 }
 fn node<'a>(mut nodes: &'a [PenNode], path: &[usize]) -> Option<&'a PenNode> {
     let (last, parents) = path.split_last()?;
@@ -136,11 +162,7 @@ pub(crate) fn move_to(
     if !source.is_real() || source == parent {
         return Some(false);
     }
-    let found = routes(
-        state.active_children(),
-        source.as_str(),
-        parent.is_real().then(|| parent.as_str()),
-    );
+    let found = routes(state, source, parent.is_real().then_some(parent));
     if found.ambiguous {
         return None;
     }
@@ -179,11 +201,7 @@ pub(crate) fn relative(
     if !source.is_real() || !anchor.is_real() || source == anchor {
         return Some(false);
     }
-    let found = routes(
-        state.active_children(),
-        source.as_str(),
-        Some(anchor.as_str()),
-    );
+    let found = routes(state, source, Some(anchor));
     if found.ambiguous {
         return None;
     }

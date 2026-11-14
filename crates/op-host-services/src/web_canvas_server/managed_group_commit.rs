@@ -479,7 +479,7 @@ impl Transaction<'_, '_, '_> {
             let mut restored = false;
             #[cfg(test)]
             let fail_rollback = self.owner.fault.load(Ordering::Acquire) == 3;
-            let _ = mcp_serve::agent_context::with_agent_context_permit(
+            let _ = mcp_serve::agent_context::with_agent_context_for_commit(
                 &self.ctx.authority.agent_contexts,
                 &request.document,
                 &mut self.state.editor,
@@ -539,7 +539,7 @@ impl Transaction<'_, '_, '_> {
             let metrics = &self.owner.metrics;
             #[cfg(test)]
             let owner = self.owner;
-            let _ = mcp_serve::agent_context::with_agent_context_permit(
+            let _ = mcp_serve::agent_context::with_agent_context_for_commit(
                 &self.ctx.authority.agent_contexts,
                 &actor.document,
                 &mut self.state.editor,

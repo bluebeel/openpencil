@@ -498,7 +498,7 @@ impl EditorState {
             return Ok(None);
         }
         if let Some(prepared) = clone_splice::duplicate(self, allocator, offset_doc_px)? {
-            let ids = prepared.commit(self.active_children_mut());
+            let ids = prepared.commit_with_locations(self);
             if ids.is_empty() {
                 return Ok(None);
             }
@@ -537,7 +537,14 @@ impl EditorState {
         if !sel.is_real() {
             return false;
         }
-        reorder_in_children(self.active_children_mut(), &sel, direction)
+        let scope = self.command_lookup_active_scope();
+        match self.command_lookup_unique(&scope, &sel) {
+            Some(Ok(Some(path))) => self.command_reorder_at(&scope, &path, direction),
+            Some(Ok(None)) => false,
+            // Duplicate IDs retain the compatibility walk, including its
+            // edge/no-op recursion behavior. Its index receipt is discarded.
+            _ => reorder_in_children(self.active_children_mut(), &sel, direction),
+        }
     }
 
     /// Move `source` to be a sibling immediately before `anchor`.

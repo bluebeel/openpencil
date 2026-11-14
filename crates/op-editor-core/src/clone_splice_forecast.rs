@@ -39,7 +39,7 @@ pub(super) fn bound(state: &EditorState, command: &C) -> Option<usize> {
                 .iter()
                 .map(|id| id.as_str().to_owned())
                 .collect();
-            let index = lookup::Index::new(roots, wanted);
+            let index = lookup::Index::for_state(state, wanted);
             if state
                 .selection
                 .set
@@ -102,8 +102,9 @@ pub(super) fn bound(state: &EditorState, command: &C) -> Option<usize> {
                     wanted.insert(node.id_str().to_owned());
                 }
             }
-            let mut index = lookup::Index::new(roots, wanted);
-            let (destination, _) = paste_target(roots, &mut index, state.selection.set.first())?;
+            let mut index = lookup::Index::for_state(state, wanted);
+            let (destination, _) =
+                paste_target(state, roots, &mut index, state.selection.set.first())?;
             for node in &state.clipboard {
                 let live = index.original.get(node.id_str()).filter(|source| {
                     reusable(node) && reusable(lookup::at(roots, &source.preorder).unwrap())

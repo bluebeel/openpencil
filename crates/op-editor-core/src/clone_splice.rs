@@ -12,6 +12,9 @@ use plan::Plan;
 #[path = "clone_splice_trace.rs"]
 mod trace;
 pub(crate) use trace::Trace;
+#[path = "clone_splice_locations.rs"]
+mod locations;
+pub(crate) use locations::LocationGap;
 #[path = "clone_splice_forecast.rs"]
 mod forecast;
 pub(crate) fn forecast(state: &EditorState, command: &crate::EditorCommand) -> Option<usize> {
@@ -44,7 +47,7 @@ pub(crate) fn duplicate(
         .iter()
         .map(|id| id.as_str().to_owned())
         .collect();
-    let index = lookup::Index::new(roots, wanted);
+    let index = lookup::Index::for_state(state, wanted);
     if state
         .selection
         .set
@@ -84,6 +87,7 @@ fn reusable(node: &PenNode) -> bool {
     matches!(node,PenNode::Frame(frame) if frame.reusable==Some(true))
 }
 fn paste_target(
+    state: &EditorState,
     roots: &[PenNode],
     index: &mut lookup::Index,
     anchor: Option<&NodeId>,
@@ -108,7 +112,7 @@ fn paste_target(
     for length in (1..path.len()).rev() {
         let parent = lookup::at(roots, &path[..length]).unwrap();
         if let Some(id) = NodeId::new_opt(parent.id_str()) {
-            index.resolve_extra(roots, &id);
+            index.resolve_extra(state, roots, &id);
             if index.ambiguous(id.as_str()) {
                 return None;
             }
@@ -134,7 +138,7 @@ pub(crate) fn paste(
             wanted.insert(node.id_str().to_owned());
         }
     }
-    let mut index = lookup::Index::new(roots, wanted);
+    let mut index = lookup::Index::for_state(state, wanted);
     for node in &state.clipboard {
         if reusable(node)
             && index.ambiguous(node.id_str())
@@ -146,7 +150,8 @@ pub(crate) fn paste(
             return Ok(None);
         }
     }
-    let Some((parent, mut cursor)) = paste_target(roots, &mut index, state.selection.set.first())
+    let Some((parent, mut cursor)) =
+        paste_target(state, roots, &mut index, state.selection.set.first())
     else {
         return Ok(None);
     };

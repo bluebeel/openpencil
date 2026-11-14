@@ -60,6 +60,30 @@ impl Index {
         }
         Ok(Self(scopes))
     }
+    /// The same exact requested-ID/ambiguity table, using a currently entered
+    /// location authority when available. Ordinary callers retain one fresh
+    /// forest walk, never one fallback traversal per requested parent.
+    pub(super) fn for_state(
+        state: &crate::EditorState,
+        wanted: Wanted,
+    ) -> Result<Self, ScopedHistoryError> {
+        let mut scopes = HashMap::with_capacity(wanted.len());
+        for (scope, ids) in &wanted {
+            let mut found = HashMap::with_capacity(ids.len());
+            for id in ids {
+                let Some((path, _, count)) = state.command_lookup_variants(scope, id) else {
+                    return Self::new(&state.doc, wanted);
+                };
+                if count > 0 {
+                    found.insert(id.clone(), if count == 1 { path } else { None });
+                }
+            }
+            // Validate even an empty requested set exactly as the fresh path.
+            patch::roots(&state.doc, scope)?;
+            scopes.insert(scope.clone(), found);
+        }
+        Ok(Self(scopes))
+    }
     pub(super) fn contains(&self, scope: &Scope, id: &str) -> bool {
         self.0
             .get(scope)

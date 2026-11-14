@@ -29,7 +29,17 @@ impl EditorState {
                 )
             })
             .flatten();
-        if parent_id.is_real() {
+        let scope = self.command_lookup_active_scope();
+        let destination = if parent_id.is_real() {
+            match self.command_insertion_path(&scope, parent_id) {
+                Some(Ok(path)) => Some(path),
+                Some(Err(())) => return false,
+                None => None,
+            }
+        } else {
+            None
+        };
+        if parent_id.is_real() && destination.is_none() {
             // Accept any container (matches `cmd_insert_subtree`), including an
             // empty one whose `children` is still `None` — the insert below
             // initializes it via `children_mut()` (`get_or_insert_with`). Using
@@ -75,7 +85,11 @@ impl EditorState {
             }
         }
 
-        if parent_id.is_real() {
+        if let Some(path) = destination {
+            if self.command_extend_at(&scope, &path, nodes).is_err() {
+                return false;
+            }
+        } else if parent_id.is_real() {
             let Some(parent) = walkers::find_node_mut(self.active_children_mut(), parent_id) else {
                 return false;
             };

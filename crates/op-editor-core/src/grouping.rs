@@ -36,9 +36,10 @@ impl EditorState {
         if self.selection.set.is_empty() {
             return Ok(None);
         }
-        let Some((parent, indices)) =
+        let Some((parent, indices)) = self.command_selected_siblings().unwrap_or_else(|| {
             selected_siblings(self.active_children(), &self.selection.set)
-        else {
+                .map(|(parent, indices)| (parent.into_boxed_slice(), indices))
+        }) else {
             return Ok(None);
         };
         let mut live = allocator.document_collision_ids(&self.doc);
@@ -71,8 +72,20 @@ impl EditorState {
             return false;
         }
         let target = self.selection.anchor.clone();
-        let Some((path, idx)) = sibling_location(self.active_children(), &target, &mut Vec::new())
-        else {
+        let scope = self.command_lookup_active_scope();
+        let indexed = self.command_lookup_path(
+            &scope,
+            &target,
+            crate::command_id_scope::sequence::LookupOrder::SiblingFirst,
+        );
+        let found = match indexed {
+            Some(path) => path.and_then(|path| {
+                let (&slot, parent) = path.split_last()?;
+                Some((parent.to_vec(), slot))
+            }),
+            None => sibling_location(self.active_children(), &target, &mut Vec::new()),
+        };
+        let Some((path, idx)) = found else {
             return false;
         };
         let children = siblings_at_path_mut(self.active_children_mut(), &path)

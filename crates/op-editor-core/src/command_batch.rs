@@ -259,6 +259,11 @@ impl EditorState {
         self.history = saved_history;
         match outcome {
             Ok(Ok(true)) => {
+                // The Batch revision collapses its accepted leaf revisions.
+                // Complete the final exact location receipt before that reset
+                // can equal a leaf's pre-command revision (same-length wraps
+                // or placeholder swaps still changed structural identity).
+                self.finish_accepted_command_locations();
                 if marks_document_dirty {
                     self.revision = before_revision;
                     self.sync_dirty_flag();

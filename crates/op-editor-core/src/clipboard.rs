@@ -100,7 +100,7 @@ impl EditorState {
         if let Some(prepared) =
             crate::mutators::clone_splice::paste(self, allocator, offset_doc_px)?
         {
-            let ids = prepared.commit(self.active_children_mut());
+            let ids = prepared.commit_with_locations(self);
             if !ids.is_empty() {
                 self.selection.anchor = ids[0].clone();
                 self.selection.set = ids.clone();

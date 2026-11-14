@@ -1,7 +1,7 @@
 //! Rich canonical insertions use the same exact bounded splice inverse as
 //! legacy leaves. Original fields, children presence and allocation rules stay
 //! in the real command; this planner borrows only its affected payload.
-use super::{authored, command_scope, read_path};
+use super::{authored, command_scope, indexed_read_path};
 use crate::{
     history::{structural_payload_bound, Scope, SpliceSpec, TargetSpec},
     EditorCommand as C, EditorState, PenNodeExt,
@@ -57,7 +57,7 @@ pub(super) fn plan(state: &EditorState, command: &C, active: usize) -> Option<Ta
     let mut forecast = insertion_bound(command)?;
     let (path, mut index) = match parent.filter(|parent| parent.is_real()) {
         Some(parent) => {
-            let path = read_path(roots, parent)?;
+            let path = indexed_read_path(state, &scope, roots, parent)?;
             let node = authored(roots, &path)?;
             if !node.is_container() {
                 return None;

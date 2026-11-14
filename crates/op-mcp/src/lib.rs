@@ -608,7 +608,10 @@ where
                 response = ToolResponse::Err {
                     id,
                     code: ToolErrorCode::Internal,
-                    message: format!("host rejected command: {cmd:?}"),
+                    message: format!(
+                        "host rejected command: {}",
+                        op_util::bounded_debug::summary(cmd, 1024)
+                    ),
                 };
             }
         }

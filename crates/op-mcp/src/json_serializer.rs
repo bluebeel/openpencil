@@ -2,7 +2,7 @@
 //! helpers. Hand-rolled so shell-core stays serde-free (wasm32
 //! bundle size). Carved off `mcp.rs` to stay under the 800-line cap.
 
-use op_util::json_escape::{push_escaped, push_json_quoted};
+use op_util::json_escape::{push_escaped, push_json_quoted, push_json_quoted_nested};
 use std::{collections::BTreeMap, fmt::Write};
 
 use super::{RequestId, ToolErrorCode, ToolResponse};
@@ -67,7 +67,7 @@ pub fn tool_response_to_json(r: &ToolResponse) -> String {
             out.push_str("{\"type\":\"text\",\"text\":");
             match json {
                 Some(raw) => push_json_quoted(&mut out, raw),
-                None => push_json_quoted(&mut out, &btree_to_json(result)),
+                None => push_nested_btree(&mut out, result),
             }
             out.push_str("}]}}");
         }
@@ -125,6 +125,23 @@ pub(super) fn btree_to_json(m: &BTreeMap<String, String>) -> String {
     push_btree_entries(&mut out, m);
     out.push('}');
     out
+}
+
+fn push_nested_btree(out: &mut String, map: &BTreeMap<String, String>) {
+    out.push('"');
+    out.push('{');
+    let mut first = true;
+    for (key, value) in map {
+        if !first {
+            out.push(',');
+        }
+        first = false;
+        push_json_quoted_nested(out, key);
+        out.push(':');
+        push_json_quoted_nested(out, value);
+    }
+    out.push('}');
+    out.push('"');
 }
 
 fn push_btree(out: &mut String, m: &BTreeMap<String, String>) {

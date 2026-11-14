@@ -4,6 +4,14 @@
 use crate::{history::Scope, EditorCommand as C, EditorState, NodeId, PenNodeExt};
 use jian_ops_schema::{node::PenNode, PenDocument};
 use std::{cmp::Ordering, collections::HashMap, sync::Arc};
+#[path = "command_id_clones.rs"]
+mod cloning;
+#[path = "command_id_insert.rs"]
+mod insertion;
+#[path = "command_id_motion.rs"]
+mod motion;
+#[path = "command_id_wrap.rs"]
+mod wrapping;
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum Order {
     Preorder,
@@ -290,6 +298,10 @@ fn sibling_priority(a: &[usize], b: &[usize]) -> Ordering {
 enum Edit {
     Append,
     Remove(usize),
+    Motion(motion::Motion),
+    Insertion(insertion::Insertion),
+    Wrap(wrapping::Wrap),
+    Clones,
 }
 #[derive(Debug)]
 pub(super) struct Pending {
@@ -297,11 +309,23 @@ pub(super) struct Pending {
     parent: usize,
     len: usize,
     revision: u64,
-    command: Box<C>,
+    command: Option<Box<C>>,
     edit: Edit,
 }
 impl Pending {
     fn prepare(index: &Index, state: &EditorState, command: &C) -> Option<Self> {
+        if cloning::supports(command) {
+            return cloning::pending(index, state, command);
+        }
+        if wrapping::supports(command) {
+            return wrapping::Wrap::pending(index, state, command);
+        }
+        if insertion::supports(command) {
+            return insertion::Insertion::pending(index, state, command);
+        }
+        if matches!(command, C::MoveNode { .. } | C::ReorderSelected { .. }) {
+            return motion::Motion::pending(index, state, command);
+        }
         let (raw, id, append) = match command {
             C::CopyNode {
                 page_id,
@@ -334,11 +358,15 @@ impl Pending {
             parent,
             len: index.entries[parent].children.len(),
             revision: state.document_revision(),
-            command: Box::new(command.clone()),
+            command: Some(Box::new(command.clone())),
             edit,
         })
     }
     fn before(&self, index: &Index, state: &EditorState) -> bool {
+        if let Edit::Motion(motion) = &self.edit {
+            return state.document_revision() == self.revision
+                && motion.before(index, state, &self.scope);
+        }
         state.document_revision() == self.revision
             && children_at(&state.doc, &self.scope, &index.path(self.parent))
                 .is_some_and(|nodes| nodes.len() == self.len)
@@ -346,6 +374,18 @@ impl Pending {
     fn finish(&self, index: &mut Index, state: &EditorState) -> Option<()> {
         if self.before(index, state) {
             return Some(());
+        }
+        self.finish_accepted(index, state)
+    }
+    fn finish_accepted(&self, index: &mut Index, state: &EditorState) -> Option<()> {
+        if let Edit::Motion(motion) = &self.edit {
+            return motion.finish(index, state, &self.scope);
+        }
+        if let Edit::Wrap(receipt) = &self.edit {
+            return receipt.finish(self, index, state);
+        }
+        if let Edit::Insertion(receipt) = &self.edit {
+            return receipt.finish(self, index, state);
         }
         let nodes = children_at(&state.doc, &self.scope, &index.path(self.parent))?;
         match self.edit {
@@ -388,7 +428,31 @@ impl Cache {
     pub(super) fn bounded(index: Option<Index>, limit: usize) -> Self {
         index.map_or(Self::Bounded(limit), Self::Ready)
     }
+    fn accept(&mut self, state: &EditorState) {
+        let prior = std::mem::replace(self, Self::Invalid);
+        *self = match prior {
+            Self::Pending(mut index, pending) => {
+                if pending.finish_accepted(&mut index, state).is_some() {
+                    Self::Ready(index)
+                } else {
+                    Self::Invalid
+                }
+            }
+            other => other,
+        };
+    }
+    fn settle(&mut self, state: &EditorState) {
+        if matches!(self, Self::Pending(index, pending) if !pending.before(index, state)) {
+            let prior = std::mem::replace(self, Self::Invalid);
+            if let Self::Pending(mut index, pending) = prior {
+                if pending.finish(&mut index, state).is_some() {
+                    *self = Self::Ready(index);
+                }
+            }
+        }
+    }
     pub(super) fn ready(&mut self, state: &EditorState) -> bool {
+        self.settle(state);
         if let Self::Bounded(limit) = self {
             *self = Index::try_new(&state.doc, *limit).map_or(Self::Invalid, Self::Ready);
         } else if matches!(self, Self::Unbuilt) {
@@ -416,8 +480,28 @@ impl Cache {
         }
     }
     pub(super) fn observe(&mut self, state: &EditorState, command: &C) {
-        if preserves_locations(command) {
+        if matches!(self, Self::Pending(index, pending)
+            if pending.same_command(state, command) && pending.before(index, state))
+        {
             return;
+        }
+        self.settle(state);
+        // A rejected previous edit leaves its original index usable too.
+        if matches!(self, Self::Pending(_, _)) {
+            let prior = std::mem::replace(self, Self::Invalid);
+            if let Self::Pending(index, _) = prior {
+                *self = Self::Ready(index);
+            }
+        }
+        if preserves_locations(command) || motion::observed_batch(command) {
+            return;
+        }
+        if matches!(command, C::MoveNode { .. } | C::ReorderSelected { .. })
+            || insertion::supports(command)
+            || wrapping::supports(command)
+            || cloning::supports(command)
+        {
+            self.ready(state);
         }
         let prior = std::mem::replace(self, Self::Invalid);
         match prior {
@@ -427,7 +511,7 @@ impl Cache {
                 }
             }
             Self::Pending(index, pending)
-                if pending.command.as_ref() == command && pending.before(&index, state) =>
+                if pending.same_command(state, command) && pending.before(&index, state) =>
             {
                 // Scoped apply and raw allocator apply both observe before the
                 // same command. No second canonical mutation occurred here.
@@ -447,9 +531,9 @@ impl Cache {
         }
     }
 }
-// Numeric identity preservation is weaker than location preservation: Move,
-// ReorderSelected and ReorderPage keep ids but relocate nodes. Only this
-// explicit header/view set may reuse routes; future commands start uncached.
+// Numeric identity preservation is weaker than location preservation. Move
+// and selected reorder use exact sibling receipts above; page reorder and
+// unknown topology still discard routes. This list only permits header/view edits.
 fn preserves_locations(command: &C) -> bool {
     let mut pending = vec![command];
     let mut count = 0usize;
@@ -553,6 +637,14 @@ impl super::SeedOverride {
     }
 }
 impl EditorState {
+    pub(crate) fn finish_accepted_command_locations(&self) {
+        let seed = &self.command_id_seed;
+        if seed.entered && seed.valid && seed.generation == self.document_generation() {
+            if let Ok(mut cache) = seed.lookup.lock() {
+                cache.accept(self);
+            }
+        }
+    }
     pub(crate) fn command_lookup_path(
         &self,
         scope: &Scope,

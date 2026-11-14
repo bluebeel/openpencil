@@ -107,6 +107,17 @@ where
     // registry snapshots `state` at build time, so it no longer
     // borrows it once the applier closure mutates it.
     let call = op_mcp::parse_tool_call(trimmed);
+    if call.is_none()
+        && !trimmed
+            .lines()
+            .any(|line| op_mcp::parse_tool_call(line.trim()).is_some())
+    {
+        // Reuse the exact malformed-message/id serializer without constructing
+        // every document-backed tool snapshot just to reject structured args.
+        // The public streaming compatibility path may contain valid individual
+        // lines; preserve that existing path when any such line is present.
+        return process_tool_message_with_registry(&ToolRegistry::default(), line, |_, _| false);
+    }
     // Enforcement, ahead of the registry build and therefore ahead of the
     // tool's own argument parsing: a denied tool never sees the path it was
     // asked to open.

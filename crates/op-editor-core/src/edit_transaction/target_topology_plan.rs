@@ -136,6 +136,38 @@ fn reorder_path(
     }
     None
 }
+/// An exact location authority can prove uniqueness without walking a forest
+/// twice. Ambiguous/public calls retain both historical traversal checks.
+fn move_path(
+    state: &EditorState,
+    scope: &Scope,
+    roots: &[PenNode],
+    id: &NodeId,
+) -> Option<(Vec<usize>, bool)> {
+    if let Some(Ok(path)) = state.command_lookup_unique(scope, id) {
+        return path.map(|path| (path.into_vec(), true));
+    }
+    let path = splice::read_path(roots, id)?;
+    (splice::remove_path(roots, id)? == path).then_some((path, false))
+}
+fn selected_reorder_path(
+    state: &EditorState,
+    scope: &Scope,
+    roots: &[PenNode],
+    direction: ReorderDirection,
+) -> Option<(Vec<usize>, usize)> {
+    if let Some(Ok(path)) = state.command_lookup_unique(scope, &state.selection.anchor) {
+        let path = path?;
+        let (slot, parent) = path.split_last()?;
+        let to = match direction {
+            ReorderDirection::Up => slot.checked_sub(1)?,
+            ReorderDirection::Down if slot + 1 < siblings(roots, parent)?.len() => slot + 1,
+            _ => return None,
+        };
+        return Some((path.into_vec(), to));
+    }
+    reorder_path(roots, &state.selection.anchor, direction)
+}
 /// Match grouping's sibling-first priority in one borrowed tree traversal for
 /// every selected id, rather than repeatedly scanning the document per member.
 fn group_locations(roots: &[PenNode], selected: &[NodeId]) -> Option<Vec<TopologyLocation>> {
@@ -202,19 +234,17 @@ pub(super) fn plan(state: &EditorState, command: &C, active: usize) -> Option<Ta
             let request_bytes =
                 identity_bytes([node_id.as_str(), target_parent.as_str()].into_iter())?
                     .checked_add(identity_bytes(page_id.iter().map(String::as_str))?)?;
-            let source_path = splice::read_path(roots, node_id)?;
-            if splice::remove_path(roots, node_id)? != source_path {
-                return None;
-            }
+            let (source_path, _) = move_path(state, &scope, roots, node_id)?;
             let source = at(roots, &source_path)?;
-            let from = location(source_path)?;
+            let from = location(source_path.clone())?;
             parent_ok(roots, &from.parent)?;
             let parent = if target_parent.is_real() {
-                if descendant_contains(source, target_parent) {
-                    return None;
-                }
-                let path = splice::read_path(roots, target_parent)?;
-                if splice::remove_path(roots, target_parent)? != path {
+                let (path, unique) = move_path(state, &scope, roots, target_parent)?;
+                if if unique {
+                    path.starts_with(&source_path)
+                } else {
+                    descendant_contains(source, target_parent)
+                } {
                     return None;
                 }
                 parent_ok(roots, &path)?;
@@ -261,7 +291,7 @@ pub(super) fn plan(state: &EditorState, command: &C, active: usize) -> Option<Ta
             if !state.selection.anchor.is_real() {
                 return None;
             }
-            let (path, to) = reorder_path(roots, &state.selection.anchor, *direction)?;
+            let (path, to) = selected_reorder_path(state, &scope, roots, *direction)?;
             let from = location(path)?;
             parent_ok(roots, &from.parent)?;
             identity_bytes(std::iter::once(state.selection.anchor.as_str()))?;
@@ -293,7 +323,23 @@ pub(super) fn plan(state: &EditorState, command: &C, active: usize) -> Option<Ta
                     .chain(std::iter::once(&state.selection.anchor))
                     .map(NodeId::as_str),
             )?;
-            let found = group_locations(roots, &state.selection.set)?;
+            let found = if state.selection.set.iter().all(NodeId::is_real) {
+                match state.command_selected_siblings() {
+                    Some(found) => {
+                        let (parent, indices) = found?;
+                        indices
+                            .into_iter()
+                            .map(|index| TopologyLocation {
+                                parent: parent.clone(),
+                                index,
+                            })
+                            .collect::<Vec<_>>()
+                    }
+                    None => group_locations(roots, &state.selection.set)?,
+                }
+            } else {
+                group_locations(roots, &state.selection.set)?
+            };
             let parent = found.first()?.parent.clone();
             parent_ok(roots, &parent)?;
             if found.iter().any(|item| item.parent != parent) {
@@ -328,7 +374,16 @@ pub(super) fn plan(state: &EditorState, command: &C, active: usize) -> Option<Ta
                     .chain(std::iter::once(&state.selection.anchor))
                     .map(NodeId::as_str),
             )?;
-            let path = splice::remove_path(roots, &state.selection.anchor)?;
+            let path = state
+                .command_lookup_path(
+                    &scope,
+                    &state.selection.anchor,
+                    crate::command_id_scope::sequence::LookupOrder::SiblingFirst,
+                )
+                .unwrap_or_else(|| {
+                    splice::remove_path(roots, &state.selection.anchor).map(Vec::into_boxed_slice)
+                })?
+                .into_vec();
             let group = at(roots, &path)?;
             if !group.is_group() {
                 return None;

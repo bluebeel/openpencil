@@ -73,7 +73,10 @@ impl AgentData {
 #[path = "agent_context_execution.rs"]
 mod execution;
 use execution::AdmissionOwner;
-pub(crate) use execution::{with_agent_context_permit, AgentDeliveryScope, AgentExecutionPermit};
+pub(crate) use execution::{
+    with_agent_context_for_commit, with_agent_context_permit, AgentDeliveryScope,
+    AgentExecutionPermit,
+};
 
 struct Slot {
     history_actor: HistoryActor,
@@ -424,7 +427,22 @@ pub(crate) fn with_agent_context(
             contexts, document, state, line, profile, &permit, action,
         );
     }
-    with_agent_context_impl(contexts, document, state, line, profile, None, action)
+    with_agent_context_impl(
+        contexts,
+        document,
+        state,
+        line,
+        profile,
+        None,
+        Phase::Request,
+        action,
+    )
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Phase {
+    Request,
+    Commit,
 }
 
 fn with_agent_context_impl(
@@ -434,17 +452,20 @@ fn with_agent_context_impl(
     line: &str,
     profile: McpAccessProfile,
     permit: Option<&AgentExecutionPermit>,
+    phase: Phase,
     action: impl FnOnce(&mut EditorState) -> Result<Option<String>, McpServeError>,
 ) -> Result<Option<String>, McpServeError> {
     if super::sniff::is_control_message(line) {
         return action(state);
     }
-    let limits = history_limits::configured()
-        .map_err(|error| McpServeError::Validation(error.to_string()))?;
-    state
-        .history
-        .configure_limits(limits)
-        .map_err(|error| McpServeError::Validation(error.to_string()))?;
+    if phase == Phase::Request {
+        let limits = history_limits::configured()
+            .map_err(|error| McpServeError::Validation(error.to_string()))?;
+        state
+            .history
+            .configure_limits(limits)
+            .map_err(|error| McpServeError::Validation(error.to_string()))?;
+    }
     let Some(call) = op_mcp::parse_tool_call(line.trim()) else {
         return action(state);
     };
@@ -461,31 +482,33 @@ fn with_agent_context_impl(
         Ok(lease) => lease,
         Err(error) => return refusal(&call, error.to_string()),
     };
-    let mut scope = Scope::enter(lease, document, state);
-    if matches!(call.tool.as_str(), "undo" | "redo") {
+    let mut scope = Scope::enter(lease, document, state, phase);
+    if phase == Phase::Request && matches!(call.tool.as_str(), "undo" | "redo") {
         if let Err(error) = scope.state.validate_actor_history(call.tool == "redo") {
             return refusal(&call, error.to_string());
         }
     }
     // Both production clipboard writers copy this exact selected forest. Charge
     // before registry/application, without cloning it or making a JSON buffer.
-    if matches!(call.tool.as_str(), "copy_selected" | "cut_selected") {
+    if phase == Phase::Request && matches!(call.tool.as_str(), "copy_selected" | "cut_selected") {
         let result = selected_clipboard_charge(scope.state)
             .and_then(|bytes| scope.lease.reserve_clipboard(bytes));
         if let Err(error) = result {
             return refusal(&call, error.to_string());
         }
     }
-    if super::atomic_tools::requests_clipboard_reservation(line) {
+    if phase == Phase::Request && super::atomic_tools::requests_clipboard_reservation(line) {
         if let Err(error) = scope.lease.reserve_clipboard(MAX_CLIPBOARD) {
             return refusal(&call, error.to_string());
         }
     }
     let mut outcome =
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| action(scope.state)));
-    if let Some(error) = scope.state.take_actor_history_error() {
-        if matches!(&outcome, Ok(Ok(_))) {
-            outcome = Ok(refusal(&call, error.to_string()));
+    if phase == Phase::Request {
+        if let Some(error) = scope.state.take_actor_history_error() {
+            if matches!(&outcome, Ok(Ok(_))) {
+                outcome = Ok(refusal(&call, error.to_string()));
+            }
         }
     }
     let restored = scope.finish();
@@ -522,9 +545,16 @@ struct Scope<'a, 's> {
 }
 
 impl<'a, 's> Scope<'a, 's> {
-    fn enter(mut lease: Lease<'a>, document: &Path, state: &'s mut EditorState) -> Self {
+    fn enter(
+        mut lease: Lease<'a>,
+        document: &Path,
+        state: &'s mut EditorState,
+        phase: Phase,
+    ) -> Self {
         let live_history_actor = state.set_history_actor(Some(lease.history_actor));
-        state.take_actor_history_error();
+        if phase == Phase::Request {
+            state.take_actor_history_error();
+        }
         let data = lease.data.as_mut().unwrap();
         let mut agent_ui = data.documents.remove(document).unwrap_or_default();
         let mut live_ui = std::mem::take(&mut state.ui);

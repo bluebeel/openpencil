@@ -127,7 +127,7 @@ impl PendingClones {
                 wanted.entry(scope.clone()).or_default().insert(id.clone());
             }
         }
-        let index = super::identity::Index::new(&state.doc, wanted).ok()?;
+        let index = super::identity::Index::for_state(state, wanted).ok()?;
         for trace in &traces {
             if let Some(id) = &trace.parent_id {
                 if index.path(&scope, id).ok()?.as_ref() != trace.parent.as_ref() {
@@ -169,11 +169,7 @@ impl PendingClones {
         if !self.matches(state) {
             return false;
         }
-        let ids = self
-            .prepared
-            .take()
-            .unwrap()
-            .commit(state.active_children_mut());
+        let ids = self.prepared.take().unwrap().commit_with_locations(state);
         if ids.is_empty() {
             return false;
         }
@@ -213,7 +209,7 @@ impl PendingClones {
                     .insert(id.clone());
             }
         }
-        let index = super::identity::Index::new(&state.doc, wanted)?;
+        let index = super::identity::Index::for_state(state, wanted)?;
         let mut parents = std::collections::HashMap::new();
         for trace in &self.traces {
             if !parents.contains_key(&trace.parent_id) {

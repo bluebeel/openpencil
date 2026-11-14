@@ -346,7 +346,7 @@ impl<'s, 'q> Transaction<'s, 'q> {
                 let stamp = self.stamp;
                 let fence = self.fence.clone();
                 let persisted = &mut self.persisted;
-                let result = mcp_serve::agent_context::with_agent_context_permit(
+                let result = mcp_serve::agent_context::with_agent_context_for_commit(
                     &request.contexts,
                     path,
                     self.editor,
@@ -443,7 +443,7 @@ fn rollback_one(
 ) -> bool {
     let mut capture = Some(capture);
     let mut restored = false;
-    let _ = mcp_serve::agent_context::with_agent_context_permit(
+    let _ = mcp_serve::agent_context::with_agent_context_for_commit(
         &request.contexts,
         path,
         editor,
