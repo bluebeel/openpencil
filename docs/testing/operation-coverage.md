@@ -150,3 +150,26 @@ group/ungroup and left/top align. The proposed private package has 32 families
 and 23 implemented workflows, of which variables/themes remain unexecuted.
 The unchanged public 27-family matrix still has 16 implemented workflows.
 The live catalog remains 179 tools; availability is not benchmark coverage.
+
+## Checkpoint-15 operation results
+
+[Checkpoint 15](engine-checkpoint-15.md) promotes the public harness to 32
+families/23 bounded workflows. Both complete files pass all 23 workflows in
+separate one-client original-16 and additional-seven cases, retaining exact
+fields/arrays/f64 bits and IDs. Metadata cases preserve absent/empty maps. Nine
+families remain unimplemented/unsupported; partial scope exclusions remain.
+
+All four MUI logical-client counts pass their offered bounded workload at
+150.8/179.1/213.7/216.1 MB engine RSS, with only 20/64/64/64 mutations and
+1/10/64/64 writers. OpenBridge original-one-client passes at 891.3 MB, but
+10/100/1,000-client cases stop above the 1 GB engine cap. No failed case has a
+final canonical pass; uncertain writes are retained and never replayed. Move
+targets are leaves and failed layout targets have at most 29 nodes, on pages
+up to 109,727 nodes. Targeted capture/layout work remains required.
+
+The scope-aligned engine monitor excludes the external generator/verifier and
+records their separate allowance; older aggregate-cap failures remain unchanged.
+Maximum active requests stays 32. Repeated one-client export CPU falls 51% with
+identical PNGs, and all 12 reference exports retain checkpoint-14 raw RGBA. These
+results establish neither all operations at 1,000 writers nor complete Figma
+pixel parity.

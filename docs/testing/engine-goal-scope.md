@@ -110,3 +110,16 @@ correctness fixes. The strict aggregate case remains a failed resource stop.
 All eight selected text-heavy reference comparisons improve; their cold render
 wall duration increases. Repeated text work and remaining exact pixel errors
 remain active, alongside every unfinished acceptance requirement above.
+
+## Checkpoint 15 continuation
+
+[Checkpoint 15](engine-checkpoint-15.md) fixes full OpenBridge saved-data
+preservation and measures all 23 implemented workflows at one client on both
+complete files. Repeated MUI export CPU falls 51% with unchanged pixels; four
+history/copy workloads also use less CPU against their checkpoint-13 baseline.
+
+OpenBridge's larger-client runs still exceed the 1 GB engine target, including
+leaf moves and bounded layout reads on large pages. Target-only edit capture,
+focused layout work and durable-write throughput are the next operation fixes.
+The 32-family catalog, global-64-write matrix and selected reference frames do
+not narrow or complete the full acceptance scope above.

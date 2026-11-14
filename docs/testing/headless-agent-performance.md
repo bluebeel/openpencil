@@ -181,3 +181,12 @@ OpenBridge completes a separate service-plus-renderer sequence at 940.4 MB RSS,
 but final canonical preservation fails and remains an active fix. The earlier
 strict aggregate resource stop is retained separately. These observations do
 not establish all operations, all writers or a universal memory bound.
+
+[Checkpoint 15](engine-checkpoint-15.md) adds complete-file one-client correctness
+proof for 23 bounded workflows on both MUI and OpenBridge. OpenBridge's original
+16-workflow sequence uses 891.3 MB engine RSS and 25.70 CPU seconds, while its
+larger-client cases still fail the memory target. MUI's warm repeated PNG export
+uses 56.98 ms median service CPU versus 116.88 ms, with identical PNG bytes.
+The public real-file harness now offers explicit independent family budgets and
+records actual writer participation. Larger workloads and bounded layout-query
+memory remain active optimization work.
