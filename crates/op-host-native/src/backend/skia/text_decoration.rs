@@ -34,6 +34,14 @@ pub(super) fn draw(
 }
 
 fn sampled_rect(canvas: &Canvas, rect: Rect, color: op_editor_ui::Color) -> bool {
+    let paint = Paint::new(jian_color_to_color4f(color), None);
+    if super::super::vector_text::draw_decoration_rect(
+        canvas,
+        super::super::to_sk_rect(rect),
+        &paint,
+    ) {
+        return true;
+    }
     let matrix = canvas.local_to_device_as_3x3();
     if !matrix.is_finite() || matrix.has_perspective() || matrix.invert().is_none() {
         return false;

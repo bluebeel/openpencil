@@ -190,7 +190,8 @@ fn inside(points: [[i64; 2]; 3], point: [i64; 2], orientation: i64) -> bool {
             let inclusive = if dy != 0 {
                 dy.signum() * orientation.signum() < 0
             } else {
-                points[(i + 2) % 3][1] > a[1]
+                // Projected Y is inverted: interior below the edge makes it a top edge.
+                points[(i + 2) % 3][1] < a[1]
             };
             if !inclusive {
                 return false;
@@ -228,7 +229,8 @@ fn span(
         let inclusive = if dy != 0 {
             dy.signum() * orientation < 0
         } else {
-            points[(i + 2) % 3][1] > a[1]
+            // Projected Y is inverted: interior below the edge makes it a top edge.
+            points[(i + 2) % 3][1] < a[1]
         };
         let threshold = i64::from(!inclusive);
         let slope = -16 * dy * orientation;

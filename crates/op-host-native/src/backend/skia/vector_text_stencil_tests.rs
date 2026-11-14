@@ -150,3 +150,67 @@ fn stencil_declines_unsupported_paths_and_bounds_before_large_allocations() {
     huge.add_rect(Rect::from_wh(4096.0, 4096.0), None, None);
     assert!(coverage(&huge.detach(), &Matrix::default(), clip, 2).is_none());
 }
+
+#[test]
+fn stencil_boundary_centers_follow_device_top_left_after_reflection_and_rotation() {
+    let path = Path::rect(Rect::from_xywh(2.5, 3.5, 8.0, 7.0), None);
+    for matrix in [
+        Matrix::default(),
+        Matrix::translate((5., 7.)),
+        Matrix::new_all(-1., 0., 24., 0., 1., 2., 0., 0., 1.),
+        Matrix::new_all(0., -1., 24., 1., 0., 2., 0., 0., 1.),
+    ] {
+        let (bounds, _) = matrix.map_rect(path.bounds());
+        let pixels = render(&path, matrix, 0, false, 0.5);
+        for y in 0..32 {
+            for x in 0..32 {
+                let px = x as f32 + 0.5;
+                let py = y as f32 + 0.5;
+                let inside = px >= bounds.left
+                    && px < bounds.right
+                    && py >= bounds.top
+                    && py < bounds.bottom;
+                assert_eq!(
+                    pixels[y * 32 + x],
+                    if inside { [1., 0.5, 0.5, 1.] } else { [1.; 4] },
+                    "{matrix:?}, {x},{y}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn stencil_fractional_rectangle_matches_independent_quantized_half_open_edges() {
+    let rect = Rect::from_xywh(2.46875, 3.3125, 8.375, 4.75);
+    let path = Path::rect(rect, None);
+    for grid in [1, 2] {
+        let pixels = render(&path, Matrix::default(), grid, false, 0.5);
+        for y in 0..32 {
+            for x in 0..32 {
+                let mut count = 0;
+                for (jx, jy) in JITTERS {
+                    let q = |v: f32| (v * 16.).round_ties_even();
+                    let left = q(grid as f32 * rect.left - jx);
+                    let right = q(grid as f32 * rect.right - jx);
+                    let top = q(grid as f32 * rect.top - jy);
+                    let bottom = q(grid as f32 * rect.bottom - jy);
+                    for dy in 0..grid {
+                        for dx in 0..grid {
+                            let px = (x as u32 * grid + dx) as f32 * 16.;
+                            let py = (y as u32 * grid + dy) as f32 * 16.;
+                            count +=
+                                u32::from(px >= left && px < right && py >= top && py < bottom);
+                        }
+                    }
+                }
+                let alpha = count as f32 / (4 * grid * grid) as f32;
+                assert_eq!(
+                    pixels[y * 32 + x],
+                    [1., 1. - alpha * 0.5, 1. - alpha * 0.5, 1.],
+                    "{grid}, {x},{y}"
+                );
+            }
+        }
+    }
+}

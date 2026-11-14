@@ -105,6 +105,42 @@ fn build_outline(
     Some(path.detach())
 }
 
+/// Decorations use the same fixed-point top-left rule as glyph triangles.
+/// Keep this explicit: ordinary line-only glyph paths retain their fallback.
+pub(super) fn draw_decoration_rect(canvas: &Canvas, rect: Rect, paint: &Paint) -> bool {
+    if paint.style() != skia_safe::PaintStyle::Fill {
+        return false;
+    }
+    let point = jian_skia::raster_sampling::is_point_sampling();
+    let grid = if point {
+        0
+    } else if super::sampled_clip::is_four_sample_pass() {
+        1
+    } else {
+        2
+    };
+    draw_coverage(canvas, &Path::rect(rect, None), paint, point, grid)
+}
+
+fn draw_coverage(canvas: &Canvas, path: &Path, paint: &Paint, point: bool, grid: u32) -> bool {
+    let matrix = canvas.local_to_device_as_3x3();
+    let Some(clip) = canvas.device_clip_bounds() else {
+        return true;
+    };
+    let Some((shader, bounds)) = stencil::coverage(path, &matrix, clip, grid) else {
+        return false;
+    };
+    let mut source = paint.clone();
+    if point {
+        jian_skia::raster_sampling::configure_final_src_over(&mut source);
+    }
+    let saved = canvas.save();
+    canvas.clip_shader(shader, skia_safe::ClipOp::Intersect);
+    canvas.draw_rect(bounds, &source);
+    canvas.restore_to_count(saved);
+    true
+}
+
 fn draw_path(canvas: &Canvas, path: &Path, paint: &Paint) -> bool {
     if path.is_empty() {
         return true;
@@ -124,19 +160,8 @@ fn draw_path(canvas: &Canvas, path: &Path, paint: &Paint) -> bool {
             .iter()
             .any(|record| record.verb() == skia_safe::PathVerb::Quad)
     {
-        let matrix = canvas.local_to_device_as_3x3();
-        if let Some(clip) = canvas.device_clip_bounds() {
-            if let Some((shader, bounds)) = stencil::coverage(path, &matrix, clip, grid) {
-                let mut source = paint.clone();
-                if point {
-                    jian_skia::raster_sampling::configure_final_src_over(&mut source);
-                }
-                let saved = canvas.save();
-                canvas.clip_shader(shader, skia_safe::ClipOp::Intersect);
-                canvas.draw_rect(bounds, &source);
-                canvas.restore_to_count(saved);
-                return true;
-            }
+        if draw_coverage(canvas, path, paint, point, grid) {
+            return true;
         }
     }
     if point {
