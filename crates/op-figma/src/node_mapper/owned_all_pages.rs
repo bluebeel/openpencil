@@ -131,8 +131,7 @@ pub(crate) fn convert_tree_all_pages_owned(
     let warnings = std::mem::take(&mut ctx.warnings);
     drop(ctx);
     drop(pool);
-    let mut image_blobs = collect_image_blobs(blobs);
-    retain_referenced_image_blobs(&document, &mut image_blobs);
+    let image_blobs = collect_referenced_image_blobs(&document, blobs);
     FigmaImportResult {
         document,
         warnings,

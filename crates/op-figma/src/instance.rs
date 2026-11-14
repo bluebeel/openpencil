@@ -44,7 +44,7 @@ pub use assignment::seed_assignments_from_instances;
 use assignment::{
     guessed_mapping_is_implausible, instance_scale, rescale_only, reserve_direct_identities,
 };
-pub(crate) use cache::{apply_instance_overrides_memoized, InstanceExpansionCache};
+pub(crate) use cache::{apply_instance_overrides_shared, InstanceExpansionCache};
 pub(crate) use style::merge_symbol_props;
 pub(crate) use swap_filter::filter_swap_stale_derived;
 

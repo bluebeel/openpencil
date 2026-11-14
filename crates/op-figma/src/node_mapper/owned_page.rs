@@ -102,8 +102,7 @@ pub(crate) fn convert_tree_page_owned(
     observer(FigImportPhase::ReleaseSource);
     drop(page);
     drop(pool);
-    let mut image_blobs = collect_image_blobs(blobs);
-    retain_referenced_image_blobs(&document, &mut image_blobs);
+    let image_blobs = collect_referenced_image_blobs(&document, blobs);
     FigmaImportResult {
         document,
         warnings,

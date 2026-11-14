@@ -3,7 +3,7 @@ use crate::kiwi::FigValue;
 use crate::text_cache::compact_transient_text_caches;
 use crate::text_cache::evidence::{nearly_equal, TextEvidence};
 use crate::tree::guid_to_string;
-use std::collections::HashMap;
+use std::{collections::HashMap, rc::Rc};
 
 #[cfg(test)]
 #[path = "style_references_tests.rs"]
@@ -25,20 +25,24 @@ pub(crate) fn resolve_style_references_with_mode(
     layout_mode: FigLayoutMode,
 ) {
     crate::component_props::resolve_component_property_swaps(node_changes);
-    let mut style_map: HashMap<String, FigValue> = HashMap::new();
+    let mut style_map: HashMap<String, Rc<FigValue>> = HashMap::new();
     for nc in node_changes.iter() {
         if nc.get("styleType").is_some() {
-            if let Some(key) = nc.get("guid").and_then(guid_to_string) {
-                style_map.insert(key, style_inputs(nc));
+            let guid = nc.get("guid").and_then(guid_to_string);
+            let asset_key = nc.get_str("key").filter(|key| !key.is_empty());
+            if guid.is_none() && asset_key.is_none() {
+                continue;
+            }
+            let frozen = Rc::new(style_inputs(nc));
+            if let Some(key) = guid {
+                style_map.insert(key, Rc::clone(&frozen));
             }
             // Library styles are referenced by `assetRef.key` — index
             // the embedded style node under its publish key too. The
             // "key:" namespace keeps hex publish keys from ever
             // colliding with "session:local" guid strings.
-            if let Some(asset_key) = nc.get_str("key") {
-                if !asset_key.is_empty() {
-                    style_map.insert(format!("key:{asset_key}"), style_inputs(nc));
-                }
+            if let Some(asset_key) = asset_key {
+                style_map.insert(format!("key:{asset_key}"), frozen);
             }
         }
     }
@@ -106,15 +110,15 @@ fn style_inputs(node: &FigValue) -> FigValue {
 fn lookup_style<'a>(
     nc: &FigValue,
     field: &str,
-    style_map: &'a HashMap<String, FigValue>,
+    style_map: &'a HashMap<String, Rc<FigValue>>,
 ) -> Option<&'a FigValue> {
     let sid = nc.get(field)?;
     // Local style: guid reference. Library style: assetRef publish key.
     if let Some(key) = sid.get("guid").and_then(guid_to_string) {
-        return style_map.get(&key);
+        return style_map.get(&key).map(Rc::as_ref);
     }
     let asset_key = sid.get("assetRef").and_then(|a| a.get_str("key"))?;
-    style_map.get(&format!("key:{asset_key}"))
+    style_map.get(&format!("key:{asset_key}")).map(Rc::as_ref)
 }
 
 pub(super) fn non_empty_array(v: &FigValue, key: &str) -> bool {
@@ -269,7 +273,7 @@ fn derived_confirms_common_ligatures(node: &FigValue, style: &FigValue) -> bool 
 
 fn resolve_on_node(
     nc: &mut FigValue,
-    style_map: &HashMap<String, FigValue>,
+    style_map: &HashMap<String, Rc<FigValue>>,
     text_priority: TextStylePriority,
 ) {
     // FILL.

@@ -343,9 +343,26 @@ fn collect_document_refs(doc: &PenDocument) -> ReferencedImages {
     refs
 }
 
+/// Same full-document reachability rule as collect-all then retain, but do
+/// not inflate packed images that the completed canonical document cannot use.
+/// Geometry and unknown source fields are not rewritten by this ownership move.
+pub(crate) fn collect_referenced_image_blobs(
+    doc: &PenDocument,
+    blobs: Vec<crate::figma_types::BlobOrString>,
+) -> HashMap<u32, Vec<u8>> {
+    let refs = collect_document_refs(doc);
+    blobs
+        .into_iter()
+        .enumerate()
+        .filter(|(index, _)| refs.blobs.contains(&(*index as u32)))
+        .filter_map(|(index, blob)| blob.into_image().map(|bytes| (index as u32, bytes)))
+        .collect()
+}
+
 /// Discard raw in-container image blobs which the converted document
 /// cannot reach. Single-page imports otherwise retain images used only
 /// by the other pages until the base64 phase completes.
+#[cfg(test)]
 pub(crate) fn retain_referenced_image_blobs(
     doc: &PenDocument,
     image_blobs: &mut HashMap<u32, Vec<u8>>,

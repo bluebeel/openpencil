@@ -5,7 +5,7 @@
 use crate::common::{collect_image_blobs, ConversionContext, FigLayoutMode};
 use crate::converters::{convert_children, convert_node};
 use crate::figma_types::FigmaDecodedFile;
-use crate::image_resolver::retain_referenced_image_blobs;
+use crate::image_resolver::collect_referenced_image_blobs;
 use crate::page_mapper::pen_page;
 use crate::tree::{
     build_tree, build_tree_for_clipboard, build_tree_owned, collect_components,
@@ -153,8 +153,7 @@ pub(crate) fn convert_tree_all_pages(
     }
 
     let document = document_with_pages(file_name, pen_pages);
-    let mut image_blobs = collect_image_blobs(std::mem::take(&mut ctx.blobs));
-    retain_referenced_image_blobs(&document, &mut image_blobs);
+    let image_blobs = collect_referenced_image_blobs(&document, std::mem::take(&mut ctx.blobs));
     FigmaImportResult {
         document,
         warnings: ctx.warnings,
@@ -217,8 +216,7 @@ pub(crate) fn convert_tree_page(
     let pen = pen_page(page, format!("figma-page-{page_index}"), name, children);
 
     let document = document_with_pages(file_name, vec![pen]);
-    let mut image_blobs = collect_image_blobs(std::mem::take(&mut ctx.blobs));
-    retain_referenced_image_blobs(&document, &mut image_blobs);
+    let image_blobs = collect_referenced_image_blobs(&document, std::mem::take(&mut ctx.blobs));
     FigmaImportResult {
         document,
         warnings: ctx.warnings,

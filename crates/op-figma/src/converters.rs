@@ -10,7 +10,7 @@ use crate::common::{
 };
 use crate::corner_geometry::smoothed_rect_path;
 use crate::figma_types::FigVec2;
-use crate::instance::{apply_instance_overrides_memoized, merge_symbol_props};
+use crate::instance::{apply_instance_overrides_shared, merge_symbol_props};
 use crate::kiwi::FigValue;
 use crate::layout_positioning::{
     apply_layout_positioning, order_children, sizing_parent_stack_mode,
@@ -58,16 +58,23 @@ fn apply_layout(l: LayoutProps, c: &mut ContainerProps) {
 
 /// Convert a parent's children, skipping invisible / transparent nodes.
 pub fn convert_children(parent: &TreeNode, ctx: &mut ConversionContext<'_>) -> Vec<PenNode> {
-    let parent_stack_mode = parent.figma.get_str("stackMode").map(str::to_string);
+    convert_children_parts(&parent.figma, &parent.children, ctx)
+}
+fn convert_children_parts(
+    figma: &FigValue,
+    children: &[TreeNode],
+    ctx: &mut ConversionContext<'_>,
+) -> Vec<PenNode> {
+    let parent_stack_mode = figma.get_str("stackMode");
     let mut result = Vec::new();
-    for child in &parent.children {
+    for child in children {
         if child.figma.get_bool("visible") == Some(false) {
             continue;
         }
         if child.figma.get_f64("opacity").map(|o| o <= 0.0) == Some(true) {
             continue;
         }
-        if let Some(node) = convert_node(child, parent_stack_mode.as_deref(), ctx) {
+        if let Some(node) = convert_node(child, parent_stack_mode, ctx) {
             result.push(node);
         }
     }
@@ -158,9 +165,16 @@ fn convert_frame(
     parent_stack_mode: Option<&str>,
     ctx: &mut ConversionContext<'_>,
 ) -> PenNode {
+    convert_frame_parts(&tree.figma, &tree.children, parent_stack_mode, ctx)
+}
+fn convert_frame_parts(
+    figma: &FigValue,
+    children: &[TreeNode],
+    parent_stack_mode: Option<&str>,
+    ctx: &mut ConversionContext<'_>,
+) -> PenNode {
     let id = ctx.generate_id();
-    let children = convert_children(tree, ctx);
-    let figma = &tree.figma;
+    let children = convert_children_parts(figma, children, ctx);
     let has_auto_layout = figma
         .get_str("stackMode")
         .map(|s| s != "NONE")
@@ -290,8 +304,7 @@ fn convert_instance(
             if !symbol_node.children.is_empty() {
                 let overrides = figma
                     .get("symbolData")
-                    .and_then(|s| s.get_array("symbolOverrides"))
-                    .map(|a| a.to_vec());
+                    .and_then(|s| s.get_array("symbolOverrides"));
                 let base_symbol_node = base_guid
                     .as_ref()
                     .and_then(|guid| ctx.symbol_tree.get(guid))
@@ -303,31 +316,27 @@ fn convert_instance(
                 // hijack the fingerprint mapping onto the swapped subtree.
                 let derived = figma.get_array("derivedSymbolData").map(|a| {
                     if is_swap {
-                        crate::instance::filter_swap_stale_derived(
+                        std::borrow::Cow::Owned(crate::instance::filter_swap_stale_derived(
                             a,
                             base_symbol_node,
                             symbol_node,
                             instance_size,
-                        )
+                        ))
                     } else {
-                        a.to_vec()
+                        std::borrow::Cow::Borrowed(a)
                     }
                 });
-                let children = apply_instance_overrides_memoized(
+                let children = apply_instance_overrides_shared(
                     &mut ctx.instance_expansions,
                     &key,
                     symbol_node,
                     overrides,
-                    derived,
+                    derived.as_deref(),
                     instance_size,
                     &mut ctx.instance_assignments,
                 );
                 let merged = merge_symbol_props(&tree.figma, &symbol_node.figma);
-                let synthetic = TreeNode {
-                    figma: merged,
-                    children,
-                };
-                return convert_frame(&synthetic, parent_stack_mode, ctx);
+                return convert_frame_parts(&merged, children.as_slice(), parent_stack_mode, ctx);
             }
         }
     }

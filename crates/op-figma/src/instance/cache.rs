@@ -3,8 +3,8 @@
 //! Figma libraries often repeat the exact same component payload thousands of
 //! times. Resolution is deterministic for a component, its override/derived
 //! payload, instance size, and the current virtual-GUID assignment epoch. The
-//! cache keeps that exact structural key and always deep-clones a hit so the
-//! conversion pass can assign independent Pen ids and mutate its local tree.
+//! cache keeps that exact structural key and shares immutable hits with the
+//! converter, which creates independent canonical IDs without mutating source.
 
 use super::apply_instance_overrides_cached;
 use crate::figma_types::FigVec2;
@@ -13,6 +13,10 @@ use crate::tree::TreeNode;
 use std::collections::{HashMap, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
+
+#[path = "cache/shared.rs"]
+mod shared;
+pub(crate) use shared::apply_instance_overrides_shared;
 
 const DEFAULT_MAX_ENTRIES: usize = 256;
 const DEFAULT_MAX_STRUCTURAL_BYTES: usize = 8 * 1024 * 1024;
@@ -43,6 +47,7 @@ struct InstanceExpansionKey {
 }
 
 impl InstanceExpansionKey {
+    #[cfg(test)]
     fn new(
         component_guid: &str,
         overrides: Vec<FigValue>,
@@ -259,15 +264,16 @@ fn tree_structural_bytes(node: &TreeNode) -> usize {
 }
 
 struct CachedExpansion {
-    children: Vec<TreeNode>,
+    key: Rc<InstanceExpansionKey>,
+    children: Rc<Vec<TreeNode>>,
     structural_bytes: usize,
 }
 
 /// Per-import, FIFO-bounded cache. Keys in `insertion_order` are `Rc`-shared
 /// with the map, so large override payloads are not duplicated for eviction.
 pub(crate) struct InstanceExpansionCache {
-    entries: HashMap<Rc<InstanceExpansionKey>, CachedExpansion>,
-    insertion_order: VecDeque<Rc<InstanceExpansionKey>>,
+    entries: HashMap<u64, Vec<CachedExpansion>>,
+    insertion_order: VecDeque<(u64, Rc<InstanceExpansionKey>)>,
     assignment_epochs: HashMap<String, u64>,
     global_assignment_epoch: u64,
     structural_bytes: usize,
@@ -326,52 +332,21 @@ impl InstanceExpansionCache {
         *epoch
     }
 
+    #[cfg(test)]
     fn get(&mut self, key: &InstanceExpansionKey) -> Option<Vec<TreeNode>> {
-        if let Some(entry) = self.entries.get(key) {
-            self.hits += 1;
-            return Some(entry.children.clone());
-        }
-        self.misses += 1;
-        None
+        self.get_shared(shared::KeyView::from_owned(key))
+            .map(|children| children.as_ref().clone())
     }
-
+    #[cfg(test)]
     fn insert(&mut self, key: InstanceExpansionKey, children: &[TreeNode]) {
-        if self.max_entries == 0 || self.max_structural_bytes == 0 {
-            return;
-        }
-        let structural_bytes =
-            key.structural_bytes() + children.iter().map(tree_structural_bytes).sum::<usize>();
-        if structural_bytes > self.max_structural_bytes || self.entries.contains_key(&key) {
-            return;
-        }
-        while !self.entries.is_empty()
-            && (self.entries.len() >= self.max_entries
-                || self.structural_bytes.saturating_add(structural_bytes)
-                    > self.max_structural_bytes)
-        {
-            let Some(oldest) = self.insertion_order.pop_front() else {
-                break;
-            };
-            if let Some(entry) = self.entries.remove(&oldest) {
-                self.structural_bytes =
-                    self.structural_bytes.saturating_sub(entry.structural_bytes);
-            }
-        }
-        let key = Rc::new(key);
-        self.insertion_order.push_back(Rc::clone(&key));
-        self.structural_bytes = self.structural_bytes.saturating_add(structural_bytes);
-        self.entries.insert(
-            key,
-            CachedExpansion {
-                children: children.to_vec(),
-                structural_bytes,
-            },
-        );
+        self.insert_owned(key, Rc::new(children.to_vec()));
     }
 }
 
-/// Resolve one instance, reusing an exact prior expansion when safe.
-pub(crate) fn apply_instance_overrides_memoized(
+/// Legacy mutable ownership for internal compatibility controls. Production
+/// conversion uses the read-only shared view and never clones cached children.
+#[cfg(test)]
+fn apply_instance_overrides_memoized(
     cache: &mut InstanceExpansionCache,
     component_guid: &str,
     symbol_node: &TreeNode,
@@ -380,34 +355,17 @@ pub(crate) fn apply_instance_overrides_memoized(
     instance_size: Option<FigVec2>,
     assignment_cache: &mut HashMap<String, String>,
 ) -> Vec<TreeNode> {
-    let mut key = InstanceExpansionKey::new(
+    apply_instance_overrides_shared(
+        cache,
         component_guid,
-        overrides.unwrap_or_default(),
-        derived.unwrap_or_default(),
-        instance_size,
-        cache.global_assignment_epoch,
-        cache.assignment_epoch(component_guid),
-    );
-    if let Some(children) = cache.get(&key) {
-        return children;
-    }
-
-    let assignments_before = assignment_cache.len();
-    let children = apply_instance_overrides_cached(
         symbol_node,
-        Some(&key.overrides),
-        Some(&key.derived),
+        overrides.as_deref(),
+        derived.as_deref(),
         instance_size,
         assignment_cache,
-    );
-    // `apply_instance_overrides_cached` inserts only for an unpinned key, so a
-    // length increase exactly identifies a newly learned component pin.
-    if assignment_cache.len() != assignments_before {
-        key.assignment_epoch = cache.bump_assignment_epoch(component_guid);
-        key.global_assignment_epoch = cache.global_assignment_epoch;
-    }
-    cache.insert(key, &children);
-    children
+    )
+    .as_ref()
+    .clone()
 }
 
 #[cfg(test)]
