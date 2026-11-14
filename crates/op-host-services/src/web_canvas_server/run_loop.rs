@@ -44,7 +44,15 @@ pub fn run_web_canvas(options: ServeWebOptions) -> Result<()> {
     } = options;
     let current_path = path.clone();
     let credential_persistence = crate::web_credential_policy::from_env();
-    let mut editor = startup_editor_for_web_canvas_with_policy(path, credential_persistence)?;
+    let primary_files = primary_files::PrimaryFiles::unbound();
+    let prepared = primary_files
+        .prepare(path.as_deref(), true)
+        .map_err(|error| WebCanvasError::Config(error.to_string()))?;
+    let mut editor = connection_binding::startup(&prepared, path, credential_persistence)?;
+    prepared
+        .install()
+        .map_err(|error| WebCanvasError::Config(error.to_string()))?;
+    drop(prepared);
     enforce_credential_persistence_policy(
         &mut editor,
         credential_persistence,
@@ -76,11 +84,12 @@ pub fn run_web_canvas(options: ServeWebOptions) -> Result<()> {
     // Shared document authority (one writer at a time via the Mutex) and SSE
     // hub. Bounded request workers hand long-lived SSE sockets to the shared
     // async runtime instead of pinning a worker for each subscriber.
-    let state = Arc::new(Mutex::new(WebCanvasState::new_with_path_and_policy(
+    let state = Arc::new(Mutex::new(WebCanvasState::new_with_primary_files(
         editor,
         bound,
         current_path,
         credential_persistence,
+        primary_files,
     )));
 
     let hub = Arc::new(SseHub::default());

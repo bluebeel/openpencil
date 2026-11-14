@@ -73,6 +73,9 @@ mod sniff;
 
 pub use error::McpServeError;
 use sniff::{sniff_id_raw, sniff_method};
+pub(crate) fn is_protocol_control(line: &str) -> bool {
+    sniff::is_control_message(line)
+}
 
 /// Unwrap an MCP `tools/call` reply to the inner tool-result JSON text,
 /// so tests assert on the flat result fields directly. Strips an HTTP
@@ -622,6 +625,7 @@ pub use doc_sync::*;
 
 pub(crate) mod agent_context;
 pub(crate) mod export_stream;
+pub(crate) mod file_ownership;
 pub(crate) mod http_export;
 mod lean_profile;
 mod lean_tools;

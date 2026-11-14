@@ -72,6 +72,7 @@ impl Drop for ConnGuard {
 /// mirrors this (over the SSE endpoint, layered on later); external MCP clients
 /// read/replace it over `/api/mcp/document`.
 pub struct WebCanvasState {
+    primary_files: Arc<primary_files::PrimaryFiles>,
     pub(crate) editor: EditorState,
     pub(crate) recovery: crate::document_recovery::DocumentRecovery,
     /// Bounded shared committed deltas; no subscriber owns a document snapshot.
@@ -149,34 +150,6 @@ impl WebCanvasState {
         )
     }
 
-    fn new_with_path_and_policy(
-        mut editor: EditorState,
-        port: u16,
-        current_path: Option<PathBuf>,
-        credential_persistence: WebCredentialPersistence,
-    ) -> Self {
-        if !credential_persistence.server_persistence() {
-            let _ = crate::web_credentials::remove_browser_owned_credentials(&mut editor);
-        }
-        Self {
-            editor,
-            recovery: Default::default(),
-            changefeed: Default::default(),
-            bootstrap_snapshot: Default::default(),
-            agent_contexts: Arc::new(crate::mcp_serve::agent_context::AgentContexts::default()),
-            credential_persistence,
-            current_path,
-            version: 0,
-            port,
-            managed_token: None,
-            allow_origins: Vec::new(),
-            reset_consumed: false,
-            auth_login_handle: None,
-            collab: collab_state::WebCollabState::default(),
-            mode: ServeMode::Local,
-        }
-    }
-
     /// One online account's document authority.
     ///
     /// Separate from the loader-backed constructors on purpose: a tenant is
@@ -210,16 +183,28 @@ impl WebCanvasState {
     /// fresh browser shell paints before the daemon applies updates.
     pub(crate) fn reset_document(&mut self) -> Result<u64> {
         self.ensure_document_available()?;
+        let prepared = primary_scope::prepared(&self.primary_files, self.current_path.as_deref())
+            .map_err(|error| WebCanvasError::Config(error.to_string()))?;
+        let version = self
+            .version
+            .checked_add(1)
+            .ok_or_else(|| WebCanvasError::Config("document version exhausted".into()))?;
         if let Some(path) = self.current_path.clone() {
-            let mut next = crate::mcp_serve::load_editor_state(&path)?;
+            let mut next = prepared.load_editor(&path)?;
             preserve_web_canvas_preferences(&self.editor, &mut next);
             set_file_name_display(&mut next, &path);
+            prepared
+                .install()
+                .map_err(|error| WebCanvasError::Config(error.to_string()))?;
             self.editor = next;
         } else {
+            prepared
+                .install()
+                .map_err(|error| WebCanvasError::Config(error.to_string()))?;
             self.editor.replace_document(EditorState::starter().doc);
         }
         self.recovery.replaced();
-        self.version += 1;
+        self.version = version;
         Ok(self.version)
     }
 
@@ -513,8 +498,12 @@ pub(crate) mod collab_state;
 mod connect_routes;
 mod connection;
 mod connection_authority;
+mod connection_binding;
 pub(crate) mod connection_pool;
 mod connection_recovery;
+mod primary_files;
+pub(crate) mod primary_scope;
+mod state_build;
 use connection_authority::ConnAuthority;
 mod connection_ai_routes;
 mod doc_routes;

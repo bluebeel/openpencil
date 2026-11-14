@@ -63,6 +63,7 @@ pub use clean_copy::{
     copy_clean_document_with_editor_meta_to_path, copy_document_to_current_schema_path,
 };
 pub use error::DocIoError;
+pub(crate) use load::load_editor_state_resolved;
 #[cfg(test)]
 use load::looks_like_legacy_doc_payload;
 pub use load::{
@@ -207,6 +208,16 @@ fn save_serializable_document_with_format<
 ) -> Result<(), DocIoError> {
     // Write through a sibling temp file so a crash mid-write doesn't
     // leave a half-written file on disk.
+    let authorization =
+        crate::mcp_serve::file_ownership::authorize_save(path).map_err(|error| {
+            DocIoError::FileOwnership {
+                detail: error.to_string(),
+                committed: false,
+            }
+        })?;
+    let _operation = authorization.scope();
+    let canonical = authorization.path().to_path_buf();
+    let path = canonical.as_path();
     let (tmp, file) = create_sibling_temp(path)?;
     let write_result = (|| {
         let serialize = |writer: &mut std::io::BufWriter<save_buffer::SaveTarget>| match format {
@@ -243,10 +254,32 @@ pub fn commit_staged_document(
     staging_path: &std::path::Path,
     destination: &std::path::Path,
 ) -> Result<(), DocIoError> {
-    replace_file(staging_path, destination)?;
+    let mut authorization =
+        crate::mcp_serve::file_ownership::authorize_save(destination).map_err(|error| {
+            DocIoError::FileOwnership {
+                detail: error.to_string(),
+                committed: false,
+            }
+        })?;
+    let canonical = authorization.path().to_path_buf();
+    authorization
+        .staging_ready(staging_path)
+        .map_err(|error| DocIoError::FileOwnership {
+            detail: error.to_string(),
+            committed: false,
+        })?;
+    replace_file(staging_path, &canonical)?;
+    authorization
+        .committed()
+        .map_err(|error| DocIoError::FileOwnership {
+            detail: format!(
+                "unconfirmed committed save; inspect persisted state before retrying: {error}"
+            ),
+            committed: true,
+        })?;
     // Old builds wrote `<path>.opmeta`. New saves are single-file, so
     // remove any stale sidecar after the document write has committed.
-    match std::fs::remove_file(sidecar_path(destination)) {
+    match std::fs::remove_file(sidecar_path(&canonical)) {
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => {

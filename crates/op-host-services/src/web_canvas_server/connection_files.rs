@@ -13,6 +13,7 @@ pub(super) fn route(
     if mcp_profile.deny_unshareable_tools {
         return Ok(None);
     }
+    let canonical_primary = current_path.map(|_| document_key);
     let state = ctx.state;
     let agent_contexts = &ctx.authority.agent_contexts;
     let routing_guard = crate::mcp_serve::resident_groups::RoutingGuard::new(
@@ -22,7 +23,7 @@ pub(super) fn route(
     if let Some(response) = crate::mcp_serve::resident_groups::dispatch(
         agent_contexts,
         admission,
-        current_path,
+        canonical_primary,
         line,
         mcp_profile,
         routing_guard,
@@ -31,7 +32,7 @@ pub(super) fn route(
     }
     let mut primary_save_uncertain = false;
     let routed = crate::mcp_serve::file_path::process_live_save_for_file_path_arg(
-        current_path,
+        canonical_primary,
         line,
         mcp_profile,
         |destination| {
@@ -79,7 +80,7 @@ pub(super) fn route(
         Some(response) => Some(response),
         None => crate::mcp_serve::file_path::process_message_for_file_path_arg_with_contexts(
             &agent_contexts,
-            current_path,
+            canonical_primary,
             line,
             mcp_profile,
         )?,

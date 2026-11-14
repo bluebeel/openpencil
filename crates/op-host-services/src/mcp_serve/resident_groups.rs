@@ -25,6 +25,7 @@ const MAX_LINE: usize = 256 * 1024;
 const MAX_REPLY: usize = 256 * 1024;
 
 struct Request {
+    claim_epoch: u64,
     line: String,
     profile: McpAccessProfile,
     contexts: Arc<AgentContexts>,
@@ -200,6 +201,15 @@ pub(crate) fn dispatch(
         }
     };
     let groups = lease.groups();
+    let claim_epoch = match lease.claim_receipt() {
+        Ok(epoch) => epoch,
+        Err(error) => {
+            return Some(Ok(super::file_path::error_response(
+                &call,
+                error.to_string(),
+            )))
+        }
+    };
     let charge = line
         .len()
         .saturating_add(MAX_REPLY)
@@ -211,6 +221,7 @@ pub(crate) fn dispatch(
     };
     let permit = admission.execution_permit(contexts, lease.path())?;
     let input = Request {
+        claim_epoch,
         line: line.to_owned(),
         profile,
         contexts: Arc::clone(contexts),
@@ -248,22 +259,39 @@ fn run(lease: &DocumentLease<'_>, requests: &[Request]) -> Vec<Reply> {
     let groups = lease.groups();
     groups.metrics.cohorts.fetch_add(1, Ordering::Relaxed);
     groups.metrics.claimed[requests.len() - 1].fetch_add(1, Ordering::Relaxed);
-    let result = lease.with_editor_accounted(false, |editor, stamp, fence| {
-        let mut tx =
-            transaction::Transaction::new(editor, lease.path(), stamp, fence, groups, requests);
-        for index in 0..requests.len() {
-            tx.stage(index);
+    let claim_epoch = match lease.claim_receipt() {
+        Ok(epoch) => epoch,
+        Err(error) => {
+            return requests
+                .iter()
+                .map(|request| request.error(&error.to_string()))
+                .collect()
         }
-        let (replies, persisted, invalidate) = tx.finish();
-        (
-            ActionResult {
-                value: replies,
-                persisted,
-                invalidate,
-            },
-            None,
-        )
-    });
+    };
+    let result =
+        lease.with_editor_accounted_epoch(false, Some(claim_epoch), |editor, stamp, fence| {
+            let mut tx = transaction::Transaction::new(
+                editor,
+                lease.path(),
+                stamp,
+                fence,
+                groups,
+                requests,
+                claim_epoch,
+            );
+            for index in 0..requests.len() {
+                tx.stage(index);
+            }
+            let (replies, persisted, invalidate) = tx.finish();
+            (
+                ActionResult {
+                    value: replies,
+                    persisted,
+                    invalidate,
+                },
+                None,
+            )
+        });
     match result {
         Ok(replies) => replies,
         Err(AuthorityError::Uncertain) => requests

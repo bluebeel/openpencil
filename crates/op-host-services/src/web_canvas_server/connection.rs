@@ -310,11 +310,13 @@ fn dispatch_inner<S: Read + Write>(
     // Authenticated same-authority since reads borrow encoded committed data;
     // they never replay commands or retain a per-subscriber document snapshot.
     if req.method == "GET" && req.path == "/api/mcp/changes" {
-        super::changefeed::http::serve(stream, req, ctx, cors_origin)?;
+        let binding = super::connection_binding::rest(ctx, req)?;
+        super::changefeed::http::serve_owned(stream, req, ctx, cors_origin, binding.as_ref())?;
         return Ok(false);
     }
     if req.method == "GET" && req.path == "/api/mcp/document" {
-        super::document_snapshot::serve(stream, ctx, cors_origin)?;
+        let binding = super::connection_binding::rest(ctx, req)?;
+        super::document_snapshot::serve_owned(stream, ctx, cors_origin, binding.as_ref())?;
         return Ok(false);
     }
     // SSE live-update stream: the browser shell subscribes and re-syncs whenever
@@ -322,8 +324,10 @@ fn dispatch_inner<S: Read + Write>(
     // version so no broadcast is missed (a duplicate is harmless — versions are
     // monotonic). The state lock is released before the long SSE wait.
     if req.method == "GET" && req.path == "/api/mcp/events" {
+        let binding = super::connection_binding::rest(ctx, req)?;
         let slot = hub.subscribe();
         let current = state.lock().unwrap_or_else(|p| p.into_inner()).sse_tick();
+        super::primary_scope::release(binding.as_ref());
         if super::async_sse::capture(&slot, current, cors_origin) {
             return Ok(false);
         }
@@ -380,10 +384,13 @@ fn dispatch_inner<S: Read + Write>(
                 return Ok(false);
             }
         };
+        let binding = super::connection_binding::rest(ctx, req)?;
         let reply = {
             let mut guard = state.lock().unwrap_or_else(|p| p.into_inner());
             if guard.recovery.required() && req.path != "/api/file/reload" {
                 let reply = super::managed_group_commit::recovery::refusal();
+                drop(guard);
+                super::primary_scope::release(binding.as_ref());
                 crate::mcp_serve::write_mcp_http_response_with_origin(
                     stream,
                     reply.status,
@@ -433,10 +440,12 @@ fn dispatch_inner<S: Read + Write>(
             if guard.version != before {
                 hub.broadcast(guard.sse_tick());
             }
+            ctx.authority.refresh_route(&guard);
             reply
         };
         // Released only after the commit is visible in the shared state.
         drop(write_pass);
+        super::primary_scope::release(binding.as_ref());
         crate::mcp_serve::write_mcp_http_response_with_origin(
             stream,
             reply.status,
@@ -534,6 +543,7 @@ fn dispatch_inner<S: Read + Write>(
             return Ok(false);
         }
     };
+    let binding = super::connection_binding::mcp(ctx, &req.body, mcp_profile)?;
     // Recovery stays ahead of both the primary fence and alternate-file
     // routing. It cannot supply a path or replay any failed operation.
     if let Some(response) = super::connection_recovery::dispatch(ctx, &req.body, mcp_profile) {
@@ -543,6 +553,7 @@ fn dispatch_inner<S: Read + Write>(
         } else {
             "200 OK"
         };
+        super::primary_scope::release(binding.as_ref());
         crate::mcp_serve::write_mcp_http_response_with_origin(
             stream,
             status,
@@ -557,6 +568,7 @@ fn dispatch_inner<S: Read + Write>(
         super::managed_group_commit::dispatch_early(ctx, &req.body, mcp_profile, &_agent_admission)
     {
         let response = response?;
+        super::primary_scope::release(binding.as_ref());
         crate::mcp_serve::write_mcp_http_response_with_origin(
             stream,
             "200 OK",
@@ -565,18 +577,11 @@ fn dispatch_inner<S: Read + Write>(
         )?;
         return Ok(false);
     }
-    let (current_path, routing_epoch) = {
-        let guard = state.lock().unwrap_or_else(|p| p.into_inner());
-        ctx.authority.refresh_route(&guard);
-        (guard.current_path.clone(), guard.recovery.epoch())
-    };
-    let document_key = current_path
-        .as_ref()
-        .map(|path| path.canonicalize().unwrap_or_else(|_| path.clone()))
-        .unwrap_or_else(|| std::path::PathBuf::from("live://canvas/current"));
+    let (current_path, document_key) = ctx.authority.primary_files.route();
+    let routing_epoch = ctx.authority.recovery.epoch();
     // Alternate local files have their own bounded, per-file writer authority.
-    // Only copy the primary path while holding its lock; dispatching another
-    // file must not hold up normal edits to the live document. Online paths
+    // Binding identity is independent of its document/save mutex. Dispatching
+    // another file does not wait for primary serialization. Online paths
     // remain account-scoped and never reach the local filesystem router.
     if let Some(response) = files::route(
         ctx,
@@ -587,6 +592,7 @@ fn dispatch_inner<S: Read + Write>(
         &_agent_admission,
         routing_epoch,
     )? {
+        super::primary_scope::release(binding.as_ref());
         crate::mcp_serve::write_mcp_http_response_with_origin(
             stream,
             "200 OK",
@@ -618,6 +624,7 @@ fn dispatch_inner<S: Read + Write>(
         })
         .flatten()
     {
+        super::primary_scope::release(binding.as_ref());
         crate::mcp_serve::write_mcp_http_response_with_origin(
             stream,
             "200 OK",
@@ -648,6 +655,7 @@ fn dispatch_inner<S: Read + Write>(
                         .to_string(),
                 })
             });
+            super::primary_scope::release(binding.as_ref());
             crate::mcp_serve::write_mcp_http_response_with_origin(
                 stream,
                 "200 OK",
@@ -684,6 +692,7 @@ fn dispatch_inner<S: Read + Write>(
     } else {
         "200 OK"
     };
+    super::primary_scope::release(binding.as_ref());
     crate::mcp_serve::write_mcp_http_response_with_origin(stream, status, &response, cors_origin)?;
     Ok(false)
 }

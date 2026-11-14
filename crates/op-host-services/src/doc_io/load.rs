@@ -45,6 +45,23 @@ pub fn load_editor_state_with_report(
     path: &std::path::Path,
     locale: op_editor_core::Locale,
 ) -> Result<LoadedEditorState, DocIoError> {
+    load_editor_state_from_paths(path, path, locale)
+}
+
+/// File bytes come from the pinned canonical destination; legacy sidecar UI
+/// semantics still follow the caller's original path, as before ownership.
+pub(crate) fn load_editor_state_resolved(
+    canonical: &std::path::Path,
+    metadata_path: &std::path::Path,
+    locale: op_editor_core::Locale,
+) -> Result<EditorState, DocIoError> {
+    load_editor_state_from_paths(canonical, metadata_path, locale).map(|loaded| loaded.state)
+}
+fn load_editor_state_from_paths(
+    path: &std::path::Path,
+    metadata_path: &std::path::Path,
+    locale: op_editor_core::Locale,
+) -> Result<LoadedEditorState, DocIoError> {
     let file = std::fs::File::open(path).map_err(|e| DocIoError::Io(e.to_string()))?;
     use op_pen_loader::payload::CanonicalFileLoadError;
     let loaded =
@@ -71,7 +88,7 @@ pub fn load_editor_state_with_report(
         state,
         embedded_meta,
         report,
-        path,
+        metadata_path,
     ))
 }
 

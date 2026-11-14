@@ -53,7 +53,14 @@ pub(super) fn open_recent_file(body: &str, state: &mut WebCanvasState) -> WebRep
         };
     }
     let path = PathBuf::from(&path_s);
-    match crate::mcp_serve::load_editor_state(&path) {
+    let prepared = match super::primary_scope::prepared(&state.primary_files, Some(&path)) {
+        Ok(prepared) => prepared,
+        Err(error) => return super::connection_binding::refusal(error),
+    };
+    let Some(version) = state.version.checked_add(1) else {
+        return super::connection_binding::refusal("document version exhausted");
+    };
+    match prepared.load_editor(&path) {
         Ok(mut next) => {
             preserve_web_canvas_preferences(&state.editor, &mut next);
             set_file_name_display(&mut next, &path);
@@ -62,10 +69,13 @@ pub(super) fn open_recent_file(body: &str, state: &mut WebCanvasState) -> WebRep
                 .map(|d| d.as_secs())
                 .unwrap_or(0);
             next.editor_ui.touch_recent_file(path_s, now);
+            if let Err(error) = prepared.install() {
+                return super::connection_binding::refusal(error);
+            }
             state.editor = next;
             state.recovery.replaced();
             state.current_path = Some(path);
-            state.version += 1;
+            state.version = version;
             WebReply {
                 status: "200 OK",
                 body: crate::mcp_serve::document_sync_ok(state.version),
@@ -98,6 +108,13 @@ pub(super) fn open_recent_file(body: &str, state: &mut WebCanvasState) -> WebRep
 pub(super) fn unbind_current_file(state: &mut WebCanvasState) -> WebReply {
     if state.recovery.required() {
         return managed_group_commit::recovery::refusal();
+    }
+    let prepared = match super::primary_scope::prepared(&state.primary_files, None) {
+        Ok(prepared) => prepared,
+        Err(error) => return super::connection_binding::refusal(error),
+    };
+    if let Err(error) = prepared.install() {
+        return super::connection_binding::refusal(error);
     }
     let unbound = state.current_path.take().is_some();
     if unbound {

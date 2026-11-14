@@ -45,6 +45,9 @@ use std::fmt;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DocIoError {
+    /// Ownership/stamp refusal, or a committed file whose final identity could
+    /// not be confirmed. Callers must never replay the latter as a rejection.
+    FileOwnership { detail: String, committed: bool },
     /// A sibling temporary file could not be created next to the save target.
     CreateTemp { path: String, detail: String },
     /// 128 candidate sibling names were all taken — a stuck directory rather
@@ -95,6 +98,7 @@ pub enum DocIoError {
 impl fmt::Display for DocIoError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            DocIoError::FileOwnership { detail, .. } => f.write_str(detail),
             DocIoError::CreateTemp { path, detail } => write!(f, "create {path}: {detail}"),
             DocIoError::TempAllocExhausted { path } => {
                 write!(f, "could not create a unique save file beside {path}")

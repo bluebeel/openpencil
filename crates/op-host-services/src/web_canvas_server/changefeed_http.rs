@@ -5,15 +5,17 @@ use super::{Batch, MAX_RESPONSE_RECORDS};
 use crate::web_canvas_server::{connection::ConnCtx, Result, WebCanvasError};
 use std::io::{IoSlice, Write};
 
-pub(in crate::web_canvas_server) fn serve<S: Write>(
+pub(in crate::web_canvas_server) fn serve_owned<S: Write>(
     stream: &mut S,
     request: &crate::mcp_serve::HttpRequest,
     ctx: &ConnCtx<'_>,
     cors_origin: Option<&str>,
+    binding: Option<&crate::web_canvas_server::primary_scope::Scope>,
 ) -> Result<()> {
     let (cursor, limit) = match arguments(request.query.as_deref()) {
         Some(arguments) => arguments,
         None => {
+            crate::web_canvas_server::primary_scope::release(binding);
             crate::mcp_serve::write_mcp_http_response_with_origin(
                 stream,
                 "400 Bad Request",
@@ -31,6 +33,7 @@ pub(in crate::web_canvas_server) fn serve<S: Write>(
         if state.recovery.required() {
             let reply = crate::web_canvas_server::managed_group_commit::recovery::refusal();
             drop(state);
+            crate::web_canvas_server::primary_scope::release(binding);
             crate::mcp_serve::write_mcp_http_response_with_origin(
                 stream,
                 reply.status,
@@ -49,6 +52,7 @@ pub(in crate::web_canvas_server) fn serve<S: Write>(
             },
         }
     };
+    crate::web_canvas_server::primary_scope::release(binding);
     write_batch(stream, &batch, cors_origin)
 }
 
@@ -130,4 +134,14 @@ fn write_batch<S: Write>(stream: &mut S, batch: &Batch, origin: Option<&str>) ->
     stream
         .flush()
         .map_err(|error| WebCanvasError::Transport(format!("changefeed flush: {error}")))
+}
+
+#[cfg(test)]
+pub(in crate::web_canvas_server) fn serve<S: Write>(
+    stream: &mut S,
+    request: &crate::mcp_serve::HttpRequest,
+    ctx: &ConnCtx<'_>,
+    origin: Option<&str>,
+) -> Result<()> {
+    serve_owned(stream, request, ctx, origin, None)
 }

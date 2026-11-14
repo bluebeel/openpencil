@@ -80,10 +80,11 @@ impl Snapshot {
     }
 }
 
-pub(super) fn serve<S: Write>(
+pub(super) fn serve_owned<S: Write>(
     stream: &mut S,
     ctx: &ConnCtx<'_>,
     origin: Option<&str>,
+    binding: Option<&crate::web_canvas_server::primary_scope::Scope>,
 ) -> Result<()> {
     let snapshot = {
         let mut state = ctx
@@ -92,6 +93,7 @@ pub(super) fn serve<S: Write>(
             .unwrap_or_else(|poison| poison.into_inner());
         Snapshot::capture(&mut state)
     };
+    crate::web_canvas_server::primary_scope::release(binding);
     let snapshot = match snapshot {
         Ok(snapshot) => snapshot,
         Err(reply) => {
@@ -138,4 +140,13 @@ pub(super) fn serve<S: Write>(
     stream
         .flush()
         .map_err(|error| WebCanvasError::Transport(format!("document snapshot flush: {error}")))
+}
+
+#[cfg(test)]
+pub(super) fn serve<S: Write>(
+    stream: &mut S,
+    ctx: &ConnCtx<'_>,
+    origin: Option<&str>,
+) -> Result<()> {
+    serve_owned(stream, ctx, origin, None)
 }

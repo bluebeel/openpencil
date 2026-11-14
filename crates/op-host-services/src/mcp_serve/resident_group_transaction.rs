@@ -12,6 +12,7 @@ struct Pending {
     capture: CommandEditCapture,
 }
 pub(super) struct Transaction<'s, 'q> {
+    claim_epoch: u64,
     editor: &'s mut EditorState,
     path: &'s Path,
     stamp: &'s FileStamp,
@@ -36,8 +37,10 @@ impl<'s, 'q> Transaction<'s, 'q> {
         fence: &'s DocumentRecovery,
         groups: &'s Groups,
         requests: &'q [Request],
+        claim_epoch: u64,
     ) -> Self {
         Self {
+            claim_epoch,
             editor,
             path,
             stamp,
@@ -57,6 +60,12 @@ impl<'s, 'q> Transaction<'s, 'q> {
     }
     pub(super) fn stage(&mut self, index: usize) {
         let request = &self.requests[index];
+        if request.claim_epoch != self.claim_epoch {
+            self.replies[index] = Some(request.error(
+                "canonical file ownership changed while this request waited; no command applied",
+            ));
+            return;
+        }
         if self.fence.required() {
             self.replies[index] = Some(request.reply(ReplyValue::Complete(Err(
                 McpServeError::Io(crate::document_recovery::REQUIRED.into()),

@@ -11,11 +11,11 @@ use std::{
         atomic::{AtomicU64, AtomicUsize, Ordering},
         Arc, Mutex, OnceLock,
     },
-    time::SystemTime,
 };
 
 use op_editor_core::EditorState;
 
+use super::file_ownership::{self, FileVersion, Handle, OperationScope, Owner, SourceIdentity};
 use super::resident_charge::{
     resident_charge_after_commands, resident_charge_cached, ChargeCache, DocumentDelta,
 };
@@ -27,6 +27,7 @@ use resident_limits::ResidentLimits;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum AuthorityError {
+    Ownership(file_ownership::ClaimError),
     Io {
         path: PathBuf,
         operation: &'static str,
@@ -58,6 +59,7 @@ pub(super) enum AuthorityError {
 impl fmt::Display for AuthorityError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Ownership(error)=>error.fmt(f),
             Self::Io { path, operation, message } => write!(f, "{operation} {}: {message}", path.display()),
             Self::Capacity { max_documents, max_bytes } => write!(f, "document authority busy (limit {max_documents} documents / {max_bytes} accounted bytes); retry later"),
             Self::SourceTooLarge { path, bytes, max_bytes } => write!(f, "{} has {bytes} source bytes; resident authority limit is {max_bytes}", path.display()),
@@ -82,25 +84,14 @@ fn io(path: &Path, operation: &'static str, error: impl fmt::Display) -> Authori
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct FileStamp {
-    len: u64,
-    modified: Option<SystemTime>,
-    identity: (u64, u64),
+    version: FileVersion,
 }
 
 impl FileStamp {
     pub fn read(path: &Path) -> Result<Self, AuthorityError> {
         let metadata = std::fs::metadata(path).map_err(|e| io(path, "stat", e))?;
-        #[cfg(unix)]
-        let identity = {
-            use std::os::unix::fs::MetadataExt;
-            (metadata.dev(), metadata.ino())
-        };
-        #[cfg(not(unix))]
-        let identity = (0, 0);
         Ok(Self {
-            len: metadata.len(),
-            modified: metadata.modified().ok(),
-            identity,
+            version: FileVersion::metadata(&metadata),
         })
     }
 
@@ -117,6 +108,7 @@ impl FileStamp {
 
 #[derive(Default)]
 struct Resident {
+    claim_epoch: Option<u64>,
     recovery: crate::document_recovery::DocumentRecovery,
     editor: Option<EditorState>,
     stamp: Option<FileStamp>,
@@ -125,6 +117,8 @@ struct Resident {
 
 struct Slot {
     path: PathBuf,
+    claim: Handle,
+    owner: Owner,
     recovery: crate::document_recovery::DocumentRecovery,
     groups: super::resident_groups::Groups,
     resident: Mutex<Resident>,
@@ -196,6 +190,9 @@ impl ResidentDocuments {
         path: &CanonicalPath,
     ) -> Result<DocumentLease<'_>, AuthorityError> {
         let path = &path.0;
+        // Resolve shared claim metadata before the hub lock. Neither taking a
+        // slot nor publishing its charge waits for an ownership transition.
+        let claim = file_ownership::resolve(path).map_err(AuthorityError::Ownership)?;
         let mut slots = self.slots.lock().map_err(|_| AuthorityError::Poisoned)?;
         let tick = self.tick.fetch_add(1, Ordering::Relaxed);
         if let Some(slot) = slots.get(path) {
@@ -215,6 +212,8 @@ impl ResidentDocuments {
         let recovery = crate::document_recovery::DocumentRecovery::default();
         let slot = Arc::new(Slot {
             path: path.clone(),
+            claim,
+            owner: Owner::resident(),
             resident: Mutex::new(Resident {
                 recovery: recovery.clone(),
                 ..Default::default()
@@ -269,6 +268,12 @@ impl DocumentLease<'_> {
     pub fn path(&self) -> &Path {
         &self.slot.path
     }
+    pub(super) fn claim_receipt(&self) -> Result<u64, AuthorityError> {
+        self.slot
+            .claim
+            .resident_receipt(&self.slot.owner)
+            .map_err(AuthorityError::Ownership)
+    }
 
     pub(super) fn groups(&self) -> &super::resident_groups::Groups {
         &self.slot.groups
@@ -287,6 +292,12 @@ impl DocumentLease<'_> {
         &self,
         action: impl FnOnce(&Path) -> ActionResult<T>,
     ) -> Result<T, AuthorityError> {
+        let operation = Arc::new(
+            self.slot
+                .claim
+                .resident_operation(&self.slot.owner, None)
+                .map_err(AuthorityError::Ownership)?,
+        );
         let mut resident = self
             .slot
             .resident
@@ -295,6 +306,9 @@ impl DocumentLease<'_> {
         if resident.recovery.required() {
             return Err(AuthorityError::Uncertain);
         }
+        let source = SourceIdentity::capture(self.path()).map_err(AuthorityError::Ownership)?;
+        let _claim_scope =
+            OperationScope::enter(operation, Some(source), resident.recovery.clone());
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| action(self.path())));
         if result.is_err() {
             resident.recovery.trip();
@@ -304,6 +318,9 @@ impl DocumentLease<'_> {
         resident.charge_cache = ChargeCache::default();
         self.slot.charge.store(RESERVATION, Ordering::Relaxed);
         let result = result.map_err(|_| AuthorityError::Uncertain)?;
+        if resident.recovery.required() {
+            return Err(AuthorityError::Uncertain);
+        }
         Ok(result.value)
     }
 
@@ -342,11 +359,38 @@ impl DocumentLease<'_> {
             &crate::document_recovery::DocumentRecovery,
         ) -> (ActionResult<T>, Option<DocumentDelta>),
     ) -> Result<T, AuthorityError> {
+        self.with_editor_accounted_epoch(create, None, action)
+    }
+    pub(super) fn with_editor_accounted_epoch<T>(
+        &self,
+        create: bool,
+        expected_epoch: Option<u64>,
+        action: impl FnOnce(
+            &mut EditorState,
+            &FileStamp,
+            &crate::document_recovery::DocumentRecovery,
+        ) -> (ActionResult<T>, Option<DocumentDelta>),
+    ) -> Result<T, AuthorityError> {
+        let operation = Arc::new(
+            self.slot
+                .claim
+                .resident_operation(&self.slot.owner, expected_epoch)
+                .map_err(AuthorityError::Ownership)?,
+        );
         let mut resident = self.slot.resident.lock().unwrap_or_else(|poison| {
             let resident = poison.into_inner();
             resident.recovery.trip();
             resident
         });
+        if resident.claim_epoch != Some(operation.epoch()) {
+            resident.editor = None;
+            resident.stamp = None;
+            resident.charge_cache = ChargeCache::default();
+            resident.claim_epoch = Some(operation.epoch());
+            self.slot.charge.store(RESERVATION, Ordering::Relaxed);
+        }
+        let _claim_scope =
+            OperationScope::enter(Arc::clone(&operation), None, resident.recovery.clone());
         let recovering = resident.recovery.required();
         if recovering {
             resident.editor = None;
@@ -383,10 +427,10 @@ impl DocumentLease<'_> {
                 .cold_load
                 .lock()
                 .map_err(|_| AuthorityError::Poisoned)?;
-            if stamp.len > self.hub.max_source_bytes {
+            if stamp.version.len > self.hub.max_source_bytes {
                 return Err(AuthorityError::SourceTooLarge {
                     path: self.path().to_path_buf(),
-                    bytes: stamp.len,
+                    bytes: stamp.version.len,
                     max_bytes: self.hub.max_source_bytes,
                 });
             }
@@ -427,6 +471,9 @@ impl DocumentLease<'_> {
             .cloned()
             .ok_or(AuthorityError::Poisoned)?;
         let fence = resident.recovery.clone();
+        let source = SourceIdentity::from_version(self.path(), expected.version.clone());
+        let _source_scope =
+            OperationScope::enter(operation, Some(Arc::clone(&source)), fence.clone());
         let editor = resident.editor.as_mut().ok_or(AuthorityError::Poisoned)?;
         let before = accounting_marker(editor);
         let (result, document_delta) = {
@@ -459,6 +506,7 @@ impl DocumentLease<'_> {
         let changed = before != accounting_marker(editor) || result.persisted;
         let current = FileStamp::read(self.path());
         let keep = !result.invalidate
+            && source.verify().is_ok()
             && current
                 .as_ref()
                 .is_ok_and(|stamp| result.persisted || stamp == &expected);

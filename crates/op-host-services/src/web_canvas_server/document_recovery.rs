@@ -47,53 +47,31 @@ impl WebCanvasState {
                 "recovery requires the original bound file; restart with that file".into(),
             )
         })?;
-        let expected = Stamp::read(&path)?;
+        let prepared = super::super::primary_scope::prepared(&self.primary_files, Some(&path))
+            .map_err(|error| WebCanvasError::Config(error.to_string()))?;
         let previous = std::mem::replace(&mut self.editor, op_editor_core::EditorState::new());
         doc_routes::preserve_web_canvas_preferences(&previous, &mut self.editor);
         drop(previous);
         // Stage the replacement without touching the uncertain authority. A
         // decode/stat/load failure retains the fence and original binding.
-        let mut next = crate::mcp_serve::load_editor_state(&path)?;
-        if expected != Stamp::read(&path)? {
-            return Err(WebCanvasError::Io(
-                "authoritative file changed during recovery; reload again".into(),
-            ));
-        }
+        let mut next = prepared.load_editor(&path)?;
+        prepared
+            .verify_source()
+            .map_err(|error| WebCanvasError::Config(error.to_string()))?;
         doc_routes::preserve_web_canvas_preferences(&self.editor, &mut next);
         doc_routes::set_file_name_display(&mut next, &path);
         // Human selection, clipboard, drafts, history and active page come from
         // the canonical load. AgentContexts stays owned by this daemon; each
         // subsequent actor scope prunes its saved ids against the loaded doc.
+        prepared
+            .install()
+            .map_err(|error| WebCanvasError::Config(error.to_string()))?;
         self.editor = next;
         self.version = self.version.saturating_add(1);
         if !self.recovery.recovered(epoch) {
             return Err(WebCanvasError::Config(REQUIRED.into()));
         }
         Ok(())
-    }
-}
-
-#[derive(PartialEq, Eq)]
-struct Stamp {
-    len: u64,
-    modified: Option<std::time::SystemTime>,
-    identity: (u64, u64),
-}
-impl Stamp {
-    fn read(path: &std::path::Path) -> Result<Self> {
-        let metadata = std::fs::metadata(path).map_err(|e| WebCanvasError::Io(e.to_string()))?;
-        #[cfg(unix)]
-        let identity = {
-            use std::os::unix::fs::MetadataExt;
-            (metadata.dev(), metadata.ino())
-        };
-        #[cfg(not(unix))]
-        let identity = (0, 0);
-        Ok(Self {
-            len: metadata.len(),
-            modified: metadata.modified().ok(),
-            identity,
-        })
     }
 }
 

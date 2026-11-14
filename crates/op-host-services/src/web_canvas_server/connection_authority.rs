@@ -3,6 +3,7 @@
 use super::*;
 
 pub(super) struct ConnAuthority {
+    pub(super) primary_files: Arc<super::primary_files::PrimaryFiles>,
     pub(super) routing: std::sync::Mutex<BoundRoute>,
     pub(super) recovery: crate::document_recovery::DocumentRecovery,
     pub(super) managed_groups: super::managed_group_commit::Groups,
@@ -16,6 +17,7 @@ impl ConnAuthority {
     /// daemon/tenant. Request admission never waits for document mutation.
     pub(super) fn new(state: &WebCanvasState) -> Self {
         Self {
+            primary_files: Arc::clone(&state.primary_files),
             routing: std::sync::Mutex::new(BoundRoute::capture(state)),
             recovery: state.recovery.clone(),
             managed_groups: super::managed_group_commit::Groups::default(),
@@ -37,11 +39,7 @@ impl BoundRoute {
     fn capture(state: &WebCanvasState) -> Self {
         Self {
             path: state.current_path.clone(),
-            document: state
-                .current_path
-                .as_ref()
-                .map(|path| path.canonicalize().unwrap_or_else(|_| path.clone()))
-                .unwrap_or_else(|| PathBuf::from("live://canvas/current")),
+            document: state.primary_files.route().1,
             epoch: state.recovery.epoch(),
             generation: state.editor.document_generation(),
         }
@@ -62,7 +60,10 @@ impl ConnAuthority {
             .routing
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
-        if route.epoch != state.recovery.epoch() || route.path != state.current_path {
+        if route.epoch != state.recovery.epoch()
+            || route.path != state.current_path
+            || route.generation != state.editor.document_generation()
+        {
             *route = BoundRoute::capture(state);
         }
     }
