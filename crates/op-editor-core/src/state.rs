@@ -81,6 +81,8 @@ pub struct EditorState {
     /// (open / revert / sync replace), so `(generation, revision)` uniquely
     /// names a state; a save-ack from a previous generation must be dropped.
     pub(crate) document_generation: u64,
+    /// Ephemeral derived-cache owner, fresh for every state clone/construction.
+    pub(crate) derived_cache_identity: crate::derived_cache_identity::DerivedCacheIdentity,
     /// Monotonic count of snapshots pushed onto `history.past`.
     /// Instance-write scopes use the delta to identify newly pushed
     /// snapshots even when the 100-entry deque evicts from the front.
@@ -155,6 +157,7 @@ impl EditorState {
             saved_revision: 0,
             revision_counter: 0,
             document_generation: 0,
+            derived_cache_identity: Default::default(),
             history_push_count: 0,
             clipboard: Vec::new(),
             ui: UiDraftState::new(),
@@ -263,6 +266,12 @@ impl EditorState {
     /// Generation of the live document.
     pub fn document_generation(&self) -> u64 {
         self.document_generation
+    }
+
+    /// Weak in-memory owner for trusted revision-keyed derived caches.
+    /// Never persisted; cloning a state creates a distinct identity.
+    pub fn derived_cache_owner(&self) -> std::sync::Weak<()> {
+        self.derived_cache_identity.downgrade()
     }
 
     /// True when document content changed since the last saved baseline.

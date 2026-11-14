@@ -749,13 +749,15 @@ pub fn get_component_snapshot(state: &EditorState) -> GetComponent {
 
 // The remaining read tools live in `read_tools.rs` (800-line cap).
 pub use super::read_tools::{
-    find_empty_space_snapshot, find_empty_space_snapshot_for_call, snapshot_layout_snapshot,
-    snapshot_layout_snapshot_for_call, FindEmptySpace, SnapshotLayout,
+    find_empty_space_snapshot, find_empty_space_snapshot_cached_for_call,
+    find_empty_space_snapshot_for_call, snapshot_layout_snapshot,
+    snapshot_layout_snapshot_cached_for_call, snapshot_layout_snapshot_for_call, FindEmptySpace,
+    SnapshotLayout,
 };
 pub use super::read_tools_extra::{
     count_nodes_snapshot, find_node_by_name_snapshot, find_node_by_name_snapshot_for_call,
-    get_canvas_bounds_snapshot, get_history_depth_snapshot, get_node_parent_snapshot,
-    get_node_parent_snapshot_for_call, get_selection_set_snapshot, get_viewport_snapshot,
-    list_node_kinds_snapshot, CountNodes, FindNodeByName, GetCanvasBounds, GetHistoryDepth,
-    GetNodeParent, GetSelectionSet, GetViewport, ListNodeKinds,
+    get_canvas_bounds_snapshot, get_canvas_bounds_snapshot_cached, get_history_depth_snapshot,
+    get_node_parent_snapshot, get_node_parent_snapshot_for_call, get_selection_set_snapshot,
+    get_viewport_snapshot, list_node_kinds_snapshot, CountNodes, FindNodeByName, GetCanvasBounds,
+    GetHistoryDepth, GetNodeParent, GetSelectionSet, GetViewport, ListNodeKinds,
 };

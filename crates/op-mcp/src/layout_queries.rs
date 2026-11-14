@@ -43,6 +43,7 @@ fn page_scope<'a>(
 fn prepare_layout(
     state: &EditorState,
     args: &BTreeMap<String, String>,
+    cached: bool,
 ) -> Result<ToolOutcome, ToolCallError> {
     // Preserve page-before-depth error precedence without constructing any scene.
     let page = page_scope(state, args)?;
@@ -55,7 +56,7 @@ fn prepare_layout(
         })
     })?;
     let parent = arg_alias(args, &["parentId", "parent_id", "parent"]);
-    let roots = op_pen_loader::editor_state_to_page_item_geometry(state, page.index, parent);
+    let roots = geometry(state, page.index, parent, cached);
     let records = limited_records(&roots, page.roots, parent, depth);
     drop(roots);
     Ok(snapshot_layout_outcome(
@@ -73,8 +74,36 @@ pub fn snapshot_layout_snapshot_for_call(
     state: &EditorState,
     args: &BTreeMap<String, String>,
 ) -> SnapshotLayout {
-    let prepared = prepare_layout(state, args)
+    let prepared = prepare_layout(state, args, false)
         .unwrap_or_else(|(code, message)| ToolOutcome::Err(code, message));
+    SnapshotLayout {
+        state: None,
+        prepared: Some(prepared),
+    }
+}
+
+fn geometry(
+    state: &EditorState,
+    page: usize,
+    item: Option<&str>,
+    cached: bool,
+) -> std::sync::Arc<Vec<ComputedGeometry>> {
+    if cached {
+        op_pen_loader::editor_state_to_page_item_geometry_cached(state, page, item)
+    } else {
+        std::sync::Arc::new(op_pen_loader::editor_state_to_page_item_geometry(
+            state, page, item,
+        ))
+    }
+}
+
+/// Trusted-host cache opt-in; canonical writes must advance editor revisions.
+pub fn snapshot_layout_snapshot_cached_for_call(
+    state: &EditorState,
+    args: &BTreeMap<String, String>,
+) -> SnapshotLayout {
+    let prepared =
+        prepare_layout(state, args, true).unwrap_or_else(|(code, msg)| ToolOutcome::Err(code, msg));
     SnapshotLayout {
         state: None,
         prepared: Some(prepared),
@@ -189,6 +218,7 @@ fn limited_records(
 fn prepare_empty_space(
     state: &EditorState,
     args: &BTreeMap<String, String>,
+    cached: bool,
 ) -> Result<ToolOutcome, ToolCallError> {
     required_i32_arg(args, "width")?;
     required_i32_arg(args, "height")?;
@@ -201,7 +231,7 @@ fn prepare_empty_space(
     }
     let page = page_scope(state, args)?;
     let node_id = arg_alias(args, &["nodeId", "node_id", "node"]);
-    let scene = op_pen_loader::editor_state_to_page_item_geometry(state, page.index, node_id);
+    let scene = geometry(state, page.index, node_id, cached);
     let (roots, all) = match node_id {
         Some(id) => (
             Vec::new(),
@@ -245,7 +275,7 @@ pub fn find_empty_space_snapshot_for_call(
     state: &EditorState,
     args: &BTreeMap<String, String>,
 ) -> FindEmptySpace {
-    let prepared = prepare_empty_space(state, args)
+    let prepared = prepare_empty_space(state, args, false)
         .unwrap_or_else(|(code, message)| ToolOutcome::Err(code, message));
     FindEmptySpace {
         pages: Vec::new(),
@@ -257,3 +287,17 @@ pub fn find_empty_space_snapshot_for_call(
 #[cfg(test)]
 #[path = "layout_queries_tests.rs"]
 mod tests;
+
+/// Trusted-host cache opt-in; direct-field-mutating clients use the fresh factory.
+pub fn find_empty_space_snapshot_cached_for_call(
+    state: &EditorState,
+    args: &BTreeMap<String, String>,
+) -> FindEmptySpace {
+    let prepared = prepare_empty_space(state, args, true)
+        .unwrap_or_else(|(code, msg)| ToolOutcome::Err(code, msg));
+    FindEmptySpace {
+        pages: Vec::new(),
+        active_page_id: String::new(),
+        prepared: Some(prepared),
+    }
+}

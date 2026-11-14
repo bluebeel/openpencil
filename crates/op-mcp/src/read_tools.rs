@@ -21,7 +21,10 @@ type ToolCallError = (ToolErrorCode, String);
 mod layout_json;
 #[path = "layout_queries.rs"]
 mod layout_queries;
-pub use layout_queries::{find_empty_space_snapshot_for_call, snapshot_layout_snapshot_for_call};
+pub use layout_queries::{
+    find_empty_space_snapshot_cached_for_call, find_empty_space_snapshot_for_call,
+    snapshot_layout_snapshot_cached_for_call, snapshot_layout_snapshot_for_call,
+};
 
 // --- snapshot_layout -------------------------------------------------
 

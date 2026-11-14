@@ -37,7 +37,7 @@ impl ComputedGeometry {
         let clip = node.clip_content;
         let children = std::mem::take(&mut node.children);
         drop(node);
-        let children: Vec<_> = children.into_iter().map(Self::from_payload).collect();
+        let children = map_geometry(children, Self::from_payload);
         let bounds = SceneNode::compute_aggregate_bounds_from_rects(
             own_bounds,
             children.iter().map(Self::aggregate_bounds),
@@ -65,7 +65,7 @@ impl ComputedGeometry {
         let kind = std::mem::replace(&mut node.kind, NodeKind::Group);
         let children = std::mem::take(&mut node.children);
         drop(node);
-        let children: Vec<_> = children.into_iter().map(Self::from_scene).collect();
+        let children = map_geometry(children, Self::from_scene);
         let bounds = SceneNode::compute_aggregate_bounds_from_rects(
             own,
             children.iter().map(Self::aggregate_bounds),
@@ -100,21 +100,30 @@ pub fn editor_state_to_page_item_geometry(
             let payload = crate::editor_scene::roots_to_page_payload(
                 state, roots, &page, page_index, false, false,
             );
-            return payload
-                .children
-                .into_iter()
-                .map(ComputedGeometry::from_payload)
-                .collect();
+            return map_geometry(payload.children, ComputedGeometry::from_payload);
         }
     }
-    crate::editor_state_to_layout_scene(state)
+    let children = crate::editor_state_to_layout_scene(state)
         .pages
         .into_iter()
         .nth(page_index)
-        .into_iter()
-        .flat_map(|page| page.children)
-        .map(ComputedGeometry::from_scene)
-        .collect()
+        .map(|page| page.children)
+        .unwrap_or_default();
+    map_geometry(children, ComputedGeometry::from_scene)
+}
+
+// Vec's in-place collect can reuse a1128B payload allocation for104B geometry,
+// retaining ten times the needed child capacity. Allocate the true output size.
+fn map_geometry<T>(
+    nodes: Vec<T>,
+    convert: impl FnMut(T) -> ComputedGeometry,
+) -> Vec<ComputedGeometry> {
+    let mut out = Vec::with_capacity(nodes.len());
+    let mut convert = convert;
+    for node in nodes {
+        out.push(convert(node));
+    }
+    out
 }
 
 #[cfg(test)]

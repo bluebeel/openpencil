@@ -171,7 +171,7 @@ pub(super) fn lean_registry(
     }
     if wants("snapshot_layout") {
         registry.register(Box::new(match arguments {
-            Some(args) => op_mcp::snapshot_layout_snapshot_for_call(doc, args),
+            Some(args) => op_mcp::snapshot_layout_snapshot_cached_for_call(doc, args),
             None => snapshot_layout_snapshot(doc),
         }));
     }

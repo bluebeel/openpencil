@@ -47,12 +47,25 @@ impl McpTool for GetCanvasBounds {
 }
 
 pub fn get_canvas_bounds_snapshot(state: &EditorState) -> GetCanvasBounds {
+    canvas_bounds(state, false)
+}
+/// Trusted-host revision-keyed reuse; the original factory remains fresh.
+pub fn get_canvas_bounds_snapshot_cached(state: &EditorState) -> GetCanvasBounds {
+    canvas_bounds(state, true)
+}
+fn canvas_bounds(state: &EditorState, cached: bool) -> GetCanvasBounds {
     let page = match &state.doc.pages {
         Some(pages) if pages.is_empty() => return GetCanvasBounds { bounds: None },
         Some(pages) => state.ui.active_page_index.min(pages.len() - 1),
         None => 0,
     };
-    let roots = op_pen_loader::editor_state_to_page_item_geometry(state, page, None);
+    let roots = if cached {
+        op_pen_loader::editor_state_to_page_item_geometry_cached(state, page, None)
+    } else {
+        std::sync::Arc::new(op_pen_loader::editor_state_to_page_item_geometry(
+            state, page, None,
+        ))
+    };
     GetCanvasBounds {
         bounds: jian_scene::layout_scene::LayoutScene::content_bounds_from_rects(
             roots

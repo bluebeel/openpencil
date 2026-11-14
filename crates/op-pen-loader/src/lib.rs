@@ -22,6 +22,8 @@
 mod adapter;
 mod authored_geometry;
 mod computed_geometry;
+mod geometry_cache;
+pub use geometry_cache::editor_state_to_page_item_geometry_cached;
 mod editor_meta;
 mod editor_meta_error;
 mod editor_meta_family;
@@ -233,3 +235,6 @@ mod editor_state_var_table_tests {
         assert!(table.active_theme.is_empty());
     }
 }
+
+#[cfg(test)]
+mod borrowed_layout_tests;

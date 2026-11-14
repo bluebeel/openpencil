@@ -12,6 +12,10 @@
 //! accessors (`id`, `children`, `children_mut`, geometry getters /
 //! setters) without each mutator having to `match` all 12 variants.
 
+#[path = "node_shallow.rs"]
+mod node_shallow;
+pub use node_shallow::clone_without_children;
+
 use jian_ops_schema::node::PenNode;
 use jian_ops_schema::node::{AlignItems, JustifyContent, LayoutMode, PenNodeBase};
 use jian_ops_schema::sizing::SizingBehavior;

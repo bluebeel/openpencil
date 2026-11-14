@@ -172,3 +172,27 @@ fn requested_layout_preserves_duplicate_parent_lookup_and_last_raw_metadata() {
     // computed coordinate rather than substituting authored positions.
     assert_eq!(response["layout"][1]["x"], 5);
 }
+
+#[test]
+fn fresh_factories_observe_unmarked_public_mutations_while_trusted_cache_is_explicit() {
+    use op_editor_core::pen_node_ext::PenNodeExt;
+    let mut state = fixture();
+    state.ui.active_page_index = 1;
+    let args = arguments(json!({"maxDepth":0}));
+    let before = snapshot_layout_snapshot_for_call(&state, &args).call(&args);
+    let _ = snapshot_layout_snapshot_cached_for_call(&state, &args).call(&args);
+    state.doc.pages.as_mut().unwrap()[1].children[1]
+        .base_mut()
+        .x = Some(999.0);
+    let after = snapshot_layout_snapshot_for_call(&state, &args).call(&args);
+    assert_ne!(
+        before, after,
+        "fresh public factory cannot use unmarked revision-keyed data"
+    );
+    assert_eq!(after, snapshot_layout_snapshot(&state).call(&args));
+    state.mark_document_changed();
+    assert_eq!(
+        after,
+        snapshot_layout_snapshot_cached_for_call(&state, &args).call(&args)
+    );
+}

@@ -203,10 +203,12 @@ fn resolve_nodes(
                 visited.remove(&reference.target);
             }
             other => {
-                let mut clone = other.clone();
+                let mut clone = crate::pen_node_ext::clone_without_children(other);
                 if let Some(children) = crate::pen_node_ext::PenNodeExt::children_mut(&mut clone) {
-                    let resolved = resolve_nodes(children, lookup, visited);
-                    *children = resolved;
+                    let original = crate::pen_node_ext::PenNodeExt::children(other)
+                        .map(Vec::as_slice)
+                        .unwrap_or(&[]);
+                    *children = resolve_nodes(original, lookup, visited);
                 }
                 out.push(clone);
             }
@@ -727,3 +729,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "ref_resolve_shallow_tests.rs"]
+mod shallow_tests;

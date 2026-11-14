@@ -48,6 +48,11 @@ fn compact_computed_geometry_matches_every_full_scene_node_without_paint_storage
             actual.id
         );
         assert_eq!(actual.children.len(), expected.children.len());
+        assert_eq!(
+            actual.children.capacity(),
+            actual.children.len(),
+            "compact geometry must not retain oversized paint payload buffers"
+        );
         for (actual, expected) in actual.children.iter().zip(&expected.children) {
             equal(actual, expected);
         }
@@ -80,36 +85,39 @@ fn compact_computed_geometry_matches_every_full_scene_node_without_paint_storage
 
 #[test]
 fn flat_layout_storage_preserves_taffy_rects_and_duplicate_id_precedence() {
-    use crate::adapter::pages::insert_flat_layout_subtree;
+    use jian_core::document::BorrowedNodeTree;
     use jian_core::{document::NodeTree, layout::LayoutEngine};
     let mut state = fixture();
     // Exercise explicit duplicate-ID precedence as well as nested/flex/text/tab layout.
-    let duplicate = state.doc.pages.as_ref().unwrap()[1].children[0].clone();
-    state.doc.pages.as_mut().unwrap()[1]
-        .children
-        .push(duplicate);
+    let root = &mut state.doc.pages.as_mut().unwrap()[1].children[0];
+    let duplicate = root.children().unwrap()[0].clone();
+    root.children_mut().unwrap().push(duplicate);
     for root in &state.doc.pages.as_ref().unwrap()[1].children {
         let mut legacy = NodeTree::new();
         legacy.insert_subtree(root.clone(), None);
-        let mut flat = NodeTree::new();
-        insert_flat_layout_subtree(&mut flat, root.clone(), None);
+        let flat = BorrowedNodeTree::from_root(root);
+        assert_eq!(
+            flat.capacity(),
+            flat.len(),
+            "reserve actual slots, not geometric excess"
+        );
         assert_eq!(legacy.len(), flat.len());
-        assert!(flat
-            .nodes
-            .values()
-            .all(|data| data.schema.children().is_none_or(Vec::is_empty)));
+        assert!(
+            std::ptr::eq(flat.schema(flat.by_id[root.id_str()]).unwrap(), root),
+            "borrow source metadata without another owned schema graph"
+        );
         let measure = crate::adapter::layout_measure_backend();
         let mut before = LayoutEngine::with_backend(measure.clone());
         let mut after = LayoutEngine::with_backend(measure);
         let br = before.build(&legacy).unwrap();
-        let ar = after.build(&flat).unwrap();
+        let ar = after.build_borrowed(&flat).unwrap();
         let available = crate::root_available_size(root);
         before.compute(br[0], available).unwrap();
         after.compute(ar[0], available).unwrap();
         for (id, key) in &legacy.by_id {
             assert_eq!(
                 before.node_rect(*key),
-                after.node_rect(flat.by_id[id]),
+                after.node_rect(flat.by_id[id.as_str()]),
                 "{id}"
             );
         }

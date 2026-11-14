@@ -103,11 +103,10 @@ pub(super) fn compute_layout_with_measure(
     measure: Rc<dyn MeasureBackend>,
 ) {
     let (root_w, root_h) = root_available_size(root);
-    let mut tree = NodeTree::new();
-    insert_flat_layout_subtree(&mut tree, root.clone(), None);
+    let tree = jian_core::document::BorrowedNodeTree::from_root(root);
     // Preview must use its injected runtime backend for paint geometry too.
     let mut engine = LayoutEngine::with_backend(measure);
-    let Ok(taffy_roots) = engine.build(&tree) else {
+    let Ok(taffy_roots) = engine.build_borrowed(&tree) else {
         return;
     };
     let Some(root_id) = taffy_roots.first() else {
@@ -125,7 +124,7 @@ pub(super) fn compute_layout_with_measure(
     for (id_str, node_key) in tree.by_id.iter() {
         if let Some(rect) = engine.node_rect(*node_key) {
             out.insert(
-                id_str.clone(),
+                (*id_str).to_owned(),
                 [
                     rect.origin.x,
                     rect.origin.y,
@@ -141,20 +140,4 @@ pub(super) fn compute_layout_with_measure(
 /// The canvas's selected backend, also used by runtimes that share its geometry.
 pub fn layout_measure_backend() -> Rc<dyn MeasureBackend> {
     LAYOUT_MEASURE_BACKEND.with(Rc::clone)
-}
-
-/// LayoutEngine reads NodeTree's explicit child links, not recursively owned
-/// schema children. Move each child into its slot once instead of retaining a
-/// duplicate descendant graph in every ancestor's schema value.
-pub(crate) fn insert_flat_layout_subtree(
-    tree: &mut NodeTree,
-    mut node: PenNode,
-    parent: Option<jian_core::document::NodeKey>,
-) {
-    use op_editor_core::pen_node_ext::PenNodeExt;
-    let children = node.children_mut().map(std::mem::take).unwrap_or_default();
-    let key = tree.insert_subtree(node, parent);
-    for child in children {
-        insert_flat_layout_subtree(tree, child, Some(key));
-    }
 }
