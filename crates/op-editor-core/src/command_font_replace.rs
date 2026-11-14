@@ -85,7 +85,7 @@ impl EditorState {
             return 0;
         };
 
-        let snapshot = self.snapshot_for_history();
+        let snapshot = self.snapshot_for_undo();
         let mut replaced = replace_in_forest(&mut self.doc.children, &from, &to);
         if let Some(pages) = self.doc.pages.as_mut() {
             for page in pages {
@@ -96,7 +96,7 @@ impl EditorState {
             replaced += replace_in_node(root, &from, &to);
         }
         if replaced > 0 {
-            self.history_push_past(snapshot);
+            self.push_undo(snapshot);
         }
         replaced
     }

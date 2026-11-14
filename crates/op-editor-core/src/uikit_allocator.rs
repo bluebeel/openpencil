@@ -101,7 +101,7 @@ impl EditorState {
             frame.reusable = None;
         }
         let new_id = NodeId::new(clone.base().id.clone());
-        let snap = self.snapshot_for_history();
+        let snap = self.snapshot_for_undo();
 
         if let Some(vars) = kit_vars {
             let mut refs = std::collections::BTreeSet::new();
@@ -128,7 +128,7 @@ impl EditorState {
             self.active_children_mut().push(clone);
         }
         self.set_single_selection(new_id.clone());
-        self.history_push_past(snap);
+        self.push_undo(snap);
         Ok(Some(new_id))
     }
 }

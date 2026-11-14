@@ -280,13 +280,13 @@ impl EditorState {
                 if page_id.is_some() {
                     self.ui.active_page_index = target_page_index;
                 }
-                let snap = self.snapshot_for_history();
+                let snap = self.snapshot_for_undo();
                 let inserted = self.cmd_insert_subtree_with_allocator(nodes, &parent_id, allocator);
                 if page_id.is_some() && target_page_index != original_page_index {
                     self.ui.active_page_index = original_page_index;
                 }
                 if inserted? {
-                    self.history_push_past(snap);
+                    self.push_undo(snap);
                     true
                 } else {
                     false
@@ -334,7 +334,7 @@ impl EditorState {
                 if page_id.is_some() {
                     self.ui.active_page_index = target_page_index;
                 }
-                let snap = self.snapshot_for_history();
+                let snap = self.snapshot_for_undo();
                 let refined =
                     self.cmd_refine_design_with_allocator(&root_id, canvas_width, allocator);
                 if page_id.is_some() && target_page_index != original_page_index {
@@ -343,7 +343,7 @@ impl EditorState {
                 match refined? {
                     Some(changed) => {
                         if changed {
-                            self.history_push_past(snap);
+                            self.push_undo(snap);
                         }
                         true
                     }
@@ -583,9 +583,9 @@ impl EditorState {
                 if self.selection.set.is_empty() {
                     return Ok(false);
                 }
-                let snap = self.snapshot_for_history();
+                let snap = self.snapshot_for_undo();
                 if self.delete_selected() {
-                    self.history_push_past(snap);
+                    self.push_undo(snap);
                     true
                 } else {
                     false
@@ -595,27 +595,27 @@ impl EditorState {
                 if self.selection.set.is_empty() || (dx == 0 && dy == 0) {
                     return Ok(false);
                 }
-                let snap = self.snapshot_for_history();
+                let snap = self.snapshot_for_undo();
                 if self.translate_selected(dx as f64, dy as f64) {
-                    self.history_push_past(snap);
+                    self.push_undo(snap);
                     true
                 } else {
                     false
                 }
             }
             EditorCommand::GroupSelected => {
-                let snap = self.snapshot_for_history();
+                let snap = self.snapshot_for_undo();
                 if self.group_selected_with_allocator(allocator)?.is_some() {
-                    self.history_push_past(snap);
+                    self.push_undo(snap);
                     true
                 } else {
                     false
                 }
             }
             EditorCommand::UngroupSelected => {
-                let snap = self.snapshot_for_history();
+                let snap = self.snapshot_for_undo();
                 if self.ungroup_selected() {
-                    self.history_push_past(snap);
+                    self.push_undo(snap);
                     true
                 } else {
                     false
@@ -625,9 +625,9 @@ impl EditorState {
                 if !self.selection.anchor.is_real() {
                     return Ok(false);
                 }
-                let snap = self.snapshot_for_history();
+                let snap = self.snapshot_for_undo();
                 if self.reorder_selected(direction) {
-                    self.history_push_past(snap);
+                    self.push_undo(snap);
                     true
                 } else {
                     false
@@ -645,21 +645,21 @@ impl EditorState {
             // --- Clipboard -----------------------------------------
             EditorCommand::CopySelected => self.copy_selected(),
             EditorCommand::CutSelected => {
-                let snap = self.snapshot_for_history();
+                let snap = self.snapshot_for_undo();
                 if self.cut_selected() {
-                    self.history_push_past(snap);
+                    self.push_undo(snap);
                     true
                 } else {
                     false
                 }
             }
             EditorCommand::PasteClipboard { offset_px } => {
-                let snap = self.snapshot_for_history();
+                let snap = self.snapshot_for_undo();
                 let new_ids = self.paste_clipboard_with_allocator(allocator, offset_px as f64)?;
                 if new_ids.is_empty() {
                     return Ok(false);
                 }
-                self.history_push_past(snap);
+                self.push_undo(snap);
                 true
             }
             EditorCommand::ImportSvg {

@@ -80,7 +80,7 @@ impl EditorState {
                 }
             }
         };
-        let pre = self.snapshot_for_history();
+        let pre = self.snapshot_for_undo();
         let children = self.active_children_mut();
         let moved = if action.is_distribute() {
             apply_distribute(children, &editable, action)
@@ -88,7 +88,7 @@ impl EditorState {
             apply_align(children, &editable, reference, action)
         };
         if moved {
-            self.history_push_past(pre);
+            self.push_undo(pre);
         }
         moved
     }

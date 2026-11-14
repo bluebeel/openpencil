@@ -168,6 +168,10 @@ impl EditorState {
 
     /// Push a snapshot onto the undo stack, clear redo, and enforce the cap.
     pub fn history_push_past(&mut self, snapshot: EditorSnapshot) {
+        if self.undo_capture_suspended {
+            self.mark_document_changed();
+            return;
+        }
         self.history_push_count = self.history_push_count.saturating_add(1);
         self.history.past.push_back(snapshot);
         if self.history.past.len() > HISTORY_CAP {
@@ -179,8 +183,23 @@ impl EditorState {
 
     /// Push the current state before a transactional edit.
     pub fn commit_history(&mut self) {
-        let snapshot = self.snapshot_for_history();
-        self.history_push_past(snapshot);
+        let snapshot = self.snapshot_for_undo();
+        self.push_undo(snapshot);
+    }
+
+    /// Capture only for undo storage. Callers that compare or restore a local
+    /// checkpoint must continue using `snapshot_for_history` instead.
+    pub(crate) fn snapshot_for_undo(&self) -> Option<EditorSnapshot> {
+        (!self.undo_capture_suspended).then(|| self.snapshot_for_history())
+    }
+
+    pub(crate) fn push_undo(&mut self, snapshot: Option<EditorSnapshot>) {
+        if let Some(snapshot) = snapshot {
+            self.history_push_past(snapshot);
+        } else {
+            debug_assert!(self.undo_capture_suspended);
+            self.mark_document_changed();
+        }
     }
 
     /// Materialize and restore all undoable editor state from a snapshot.

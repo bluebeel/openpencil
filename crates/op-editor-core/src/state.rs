@@ -87,6 +87,9 @@ pub struct EditorState {
     /// Instance-write scopes use the delta to identify newly pushed
     /// snapshots even when the 100-entry deque evicts from the front.
     pub(crate) history_push_count: u64,
+    /// Atomic batches retain one outer undo checkpoint. Intermediate writes
+    /// still advance revisions but must not capture or evict undo entries.
+    pub(crate) undo_capture_suspended: bool,
     /// Cross-action clipboard buffer. Copy / cut fill it; paste
     /// drains it (clones, so repeated paste works). Not part of the
     /// `.op` file — transient editor state.
@@ -159,6 +162,7 @@ impl EditorState {
             document_generation: 0,
             derived_cache_identity: Default::default(),
             history_push_count: 0,
+            undo_capture_suspended: false,
             clipboard: Vec::new(),
             ui: UiDraftState::new(),
             editor_ui: EditorUiState::new(),

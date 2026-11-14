@@ -422,7 +422,7 @@ impl EditorState {
             return false;
         }
 
-        let snap = self.snapshot_for_history();
+        let snap = self.snapshot_for_undo();
         if let Some(live) = walkers::find_node_mut(self.active_children_mut(), node_id) {
             set_reusable(live, true);
         }
@@ -433,7 +433,7 @@ impl EditorState {
         ) {
             return false;
         }
-        self.history_push_past(snap);
+        self.push_undo(snap);
         true
     }
 
@@ -483,10 +483,10 @@ impl EditorState {
         walkers::translate_subtree(&mut clone, 20.0, 20.0);
         clone.base_mut().name = Some(name);
         let new_id = NodeId::new(clone.base().id.clone());
-        let snap = self.snapshot_for_history();
+        let snap = self.snapshot_for_undo();
         self.active_children_mut().push(clone);
         self.set_single_selection(new_id.clone());
-        self.history_push_past(snap);
+        self.push_undo(snap);
         Ok(Some(new_id))
     }
 
@@ -508,7 +508,7 @@ impl EditorState {
             return false;
         }
 
-        let snap = self.snapshot_for_history();
+        let snap = self.snapshot_for_undo();
         let Some(PenNode::Ref(reference)) =
             walkers::find_node_mut(self.active_children_mut(), node_id)
         else {
@@ -516,7 +516,7 @@ impl EditorState {
         };
         reference.target.clear();
         reference.target.push_str(component_id.as_str());
-        self.history_push_past(snap);
+        self.push_undo(snap);
         true
     }
 
@@ -544,12 +544,12 @@ impl EditorState {
         let registered_component = self.components.find_by_id(node_id).is_some();
         let reusable_frame = matches!(&node, PenNode::Frame(frame) if frame.reusable == Some(true));
         if is_component_root(&node) && (registered_component || reusable_frame) {
-            let snap = self.snapshot_for_history();
+            let snap = self.snapshot_for_undo();
             if let Some(live) = walkers::find_node_mut(self.active_children_mut(), node_id) {
                 set_reusable(live, false);
             }
             self.components.remove(node_id);
-            self.history_push_past(snap);
+            self.push_undo(snap);
             return Ok(Some(node_id.clone()));
         }
 
@@ -567,12 +567,12 @@ impl EditorState {
                 let mut taken = self.collect_node_ids();
                 let detached = walkers::deep_clone_with_allocator(&merged, allocator, &mut taken)?;
                 let new_id = NodeId::new(detached.base().id.clone());
-                let snap = self.snapshot_for_history();
+                let snap = self.snapshot_for_undo();
                 if !replace_node_in_children(self.active_children_mut(), node_id, detached) {
                     return Ok(None);
                 }
                 self.set_single_selection(new_id.clone());
-                self.history_push_past(snap);
+                self.push_undo(snap);
                 Ok(Some(new_id))
             }
             _ => Ok(None),
@@ -585,10 +585,10 @@ impl EditorState {
         if self.components.find_by_id(component_id).is_none() {
             return false;
         }
-        let snap = self.snapshot_for_history();
+        let snap = self.snapshot_for_undo();
         self.components.remove(component_id);
         clear_reusable_in_document(&mut self.doc, component_id);
-        self.history_push_past(snap);
+        self.push_undo(snap);
         true
     }
 

@@ -261,10 +261,10 @@ impl EditorState {
             gestures: None,
             route: None,
         });
-        let pre = self.snapshot_for_history();
+        let pre = self.snapshot_for_undo();
         self.active_children_mut().push(group);
         self.set_single_selection(group_id);
-        self.history_push_past(pre);
+        self.push_undo(pre);
         Ok(count)
     }
 }

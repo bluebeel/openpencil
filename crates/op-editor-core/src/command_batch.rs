@@ -166,40 +166,40 @@ impl EditorState {
         }
         let marks_document_dirty = commands.iter().any(command_marks_document_dirty);
         let pre = self.snapshot_for_history();
-        let past_len = self.history.past.len();
-        // Sub-command history pushes clear the redo stack; park it so a
-        // rolled-back batch restores redo intact. O(1) move, no clone.
-        let saved_future = std::mem::take(&mut self.history.future);
-        for cmd in commands {
-            let outcome = self.apply_with_allocator(cmd, allocator);
-            if !matches!(&outcome, Ok(true)) {
-                // Restore the pre-batch history bookkeeping first (this
-                // is batch-specific — a plain restore does not touch the
-                // undo/redo stacks): drop any sub-command undo entries
-                // and hand the parked redo stack back intact.
-                self.history.past.truncate(past_len);
-                self.history.future = saved_future;
-                // Then route the document / selection / page / component
-                // / app-state-owner / revision restore through the same
-                // materializing path undo/redo use. `restore` rebuilds
-                // the owned doc from the shared snapshot and re-syncs the
-                // dirty flag. Ownership rolls back with doc.state — a
-                // stale entry would mark a key generation-owned that the
-                // restored document no longer carries, silently skipping
-                // later merges of that key.
+        // Park both stacks, not just their lengths: intermediate pushes used
+        // to evict old entries at the cap, which truncate could not recover.
+        // An empty scratch history also isolates sub-command snapshot repairs.
+        let saved_history = std::mem::take(&mut self.history);
+        debug_assert!(!self.undo_capture_suspended);
+        self.undo_capture_suspended = true;
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            for cmd in commands {
+                let outcome = self.apply_with_allocator(cmd, allocator);
+                if !matches!(&outcome, Ok(true)) {
+                    return outcome;
+                }
+            }
+            Ok(true)
+        }));
+        self.undo_capture_suspended = false;
+        self.history = saved_history;
+        match outcome {
+            Ok(Ok(true)) => {
+                if marks_document_dirty {
+                    self.revision = pre.revision;
+                    self.sync_dirty_flag();
+                    self.history_push_past(pre);
+                }
+                Ok(true)
+            }
+            Ok(failure) => {
                 self.restore(pre);
-                return outcome;
+                failure
+            }
+            Err(panic) => {
+                self.restore(pre);
+                std::panic::resume_unwind(panic)
             }
         }
-        // Collapse any per-sub-command history entries into one batch
-        // entry, so a GUI undo reverts the whole program at once. The
-        // push also clears redo — standard semantics for a new edit.
-        self.history.past.truncate(past_len);
-        if marks_document_dirty {
-            self.revision = pre.revision;
-            self.sync_dirty_flag();
-            self.history_push_past(pre);
-        }
-        Ok(true)
     }
 }

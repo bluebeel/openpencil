@@ -93,14 +93,14 @@ pub(super) fn apply_authored_subtree_on_page(
     if page_id.is_some() {
         state.ui.active_page_index = target_page_index;
     }
-    let snap = state.snapshot_for_history();
+    let snap = state.snapshot_for_undo();
     let changed = if preserve_roots {
         state.cmd_insert_authored_subtree_preserving_roots(nodes, parent_id)
     } else {
         state.cmd_insert_authored_subtree(nodes, parent_id)
     };
     if changed {
-        state.history_push_past(snap);
+        state.push_undo(snap);
     }
     if page_id.is_some() && target_page_index != original_page_index {
         state.ui.active_page_index = original_page_index;

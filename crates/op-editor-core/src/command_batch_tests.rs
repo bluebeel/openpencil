@@ -104,6 +104,103 @@ fn batch_rejects_empty_and_nested_batches() {
     );
 }
 
+fn nudge() -> EditorCommand {
+    EditorCommand::NudgeSelected { dx: 1, dy: 0 }
+}
+
+#[test]
+fn large_batch_preserves_older_history_at_capacity_and_has_one_undo_step() {
+    let mut s = sample();
+    for _ in 0..crate::HISTORY_CAP {
+        assert!(s.apply(nudge()));
+    }
+    let before_doc = s.doc.clone();
+    let mut expected_history = s.history.past.clone();
+    expected_history.pop_front();
+    let pushed = s.history_push_count;
+    assert!(s.apply(EditorCommand::Batch {
+        commands: (0..crate::HISTORY_CAP + 20).map(|_| nudge()).collect(),
+    }));
+    assert_eq!(s.history_push_count, pushed + 1);
+    assert_eq!(s.history.past.len(), crate::HISTORY_CAP);
+    assert!(s.history.future.is_empty());
+    let after_doc = s.doc.clone();
+    assert!(s.undo());
+    assert_eq!(s.doc, before_doc);
+    assert_eq!(s.history.past, expected_history);
+    assert!(s.redo());
+    assert_eq!(s.doc, after_doc);
+}
+
+#[test]
+fn failed_large_batch_restores_every_old_history_entry_and_redo() {
+    let mut s = sample();
+    for _ in 0..crate::HISTORY_CAP + 1 {
+        assert!(s.apply(nudge()));
+    }
+    assert!(s.undo());
+    let before = s.snapshot_for_history();
+    let history = s.history.clone();
+    let mut commands: Vec<_> = (0..crate::HISTORY_CAP + 20).map(|_| nudge()).collect();
+    commands.push(EditorCommand::DeleteNode {
+        node_id: NodeId::new("missing"),
+        page_id: None,
+    });
+    assert!(!s.apply(EditorCommand::Batch { commands }));
+    assert_eq!(s.snapshot_for_history(), before);
+    assert_eq!(s.history.past, history.past);
+    assert_eq!(s.history.future, history.future);
+    assert!(!s.undo_capture_suspended);
+}
+
+#[test]
+fn selection_only_batch_keeps_redo_and_dirty_revision() {
+    let mut s = sample();
+    assert!(s.apply(nudge()));
+    assert!(s.undo());
+    let revision = s.revision;
+    let future = s.history.future.clone();
+    assert!(s.apply(EditorCommand::Batch {
+        commands: vec![EditorCommand::ClearSelection],
+    }));
+    assert_eq!(s.revision, revision);
+    assert_eq!(s.history.future, future);
+    assert!(s.history.past.is_empty());
+    assert!(s.selection.set.is_empty());
+}
+
+#[test]
+fn panicking_batch_restores_document_and_history_then_resumes_unwind() {
+    struct PanicAllocator;
+    impl crate::IdAllocator for PanicAllocator {
+        fn allocate(
+            &mut self,
+            _: &mut std::collections::HashSet<NodeId>,
+        ) -> Result<NodeId, crate::IdAllocError> {
+            panic!("allocator probe");
+        }
+    }
+    let mut s = sample();
+    assert!(s.apply(nudge()));
+    let before = s.snapshot_for_history();
+    let history = s.history.clone();
+    let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        s.apply_with_allocator(
+            EditorCommand::Batch {
+                commands: vec![nudge(), insert("unreachable")],
+            },
+            &mut PanicAllocator,
+        )
+    }));
+    assert!(panicked.is_err());
+    assert_eq!(s.snapshot_for_history(), before);
+    assert_eq!(s.history.past, history.past);
+    assert_eq!(s.history.future, history.future);
+    assert!(!s.undo_capture_suspended);
+    assert!(s.apply(nudge()));
+    assert_eq!(s.history.past.len(), history.past.len() + 1);
+}
+
 #[test]
 fn batch_rejects_non_document_sub_commands_up_front_with_no_state_change() {
     // Commands whose primary state lives outside the rollback
