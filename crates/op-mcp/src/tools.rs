@@ -255,14 +255,14 @@ pub fn selection_snapshot_for_call(
                 .filter(|id| id.is_real())
                 .map(|id| id.as_str())
                 .collect();
-            let nodes: Vec<_> = state
-                .selection
-                .set
-                .iter()
-                .filter(|id| id.is_real())
-                .filter_map(|id| find_node(state.active_children(), id))
-                .map(|node| node_snapshot_value(node, depth))
-                .collect();
+            let nodes: Vec<_> = super::requested_nodes::find_for_state(
+                state,
+                state.active_children(),
+                &selected_ids,
+            )
+            .into_iter()
+            .map(|node| node_snapshot_value(node, depth))
+            .collect();
             ToolOutcome::OkJson(
                 json!({"selectedIds": selected_ids,
                 "activePageId": active_page_id(state), "nodes": nodes})
@@ -442,6 +442,20 @@ pub fn get_node_snapshot_for_call(state: &EditorState, args: &BTreeMap<String, S
     }
     let mut nodes = BTreeMap::new();
     if let Some(id) = args.get("node_id") {
+        if let Some(found) = super::trusted_reads::global_last(state, id) {
+            if let Some(found) = found {
+                nodes.insert(
+                    id.clone(),
+                    node_record(
+                        found.node,
+                        found.parent.map_or("", PenNodeExt::id_str),
+                        &state.ui.variables.fill_refs,
+                        &state.ui.variables.stroke_refs,
+                    ),
+                );
+            }
+            return GetNode { nodes };
+        }
         let mut found = None;
         match &state.doc.pages {
             Some(pages) => {

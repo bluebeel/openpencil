@@ -348,7 +348,7 @@ pub fn map_figma_stroke(node: &FigValue) -> Option<PenStroke> {
         join: map_stroke_join(node.get_str("strokeJoin")),
         cap: map_stroke_cap(node.get_str("strokeCap")),
         dash_pattern,
-        dash_offset: None,
+        dash_offset: node.get_f64("dashOffset"),
         // `mapFigmaFills` re-applies the visible filter — harmless.
         fill: map_figma_fills(Some(stroke_paints)),
     }))

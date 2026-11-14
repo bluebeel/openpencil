@@ -23,7 +23,7 @@ struct Record {
 }
 pub(super) struct Catalog(Vec<Record>);
 impl Catalog {
-    pub(super) fn new(history: &History, current: &[Patch]) -> Self {
+    pub(super) fn new(history: &History, current: &[Patch], doc: &PenDocument) -> Self {
         let mut records = Vec::new();
         for snapshot in history
             .past
@@ -32,26 +32,31 @@ impl Catalog {
             .filter(|entry| !history.operation_conflicted(entry.history_tag().operation))
             .filter_map(|entry| entry.scoped_snapshot())
         {
-            Self::append(&mut records, &snapshot.patches);
+            Self::append(&mut records, &snapshot.patches, doc);
         }
-        Self::append(&mut records, current);
+        Self::append(&mut records, current, doc);
         Self(records)
     }
-    fn append(records: &mut Vec<Record>, patches: &[Patch]) {
+    fn append(records: &mut Vec<Record>, patches: &[Patch], doc: &PenDocument) {
         for splice in patches.iter().flat_map(Patch::splices) {
             records.push(Record {
                 key: ParentKey {
-                    scope: splice.scope.clone(),
+                    scope: splice.scope.current(doc),
                     id: splice.parent_id.clone(),
                 },
                 anchor: splice.anchors(false),
             });
         }
     }
-    fn matching<'a>(&'a self, key: &'a ParentKey) -> impl Iterator<Item = Anchors> + 'a {
+    fn matching<'a>(
+        &'a self,
+        key: &'a ParentKey,
+        doc: &PenDocument,
+    ) -> impl Iterator<Item = Anchors> + 'a {
+        let scope = key.scope.current(doc);
         self.0
             .iter()
-            .filter(move |record| &record.key == key)
+            .filter(move |record| record.key.id == key.id && record.key.scope == scope)
             .map(|record| record.anchor.clone())
     }
 }
@@ -241,7 +246,7 @@ impl Prepared {
                 splice_order::order(
                     &remaining_ids,
                     &restores,
-                    catalog.matching(&key).chain(anchors.into_iter()),
+                    catalog.matching(&key, doc).chain(anchors.into_iter()),
                 )?
             };
             if absence && !order.is_empty() {

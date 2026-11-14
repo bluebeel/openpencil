@@ -51,7 +51,7 @@ impl McpTool for BatchGet {
             Ok(page) => page,
             Err((code, msg)) => return ToolOutcome::Err(code, msg),
         };
-        batch_get_result(&page.roots, args, &self.resolved_vars)
+        batch_get_result(&page.roots, args, &self.resolved_vars, None)
     }
 }
 
@@ -59,6 +59,7 @@ fn batch_get_result(
     roots: &[PenNode],
     args: &BTreeMap<String, String>,
     resolved_vars: &BTreeMap<String, VariableScalar>,
+    state: Option<&EditorState>,
 ) -> ToolOutcome {
     let resolve_refs = matches!(
         arg_alias(args, &["resolveRefs", "resolve_refs"]),
@@ -81,7 +82,25 @@ fn batch_get_result(
         Err((code, msg)) => return ToolOutcome::Err(code, msg),
     };
     let parent_id = arg_alias(args, &["parentId", "parent_id", "parent"]);
-    let search_roots = search_roots(roots, parent_id);
+    let search_roots =
+        if let Some(lookup) = state.and_then(|state| state.trusted_node_lookup(roots)) {
+            parent_id
+                .filter(|id| !id.is_empty())
+                .and_then(|id| lookup.find(id, op_editor_core::NodeReadOrder::First))
+                .and_then(|found| found.node.children())
+                .map_or_else(
+                    || {
+                        if parent_id.is_none() {
+                            roots
+                        } else {
+                            &[]
+                        }
+                    },
+                    Vec::as_slice,
+                )
+        } else {
+            search_roots(roots, parent_id)
+        };
     let mut nodes: Vec<&PenNode> = Vec::new();
     let mut seen = BTreeSet::new();
 
@@ -101,11 +120,10 @@ fn batch_get_result(
                 Err((code, msg)) => return ToolOutcome::Err(code, msg),
             }
         }
-        let requested = if seen.is_empty() {
-            super::requested_nodes::find(roots, &node_ids)
-        } else {
-            let pending: Vec<_> = node_ids.iter().filter(|id| !seen.contains(*id)).collect();
-            super::requested_nodes::find(roots, &pending)
+        let pending: Vec<_> = node_ids.iter().filter(|id| !seen.contains(*id)).collect();
+        let requested = match state {
+            Some(state) => super::requested_nodes::find_for_state(state, roots, &pending),
+            None => super::requested_nodes::find(roots, &pending),
         };
         for node in requested {
             if seen.insert(node.id_str().to_owned()) {
@@ -154,7 +172,7 @@ pub fn batch_get_snapshot_for_call(
             } else {
                 BTreeMap::new()
             };
-            batch_get_result(roots, args, &variables)
+            batch_get_result(roots, args, &variables, Some(state))
         }
         Err((code, message)) => ToolOutcome::Err(code, message),
     };

@@ -222,6 +222,24 @@ pub fn get_node_parent_snapshot_for_call(
     state: &EditorState,
     args: &BTreeMap<String, String>,
 ) -> GetNodeParent {
+    if let (Some(id), Some(lookup)) = (
+        args.get("node_id"),
+        state
+            .trusted_node_lookup(active_children(state))
+            .filter(|lookup| lookup.is_indexed()),
+    ) {
+        let index = lookup
+            .find(id, op_editor_core::NodeReadOrder::First)
+            .map(|found| {
+                vec![(
+                    found.node.id_str().into(),
+                    found.parent.map_or("", PenNodeExt::id_str).into(),
+                    found.depth as u32,
+                )]
+            })
+            .unwrap_or_default();
+        return GetNodeParent { index };
+    }
     let index = args
         .get("node_id")
         .and_then(|id| first_match(active_children(state), "", 0, &|node| node.id_str() == id))

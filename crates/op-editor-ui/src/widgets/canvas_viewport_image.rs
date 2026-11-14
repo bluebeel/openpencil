@@ -602,7 +602,9 @@ fn paint_image_node_with_stroke(
             cx.backend.restore();
         }
     }
-    if let Some(stroke) = node.stroke.filter(|_| paint_stroke) {
+    let rich_stroke =
+        paint_stroke && super::canvas_viewport_stroke_paint::paint(cx, node, world_rect, zoom);
+    if let Some(stroke) = node.stroke.filter(|_| paint_stroke && !rich_stroke) {
         let width = stroke.width * zoom;
         if let Some(radii) = per_corner {
             cx.backend

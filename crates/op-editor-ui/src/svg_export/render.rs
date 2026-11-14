@@ -67,6 +67,9 @@ fn emit_node_inner(out: &mut String, n: &SceneNode, suppress_node_blend: bool) {
     if defers_rect_stroke && (!composite_painted || matches!(n.kind, NodeKind::Frame)) {
         emit_rect_stroke_overlay(out, n);
     }
+    if !composite_painted {
+        super::stroke_paint::emit(out, n);
+    }
     if needs_composite {
         out.push_str("</g>");
     }

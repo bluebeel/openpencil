@@ -72,6 +72,10 @@ impl SharedComponents {
         library.restore_document_backing(self.document_backing.clone());
         library
     }
+    pub(crate) fn backing_matches(&self, library: &ComponentLibrary) -> bool {
+        let current = library.document_backing();
+        Arc::ptr_eq(&self.document_backing, &current) || self.document_backing == current
+    }
     pub fn components(&self) -> &[Arc<SharedComponent>] {
         &self.components
     }
@@ -96,7 +100,9 @@ impl SharedComponents {
                 .document_backing
                 .iter()
                 .map(|(id, location)| {
-                    id.as_str().len() + location.child_path.len() * std::mem::size_of::<usize>()
+                    id.as_str().len()
+                        + location.child_path.len() * std::mem::size_of::<usize>()
+                        + location.page_id.as_ref().map_or(0, |id| 32 + id.len())
                 })
                 .sum::<usize>()
     }

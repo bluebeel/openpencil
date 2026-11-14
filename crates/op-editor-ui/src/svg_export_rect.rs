@@ -30,6 +30,9 @@ pub(super) fn emit_widget_frame_background(out: &mut String, node: &SceneNode, d
 }
 
 pub(super) fn emit_rect_stroke_overlay(out: &mut String, node: &SceneNode) {
+    if node.stroke_paint.is_some() {
+        return;
+    }
     let Some(stroke) = node.stroke else {
         return;
     };

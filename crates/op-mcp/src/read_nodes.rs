@@ -44,19 +44,26 @@ impl McpTool for ReadNodes {
             Ok(page) => page,
             Err((code, msg)) => return ToolOutcome::Err(code, msg),
         };
-        read_nodes_result(&page.roots, args, || {
-            (
-                serde_json::from_str(&self.variables_json)
-                    .unwrap_or_else(|_| serde_json::json!({})),
-                serde_json::from_str(&self.themes_json).unwrap_or_else(|_| serde_json::json!([])),
-            )
-        })
+        read_nodes_result(
+            &page.roots,
+            args,
+            |ids| super::requested_nodes::find(&page.roots, ids),
+            || {
+                (
+                    serde_json::from_str(&self.variables_json)
+                        .unwrap_or_else(|_| serde_json::json!({})),
+                    serde_json::from_str(&self.themes_json)
+                        .unwrap_or_else(|_| serde_json::json!([])),
+                )
+            },
+        )
     }
 }
 
-fn read_nodes_result(
-    roots: &[PenNode],
+fn read_nodes_result<'a>(
+    roots: &'a [PenNode],
     args: &BTreeMap<String, String>,
+    find: impl FnOnce(&[String]) -> Vec<&'a PenNode>,
     metadata: impl FnOnce() -> (Value, Value),
 ) -> ToolOutcome {
     let depth = match parse_depth(args) {
@@ -73,7 +80,7 @@ fn read_nodes_result(
     };
 
     let selected: Vec<&PenNode> = match node_ids {
-        Some(ids) if !ids.is_empty() => super::requested_nodes::find(roots, &ids),
+        Some(ids) if !ids.is_empty() => find(&ids),
         _ => roots.iter().collect(),
     };
     let nodes: Vec<Value> = selected
@@ -102,26 +109,31 @@ pub fn read_nodes_snapshot_for_call(
     args: &BTreeMap<String, String>,
 ) -> ReadNodes {
     let outcome = match requested_page_roots(state, args) {
-        Ok(roots) => read_nodes_result(roots, args, || {
-            (
-                state
-                    .doc
-                    .variables
-                    .as_ref()
-                    .map(|value| {
-                        serde_json::to_value(value).unwrap_or_else(|_| serde_json::json!({}))
-                    })
-                    .unwrap_or_else(|| serde_json::json!({})),
-                state
-                    .doc
-                    .themes
-                    .as_ref()
-                    .map(|value| {
-                        serde_json::to_value(value).unwrap_or_else(|_| serde_json::json!([]))
-                    })
-                    .unwrap_or_else(|| serde_json::json!([])),
-            )
-        }),
+        Ok(roots) => read_nodes_result(
+            roots,
+            args,
+            |ids| super::requested_nodes::find_for_state(state, roots, ids),
+            || {
+                (
+                    state
+                        .doc
+                        .variables
+                        .as_ref()
+                        .map(|value| {
+                            serde_json::to_value(value).unwrap_or_else(|_| serde_json::json!({}))
+                        })
+                        .unwrap_or_else(|| serde_json::json!({})),
+                    state
+                        .doc
+                        .themes
+                        .as_ref()
+                        .map(|value| {
+                            serde_json::to_value(value).unwrap_or_else(|_| serde_json::json!([]))
+                        })
+                        .unwrap_or_else(|| serde_json::json!([])),
+                )
+            },
+        ),
         Err((code, message)) => ToolOutcome::Err(code, message),
     };
     ReadNodes {

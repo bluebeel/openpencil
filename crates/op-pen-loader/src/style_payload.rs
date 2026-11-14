@@ -531,7 +531,20 @@ pub(crate) fn stroke_to_payload(s: Option<&PenStroke>) -> Option<StrokePayload> 
         Some(StrokeAlign::Outside) => 1,
         Some(StrokeAlign::Center) | None => 0,
     };
+    let simple_paint = matches!(s.fill.as_deref(),Some([PenFill::Solid(body)]) if body.blend_mode.as_ref().is_none_or(|mode|*mode==jian_ops_schema::style::BlendMode::Normal));
+    let styled = s.cap.is_some()
+        || s.join.is_some()
+        || s.dash_pattern
+            .as_ref()
+            .is_some_and(|dash| dash.iter().any(|value| *value > 0.0));
+    let detail =
+        if styled || (!simple_paint && s.fill.as_ref().is_some_and(|fill| !fill.is_empty())) {
+            Some(Box::new((**s).clone()))
+        } else {
+            None
+        };
     Some(StrokePayload {
+        detail,
         color,
         width,
         sides,

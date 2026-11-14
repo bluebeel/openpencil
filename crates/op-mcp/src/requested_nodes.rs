@@ -17,6 +17,70 @@ pub(super) fn find<'a, S: AsRef<str>>(roots: &'a [PenNode], ids: &[S]) -> Vec<&'
     find_multiple(roots, ids, &mut || {})
 }
 
+/// Reuse one proof-bearing locked-host index. Public snapshots retain the
+/// request-local traversal, including raw first-DFS/missing/duplicate behavior.
+pub(super) fn find_for_state<'a, S: AsRef<str>>(
+    state: &'a op_editor_core::EditorState,
+    roots: &'a [PenNode],
+    ids: &[S],
+) -> Vec<&'a PenNode> {
+    if ids.is_empty() {
+        return Vec::new();
+    }
+    if let Some(lookup) = state
+        .trusted_node_lookup(roots)
+        .filter(|lookup| lookup.is_indexed())
+    {
+        return ids
+            .iter()
+            .filter_map(|id| {
+                let id = id.as_ref();
+                (!id.is_empty())
+                    .then(|| lookup.find(id, op_editor_core::NodeReadOrder::First))
+                    .flatten()
+                    .map(|found| found.node)
+            })
+            .collect();
+    }
+    find(roots, ids)
+}
+
+/// Complete ordered forests retain first-page precedence. A missing ID does
+/// not trigger a second fallback tree scan while the index proves its absence.
+pub(super) fn find_in_forests_for_state<'a, S: AsRef<str>>(
+    state: &'a op_editor_core::EditorState,
+    forests: impl IntoIterator<Item = &'a [PenNode]>,
+    ids: &[S],
+) -> Vec<&'a PenNode> {
+    if ids.is_empty() {
+        return Vec::new();
+    }
+    let forests: Vec<_> = forests.into_iter().collect();
+    let lookups: Option<Vec<_>> = forests
+        .iter()
+        .map(|&roots| state.trusted_node_lookup(roots))
+        .collect();
+    if let Some(lookups) =
+        lookups.filter(|lookups| lookups.iter().all(|lookup| lookup.is_indexed()))
+    {
+        return ids
+            .iter()
+            .filter_map(|id| {
+                let id = id.as_ref();
+                if id.is_empty() {
+                    return None;
+                }
+                lookups.iter().find_map(|lookup| {
+                    lookup
+                        .find(id, op_editor_core::NodeReadOrder::First)
+                        .map(|found| found.node)
+                })
+            })
+            .collect();
+    }
+    find_in_forests(forests, ids)
+}
+
 /// First matches across ordered document forests. Keep one unresolved-ID set
 /// across pages and stop as soon as all targets have their first match.
 pub(super) fn find_in_forests<'a, S: AsRef<str>>(

@@ -185,12 +185,14 @@ where
         let (result, command) = match key.as_ref().and_then(|key| read_cache.get(key)) {
             Some(result) => (result.clone(), None),
             None => {
-                let registry = crate::mcp_serve::registry::rebuild_registry(
-                    state,
-                    Some(&call.tool),
-                    profile,
-                    Some(&call.arguments),
-                );
+                let registry = state.with_trusted_read_lookup(|state| {
+                    crate::mcp_serve::registry::rebuild_registry(
+                        state,
+                        Some(&call.tool),
+                        profile,
+                        Some(&call.arguments),
+                    )
+                });
                 let outcome =
                     outcome(registry.dispatch_once(call), read).map_err(|error| error.at(index))?;
                 if let Some(key) = key {

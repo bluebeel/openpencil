@@ -27,9 +27,15 @@ impl EditorState {
         batch: CommittedMetadata,
     ) -> Result<Option<CommittedMetadataApply>, Error> {
         let mut scopes = Vec::new();
-        let mut refresh_components = batch.changes_structure;
+        let mut refresh_components = false;
         let mut touched = Vec::new();
         for operation in &batch.operations {
+            if matches!(
+                operation,
+                crate::web_sync::committed::Operation::CatalogLabel(_)
+            ) {
+                continue;
+            }
             let scope = mutation::scope(operation.page());
             patch::roots(&self.doc, &scope).map_err(|_| Error::Precondition)?;
             if !scopes.contains(&scope) {
@@ -40,19 +46,43 @@ impl EditorState {
                     touched.push(id);
                 }
                 refresh_components |= crate::NodeId::new_opt(&value.expected_id)
-                    .is_some_and(|id| self.components.is_document_backed(&id))
-                    || matches!(&value.value, jian_ops_schema::node::PenNode::Frame(node) if node.reusable == Some(true));
+                    .is_some_and(|id| self.components.is_document_backed(&id));
             }
+        }
+        if batch.changes_structure && !refresh_components {
+            let backing = self.components.document_backing();
+            refresh_components = backing.values().any(|location| {
+                let Some(page) = location.page_index_in(&self.doc) else {
+                    return true;
+                };
+                scopes.iter().any(|scope| match (scope, page) {
+                    (patch::Scope::Root, None) => true,
+                    (patch::Scope::Page { index, .. }, Some(page)) => *index == page,
+                    _ => false,
+                })
+            });
         }
         if batch.operations.is_empty() {
             return Ok(None);
         }
-        let mut snapshot = ScopedEditorSnapshot::auxiliary(self, scopes);
+        let mut snapshot =
+            ScopedEditorSnapshot::auxiliary_with_components(self, scopes, refresh_components);
         let history = self.history.clone();
         let history_push_count = self.history_push_count;
         let runtime_high_water = self.runtime_id_high_water();
-        let mut before = Vec::new();
+        let mut before: Vec<regions::Before> = Vec::new();
+        let mut labels = super::forward_catalog::Labels::default();
         for operation in batch.operations {
+            if let crate::web_sync::committed::Operation::CatalogLabel(value) = operation {
+                if let Err(error) = labels.apply(self, value) {
+                    for old in before.into_iter().rev() {
+                        old.restore(&mut self.doc);
+                    }
+                    labels.restore(self)?;
+                    return Err(error);
+                }
+                continue;
+            }
             match mutation::apply(&mut self.doc, operation) {
                 Ok(captured) => regions::remember(&mut before, captured),
                 Err(error) => {
@@ -62,13 +92,25 @@ impl EditorState {
                     for old in before.into_iter().rev() {
                         old.restore(&mut self.doc);
                     }
+                    labels.restore(self)?;
                     return Err(error);
                 }
             }
         }
+        let label_patches = match labels.compact(self) {
+            Ok(patches) => patches,
+            Err(_) => {
+                for old in before.into_iter().rev() {
+                    old.restore(&mut self.doc);
+                }
+                labels.restore(self)?;
+                return Err(Error::Capture);
+            }
+        };
         regions::normalize(&mut before, &self.doc);
         snapshot.patches = mutation::compact(before, &self.doc);
-        if snapshot.patches.is_empty() {
+        snapshot.auxiliary_patches = label_patches;
+        if !snapshot.has_canonical_changes() {
             return Ok(None);
         }
         if refresh_components {
@@ -85,10 +127,12 @@ impl EditorState {
                 self.ui.variables.stroke_refs.remove(&id);
             }
         }
-        self.editor_ui.clear_document_derived();
-        self.codegen.reset_for_document_replacement();
-        self.instance_write_virtual_anchor = None;
-        jian_ops_schema::image_thumbs::activate_for_document(&self.doc);
+        if !snapshot.patches.is_empty() {
+            self.editor_ui.clear_document_derived();
+            self.codegen.reset_for_document_replacement();
+            self.instance_write_virtual_anchor = None;
+            jian_ops_schema::image_thumbs::activate_for_document(&self.doc);
+        }
         // Do not let selective undo jump across this external state boundary.
         // A stale Full local entry remains behind the remote entry in global
         // LIFO history, or conflicts explicitly for actor-selective traversal.
@@ -121,8 +165,10 @@ impl EditorState {
         self.runtime_node_high_water = applied.runtime_high_water;
         // Keep the monotonic revision counter: a failed paint may already have
         // derived scene data under the rejected revision. Never alias it later.
-        self.editor_ui.clear_document_derived();
-        self.codegen.reset_for_document_replacement();
+        if !snapshot.patches.is_empty() {
+            self.editor_ui.clear_document_derived();
+            self.codegen.reset_for_document_replacement();
+        }
         Ok(())
     }
 }

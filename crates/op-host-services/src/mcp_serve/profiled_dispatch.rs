@@ -140,19 +140,29 @@ where
     let requested_tool = call.as_ref().map(|call| call.tool.as_str());
     let arguments = call.as_ref().map(|call| &call.arguments);
     let mut registry = if bound_authority {
-        registry::rebuild_registry_with_authority(state, requested_tool, profile, arguments, true)
+        state.with_trusted_read_lookup(|state| {
+            registry::rebuild_registry_with_authority(
+                state,
+                requested_tool,
+                profile,
+                arguments,
+                true,
+            )
+        })
     } else {
         rebuild_registry(state, requested_tool, profile, arguments)
     };
     if requested_tool == Some("batch_tools") {
         if let Some(arguments) = arguments {
             if bound_authority || atomic_tools::read_only(arguments) {
-                registry.register(atomic_tools::prepare(
-                    state,
-                    arguments,
-                    profile,
-                    bound_authority,
-                ));
+                let prepared = if bound_authority {
+                    state.with_trusted_read_lookup(|state| {
+                        atomic_tools::prepare(state, arguments, profile, true)
+                    })
+                } else {
+                    atomic_tools::prepare(state, arguments, profile, false)
+                };
+                registry.register(prepared);
             }
         }
     }

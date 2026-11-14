@@ -50,6 +50,7 @@ enum Operation<'a> {
     Children(Children<'a>),
     Metadata(NodeMetadata<'a>),
     Node(NodeValue<'a>),
+    Label(super::auxiliary::ForwardLabel<'a>),
 }
 
 impl ScopedEditorSnapshot {
@@ -60,14 +61,33 @@ impl ScopedEditorSnapshot {
         state: &EditorState,
         limit: usize,
     ) -> Option<Vec<u8>> {
-        if !self.auxiliary_patches.is_empty()
+        if self.page_patch.is_some()
             || self.header.is_some()
             || !self.page_headers.is_empty()
             || self.patches.len() > MAX_OPERATIONS
         {
             return None;
         }
+        // A full catalog checkpoint must not publish independent catalog edits
+        // as node-only data. Exact label patches below need no full checkpoint.
+        if self.captures_components {
+            let before = self.components.components();
+            let current = &state.components.components;
+            if !self.components.backing_matches(&state.components)
+                || before.len() != current.len()
+                || before.iter().zip(current).any(|(old, new)| {
+                    old.id != new.id || old.name != new.name || !old.root.equals_node(&new.root)
+                })
+            {
+                return None;
+            }
+        }
         self.validate_shape(state).ok()?;
+        let labels = self
+            .auxiliary_patches
+            .iter()
+            .map(|patch| patch.forward_label(state))
+            .collect::<Option<Vec<_>>>()?;
         let mut budget = Budget::new(limit);
         let mut children = Vec::new();
         let mut nodes = Vec::new();
@@ -85,7 +105,8 @@ impl ScopedEditorSnapshot {
             {
                 return None;
             }
-            let catalog = super::splice_exchange::Catalog::new(&state.history, &self.patches);
+            let catalog =
+                super::splice_exchange::Catalog::new(&state.history, &self.patches, &state.doc);
             let prepared = super::splice_exchange::Prepared::capture(
                 &state.doc,
                 &self.patches,
@@ -189,6 +210,7 @@ impl ScopedEditorSnapshot {
                 value: crate::history_snapshot::BorrowedNodeMetadata(current),
             }));
         }
+        operations.extend(labels.into_iter().map(Operation::Label));
         if operations.len() > MAX_OPERATIONS {
             return None;
         }

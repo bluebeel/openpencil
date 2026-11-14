@@ -183,6 +183,7 @@ mod theme_presets_tests;
 pub mod tools;
 #[cfg(test)]
 mod tools_tests;
+mod trusted_reads;
 pub mod ui_kit_tool;
 mod update_node_data;
 #[cfg(test)]

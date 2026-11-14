@@ -33,12 +33,14 @@ struct UiContext {
     selection: SelectionState,
     viewport: op_editor_core::viewport::Viewport,
     active_page: usize,
+    active_page_id: Option<String>,
     tool: op_editor_core::tool::Tool,
 }
 
 impl UiContext {
     fn charge(&self) -> usize {
-        256 + self.selection.set.capacity() * std::mem::size_of::<op_editor_core::NodeId>()
+        256 + self.active_page_id.as_ref().map_or(0, String::capacity)
+            + self.selection.set.capacity() * std::mem::size_of::<op_editor_core::NodeId>()
             + self
                 .selection
                 .set
@@ -527,9 +529,17 @@ impl<'a, 's> Scope<'a, 's> {
         let mut agent_ui = data.documents.remove(document).unwrap_or_default();
         let mut live_ui = std::mem::take(&mut state.ui);
         state.ui.variables = std::mem::take(&mut live_ui.variables);
-        state.ui.active_page_index = agent_ui
-            .active_page
-            .min(state.page_count().saturating_sub(1));
+        state.ui.active_page_index = resolve_page(
+            state,
+            agent_ui.active_page,
+            agent_ui.active_page_id.as_deref(),
+        );
+        agent_ui.active_page_id = state
+            .doc
+            .pages
+            .as_ref()
+            .and_then(|pages| pages.get(live_ui.active_page_index))
+            .map(|page| page.id.clone());
         selected::prune(&mut agent_ui.selection, state.active_children());
         agent_ui.active_page = live_ui.active_page_index;
         std::mem::swap(&mut state.selection, &mut agent_ui.selection);
@@ -567,17 +577,19 @@ impl<'a, 's> Scope<'a, 's> {
         std::mem::swap(&mut self.state.selection, &mut self.live.selection);
         std::mem::swap(&mut self.state.viewport, &mut self.live.viewport);
         std::mem::swap(&mut self.state.tool, &mut self.live.tool);
+        let human_page_id = self.live.active_page_id.take();
         self.live.active_page = self.state.ui.active_page_index;
+        self.live.active_page_id = current_page_id(self.state);
         let mut live_ui = self.live_ui.take().unwrap();
         live_ui.variables = std::mem::take(&mut self.state.ui.variables);
         self.state.ui = live_ui;
         self.state.editor_ui.image_panel = std::mem::take(&mut self.live_image_panel);
         self.state.editor_ui.image_crop_editing = self.live_crop_editing.take();
-        self.state.ui.active_page_index = self
-            .state
-            .ui
-            .active_page_index
-            .min(self.state.page_count().saturating_sub(1));
+        self.state.ui.active_page_index = resolve_page(
+            self.state,
+            self.state.ui.active_page_index,
+            human_page_id.as_deref(),
+        );
         let mut selection = std::mem::take(&mut self.state.selection);
         selected::prune(&mut selection, self.state.active_children());
         self.state.selection = selection;
@@ -595,6 +607,20 @@ impl<'a, 's> Scope<'a, 's> {
                     error = Some(message);
                 }
             }
+        }
+        if self
+            .live
+            .active_page_id
+            .as_ref()
+            .is_some_and(|id| id.capacity() > UI_ALLOWANCE / 4)
+        {
+            // Canonical page data is untouched. Refuse an unretainable actor
+            // preference rather than keeping bytes outside the UI reservation.
+            self.live.active_page_id = None;
+            error = Some(AgentContextError::Capacity {
+                resource: "page identity bytes",
+                limit: UI_ALLOWANCE / 4,
+            });
         }
         if self.live.selection.len() > MAX_SELECTION || self.live.charge() > UI_ALLOWANCE / 2 {
             self.live.selection = SelectionState::empty();
@@ -683,6 +709,7 @@ pub(super) fn validate_atomic_ui(state: &EditorState) -> Result<(), AgentContext
         selection: state.selection.clone(),
         viewport: state.viewport,
         active_page: state.ui.active_page_index,
+        active_page_id: current_page_id(state),
         tool: state.tool,
     };
     if ui.charge() > UI_ALLOWANCE / 2 {
@@ -704,3 +731,29 @@ fn selected_clipboard_charge(state: &EditorState) -> Result<usize, AgentContextE
 #[cfg(test)]
 #[path = "agent_context_tests.rs"]
 mod tests;
+
+pub(crate) fn current_page_id(state: &EditorState) -> Option<String> {
+    state
+        .doc
+        .pages
+        .as_ref()?
+        .get(state.ui.active_page_index)
+        .map(|page| page.id.clone())
+}
+fn resolve_page(state: &EditorState, hint: usize, id: Option<&str>) -> usize {
+    if let (Some(id), Some(pages)) = (id, state.doc.pages.as_ref()) {
+        if pages.get(hint).is_some_and(|page| page.id == id) {
+            return hint;
+        }
+        let mut found = pages.iter().enumerate().filter(|(_, page)| page.id == id);
+        if let Some((index, _)) = found.next() {
+            if found.next().is_none() {
+                return index;
+            }
+        }
+    }
+    hint.min(state.page_count().saturating_sub(1))
+}
+pub(crate) fn restore_active_page(state: &mut EditorState, hint: usize, id: Option<&str>) {
+    state.ui.active_page_index = resolve_page(state, hint, id);
+}

@@ -176,7 +176,8 @@ impl PendingDeletion {
     pub(super) fn restore(self, state: &mut EditorState) -> Result<(), ScopedHistoryError> {
         if let Some(patch) = self.compact(state)? {
             let mut patches = vec![patch::Patch::Clones(patch)];
-            let catalog = super::splice_exchange::Catalog::new(&state.history, &patches);
+            let catalog =
+                super::splice_exchange::Catalog::new(&state.history, &patches, &state.doc);
             if let Some(prepared) =
                 super::splice_exchange::Prepared::capture(&state.doc, &patches, &catalog, false)?
             {

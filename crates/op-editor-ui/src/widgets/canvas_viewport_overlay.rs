@@ -173,6 +173,9 @@ pub(crate) fn paint_node_stroke(
     world_rect: Rect,
     zoom: f32,
 ) {
+    if super::canvas_viewport_stroke_paint::paint(cx, node, world_rect, zoom) {
+        return;
+    }
     let r = node.corner_radius * zoom;
     let use_round = r > 0.5;
     let per_corner = scaled_non_uniform_corner_radii(node, zoom);

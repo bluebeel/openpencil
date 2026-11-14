@@ -188,10 +188,12 @@ pub(super) fn paint_ellipse(cx: &mut PaintCx<'_>, node: &SceneNode, world_rect: 
                 cx.backend.fill_oval(world_rect, fill);
             }
         }
-        if let Some(stroke) = node.stroke {
-            let w = stroke.width * zoom;
-            let (rect, _) = align_stroke_rect(world_rect, 0.0, w, stroke.align);
-            cx.backend.stroke_oval(rect, stroke.color, w);
+        if !crate::widgets::canvas_viewport_stroke_paint::paint(cx, node, world_rect, zoom) {
+            if let Some(stroke) = node.stroke {
+                let w = stroke.width * zoom;
+                let (rect, _) = align_stroke_rect(world_rect, 0.0, w, stroke.align);
+                cx.backend.stroke_oval(rect, stroke.color, w);
+            }
         }
         return;
     }
@@ -200,6 +202,9 @@ pub(super) fn paint_ellipse(cx: &mut PaintCx<'_>, node: &SceneNode, world_rect: 
         if let Some(fill) = node.fill {
             cx.backend.fill_polygon(poly, fill);
         }
+    }
+    if crate::widgets::canvas_viewport_stroke_paint::paint(cx, node, world_rect, zoom) {
+        return;
     }
     if let Some(stroke) = node.stroke {
         let w = stroke.width * zoom;
@@ -308,6 +313,9 @@ pub(crate) fn paint_svg_path_node(
                 node.even_odd_fill,
             );
         }
+    }
+    if crate::widgets::canvas_viewport_stroke_paint::paint(cx, node, world_rect, zoom) {
+        return;
     }
     if let Some(stroke) = node.stroke {
         cx.backend

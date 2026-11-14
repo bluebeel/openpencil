@@ -51,6 +51,7 @@ fn parent_path(doc: &PenDocument, scope: &Scope, ids: &[String]) -> Result<Vec<u
 pub(super) fn apply(doc: &mut PenDocument, operation: Operation) -> Result<Before, Error> {
     let scope = scope(operation.page());
     match operation {
+        Operation::CatalogLabel(_) => Err(Error::Precondition),
         Operation::Metadata(value) => {
             let roots = patch::roots_mut(doc, &scope).map_err(|_| Error::Precondition)?;
             let current = patch::node_mut(roots, &value.path).ok_or(Error::Precondition)?;

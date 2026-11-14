@@ -172,10 +172,21 @@ impl Charge {
             + self.optional_arc(node.image_src.as_ref())
             + self.optional_arc(node.image_thumbnail_src.as_ref())
             + node.video.as_ref().map_or(0, |v| self.arc(&v.src))
+            + node.stroke_paint.as_ref().map_or(0, |paint| {
+                size_of::<jian_scene::SceneStrokePaint>()
+                    + 32
+                    + paint.style.dash_pattern.capacity() * size_of::<f32>()
+                    + paint.layers.capacity() * size_of::<SceneFillLayer>()
+            })
             + node.fill_layers.capacity() * size_of::<SceneFillLayer>()
             + node
                 .fill_layers
                 .iter()
+                .chain(
+                    node.stroke_paint
+                        .iter()
+                        .flat_map(|paint| paint.layers.iter()),
+                )
                 .map(|layer| match layer {
                     SceneFillLayer::Solid { .. } => 0,
                     SceneFillLayer::Gradient { gradient, .. } => self.gradient(gradient),
@@ -224,6 +235,7 @@ fn scene_shape_guard(node: &SceneNode) {
         gradient: _,
         shader: _,
         stroke: _,
+        stroke_paint: _,
         text: _,
         text_runs: _,
         font_family: _,

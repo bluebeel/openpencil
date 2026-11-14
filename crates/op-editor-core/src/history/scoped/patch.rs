@@ -10,6 +10,24 @@ pub(crate) enum Scope {
     Root,
     Page { index: usize, id: String },
 }
+impl Scope {
+    pub(super) fn same_authority(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Root, Self::Root) => true,
+            (Self::Page { id: a, .. }, Self::Page { id: b, .. }) => a == b,
+            _ => false,
+        }
+    }
+    pub(super) fn current(&self, doc: &PenDocument) -> Self {
+        match self {
+            Self::Page { index, id } => Self::Page {
+                index: super::pages::index_hint(doc, *index, id).unwrap_or(*index),
+                id: id.clone(),
+            },
+            Self::Root => Self::Root,
+        }
+    }
+}
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct NodePatch {
     pub scope: Scope,
@@ -122,11 +140,9 @@ pub(super) fn roots<'a>(
     match scope {
         Scope::Root => Ok(&doc.children),
         Scope::Page { index, id } => {
-            let page = doc
-                .pages
-                .as_ref()
-                .and_then(|p| p.get(*index))
+            let resolved = super::pages::index_hint(doc, *index, id)
                 .ok_or(ScopedHistoryError::PageMissing { index: *index })?;
+            let page = &doc.pages.as_ref().unwrap()[resolved];
             if &page.id != id {
                 return Err(ScopedHistoryError::PageIdentityChanged { index: *index });
             }
@@ -141,11 +157,9 @@ pub(super) fn roots_mut<'a>(
     match scope {
         Scope::Root => Ok(&mut doc.children),
         Scope::Page { index, id } => {
-            let page = doc
-                .pages
-                .as_mut()
-                .and_then(|p| p.get_mut(*index))
+            let resolved = super::pages::index_hint(doc, *index, id)
                 .ok_or(ScopedHistoryError::PageMissing { index: *index })?;
+            let page = &mut doc.pages.as_mut().unwrap()[resolved];
             if &page.id != id {
                 return Err(ScopedHistoryError::PageIdentityChanged { index: *index });
             }

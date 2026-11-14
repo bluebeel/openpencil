@@ -9,20 +9,34 @@ use std::{marker::PhantomData, sync::Arc};
 pub(super) struct ReplaceChildren<'a, S> {
     inner: S,
     children: Option<&'a [Arc<SharedNode>]>,
+    omit_children: bool,
 }
 impl<'a, S> ReplaceChildren<'a, S> {
     pub fn new(inner: S, children: Option<&'a [Arc<SharedNode>]>) -> Self {
-        Self { inner, children }
+        Self {
+            inner,
+            children,
+            omit_children: false,
+        }
+    }
+    pub fn omitting_children(inner: S) -> Self {
+        Self {
+            inner,
+            children: None,
+            omit_children: true,
+        }
     }
 }
 pub(super) struct Map<'a, M> {
     inner: M,
     children: Option<&'a [Arc<SharedNode>]>,
+    omit_children: bool,
     pending: bool,
 }
 pub(super) struct Struct<'a, M> {
     inner: M,
     children: Option<&'a [Arc<SharedNode>]>,
+    omit_children: bool,
 }
 macro_rules! forward {($($name:ident($($arg:ident:$ty:ty),*));*$(;)?)=>{$(fn $name(self,$($arg:$ty),*)->Result<Self::Ok,Self::Error>{self.inner.$name($($arg),*)})*}}
 impl<'a, S: Serializer> Serializer for ReplaceChildren<'a, S> {
@@ -81,6 +95,7 @@ impl<'a, S: Serializer> Serializer for ReplaceChildren<'a, S> {
         Ok(Map {
             inner: self.inner.serialize_map(n)?,
             children: self.children,
+            omit_children: self.omit_children,
             pending: false,
         })
     }
@@ -92,6 +107,7 @@ impl<'a, S: Serializer> Serializer for ReplaceChildren<'a, S> {
         Ok(Struct {
             inner: self.inner.serialize_struct(n, len)?,
             children: self.children,
+            omit_children: self.omit_children,
         })
     }
     fn serialize_struct_variant(
@@ -115,10 +131,16 @@ impl<M: SerializeMap> SerializeMap for Map<'_, M> {
     type Error = M::Error;
     fn serialize_key<T: ?Sized + Serialize>(&mut self, key: &T) -> Result<(), Self::Error> {
         self.pending = key.serialize(Key::<Self::Error>(PhantomData))?;
+        if self.pending && self.omit_children {
+            return Ok(());
+        }
         self.inner.serialize_key(key)
     }
     fn serialize_value<T: ?Sized + Serialize>(&mut self, value: &T) -> Result<(), Self::Error> {
         if std::mem::take(&mut self.pending) {
+            if self.omit_children {
+                return Ok(());
+            }
             let c = self
                 .children
                 .ok_or_else(|| serde::ser::Error::custom("missing captured children"))?;
@@ -133,6 +155,9 @@ impl<M: SerializeMap> SerializeMap for Map<'_, M> {
         value: &V,
     ) -> Result<(), Self::Error> {
         if key.serialize(Key::<Self::Error>(PhantomData))? {
+            if self.omit_children {
+                return Ok(());
+            }
             let c = self
                 .children
                 .ok_or_else(|| serde::ser::Error::custom("missing captured children"))?;
@@ -154,6 +179,9 @@ impl<M: SerializeStruct> SerializeStruct for Struct<'_, M> {
         value: &T,
     ) -> Result<(), Self::Error> {
         if key == "children" {
+            if self.omit_children {
+                return Ok(());
+            }
             let c = self
                 .children
                 .ok_or_else(|| serde::ser::Error::custom("missing captured children"))?;

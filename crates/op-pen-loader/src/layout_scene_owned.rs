@@ -92,6 +92,13 @@ pub(crate) fn node_payload_to_scene(
             st
         })
     };
+    let stroke_paint = if stroke.is_some() {
+        node.stroke
+            .as_ref()
+            .and_then(|stroke| stroke_paint_to_scene(stroke, &node_id, var_table, [node.w, node.h]))
+    } else {
+        None
+    };
     let fill_layers = fill_layers_to_scene(&node.fill_layers, variable_fill, [node.w, node.h]);
     drop(node.fill_layers);
     let text_runs = text_runs_to_scene(&node.text_runs, paint_opacity);
@@ -134,6 +141,7 @@ pub(crate) fn node_payload_to_scene(
             .shader
             .map(|s| payload_shader_into_scene(s, paint_opacity, [node.w, node.h])),
         stroke,
+        stroke_paint,
         text: node.text,
         text_runs,
         font_family: node.font_family,

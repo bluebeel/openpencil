@@ -42,6 +42,7 @@ struct CodegenInput {
 
 struct ExportContext<'a> {
     doc: &'a PenDocument,
+    state: Option<&'a EditorState>,
     active_page: usize,
     selection: Vec<&'a str>,
 }
@@ -79,6 +80,7 @@ pub fn codegen_export_snapshot_for_call(
 ) -> CodegenExport {
     let context = ExportContext {
         doc: &state.doc,
+        state: Some(state),
         active_page: state.ui.active_page_index,
         selection: state.selection.set.iter().map(|id| id.as_str()).collect(),
     };
@@ -109,6 +111,7 @@ impl McpTool for CodegenExport {
         };
         ExportContext {
             doc: &input.doc,
+            state: None,
             active_page: input.active_page,
             selection: input.selection.iter().map(String::as_str).collect(),
         }
@@ -188,10 +191,12 @@ impl ExportContext<'_> {
 
     fn find_requested<S: AsRef<str>>(&self, ids: &[S]) -> Vec<Option<&PenNode>> {
         let mut found = HashMap::new();
-        for node in super::requested_nodes::find_in_forests(
-            self.pages().into_iter().map(|(_, roots)| roots),
-            ids,
-        ) {
+        let forests = self.pages().into_iter().map(|(_, roots)| roots);
+        let requested = match self.state {
+            Some(state) => super::requested_nodes::find_in_forests_for_state(state, forests, ids),
+            None => super::requested_nodes::find_in_forests(forests, ids),
+        };
+        for node in requested {
             // Ordered forests preserve first-page/DFS identity and requested
             // duplicates without rescanning later pages for resolved targets.
             found.entry(node.id_str()).or_insert(node);

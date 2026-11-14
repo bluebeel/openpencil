@@ -18,6 +18,7 @@ mod cohort;
 pub(crate) use boolean::forecast as boolean_command_bound;
 mod forward;
 mod forward_apply;
+mod forward_catalog;
 mod forward_mutation;
 mod forward_regions;
 mod forward_structure;
@@ -27,6 +28,7 @@ mod identity;
 mod incremental;
 mod incremental_regions;
 mod metadata_changes;
+mod pages;
 mod patch;
 mod ref_target;
 mod splice;
@@ -57,6 +59,8 @@ pub struct ScopedEditorSnapshot {
     pub(crate) actor_safe: bool,
     generation: u64,
     page_count: Option<usize>,
+    page_patch: Option<pages::Patch>,
+    active_page_id: Option<String>,
     scopes: Vec<Scope>,
     patches: Vec<Patch>,
     auxiliary_patches: Vec<auxiliary::Patch>,
@@ -560,6 +564,8 @@ impl ScopedEditorSnapshot {
             generation: state.document_generation,
             page_count: state.doc.pages.as_ref().map(Vec::len),
             scopes,
+            page_patch: None,
+            active_page_id: pages::active_id(state),
             patches: Vec::new(),
             auxiliary_patches: Vec::new(),
             page_headers: Vec::new(),
@@ -580,7 +586,8 @@ impl ScopedEditorSnapshot {
         }
     }
     pub(crate) fn has_canonical_changes(&self) -> bool {
-        !self.patches.is_empty()
+        self.page_patch.is_some()
+            || !self.patches.is_empty()
             || !self.auxiliary_patches.is_empty()
             || !self.page_headers.is_empty()
             || self.header.is_some()
@@ -605,11 +612,15 @@ impl ScopedEditorSnapshot {
         self.captures_components
     }
     pub fn retained_roots(&self) -> impl Iterator<Item = &Arc<SharedNode>> {
-        self.patches.iter().flat_map(Patch::retained_roots).chain(
-            self.auxiliary_patches
-                .iter()
-                .flat_map(auxiliary::Patch::retained_roots),
-        )
+        self.page_patch
+            .iter()
+            .flat_map(pages::Patch::retained_roots)
+            .chain(self.patches.iter().flat_map(Patch::retained_roots))
+            .chain(
+                self.auxiliary_patches
+                    .iter()
+                    .flat_map(auxiliary::Patch::retained_roots),
+            )
     }
     /// Includes every owned non-SharedNode allocation. Shared component roots
     /// and backing are exposed separately for identity-aware ledger accounting.
@@ -624,7 +635,12 @@ impl ScopedEditorSnapshot {
                     .map(|(key, value)| id(key) + value.capacity())
                     .sum::<usize>()
         }
-        let mut total = mem::size_of::<Self>()
+        let mut total = self
+            .page_patch
+            .as_ref()
+            .map_or(0, pages::Patch::storage_bytes)
+            + self.active_page_id.as_ref().map_or(0, String::capacity)
+            + mem::size_of::<Self>()
             + 2 * mem::size_of::<usize>()
             + self.scopes.capacity() * mem::size_of::<Scope>()
             + self.patches.capacity() * mem::size_of::<Patch>()
@@ -687,6 +703,17 @@ impl ScopedEditorSnapshot {
             return Err(ScopedHistoryError::PageShapeChanged);
         }
         for scope in &self.scopes {
+            if let Scope::Page { index, id } = scope {
+                if !state
+                    .doc
+                    .pages
+                    .as_ref()
+                    .and_then(|pages| pages.get(*index))
+                    .is_some_and(|page| page.id == *id)
+                {
+                    return Err(ScopedHistoryError::PageIdentityChanged { index: *index });
+                }
+            }
             patch::roots(&state.doc, scope)?;
         }
         Ok(())
@@ -695,7 +722,7 @@ impl ScopedEditorSnapshot {
     /// becomes the reverse entry; no permanent before/after document pair.
     pub(crate) fn exchange(&mut self, state: &mut EditorState) -> Result<(), ScopedHistoryError> {
         self.validate_shape(state)?;
-        let catalog = splice_exchange::Catalog::new(&state.history, &self.patches);
+        let catalog = splice_exchange::Catalog::new(&state.history, &self.patches, &state.doc);
         let splices =
             splice_exchange::Prepared::capture(&state.doc, &self.patches, &catalog, false)?;
         if let Some(prepared) = &splices {
@@ -712,6 +739,12 @@ impl ScopedEditorSnapshot {
             return Err(ScopedHistoryError::DocumentHeaderChanged);
         }
         let auxiliary = auxiliary::Prepared::capture(state, &self.auxiliary_patches, false)?;
+        let page = self
+            .page_patch
+            .as_ref()
+            .map(|patch| pages::Prepared::capture(state, patch))
+            .transpose()?;
+        let active = pages::Active::capture(state);
         let reverse =
             Self::auxiliary_with_components(state, self.scopes.clone(), self.captures_components);
         let mut reordered = patch::Reorders::default();
@@ -739,10 +772,12 @@ impl ScopedEditorSnapshot {
         if let Some(header) = &mut self.header {
             header.exchange(&mut state.doc);
         }
+        if let Some(page) = page {
+            page.exchange(state, self.page_patch.as_mut().unwrap());
+        }
         auxiliary.exchange(state, &mut self.auxiliary_patches);
         state.selection = mem::replace(&mut self.selection, reverse.selection);
-        state.ui.active_page_index =
-            mem::replace(&mut self.active_page_index, reverse.active_page_index);
+        pages::exchange_active(self, state, active);
         if self.captures_components {
             state.components = self.components.materialize();
             self.components = reverse.components;

@@ -73,11 +73,10 @@ pub(super) fn transformed_leaf(
     } else {
         similarity_scale(matrix)
     };
-    let source_stroke = resolve_svg_stroke(&[], &geometry_ctx, 1.0);
+    let source_stroke = resolve_svg_stroke_geometry(&[], &geometry_ctx, 1.0);
     // A scalar canonical stroke cannot represent anisotropy/shear or a custom
     // miter limit. Expand it in the correct coordinate space before baking.
-    let needs_outline = source_stroke.is_some()
-        && (scalar.is_none() || ctx.stroke_miter != 4.0 || stroke_raw.starts_with("url("));
+    let needs_outline = source_stroke.is_some() && (scalar.is_none() || ctx.stroke_miter != 4.0);
     let id = allocator.allocate(taken)?;
     let name = el.attr("id").unwrap_or(match el.tag.as_str() {
         "rect" => "Rect",
@@ -86,7 +85,7 @@ pub(super) fn transformed_leaf(
         _ => "Path",
     });
     if !needs_outline {
-        let mut stroke = resolve_svg_stroke(&[], &geometry_ctx, scalar.unwrap_or(1.0));
+        let mut stroke = resolve_svg_stroke_geometry(&[], &geometry_ctx, scalar.unwrap_or(1.0));
         if source_stroke.is_some() && stroke.is_none() {
             tracing::warn!(tag = %el.tag, "SVG transformed stroke is outside finite scalar range");
             return Ok(None);

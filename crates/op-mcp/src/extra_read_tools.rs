@@ -125,6 +125,18 @@ pub fn get_node_children_snapshot_for_call(
     let mut children = BTreeMap::new();
     let mut known_ids = std::collections::BTreeSet::new();
     if let Some(id) = args.get("node_id") {
+        if let Some((known, found)) = super::trusted_reads::global_children(state, id) {
+            if known {
+                known_ids.insert(id.clone());
+            }
+            if let Some(found) = found {
+                children.insert(id.clone(), found.iter().map(child_record).collect());
+            }
+            return GetNodeChildren {
+                children,
+                known_ids,
+            };
+        }
         let mut known = false;
         let mut found = None;
         match &state.doc.pages {

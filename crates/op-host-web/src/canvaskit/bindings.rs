@@ -23,6 +23,27 @@ extern "C" {
     /// a handle rather than borrow the host's.
     #[derive(Clone)]
     pub type OpCk;
+    #[wasm_bindgen(method,js_name=pushPaintSpace)]
+    pub(super) fn push_paint_space(this: &OpCk, x: f32, y: f32, w: f32, h: f32);
+    #[wasm_bindgen(method,js_name=popPaintSpace)]
+    pub(super) fn pop_paint_space(this: &OpCk);
+    #[wasm_bindgen(method,js_name=strokeGeometry)]
+    pub(super) fn stroke_geometry(
+        this: &OpCk,
+        kind: u8,
+        data: &str,
+        values: &[f32],
+        even_odd: bool,
+        width: f32,
+        sides: &[f32],
+        placement: u8,
+        cap: u8,
+        join: u8,
+        dashes: &[f32],
+        phase: f32,
+        color: &[f32],
+    );
+
     #[wasm_bindgen(method, js_name = beginFrame)]
     pub(super) fn begin_frame(this: &OpCk);
     #[wasm_bindgen(method, js_name = captureShadowBasis)]

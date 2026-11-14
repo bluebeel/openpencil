@@ -94,17 +94,18 @@ pub(super) fn draw(
     } else {
         2.0
     };
+    let paint_rect = backend.active_paint_rect(rect);
     let thumbnail = options
         .thumbnail
         .as_ref()
         .and_then(|thumb| backend.raster_image(thumb.id))
         .and_then(|image| {
-            let local = mapping(rect, &image, options)?;
+            let local = mapping(paint_rect, &image, options)?;
             adequate(canvas, &local.local, grid).then_some((image, local))
         });
     let selected = thumbnail.or_else(|| {
         let image = backend.raster_image(id)?;
-        let local = mapping(rect, &image, options)?;
+        let local = mapping(paint_rect, &image, options)?;
         Some((image, local))
     });
     let Some((image, local)) = selected else {
@@ -115,13 +116,15 @@ pub(super) fn draw(
         options.corner_radius.max(0.0),
         options.corner_radius.max(0.0),
     );
-    let Some(shader) = shader::make_with_vertex_uv(
+    let Some(shader) = shader::make_with_paint_rect(
         canvas,
         &image,
         &local.local,
         local.rotation_uv,
         options.transform.or(local.rotation_uv),
         &shape,
+        super::to_sk_rect(paint_rect),
+        backend.has_paint_space() && options.mode != ImageDrawMode::Fit,
         if point { 0.0 } else { grid },
     ) else {
         if point {

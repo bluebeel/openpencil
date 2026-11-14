@@ -39,7 +39,7 @@ use op_editor_core::EditorState;
 use serde_json::Value;
 
 use super::codegen_plan_store::{
-    assemble_plan, clean_plan, create_plan_for_roots, submit_chunk_result,
+    assemble_plan, clean_plan, create_plan_for_roots, create_plan_for_state, submit_chunk_result,
 };
 use super::read_nodes::{page_nodes_snapshots, PageNodes};
 use super::{McpTool, ToolErrorCode, ToolOutcome};
@@ -82,13 +82,14 @@ impl McpTool for CodegenPlan {
             .get("pageId")
             .and_then(|id| self.pages.iter().find(|page| page.id == *id))
             .or_else(|| self.pages.first());
-        codegen_plan_result(page.map_or(&[], |page| page.roots.as_slice()), args)
+        codegen_plan_result(page.map_or(&[], |page| page.roots.as_slice()), args, None)
     }
 }
 
 fn codegen_plan_result(
     roots: &[jian_ops_schema::node::PenNode],
     args: &BTreeMap<String, String>,
+    state: Option<&EditorState>,
 ) -> ToolOutcome {
     let Some(raw_plan) = args.get("plan") else {
         // TS: no plan in the forwarded body → plan.post.ts 400
@@ -107,7 +108,11 @@ fn codegen_plan_result(
             );
         }
     };
-    match create_plan_for_roots(&plan, roots) {
+    let result = match state {
+        Some(state) => create_plan_for_state(&plan, roots, Some(state)),
+        None => create_plan_for_roots(&plan, roots),
+    };
+    match result {
         Ok(result) => ToolOutcome::OkJson(pretty(&result)),
         Err(message) => ToolOutcome::Err(
             ToolErrorCode::ToolFailed,
@@ -224,7 +229,7 @@ pub fn codegen_plan_snapshot_for_call(
     };
     CodegenPlan {
         pages: Vec::new(),
-        prepared: Some(codegen_plan_result(roots, args)),
+        prepared: Some(codegen_plan_result(roots, args, Some(state))),
     }
 }
 

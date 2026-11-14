@@ -15,6 +15,37 @@ pub(super) fn apply(
     metrics: &metrics::Metrics,
     capture: &mut Option<CommandEditCapture>,
 ) -> Outcome {
+    if matches!(
+        command,
+        EditorCommand::AddPage { .. }
+            | EditorCommand::DuplicatePage { .. }
+            | EditorCommand::DeletePage { .. }
+            | EditorCommand::ReorderPage { .. }
+    ) {
+        let mut attempted = false;
+        let result = editor.try_apply_captured_pages(command.clone(), capture, |state, bytes| {
+            attempted = true;
+            let reserved = budget.reserve_pages(state, command, input, bytes);
+            metrics.observe_forecast(budget.forecast());
+            if let Err(reason) = reserved {
+                metrics.refuse(reason);
+                false
+            } else {
+                true
+            }
+        });
+        return match result {
+            Some(applied) => Outcome::Applied(applied),
+            None => {
+                if !attempted {
+                    metrics
+                        .strict_capture_fallback
+                        .fetch_add(1, Ordering::Relaxed);
+                }
+                Outcome::Isolated
+            }
+        };
+    }
     if matches!(command, EditorCommand::Undo | EditorCommand::Redo) {
         let mut attempted = false;
         let result = editor.try_apply_captured_history(command.clone(), capture, |state, bytes| {

@@ -155,7 +155,7 @@ impl MovePatch {
         self.to.rebase_identity(&self.scope, index)
     }
     pub(super) fn conflicts_splice(&self, splice: &super::splice::SplicePatch) -> bool {
-        self.scope == splice.scope
+        self.scope.same_authority(&splice.scope)
             && (splice.contains_changed(&self.node_id)
                 || self
                     .from
@@ -171,7 +171,7 @@ impl MovePatch {
                 || self.to.id == splice.parent_id)
     }
     pub(super) fn conflicts_node(&self, node: &super::patch::NodePatch) -> bool {
-        if node.scope != self.scope {
+        if !node.scope.same_authority(&self.scope) {
             return false;
         }
         if node.metadata_only {

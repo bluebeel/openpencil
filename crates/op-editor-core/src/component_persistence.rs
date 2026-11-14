@@ -289,6 +289,7 @@ fn restore(doc: &PenDocument, rows: Vec<Row>) -> ComponentLibrary {
                     id.clone(),
                     DocumentNodeLocation {
                         page_index: None,
+                        page_id: None,
                         child_path: Box::new([]),
                     },
                 );
@@ -319,6 +320,7 @@ fn find_roots<'a>(
     fn visit<'a>(
         nodes: &'a [PenNode],
         page: Option<usize>,
+        page_id: Option<&Arc<str>>,
         path: &mut Vec<usize>,
         wanted: &HashSet<&str>,
         found: &mut HashMap<&'a str, (&'a PenNode, DocumentNodeLocation)>,
@@ -331,13 +333,14 @@ fn find_roots<'a>(
                         node,
                         DocumentNodeLocation {
                             page_index: page,
+                            page_id: page_id.cloned(),
                             child_path: path.clone().into_boxed_slice(),
                         },
                     )
                 });
             }
             if let Some(children) = node.children() {
-                visit(children, page, path, wanted, found);
+                visit(children, page, page_id, path, wanted, found);
             }
             path.pop();
         }
@@ -349,53 +352,82 @@ fn find_roots<'a>(
     let mut path = Vec::new();
     if let Some(pages) = &doc.pages {
         for (index, page) in pages.iter().enumerate() {
-            visit(&page.children, Some(index), &mut path, wanted, &mut found);
+            let id: Arc<str> = Arc::from(page.id.as_str());
+            visit(
+                &page.children,
+                Some(index),
+                Some(&id),
+                &mut path,
+                wanted,
+                &mut found,
+            );
         }
     }
-    visit(&doc.children, None, &mut path, wanted, &mut found);
+    visit(&doc.children, None, None, &mut path, wanted, &mut found);
     found
 }
 impl ComponentLibrary {
-    /// Reindex live canonical definitions while retaining independent catalog
-    /// labels and owned external prototypes. Whole-file replacement starts fresh.
+    /// Refresh canonical roots for explicitly registered document-backed rows.
+    /// Membership/order/labels remain authoritative; discovery belongs to create,
+    /// import and page commands. A structural feed must not resurrect a deleted
+    /// registration merely because its canonical source is still reusable.
     pub fn rebuild_from_document_preserving_catalog(&mut self, doc: &PenDocument) {
-        let mut defaults = Self::from_document(doc);
-        let positions = defaults
-            .components
-            .iter()
-            .enumerate()
-            .map(|(i, c)| (c.id.clone(), i))
-            .collect::<HashMap<_, _>>();
-        let old_backing = std::mem::take(&mut self.document_backing);
-        let old = std::mem::take(&mut self.components);
-        let mut components = Vec::with_capacity(old.len() + defaults.components.len());
-        let mut backing = HashMap::new();
-        let mut represented = HashSet::new();
-        for mut component in old {
-            represented.insert(component.id.clone());
-            if old_backing.contains_key(&component.id) {
-                if let Some(index) = positions.get(&component.id).copied() {
-                    component.root = shallow_root(&defaults.components[index].root);
-                    if let Some(location) = defaults.document_backing.get(&component.id) {
-                        backing.insert(component.id.clone(), location.clone());
-                    }
+        if self.document_backing.is_empty() {
+            return;
+        }
+        let mut found = HashMap::new();
+        let mut wanted = HashSet::new();
+        for component in &self.components {
+            if let Some(location) = self.document_backing.get(&component.id) {
+                if let Some(root) = resolve_document_location(doc, location, component.id.as_str())
+                {
+                    found.insert(
+                        component.id.as_str(),
+                        (root, std::borrow::Cow::Borrowed(location)),
+                    );
                 } else {
-                    continue;
+                    wanted.insert(component.id.as_str());
                 }
             }
-            components.push(component);
         }
-        for component in defaults.components.drain(..) {
-            if !represented.contains(&component.id) {
-                if let Some(location) = defaults.document_backing.get(&component.id) {
-                    backing.insert(component.id.clone(), location.clone());
+        // Every stale route shares one canonical first-identity walk. Unresolved
+        // entries retain their existing fallback prototype and registration.
+        found.extend(
+            find_roots(doc, &wanted)
+                .into_iter()
+                .map(|(id, (root, location))| (id, (root, std::borrow::Cow::Owned(location)))),
+        );
+        let mut replacements = Vec::new();
+        for (index, component) in self.components.iter().enumerate() {
+            if let Some((root, location)) = found.get(component.id.as_str()) {
+                let header =
+                    (!crate::history_snapshot::SharedNode::metadata_equal_ignoring_children(
+                        &component.root,
+                        root,
+                    ))
+                    .then(|| shallow_root(root));
+                if header.is_some()
+                    || self.document_backing.get(&component.id) != Some(location.as_ref())
+                {
+                    replacements.push((index, header, location.as_ref().clone()));
                 }
-                components.push(component);
             }
         }
-        self.components = components;
-        self.document_backing = Arc::new(backing);
-        self.invalidate_sorted_options();
+        drop(found);
+        drop(wanted);
+        if replacements.is_empty() {
+            return;
+        }
+        let backing = Arc::make_mut(&mut self.document_backing);
+        for (index, header, location) in replacements {
+            let component = &mut self.components[index];
+            if let Some(header) = header {
+                component.root = header;
+            }
+            backing.insert(component.id.clone(), location);
+        }
+        // Names/order/identity are unchanged, so the sorted option cache remains
+        // valid and owned external prototypes never need cloning.
     }
 }
 

@@ -4,7 +4,11 @@ use op_editor_core::EditorCommand as C;
 pub(crate) fn tool(name: &str) -> bool {
     matches!(
         name,
-        "undo"
+        "add_page"
+            | "duplicate_page"
+            | "delete_page"
+            | "reorder_page"
+            | "undo"
             | "redo"
             | "set_variable_color"
             | "set_variable_number"
@@ -54,7 +58,11 @@ pub(crate) fn tool(name: &str) -> bool {
 pub(crate) fn structural_tool(name: &str) -> bool {
     matches!(
         name,
-        "undo"
+        "add_page"
+            | "duplicate_page"
+            | "delete_page"
+            | "reorder_page"
+            | "undo"
             | "redo"
             | "insert_node"
             | "delete_node"
@@ -76,6 +84,12 @@ pub(crate) fn structural_tool(name: &str) -> bool {
 pub(crate) fn command(command: &C) -> bool {
     // History exchange is one actor operation, never a child of atomic Batch.
     // Core still validates the selected scoped entry and its actual receipt.
+    if matches!(
+        command,
+        C::AddPage { .. } | C::DuplicatePage { .. } | C::DeletePage { .. } | C::ReorderPage { .. }
+    ) {
+        return true;
+    }
     if matches!(command, C::Undo | C::Redo) {
         return true;
     }

@@ -9,6 +9,7 @@ use std::fmt::Write as _;
 
 mod batch;
 mod gradient_geometry;
+mod stroke_paint;
 pub use batch::SvgNodeBatch;
 
 mod bounds;
@@ -236,6 +237,7 @@ fn emit_node_defs(out: &mut String, n: &SceneNode, sibling_mask: bool) {
         return;
     }
     let id = svg_id(&n.id);
+    stroke_paint::emit_defs(out, n);
     if let Some(shader) = &n.shader {
         if let Some(paint) = shader.gradient.as_deref() {
             gradient_geometry::emit(
@@ -401,6 +403,9 @@ fn emit_polygon(out: &mut String, n: &SceneNode) {
 }
 
 fn emit_line(out: &mut String, n: &SceneNode) {
+    if n.stroke_paint.is_some() {
+        return;
+    }
     let (color, width) = match n.stroke {
         Some(s) => (s.color, s.width),
         None => (n.fill.unwrap_or(Color::BLACK), 1.5),
@@ -614,8 +619,10 @@ fn xml_escape(text: &str) -> escaped::Escaped<'_> {
 
 fn fill_stroke_attrs(n: &SceneNode) -> String {
     let mut s = fill_attrs(n);
-    if let Some(stroke) = n.stroke {
-        s.push_str(&stroke_attrs(stroke.color, stroke.width));
+    if n.stroke_paint.is_none() {
+        if let Some(stroke) = n.stroke {
+            s.push_str(&stroke_attrs(stroke.color, stroke.width));
+        }
     }
     s
 }

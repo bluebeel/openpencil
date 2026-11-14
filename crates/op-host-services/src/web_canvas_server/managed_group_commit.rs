@@ -277,6 +277,7 @@ struct Transaction<'s, 'a, 'q> {
     before_version: u64,
     last_changed: Option<usize>,
     live_selection: Option<op_editor_core::SelectionState>,
+    live_page: Option<(usize, Option<String>)>,
     persisted: bool,
     finished: bool,
 }
@@ -314,10 +315,20 @@ impl Transaction<'_, '_, '_> {
                 + selection.set.len() * std::mem::size_of::<op_editor_core::NodeId>()
                 + selection.anchor.as_str().len()
                 + std::mem::size_of::<op_editor_core::SelectionState>();
+            let bytes = bytes
+                .saturating_add(
+                    crate::mcp_serve::agent_context::current_page_id(&self.state.editor)
+                        .map_or(0, |id| id.capacity()),
+                )
+                .saturating_add(64);
             if bytes > 2 * 1024 * 1024 || self.budget.reserve_live_selection(bytes).is_err() {
                 self.replies[index] = Some(Reply::Isolated);
                 return;
             }
+            self.live_page = Some((
+                self.state.editor.ui.active_page_index,
+                crate::mcp_serve::agent_context::current_page_id(&self.state.editor),
+            ));
             self.live_selection = Some(selection.clone());
         }
         let policy = self.state.collab_policy();
@@ -491,6 +502,13 @@ impl Transaction<'_, '_, '_> {
             if let Some(selection) = self.live_selection.take() {
                 self.state.editor.selection = selection;
             }
+            if let Some((index, id)) = self.live_page.take() {
+                crate::mcp_serve::agent_context::restore_active_page(
+                    &mut self.state.editor,
+                    index,
+                    id.as_deref(),
+                );
+            }
         }
         if !clean {
             self.state.recovery.trip();
@@ -651,6 +669,7 @@ fn run_group(ctx: &ConnCtx<'_>, owner: &Groups, requests: &[Request]) -> Vec<Rep
         before_version,
         last_changed: None,
         live_selection: None,
+        live_page: None,
         persisted: false,
         finished: false,
     };

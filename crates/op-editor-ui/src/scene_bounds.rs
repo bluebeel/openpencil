@@ -91,7 +91,10 @@ fn has_own_paint(n: &SceneNode, rules: PaintCornerRules) -> bool {
 /// Frame/Other contribute only when a counted paint source is set (see
 /// [`PaintCornerRules`]); Path with empty `points` is invisible.
 pub fn own_paint_corners(n: &SceneNode, rules: PaintCornerRules) -> Option<Vec<glam::Vec2>> {
-    let stroke_pad = n.stroke.map(|s| s.width * 0.5).unwrap_or(0.0);
+    let stroke_pad = n
+        .stroke
+        .map(|s| s.width * if n.stroke_paint.is_some() { 4.0 } else { 0.5 })
+        .unwrap_or(0.0);
     let (x0, y0, x1, y1) = match &n.kind {
         NodeKind::Rect | NodeKind::Ellipse | NodeKind::Polygon | NodeKind::Line => {
             let nr = normalize_rect(n.bounds);

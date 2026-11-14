@@ -10,7 +10,13 @@ struct Collector<'a> {
     positions: HashMap<NodeId, usize>,
 }
 impl<'a> Collector<'a> {
-    fn walk(&mut self, nodes: &'a [PenNode], page_index: Option<usize>, path: &mut Vec<usize>) {
+    fn walk(
+        &mut self,
+        nodes: &'a [PenNode],
+        page_index: Option<usize>,
+        page_id: Option<&Arc<str>>,
+        path: &mut Vec<usize>,
+    ) {
         for (index, node) in nodes.iter().enumerate() {
             path.push(index);
             let id = node.id_str();
@@ -24,6 +30,7 @@ impl<'a> Collector<'a> {
                         node,
                         DocumentNodeLocation {
                             page_index,
+                            page_id: page_id.cloned(),
                             child_path: path.clone().into_boxed_slice(),
                         },
                     ),
@@ -43,6 +50,7 @@ impl<'a> Collector<'a> {
                         },
                         DocumentNodeLocation {
                             page_index,
+                            page_id: page_id.cloned(),
                             child_path: path.clone().into_boxed_slice(),
                         },
                         &mut self.positions,
@@ -50,7 +58,7 @@ impl<'a> Collector<'a> {
                 }
             }
             if let Some(children) = node.children() {
-                self.walk(children, page_index, path);
+                self.walk(children, page_index, page_id, path);
             }
             path.pop();
         }
@@ -74,10 +82,11 @@ pub(super) fn from_document(doc: &PenDocument) -> ComponentLibrary {
     let mut path = Vec::new();
     if let Some(pages) = &doc.pages {
         for (index, page) in pages.iter().enumerate() {
-            collector.walk(&page.children, Some(index), &mut path);
+            let id: Arc<str> = Arc::from(page.id.as_str());
+            collector.walk(&page.children, Some(index), Some(&id), &mut path);
         }
     }
-    collector.walk(&doc.children, None, &mut path);
+    collector.walk(&doc.children, None, None, &mut path);
     // Preserve original conversion-entry order: repeated ids replace metadata,
     // and an absent root name falls back to that entry's own caller-stable key.
     for entry in doc.conversion.iter().flat_map(|spec| &spec.entries) {

@@ -7,6 +7,8 @@ use skia_safe::{
 const SOURCE: &str = r#"
 uniform shader image;
 uniform float4 bounds;
+uniform float4 paintBounds;
+uniform float clampOutside;
 uniform float4 topRadii;
 uniform float4 bottomRadii;
 uniform float4 deviceInverse;
@@ -72,11 +74,11 @@ float4 sampleBytes(float2 p, float2 offset) {
     float2 uv = float2(imageInverse.x * q.x + imageInverse.y * q.y,
                        imageInverse.z * q.x + imageInverse.w * q.y) + imageOffset;
     if (directRotationUv != 0.0) {
-        float2 unit = (q - bounds.xy) / (bounds.zw - bounds.xy);
+        float2 unit = (q - paintBounds.xy) / (paintBounds.zw - paintBounds.xy);
         uv = float2(imageInverse.x * unit.x + imageInverse.y * unit.y,
                     imageInverse.z * unit.x + imageInverse.w * unit.y) + imageOffset;
     }
-    if (inside(q) == 0.0 || (directRotationUv == 0.0 && (any(lessThan(uv, float2(0.0))) || any(greaterThan(uv, float2(1.0)))))) return float4(0.0);
+    if (inside(q) == 0.0 || (directRotationUv == 0.0 && clampOutside == 0.0 && (any(lessThan(uv, float2(0.0))) || any(greaterThan(uv, float2(1.0)))))) return float4(0.0);
     // The source pass writes the point-sampled premultiplied color to RGBA8
     // before its 2x resolve. Recover those byte values before averaging.
     float4 color = float4(image.eval(nearestTexel(uv)));
@@ -155,6 +157,7 @@ pub(super) fn make_with_rotation(
     make_with_vertex_uv(canvas, image, local, rotation_uv, None, shape, grid)
 }
 
+#[cfg(test)]
 pub(super) fn make_with_vertex_uv(
     canvas: &Canvas,
     image: &Image,
@@ -162,6 +165,29 @@ pub(super) fn make_with_vertex_uv(
     rotation_uv: Option<[f32; 6]>,
     vertex_uv: Option<[f32; 6]>,
     shape: &RRect,
+    grid: f32,
+) -> Option<Shader> {
+    make_with_paint_rect(
+        canvas,
+        image,
+        local,
+        rotation_uv,
+        vertex_uv,
+        shape,
+        *shape.rect(),
+        false,
+        grid,
+    )
+}
+pub(super) fn make_with_paint_rect(
+    canvas: &Canvas,
+    image: &Image,
+    local: &Matrix,
+    rotation_uv: Option<[f32; 6]>,
+    vertex_uv: Option<[f32; 6]>,
+    shape: &RRect,
+    paint_rect: skia_safe::Rect,
+    clamp_outside: bool,
     grid: f32,
 ) -> Option<Shader> {
     let device = canvas.local_to_device_as_3x3();
@@ -189,12 +215,17 @@ pub(super) fn make_with_vertex_uv(
             uv.translate_y() / h,
         ]
     });
-    let vertex = vertex_uv.and_then(|uv| super::varyings::uniforms(&device, *rect, uv, grid));
+    let vertex = vertex_uv.and_then(|uv| super::varyings::uniforms(&device, paint_rect, uv, grid));
     let uniforms = [
         rect.left,
         rect.top,
         rect.right,
         rect.bottom,
+        paint_rect.left,
+        paint_rect.top,
+        paint_rect.right,
+        paint_rect.bottom,
+        if clamp_outside { 1.0 } else { 0.0 },
         radii[0].x,
         radii[0].y,
         radii[1].x,
@@ -220,7 +251,7 @@ pub(super) fn make_with_vertex_uv(
     ];
     // Both program layouts are fixed. Preserve every native-endian f32 bit
     // while avoiding a short-lived heap Vec before Skia copies its uniforms.
-    const MAX_UNIFORM_BYTES: usize = (26 + super::varyings::FLOATS) * 4;
+    const MAX_UNIFORM_BYTES: usize = (31 + super::varyings::FLOATS) * 4;
     let mut storage = [0u8; MAX_UNIFORM_BYTES];
     let floats = uniforms
         .iter()
@@ -245,7 +276,17 @@ pub(super) fn make_with_vertex_uv(
         (false, false) => EFFECT.with(build),
     };
     if result.is_none() && vertex.is_some() {
-        make_with_vertex_uv(canvas, image, local, rotation_uv, None, shape, grid)
+        make_with_paint_rect(
+            canvas,
+            image,
+            local,
+            rotation_uv,
+            None,
+            shape,
+            paint_rect,
+            clamp_outside,
+            grid,
+        )
     } else {
         result
     }
@@ -261,7 +302,7 @@ mod tests {
             let effect = make_effect(small, true).expect("vertex interpolation program");
             assert_eq!(
                 effect.uniform_size(),
-                (26 + super::super::varyings::FLOATS) * 4
+                (31 + super::super::varyings::FLOATS) * 4
             );
         }
     }

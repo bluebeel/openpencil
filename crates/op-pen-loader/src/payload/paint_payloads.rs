@@ -10,6 +10,10 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct StrokePayload {
+    /// Retained only when the legacy one-solid/default-style projection loses
+    /// paint layers or stroke styling. Canonical fields remain fully typed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<Box<jian_ops_schema::style::PenStrokeBody>>,
     /// The stroke's resolved solid paint, or `None` when the author declared
     /// a stroke with no resolvable colour at all (`"stroke": {"thickness": 1}`
     /// with no `fill` key, `"fill": []`, or a gradient with no usable stops).

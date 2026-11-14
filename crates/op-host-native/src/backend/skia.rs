@@ -73,15 +73,18 @@ mod gradient;
 mod image;
 mod image_diagnostics;
 mod image_nearest16;
+mod image_paint_field;
 mod image_precision;
 mod image_rotation;
 mod image_supersample;
 mod layer;
+mod paint_space;
 mod path;
 mod raster_point;
 mod rounded_shadow;
 mod sampled_clip;
 mod shaped_text;
+mod stroke_paint;
 mod svg_raster_cache;
 mod text;
 mod vector_text;
@@ -127,6 +130,7 @@ pub struct NativeBackend {
     /// Small, paint-thread-decoded blur-up rasters. This cache is isolated
     /// from the full-resolution worker-populated image LRU.
     thumb_cache: image::ThumbCache,
+    paint_spaces: Vec<op_editor_ui::Rect>,
     svg_path_cache: std::collections::HashMap<u64, path::SvgPathCacheEntry>,
     svg_path_cache_order: std::collections::VecDeque<u64>,
     /// Sum of `SvgPathCacheEntry` d-string lengths — the byte proxy the
@@ -263,6 +267,7 @@ impl NativeBackend {
             image_cache_tick: 0,
             raster_generation: 0,
             thumb_cache: image::ThumbCache::default(),
+            paint_spaces: Vec::new(),
             svg_path_cache: std::collections::HashMap::new(),
             svg_path_cache_order: std::collections::VecDeque::new(),
             svg_path_cache_bytes: 0,
@@ -783,7 +788,6 @@ mod font_fallback_tests;
 #[cfg(test)]
 #[path = "skia/complex_script_tests.rs"]
 mod complex_script_tests;
-
 // Gated off Windows: exercises `jian_skia::register_imported_font` (skia
 // `FontMgr::new_from_data`, DirectWrite on Windows) from parallel test-worker
 // threads, which segfaults in Windows CI. Production resolves fonts on the
@@ -791,6 +795,5 @@ mod complex_script_tests;
 #[cfg(all(test, not(target_os = "windows")))]
 #[path = "skia/font_import_tests.rs"]
 mod font_import_tests;
-
 #[cfg(test)]
 mod rounded_shadow_tests;

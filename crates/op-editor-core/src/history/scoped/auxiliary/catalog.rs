@@ -66,6 +66,7 @@ impl Entry {
             + self.backing.as_ref().map_or(0, |location| {
                 mem::size_of::<DocumentNodeLocation>()
                     + location.child_path.len() * mem::size_of::<usize>()
+                    + location.page_id.as_ref().map_or(0, |id| 32 + id.len())
             })
     }
 }
@@ -260,7 +261,11 @@ pub(super) struct Prepared {
     recent: Vec<Anchors>,
 }
 impl Prepared {
-    pub(super) fn capture(state: &EditorState, patch: &Patch) -> Result<Self, ScopedHistoryError> {
+    pub(super) fn capture(
+        state: &EditorState,
+        patch: &Patch,
+        current: &[super::Patch],
+    ) -> Result<Self, ScopedHistoryError> {
         let live = position(state, &patch.id)?;
         match (&patch.expected, live) {
             (Some(expected), Some(index)) if expected.matches(state, index) => {}
@@ -299,6 +304,12 @@ impl Prepared {
                         known.push(entry.anchor(false));
                         known.extend(entry.recent.iter().cloned());
                     }
+                }
+            }
+            for edit in current {
+                if let super::Patch::Catalog(entry) = edit {
+                    known.push(entry.anchor(false));
+                    known.extend(entry.recent.iter().cloned());
                 }
             }
             known.push(patch.anchor(true));

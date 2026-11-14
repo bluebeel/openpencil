@@ -133,7 +133,23 @@ pub(super) fn mesh(
     colors: &[Color],
     opacity: f32,
 ) -> bool {
-    if !jian_skia::raster_sampling::is_point_sampling() {
+    mesh_field(
+        canvas, rect, rect, radius, rows, cols, colors, opacity, true,
+    )
+}
+#[allow(clippy::too_many_arguments)]
+pub(super) fn mesh_field(
+    canvas: &Canvas,
+    coverage: Rect,
+    rect: Rect,
+    radius: f32,
+    rows: u32,
+    cols: u32,
+    colors: &[Color],
+    opacity: f32,
+    point_only: bool,
+) -> bool {
+    if point_only && !jian_skia::raster_sampling::is_point_sampling() {
         return false;
     }
     let (rows, cols) = (rows.max(2), cols.max(2));
@@ -196,7 +212,7 @@ pub(super) fn mesh(
     paint.set_shader(shader);
     paint.set_alpha_f(opacity.clamp(0.0, 1.0));
     jian_skia::raster_sampling::configure_paint(&mut paint);
-    draw_round_rect(canvas, to_sk_rect(rect), radius, radius, &paint);
+    draw_round_rect(canvas, to_sk_rect(coverage), radius, radius, &paint);
     true
 }
 

@@ -23,7 +23,7 @@ fn plan(state: &EditorState, id: &NodeId, name: Option<&str>) -> Option<Plan> {
         .as_ref()
         .filter(|pages| !pages.is_empty())
         .map(|pages| state.ui.active_page_index.min(pages.len() - 1));
-    let same_page = location.page_index == active_page;
+    let same_page = location.page_index_in(&state.doc)? == active_page;
     let active = if same_page {
         location.child_path.clone()
     } else {

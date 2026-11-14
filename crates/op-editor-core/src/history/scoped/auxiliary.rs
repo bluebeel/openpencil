@@ -9,8 +9,14 @@ use jian_ops_schema::variable::VariableDefinition;
 use std::mem;
 #[path = "auxiliary/catalog.rs"]
 mod catalog;
+#[path = "auxiliary/forward.rs"]
+mod forward;
 #[path = "auxiliary/lifecycle.rs"]
 mod lifecycle;
+pub(super) use forward::Label as ForwardLabel;
+#[path = "auxiliary/page_catalog.rs"]
+mod page_catalog;
+pub(super) use page_catalog::{AddedPage, PreparedPageCatalog};
 #[path = "auxiliary_plan.rs"]
 mod plan;
 #[derive(Debug)]
@@ -252,7 +258,10 @@ impl Patch {
                 Self::Page {
                     index: b, id: y, ..
                 },
-            ) => a == b && x == y,
+            ) => {
+                let _ = (a, b);
+                x == y
+            }
             (Self::Component { id: a, .. }, Self::Component { id: b, .. }) => a == b,
             _ => false,
         }
@@ -294,7 +303,7 @@ impl Prepared {
         let mut catalogs = Vec::with_capacity(patches.len());
         for patch in patches {
             if let Patch::Catalog(patch) = patch {
-                catalogs.push(Some(catalog::Prepared::capture(state, patch)?));
+                catalogs.push(Some(catalog::Prepared::capture(state, patch, patches)?));
                 indices.push(None);
                 continue;
             }
@@ -317,16 +326,12 @@ impl Prepared {
                     expected,
                     ..
                 } => {
-                    if !state
-                        .doc
-                        .pages
-                        .as_ref()
-                        .and_then(|pages| pages.get(*index))
-                        .is_some_and(|page| page.id == *id && page.name == *expected)
-                    {
+                    let index = super::pages::index_hint(&state.doc, *index, id)
+                        .ok_or(ScopedHistoryError::NodePathChanged)?;
+                    if state.doc.pages.as_ref().unwrap()[index].name != *expected {
                         return Err(ScopedHistoryError::NodePathChanged);
                     }
-                    Some(*index)
+                    Some(index)
                 }
                 Patch::Component { id, expected, .. } => {
                     let mut found = state

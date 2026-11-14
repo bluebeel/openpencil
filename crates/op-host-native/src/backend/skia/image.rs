@@ -50,9 +50,10 @@ impl NativeBackend {
         {
             return;
         }
+        let paint_rect = self.active_paint_rect(rect);
         let rotation_uv = self.raster_image(id).and_then(|image| {
             super::image_rotation::supported(
-                rect,
+                paint_rect,
                 [image.width() as f32, image.height() as f32],
                 options,
             )
@@ -322,6 +323,23 @@ impl NativeBackend {
         let Some(image) = self.raster_image(id) else {
             return;
         };
+        if self.has_paint_space() {
+            super::image_paint_field::draw(
+                self,
+                canvas,
+                rect,
+                &image,
+                mode,
+                adjustments,
+                opacity,
+                transform,
+                blend_mode,
+                original_size,
+                tile_scale,
+            );
+            return;
+        }
+
         if super::image_supersample::draw(
             canvas,
             to_sk_rect(rect),
@@ -633,7 +651,6 @@ fn draw_tiled_image(
 
     canvas.restore_to_count(save);
 }
-
 fn normalized_tile_scale(scale: f32) -> f32 {
     if scale.is_finite() && scale > 0.0 {
         scale
@@ -641,13 +658,11 @@ fn normalized_tile_scale(scale: f32) -> f32 {
         1.0
     }
 }
-
 fn valid_original_size(size: Option<[f32; 2]>) -> Option<[f32; 2]> {
     size.filter(|[width, height]| {
         width.is_finite() && height.is_finite() && *width > 0.0 && *height > 0.0
     })
 }
-
 /// Keep pathological but positive wire values from producing billions of
 /// individual draws. Dense sub-pixel repetition is visually indistinguishable
 /// beyond this bound, while the shared multiplier preserves bitmap aspect.
@@ -659,11 +674,9 @@ fn effective_tile_scale(rect: Rect, image_w: f32, image_h: f32, scale: f32) -> f
     let min_for_y = rect.size.y.abs() / (image_h * MAX_REPEATS_PER_AXIS);
     authored.max(min_for_progress).max(min_for_x).max(min_for_y)
 }
-
 #[cfg(test)]
 mod crop_transform_tests {
     use super::*;
-
     fn render_with_scale(
         mode: ImageDrawMode,
         transform: Option<[f32; 6]>,
@@ -671,7 +684,6 @@ mod crop_transform_tests {
     ) -> Vec<u8> {
         render_with_options(mode, transform, None, tile_scale)
     }
-
     fn render_with_options(
         mode: ImageDrawMode,
         transform: Option<[f32; 6]>,
@@ -684,7 +696,6 @@ mod crop_transform_tests {
         source
             .canvas()
             .draw_rect(skia_safe::Rect::from_xywh(2.0, 0.0, 2.0, 2.0), &blue);
-
         let mut backend = NativeBackend::with_dpi(1.0);
         backend.install_raster_image(1, source.image_snapshot(), u32::MAX);
         let mut target = skia_safe::surfaces::raster_n32_premul((20, 20)).unwrap();
@@ -710,11 +721,9 @@ mod crop_transform_tests {
             .as_bytes()
             .to_vec()
     }
-
     fn render(mode: ImageDrawMode, transform: Option<[f32; 6]>) -> Vec<u8> {
         render_with_scale(mode, transform, 1.0)
     }
-
     #[test]
     fn crop_uses_figma_transform_identically_to_fill() {
         let transform = Some([0.5, 0.0, 0.0, 0.0, 1.0, 0.0]);
@@ -730,7 +739,6 @@ mod crop_transform_tests {
             "the parity assertion must prove the transform affects pixels"
         );
     }
-
     #[test]
     fn tile_scale_is_distinct_from_affine_decal_sampling() {
         let transform = Some([0.5, 0.0, 0.0, 0.0, 1.0, 0.0]);
@@ -746,7 +754,6 @@ mod crop_transform_tests {
             "the authored tile scale must affect output pixels"
         );
     }
-
     #[test]
     fn tile_scale_preserves_figma_value_and_bounds_pathological_repetition() {
         let rect = Rect::xywh(0.0, 0.0, 220.0, 220.0);
@@ -764,7 +771,6 @@ mod crop_transform_tests {
             effective_tile_scale(rect, 220.0, 220.0, 0.38618907),
             0.38618907
         );
-
         let bounded = effective_tile_scale(
             Rect::xywh(1.0e20, 1.0e20, 1_000_000.0, 1_000_000.0),
             1.0,
@@ -773,7 +779,6 @@ mod crop_transform_tests {
         );
         assert!(bounded >= 1_000_000.0 / 128.0);
     }
-
     #[test]
     fn original_size_keeps_tile_period_after_oversized_raster_is_downsampled() {
         // Model a 4096px source decoded to a 256px raster (16x reduction).
@@ -788,7 +793,6 @@ mod crop_transform_tests {
             decoded_period,
             "invalid authored dimensions must fall back to the decoded raster"
         );
-
         let source = valid_original_size(Some([4096.0, 4096.0])).unwrap();
         assert_eq!([source[0] * 0.25, source[1] * 0.25], [1024.0, 1024.0]);
     }

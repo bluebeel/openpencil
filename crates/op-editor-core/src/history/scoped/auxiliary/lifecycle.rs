@@ -55,7 +55,7 @@ fn scope(
     location: &crate::component_backing::DocumentNodeLocation,
     state: &EditorState,
 ) -> Option<Scope> {
-    match location.page_index {
+    match location.page_index_in(&state.doc)? {
         Some(index) => Some(Scope::Page {
             index,
             id: state.doc.pages.as_ref()?.get(index)?.id.clone(),

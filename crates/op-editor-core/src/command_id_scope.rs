@@ -219,4 +219,4 @@ mod tests;
 
 #[path = "command_id_sequence.rs"]
 pub(crate) mod sequence;
-pub use sequence::CommandIdSequence;
+pub use sequence::{CommandIdSequence, NodeRead, NodeReadOrder, TrustedNodeLookup};

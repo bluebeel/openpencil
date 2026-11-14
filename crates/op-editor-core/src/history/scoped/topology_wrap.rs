@@ -205,7 +205,7 @@ impl WrapPatch {
         self.parent.rebase_identity(&self.scope, index)
     }
     pub(super) fn conflicts_splice(&self, splice: &super::splice::SplicePatch) -> bool {
-        self.scope == splice.scope
+        self.scope.same_authority(&splice.scope)
             && (self.parent.id == splice.parent_id
                 || splice.contains_changed(self.header.id_str())
                 || self
@@ -216,7 +216,7 @@ impl WrapPatch {
                 || self.members.iter().any(|id| splice.contains_changed(id)))
     }
     pub(super) fn conflicts_node(&self, node: &super::patch::NodePatch) -> bool {
-        if node.scope != self.scope {
+        if !node.scope.same_authority(&self.scope) {
             return false;
         }
         if node.expected_id == self.header.id_str() || node.old.id_str() == self.header.id_str() {

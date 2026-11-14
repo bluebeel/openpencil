@@ -36,7 +36,7 @@ impl NativeBackend {
         if stops.is_empty() {
             return;
         }
-        let (start, end) = linear_gradient_endpoints(rect, angle_deg);
+        let (start, end) = linear_gradient_endpoints(self.active_paint_rect(rect), angle_deg);
         let Some(shader) = linear_shader(start, end, stops, opacity) else {
             // Skia refused to build the shader (degenerate input);
             // degrade to first-stop solid so the node still paints.
@@ -71,16 +71,17 @@ impl NativeBackend {
         if stops.is_empty() {
             return;
         }
+        let paint_rect = self.active_paint_rect(rect);
         let center = skia_safe::Point::new(
-            rect.origin.x + rect.size.x * cx_frac.clamp(0.0, 1.0),
-            rect.origin.y + rect.size.y * cy_frac.clamp(0.0, 1.0),
+            paint_rect.origin.x + paint_rect.size.x * cx_frac.clamp(0.0, 1.0),
+            paint_rect.origin.y + paint_rect.size.y * cy_frac.clamp(0.0, 1.0),
         );
         // Match `pen-renderer/src/node-renderer.ts:187` — outer
         // radius is `radius_frac × max(w, h)`. Earlier this used
         // `min(w, h) / 2`, which made existing `.op` radial
         // gradients render at roughly 1/4 the size on native vs.
         // web/export.
-        let outer = (rect.size.x.max(rect.size.y)) * radius_frac.clamp(0.0, 1.0);
+        let outer = (paint_rect.size.x.max(paint_rect.size.y)) * radius_frac.clamp(0.0, 1.0);
         let outer = outer.max(0.01); // Sub-pixel radii confuse skia's shader.
         let Some(shader) = radial_shader(center, outer, stops, opacity) else {
             self.fill_round_rect(canvas, rect, radius, fold_opacity(stops[0].1, opacity));
@@ -110,6 +111,20 @@ impl NativeBackend {
         colors: &[Color],
         opacity: f32,
     ) {
+        if self.has_paint_space() {
+            super::raster_point::mesh_field(
+                canvas,
+                rect,
+                self.active_paint_rect(rect),
+                radius,
+                rows,
+                cols,
+                colors,
+                opacity,
+                false,
+            );
+            return;
+        }
         if super::raster_point::mesh(canvas, rect, radius, rows, cols, colors, opacity) {
             return;
         }
@@ -228,7 +243,7 @@ impl NativeBackend {
     ) {
         use skia_safe::runtime_effect::RuntimeShaderBuilder;
 
-        let local_matrix = runtime_shader_local_matrix(rect, uniforms);
+        let local_matrix = runtime_shader_local_matrix(self.active_paint_rect(rect), uniforms);
         let shader = self.shader_cache.get_or_compile(sksl).and_then(|effect| {
             // `RuntimeEffect` is an RCHandle — this is a refcount bump,
             // not a recompile.

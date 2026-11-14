@@ -77,6 +77,33 @@ impl PartialEq for ComponentLibrary {
 }
 
 impl ComponentLibrary {
+    /// Lexical page-table authority: update routes without a getter Arc clone.
+    pub(crate) fn document_backing_mut(&mut self) -> &mut HashMap<NodeId, DocumentNodeLocation> {
+        Arc::make_mut(&mut self.document_backing)
+    }
+    pub(crate) fn apply_page_catalog_delta(
+        &mut self,
+        remove: &std::collections::HashSet<NodeId>,
+        add: Vec<(Component, DocumentNodeLocation)>,
+    ) {
+        if remove.is_empty() && add.is_empty() {
+            return;
+        }
+        self.invalidate_sorted_options();
+        self.components
+            .retain(|component| !remove.contains(&component.id));
+        {
+            let backing = self.document_backing_mut();
+            for id in remove {
+                backing.remove(id);
+            }
+            for (component, location) in &add {
+                backing.insert(component.id.clone(), location.clone());
+            }
+        }
+        self.components
+            .extend(add.into_iter().map(|(component, _)| component));
+    }
     /// The caller has validated one exact entry and its rebased row position.
     pub(crate) fn exchange_catalog_entry(
         &mut self,

@@ -8,6 +8,8 @@ use std::{cmp::Ordering, collections::HashMap, sync::Arc};
 pub(crate) enum Order {
     Preorder,
     SiblingFirst,
+    LastPreorder,
+    LastNonEmptyPostorder,
 }
 #[derive(Debug)]
 struct Entry {
@@ -70,6 +72,45 @@ impl Index {
         }
         index
     }
+    /// Forecast only index-owned ID/location allocations before cloning any
+    /// ID text. Conservative capacity/reallocation headroom covers Vec/HashMap
+    /// growth; oversized read scopes simply keep their fresh legacy traversal.
+    pub(super) fn try_new(doc: &PenDocument, limit: usize) -> Option<Self> {
+        let row = std::mem::size_of::<Entry>()
+            .checked_mul(4)?
+            .checked_add((std::mem::size_of::<(Arc<str>, Locations)>() + 32).checked_mul(8)?)?
+            .checked_add(4 * std::mem::size_of::<usize>() + 64)?;
+        let mut bytes = 64usize.checked_mul(1024)?;
+        let mut pending = Vec::new();
+        pending.push(doc.children.as_slice());
+        bytes = bytes.checked_add(row)?;
+        for page in doc.pages.as_deref().unwrap_or_default() {
+            bytes = bytes
+                .checked_add(row)?
+                .checked_add(page.id.len())?
+                .checked_add(4 * std::mem::size_of::<(String, usize)>())?;
+            if bytes > limit {
+                return None;
+            }
+            pending.push(page.children.as_slice());
+        }
+        while let Some(nodes) = pending.pop() {
+            for node in nodes {
+                bytes = bytes.checked_add(row)?.checked_add(node.id_str().len())?;
+                if bytes > limit {
+                    return None;
+                }
+                if let Some(children) = node.children() {
+                    pending.push(children);
+                }
+            }
+        }
+        if bytes > limit {
+            return None;
+        }
+        let index = Self::new(doc);
+        (index.storage_bytes() <= limit).then_some(index)
+    }
     fn add_root(&mut self) -> usize {
         let key = self.entries.len();
         self.entries.push(Entry {
@@ -113,6 +154,46 @@ impl Index {
             }
         }
     }
+    pub(super) fn storage_bytes(&self) -> usize {
+        let mut bytes = std::mem::size_of::<Self>()
+            .saturating_add(
+                self.entries
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<Entry>()),
+            )
+            .saturating_add(
+                self.ids
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<(Arc<str>, Locations)>() + 32),
+            )
+            .saturating_add(
+                self.pages
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<(String, usize)>()),
+            );
+        for entry in &self.entries {
+            if entry.parent.is_none() {
+                bytes = bytes.saturating_add(2 * std::mem::size_of::<usize>());
+            }
+            bytes = bytes.saturating_add(
+                entry
+                    .children
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<usize>()),
+            );
+        }
+        for (id, locations) in &self.ids {
+            bytes = bytes.saturating_add(id.len() + 2 * std::mem::size_of::<usize>());
+            if let Locations::Many(keys) = locations {
+                bytes = bytes
+                    .saturating_add(keys.capacity().saturating_mul(std::mem::size_of::<usize>()));
+            }
+        }
+        for (id, _) in &self.pages {
+            bytes = bytes.saturating_add(id.capacity());
+        }
+        bytes
+    }
     fn root(&self, scope: &Scope) -> Option<usize> {
         match scope {
             Scope::Root => Some(0),
@@ -134,15 +215,26 @@ impl Index {
     }
     fn select(&self, root: usize, id: &str, order: Order) -> Option<usize> {
         let keys = self.ids.get(id)?.keys();
+        if let [key] = keys {
+            let entry = &self.entries[*key];
+            return (entry.root == root
+                && (!matches!(order, Order::LastNonEmptyPostorder) || !entry.children.is_empty()))
+            .then_some(*key);
+        }
         let mut best: Option<(usize, Box<[usize]>)> = None;
         for &key in keys {
-            if self.entries[key].root != root {
+            if self.entries[key].root != root
+                || matches!(order, Order::LastNonEmptyPostorder)
+                    && self.entries[key].children.is_empty()
+            {
                 continue;
             }
             let path = self.path(key);
             let replace = best.as_ref().is_none_or(|(_, old)| match order {
                 Order::Preorder => path.as_ref() < old.as_ref(),
                 Order::SiblingFirst => sibling_priority(&path, old).is_lt(),
+                Order::LastPreorder => path.as_ref() > old.as_ref(),
+                Order::LastNonEmptyPostorder => postorder_priority(&path, old).is_gt(),
             });
             if replace {
                 best = Some((key, path));
@@ -150,12 +242,9 @@ impl Index {
         }
         best.map(|(key, _)| key)
     }
-    fn query(&self, scope: &Scope, id: &NodeId, order: Order) -> Option<Option<Box<[usize]>>> {
+    fn query(&self, scope: &Scope, id: &str, order: Order) -> Option<Option<Box<[usize]>>> {
         let root = self.root(scope)?;
-        Some(
-            self.select(root, id.as_str(), order)
-                .map(|key| self.path(key)),
-        )
+        Some(self.select(root, id, order).map(|key| self.path(key)))
     }
     fn remove(&mut self, parent: usize, at: usize) {
         let key = self.entries[parent].children.remove(at);
@@ -177,6 +266,13 @@ impl Index {
             row.parent = None;
             row.id = Arc::from("");
         }
+    }
+}
+fn postorder_priority(a: &[usize], b: &[usize]) -> Ordering {
+    if a.starts_with(b) || b.starts_with(a) {
+        b.len().cmp(&a.len())
+    } else {
+        a.cmp(b)
     }
 }
 fn sibling_priority(a: &[usize], b: &[usize]) -> Ordering {
@@ -280,6 +376,7 @@ impl Pending {
 pub(super) enum Cache {
     #[default]
     Unbuilt,
+    Bounded(usize),
     Ready(Index),
     Pending(Index, Pending),
     Invalid,
@@ -288,21 +385,33 @@ impl Cache {
     pub(super) fn new(index: Option<Index>) -> Self {
         index.map_or(Self::Unbuilt, Self::Ready)
     }
+    pub(super) fn bounded(index: Option<Index>, limit: usize) -> Self {
+        index.map_or(Self::Bounded(limit), Self::Ready)
+    }
+    pub(super) fn ready(&mut self, state: &EditorState) -> bool {
+        if let Self::Bounded(limit) = self {
+            *self = Index::try_new(&state.doc, *limit).map_or(Self::Invalid, Self::Ready);
+        } else if matches!(self, Self::Unbuilt) {
+            *self = Self::Ready(Index::new(&state.doc));
+        }
+        match self {
+            Self::Ready(_) => true,
+            Self::Pending(index, pending) => pending.before(index, state),
+            _ => false,
+        }
+    }
     pub(super) fn path(
         &mut self,
         state: &EditorState,
         scope: &Scope,
-        id: &NodeId,
+        id: &str,
         order: Order,
     ) -> Option<Option<Box<[usize]>>> {
-        if matches!(self, Self::Unbuilt) {
-            *self = Self::Ready(Index::new(&state.doc));
+        if !self.ready(state) {
+            return None;
         }
         match self {
-            Self::Ready(index) => index.query(scope, id, order),
-            Self::Pending(index, pending) if pending.before(index, state) => {
-                index.query(scope, id, order)
-            }
+            Self::Ready(index) | Self::Pending(index, _) => index.query(scope, id, order),
             _ => None,
         }
     }
@@ -454,7 +563,10 @@ impl EditorState {
         if !seed.entered || !seed.valid || seed.generation != self.document_generation() {
             return None;
         }
-        seed.lookup.lock().ok()?.path(self, scope, id, order)
+        seed.lookup
+            .lock()
+            .ok()?
+            .path(self, scope, id.as_str(), order)
     }
     pub(crate) fn command_find_node(&self, scope: &Scope, id: &NodeId) -> Option<&PenNode> {
         match self.command_lookup_path(scope, id, Order::Preorder) {

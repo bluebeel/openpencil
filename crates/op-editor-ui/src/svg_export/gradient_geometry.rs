@@ -44,6 +44,40 @@ pub(super) fn validate(node: &SceneNode) -> Result<(), SvgExportError> {
             }
         }
     }
+    if let Some(stroke) = &node.stroke_paint {
+        for layer in &stroke.layers {
+            if let crate::layout_scene::SceneFillLayer::Shader { shader, .. } = layer {
+                if let Some(paint) = &shader.gradient {
+                    if !shader.opacity.is_finite() || !(0.0..=1.0).contains(&shader.opacity) {
+                        return Err(SvgExportError::InvalidGradient {
+                            node_id: node.id.clone(),
+                            source: composition::GradientSvgError::InvalidGeometry,
+                        });
+                    }
+                    let mut b = normalize_rect(node.bounds);
+                    if b.size.x == 0.0 {
+                        b.size.x = 1.0;
+                    }
+                    if b.size.y == 0.0 {
+                        b.size.y = 1.0;
+                    }
+                    composition::validate(
+                        paint,
+                        [
+                            b.origin.x as f64,
+                            b.origin.y as f64,
+                            b.size.x as f64,
+                            b.size.y as f64,
+                        ],
+                    )
+                    .map_err(|source| SvgExportError::InvalidGradient {
+                        node_id: node.id.clone(),
+                        source,
+                    })?;
+                }
+            }
+        }
+    }
     for child in node.visible_children() {
         validate(child)?;
     }

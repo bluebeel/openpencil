@@ -45,7 +45,7 @@ mod error;
 
 #[path = "codegen_plan_capture.rs"]
 mod capture;
-pub(crate) use capture::create_plan_for_roots;
+pub(crate) use capture::{create_plan_for_roots, create_plan_for_state};
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};

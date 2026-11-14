@@ -359,3 +359,27 @@ mod tests {
         assert_eq!(bounds.y, 5.0);
     }
 }
+
+/// Retain separate open/closed SVG contours without flattening curves or arcs.
+/// Returned path data remains in the original source coordinate system.
+pub(crate) fn split_closed_contours(data: &str) -> Option<(String, String)> {
+    let segments = absolute_segments(data)?;
+    let mut closed = Vec::new();
+    let mut open = Vec::new();
+    let mut contour = Vec::new();
+    for segment in segments {
+        if matches!(segment, Segment::Move(..)) && !contour.is_empty() {
+            open.append(&mut contour);
+        }
+        let closes = matches!(segment, Segment::Close);
+        contour.push(segment);
+        if closes {
+            closed.append(&mut contour);
+        }
+    }
+    open.append(&mut contour);
+    Some((
+        serialize_local_segments(&closed, 0.0, 0.0),
+        serialize_local_segments(&open, 0.0, 0.0),
+    ))
+}

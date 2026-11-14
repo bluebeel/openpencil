@@ -54,7 +54,11 @@ fn nodes_ready_uncached(backend: &mut NativeBackend, nodes: &[SceneNode]) -> boo
                 return false;
             }
         }
-        for layer in &node.fill_layers {
+        for layer in node.fill_layers.iter().chain(
+            node.stroke_paint
+                .iter()
+                .flat_map(|stroke| stroke.layers.iter()),
+        ) {
             if let SceneFillLayer::Image {
                 src,
                 src_id,

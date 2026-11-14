@@ -8,6 +8,8 @@
 
 #[path = "backend_shadow.rs"]
 mod shadow;
+#[path = "backend_stroke_paint.rs"]
+mod stroke_paint;
 
 use op_editor_ui::{
     Color, ImageAdjustments, ImageBlendMode, ImageDrawMode, Point2D, Rect, RenderBackend,
@@ -33,6 +35,26 @@ pub struct CanvasKitBackend {
 }
 
 impl RenderBackend for CanvasKitBackend {
+    fn supports_stroke_paint_fields(&self) -> bool {
+        true
+    }
+    fn push_paint_space(&mut self, rect: Rect) {
+        self.ck
+            .push_paint_space(rect.origin.x, rect.origin.y, rect.size.x, rect.size.y);
+    }
+    fn pop_paint_space(&mut self) {
+        self.ck.pop_paint_space();
+    }
+    fn stroke_geometry(
+        &mut self,
+        geometry: op_editor_ui::StrokeGeometry<'_>,
+        options: &op_editor_ui::StrokeMaskOptions<'_>,
+        color: Color,
+    ) -> bool {
+        stroke_paint::draw(&self.ck, geometry, options, color);
+        true
+    }
+
     fn begin_frame(&mut self) {
         self.ck.begin_frame();
         if (self.dpr - 1.0).abs() > f32::EPSILON {

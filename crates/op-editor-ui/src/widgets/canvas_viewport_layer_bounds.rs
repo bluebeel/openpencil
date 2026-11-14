@@ -316,7 +316,14 @@ fn stroke_visual_bounds(node: &SceneNode, bounds: Rect) -> Result<Rect, ()> {
         SceneStrokeAlign::Center => width * 0.5,
         SceneStrokeAlign::Outside => width,
     };
-    outset_rect(bounds, outset)
+    outset_rect(
+        bounds,
+        if node.stroke_paint.is_some() {
+            outset.max(width * 4.0)
+        } else {
+            outset
+        },
+    )
 }
 
 fn finish_layer_bounds(

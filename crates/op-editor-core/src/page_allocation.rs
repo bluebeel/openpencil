@@ -4,6 +4,9 @@ use super::{make_page, walkers, EditorState, IdAllocError, IdAllocator, NodeId, 
 use std::collections::HashSet;
 pub(super) struct Promotion(Option<NodeId>);
 impl Promotion {
+    pub(super) fn id(&self) -> Option<&NodeId> {
+        self.0.as_ref()
+    }
     pub(super) fn prepare(
         state: &EditorState,
         allocator: &mut dyn IdAllocator,

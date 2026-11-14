@@ -28,6 +28,7 @@ pub(super) struct Transaction<'s, 'q> {
     replies: Vec<Option<Reply>>,
     last_changed: Option<usize>,
     live_selection: Option<op_editor_core::SelectionState>,
+    live_page: Option<(usize, Option<String>)>,
     changed: usize,
     fatal: Option<String>,
     persisted: bool,
@@ -58,6 +59,7 @@ impl<'s, 'q> Transaction<'s, 'q> {
             replies: (0..requests.len()).map(|_| None).collect(),
             last_changed: None,
             live_selection: None,
+            live_page: None,
             changed: 0,
             fatal: None,
             persisted: false,
@@ -115,6 +117,12 @@ impl<'s, 'q> Transaction<'s, 'q> {
                 )
                 .saturating_add(selection.anchor.as_str().len())
                 .saturating_add(std::mem::size_of::<op_editor_core::SelectionState>());
+            let bytes = bytes
+                .saturating_add(
+                    crate::mcp_serve::agent_context::current_page_id(&self.editor)
+                        .map_or(0, |id| id.capacity()),
+                )
+                .saturating_add(64);
             if selection.set.len() > 16_384
                 || bytes > 2 * 1024 * 1024
                 || self.budget.reserve_live_selection(bytes).is_err()
@@ -124,6 +132,10 @@ impl<'s, 'q> Transaction<'s, 'q> {
                 self.replies[index] = Some(request.reply(ReplyValue::Isolated));
                 return;
             }
+            self.live_page = Some((
+                self.editor.ui.active_page_index,
+                crate::mcp_serve::agent_context::current_page_id(&self.editor),
+            ));
             self.live_selection = Some(selection.clone());
         }
         let before_budget = self.budget;
@@ -291,6 +303,13 @@ impl<'s, 'q> Transaction<'s, 'q> {
         if clean {
             if let Some(selection) = self.live_selection.take() {
                 self.editor.selection = selection;
+            }
+            if let Some((index, id)) = self.live_page.take() {
+                crate::mcp_serve::agent_context::restore_active_page(
+                    &mut self.editor,
+                    index,
+                    id.as_deref(),
+                );
             }
         } else {
             self.fence.trip();

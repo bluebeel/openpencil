@@ -105,14 +105,16 @@ pub(super) fn resolve_svg_fill_hex(attrs: &[(String, String)], ctx: &StyleCtx) -
     }
 }
 
-pub(super) fn resolve_svg_stroke(
+// Resolve width/style geometry only. The caller replaces this temporary
+// paint with resource-resolved solid/gradient data before creating a node.
+pub(super) fn resolve_svg_stroke_geometry(
     attrs: &[(String, String)],
     ctx: &StyleCtx,
     scale: f64,
 ) -> Option<PenStroke> {
     let raw = extract_style_or_attr(attrs, "stroke").or_else(|| ctx.stroke.clone())?;
     let raw = raw.trim();
-    if raw.eq_ignore_ascii_case("none") || raw.to_ascii_lowercase().starts_with("url(") {
+    if raw.eq_ignore_ascii_case("none") {
         return None;
     }
     let hex = parse_svg_color(raw).unwrap_or_else(|| "#000000".to_string());

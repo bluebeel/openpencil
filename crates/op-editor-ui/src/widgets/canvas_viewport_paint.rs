@@ -553,10 +553,19 @@ fn paint_node_inner<'a>(
                 // ellipse silhouette via skia's `clip_oval`-style
                 // approximation (no native clip_oval on the trait, so
                 // fall back to the rect-clip path the painter has).
-                paint_image_node(cx, node, world_rect, zoom, src, !options.mask_source);
-                if let Some(stroke) = node.stroke {
-                    cx.backend
-                        .stroke_oval(world_rect, stroke.color, stroke.width * zoom);
+                paint_image_node_without_stroke(
+                    cx,
+                    node,
+                    world_rect,
+                    zoom,
+                    src,
+                    !options.mask_source,
+                );
+                if !super::canvas_viewport_stroke_paint::paint(cx, node, world_rect, zoom) {
+                    if let Some(stroke) = node.stroke {
+                        cx.backend
+                            .stroke_oval(world_rect, stroke.color, stroke.width * zoom);
+                    }
                 }
             } else {
                 paint_ellipse(cx, node, world_rect, zoom);
@@ -584,14 +593,23 @@ fn paint_node_inner<'a>(
                 // by the stroke. A perfect clip-to-polygon path lands when
                 // `RenderBackend` grows a polygon-clip primitive.
                 if let Some(src) = node.image_src.as_deref() {
-                    paint_image_node(cx, node, world_rect, zoom, src, !options.mask_source);
+                    paint_image_node_without_stroke(
+                        cx,
+                        node,
+                        world_rect,
+                        zoom,
+                        src,
+                        !options.mask_source,
+                    );
                 } else if let Some(fill) = node.fill {
                     cx.backend.fill_polygon(&pts, fill);
                 }
             }
-            if let Some(stroke) = node.stroke {
-                cx.backend
-                    .stroke_polygon(&pts, stroke.color, stroke.width * zoom);
+            if !super::canvas_viewport_stroke_paint::paint(cx, node, world_rect, zoom) {
+                if let Some(stroke) = node.stroke {
+                    cx.backend
+                        .stroke_polygon(&pts, stroke.color, stroke.width * zoom);
+                }
             }
         }
         NodeKind::Line => {
@@ -609,7 +627,9 @@ fn paint_node_inner<'a>(
                     (1.5_f32).max(zoom),
                 ),
             };
-            cx.backend.stroke_line(from, to, color, width);
+            if !super::canvas_viewport_stroke_paint::paint(cx, node, world_rect, zoom) {
+                cx.backend.stroke_line(from, to, color, width);
+            }
         }
         NodeKind::Path => {
             if let Some(d) = node.svg_path.as_deref() {
@@ -676,14 +696,16 @@ fn paint_node_inner<'a>(
                 )),
                 None => None,
             };
-            if let Some((color, width)) = stroke {
-                for pair in points.windows(2) {
-                    cx.backend.stroke_line(
-                        doc_to_world_point(pair[0], viewport_origin, zoom),
-                        doc_to_world_point(pair[1], viewport_origin, zoom),
-                        color,
-                        width,
-                    );
+            if !super::canvas_viewport_stroke_paint::paint(cx, node, world_rect, zoom) {
+                if let Some((color, width)) = stroke {
+                    for pair in points.windows(2) {
+                        cx.backend.stroke_line(
+                            doc_to_world_point(pair[0], viewport_origin, zoom),
+                            doc_to_world_point(pair[1], viewport_origin, zoom),
+                            color,
+                            width,
+                        );
+                    }
                 }
             }
         }

@@ -65,7 +65,10 @@ mod sparse_atomic;
 pub use sparse_atomic::{validate_sparse_atomic_commands, SparseAtomicValidation};
 mod command_id_scope;
 mod node_json;
-pub use command_id_scope::{AtomicCommandSimulation, CommandIdSequence, CommandSimulation};
+pub use command_id_scope::{
+    AtomicCommandSimulation, CommandIdSequence, CommandSimulation, NodeRead, NodeReadOrder,
+    TrustedNodeLookup,
+};
 pub use edit_transaction::{AtomicAuthorityEdit, AtomicAuthorityError};
 pub use node_json::map_subtree_json;
 pub mod command_font_replace;
@@ -493,3 +496,8 @@ pub use variables_panel_state::VariablesPanelButton;
 pub use viewport::Viewport;
 pub use walkers::ReorderDirection;
 pub use web_sync::WebSyncError;
+
+/// Split editable/export SVG stroke contours without curve flattening.
+pub fn svg_path_split_closed_contours(data: &str) -> Option<(String, String)> {
+    svg_path_data::split_closed_contours(data)
+}

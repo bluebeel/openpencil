@@ -11,11 +11,17 @@ const RESERVED: &[&str] = &[
     "clip-n-",
     "ancestor-clip-n-",
     "image-pattern-n-",
+    "image-pattern-stroke-paint-",
     "mask-n-",
     "vector-mask-n-",
     "ancestor-mask-n-",
     "ancestor-vector-mask-n-",
     "visual-clip-n-",
+    "stroke-interior-",
+    "stroke-exterior-",
+    "stroke-coverage-",
+    "stroke-sides-",
+    "stroke-paint-",
 ];
 
 pub(super) fn node_id(id: &str) -> String {

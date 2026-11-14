@@ -16,6 +16,9 @@ use crate::state::EditorState;
 use crate::walkers;
 #[path = "page_allocation.rs"]
 mod allocation;
+#[path = "page_command_plan.rs"]
+mod command_plan;
+pub(crate) use command_plan::{CommittedPageCommand, PreparedPageCommand};
 use jian_ops_schema::node::PenNode;
 use jian_ops_schema::page::PenPage;
 
@@ -64,8 +67,10 @@ impl EditorState {
             // `max_node_id` must see the nodes that are migrating so
             // the new page id can't collide with one of them.
             let id = allocator.allocate(taken)?;
+            let routes = self.prepare_page_root_routes(Some(id.as_str()));
             let root = std::mem::take(&mut self.doc.children);
             self.doc.pages = Some(vec![make_page(id.into(), "Page 1".to_string(), root)]);
+            routes.install(self);
         }
         Ok(())
     }
@@ -193,12 +198,25 @@ impl EditorState {
                 vec![frame]
             }
         };
-        // Every allocation has succeeded before the first canonical write.
+        // Every allocation and catalog preflight succeeds before the first write.
+        let new_index = self
+            .doc
+            .pages
+            .as_ref()
+            .filter(|pages| !pages.is_empty())
+            .map_or(1, Vec::len);
+        let page_name = custom_name.unwrap_or_else(|| format!("Page {}", new_index + 1));
+        let page = make_page(page_id.into(), page_name, page_children);
+        let Some(catalogue) =
+            self.prepare_page_catalog_change(Some((&page, new_index, None)), None)
+        else {
+            return Ok(None);
+        };
+        let routes = self.prepare_page_root_routes(promotion.id().map(NodeId::as_str));
         promotion.commit(self);
-        let pages = self.doc.pages.as_mut().unwrap();
-        let page_name = custom_name.unwrap_or_else(|| format!("Page {}", pages.len() + 1));
-        pages.push(make_page(page_id.into(), page_name, page_children));
-        let new_index = pages.len() - 1;
+        routes.install(self);
+        self.doc.pages.as_mut().unwrap().push(page);
+        catalogue.commit_without_history(self);
         self.ui.active_page_index = new_index;
         self.clear_selection();
         Ok(Some(new_index))
@@ -268,7 +286,9 @@ impl EditorState {
             .collect::<Vec<_>>();
         let added = accepted.len();
         let largest = accepted.iter().map(walkers::max_id_walk).max();
+        let routes = self.prepare_page_root_routes(promotion.id().map(NodeId::as_str));
         promotion.commit(self);
+        routes.install(self);
         let pages = self.doc.pages.as_mut().unwrap();
         let page_idx = match existing_page {
             Some(index) => index,
@@ -323,9 +343,25 @@ impl EditorState {
         else {
             return Ok(None);
         };
-        promotion.commit(self);
+        let source = self
+            .doc
+            .pages
+            .as_ref()
+            .filter(|pages| !pages.is_empty())
+            .map_or(self.doc.children.as_slice(), |pages| {
+                pages[idx].children.as_slice()
+            });
         let new_index = idx + 1;
+        let Some(catalogue) =
+            self.prepare_page_catalog_change(Some((&clone, new_index, Some(source))), None)
+        else {
+            return Ok(None);
+        };
+        let routes = self.prepare_page_root_routes(promotion.id().map(NodeId::as_str));
+        promotion.commit(self);
+        routes.install(self);
         self.doc.pages.as_mut().unwrap().insert(new_index, clone);
+        catalogue.commit_without_history(self);
         self.ui.active_page_index = new_index;
         self.clear_selection();
         Ok(Some(new_index))
@@ -400,13 +436,32 @@ impl EditorState {
     /// only one page remains. Adjusts `active_page_index` + clears
     /// the selection.
     pub fn remove_page(&mut self, idx: usize) -> bool {
-        let Some(pages) = self.doc.pages.as_mut() else {
+        let Some(page) = self
+            .doc
+            .pages
+            .as_ref()
+            .filter(|pages| pages.len() > 1)
+            .and_then(|pages| pages.get(idx))
+        else {
             return false;
         };
-        if idx >= pages.len() || pages.len() <= 1 {
+        let Some(catalogue) = self.prepare_page_catalog_change(None, Some(page)) else {
+            return false;
+        };
+        if self.remove_page_retained(idx).is_none() {
             return false;
         }
-        pages.remove(idx);
+        catalogue.commit_without_history(self);
+        true
+    }
+    /// Same page/UI mutation, but let an exact undo receipt own the removed
+    /// page instead of cloning it before the ordinary mutator drops it.
+    pub(crate) fn remove_page_retained(&mut self, idx: usize) -> Option<PenPage> {
+        let pages = self.doc.pages.as_mut()?;
+        if idx >= pages.len() || pages.len() <= 1 {
+            return None;
+        }
+        let removed = pages.remove(idx);
         let len = pages.len();
         if self.ui.active_page_index >= len {
             self.ui.active_page_index = len - 1;
@@ -414,7 +469,7 @@ impl EditorState {
             self.ui.active_page_index -= 1;
         }
         self.clear_selection();
-        true
+        Some(removed)
     }
 
     /// Rename a node by id on the active page. True when the node

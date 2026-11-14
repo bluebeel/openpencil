@@ -41,7 +41,9 @@ mod owned;
 pub(crate) use owned::{node_payload_to_scene, payload_into_scene};
 
 mod stroke;
+mod stroke_paint;
 use stroke::{is_status_bar_shell_stroke, is_unpainted_widget_stroke, scene_stroke};
+use stroke_paint::stroke_paint_to_scene;
 mod widget;
 use widget::widget_payload_to_scene;
 

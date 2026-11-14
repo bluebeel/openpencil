@@ -99,7 +99,7 @@ impl ScopedEditorSnapshot {
         if !self.actor_safe || self.header.is_some() || !self.page_headers.is_empty() {
             return None;
         }
-        self.validate_shape(state).ok()?;
+        super::pages::validate_actor_shape(self, state).ok()?;
         let mut bound = Bound { bytes: 0, limit };
         // Clone/rebase the one scoped entry, its inverse on abort, auxiliary
         // ownership, and the exact History checkpoint are independently charged.
@@ -110,6 +110,9 @@ impl ScopedEditorSnapshot {
                 .checked_mul(4)?
                 .checked_add(16 * 1024)?,
         )?;
+        if let Some(page) = &self.page_patch {
+            bound.add(page.cohort_live_bound(state, limit.checked_sub(bound.bytes)?)?)?;
+        }
         let mut wanted = identity::Wanted::new();
         for patch in &self.patches {
             patch.want_cohort_identities(&mut wanted);

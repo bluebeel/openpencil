@@ -16,7 +16,7 @@ impl SplicePatch {
             .is_ok()
     }
     pub(super) fn same_parent(&self, other: &Self) -> bool {
-        self.scope == other.scope && self.parent_id == other.parent_id
+        self.scope.same_authority(&other.scope) && self.parent_id == other.parent_id
     }
     pub(super) fn anchors(&self, required: bool) -> Anchors {
         Anchors {
@@ -118,7 +118,7 @@ impl SplicePatch {
         Ok(patch)
     }
     pub(super) fn conflicts_splice(&self, other: &Self) -> bool {
-        if self.scope != other.scope {
+        if !self.scope.same_authority(&other.scope) {
             return false;
         }
         if self.changed_ids.iter().any(|id| other.contains_changed(id)) {
@@ -139,7 +139,7 @@ impl SplicePatch {
     }
     pub(super) fn conflicts_patch(&self, other: &Patch) -> bool {
         if let Patch::Node(node) = other {
-            if node.scope != self.scope {
+            if !node.scope.same_authority(&self.scope) {
                 return false;
             }
             if self.contains_changed(&node.expected_id) || self.contains_changed(node.old.id_str())
@@ -173,7 +173,7 @@ impl SplicePatch {
         // Ordering/grouping/opaque structural patches own the affected child
         // ordering. They retain their existing conservative overlap regions.
         other.regions().into_iter().flatten().any(|region| {
-            region.scope == &self.scope
+            region.scope.same_authority(&self.scope)
                 && (region.path.starts_with(&self.parent) || self.parent.starts_with(region.path))
         })
     }

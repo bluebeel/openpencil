@@ -1,3 +1,4 @@
+import { strokePaintGeometry, imagePaintField, drawMeshPaintField } from './op_ck_stroke_paint.js';
 // Thin CanvasKit FFI bridge for the Rust web shell.
 //
 // FFI glue only — flat, scalar-argument drawing functions the Rust
@@ -850,6 +851,8 @@ export async function opCkInit(canvasId) {
     Math.max(0, bottomRight), Math.max(0, bottomRight),
     Math.max(0, bottomLeft), Math.max(0, bottomLeft),
   );
+  const paintSpaces = [];
+  const paintSpace = (x,y,w,h) => paintSpaces.length ? paintSpaces[paintSpaces.length-1] : [x,y,w,h];
   const drawGradientRRect = (rrect, shader, fallbackColor) => {
     if (!shader) {
       canvas.drawRRect(rrect, fillPaint(...fallbackColor));
@@ -877,6 +880,7 @@ export async function opCkInit(canvasId) {
     fallback,
   ) => {
     const alpha = opCkClampUnit(opacity);
+    [x,y,w,h] = paintSpace(x,y,w,h);
     const shader = opCkMakeRuntimeShaderForRect(
       runtimeEffects.get(sksl),
       uniformNames,
@@ -908,6 +912,7 @@ export async function opCkInit(canvasId) {
   const makeLinearGradient = (x, y, w, h, stops, angleDeg, opacity) => {
     const gradient = gradientStops(stops, opacity);
     if (!gradient.colors.length) return null;
+    [x,y,w,h]=paintSpace(x,y,w,h);
     const points = linearGradientPoints(x, y, w, h, angleDeg);
     try {
       // Flag 1 requests interpolation in premultiplied colour space, matching
@@ -926,6 +931,7 @@ export async function opCkInit(canvasId) {
     }
   };
   const makeRadialGradient = (x, y, w, h, stops, cxFrac, cyFrac, radiusFrac, opacity) => {
+    [x,y,w,h]=paintSpace(x,y,w,h);
     const gradient = gradientStops(stops, opacity);
     if (!gradient.colors.length) return null;
     const center = [
@@ -948,6 +954,7 @@ export async function opCkInit(canvasId) {
     }
   };
   const drawMeshGradientRRect = (rrect, x, y, w, h, rows, cols, colors, opacity) => {
+    if(paintSpaces.length){drawMeshPaintField(CK,canvas,[x,y,w,h],paintSpace(x,y,w,h),rows,cols,colors,opacity);return;}
     const alpha = opCkClampUnit(opacity);
     const fallback = colors.length >= 4
       ? [
@@ -1280,7 +1287,11 @@ export async function opCkInit(canvasId) {
   };
 
   return {
+    pushPaintSpace(x,y,w,h) {if(paintSpaces.length>=16)throw new Error('stroke paint-space nesting exceeds16');paintSpaces.push([x,y,w,h]);},
+    popPaintSpace() {if(!paintSpaces.length)throw new Error('unbalanced stroke paint-space');paintSpaces.pop();},
+    strokeGeometry(kind,data,values,evenOdd,width,sides,placement,cap,join,dashes,phase,color) {strokePaintGeometry(CK,canvas,cachedSvgPath,fitPathToRect,kind,data,values,evenOdd,width,sides,placement,cap,join,dashes,phase,color);},
     beginFrame() {
+      paintSpaces.length=0;
       // Discard any leaked save / clip / matrix state from a prior (possibly
       // unbalanced) paint pass, then open a clean frame baseline. This mirrors
       // the native backend's per-frame `reset_matrix()`: without it a single
@@ -1534,6 +1545,8 @@ export async function opCkInit(canvasId) {
       const imageW = image.width();
       const imageH = image.height();
       if (!(imageW > 0) || !(imageH > 0)) return;
+      if(paintSpaces.length) {imagePaintField(CK,canvas,image,[x,y,w,h],paintSpace(x,y,w,h),mode,transform,adjustments,opacity,blendMode,originalWidth,originalHeight,tileScale,figmaImageLocalMatrix,imageAdjustmentMatrix,blendModeForCode);return;}
+
       const dst = CK.LTRBRect(x, y, x + w, y + h);
       const src = CK.LTRBRect(0, 0, imageW, imageH);
       const paint = new CK.Paint();

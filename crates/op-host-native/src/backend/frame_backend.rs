@@ -86,6 +86,26 @@ impl<'a> RenderBackend for NativeFrameBackend<'a> {
             .push_composite_layer(self.canvas, bounds, opacity, mode);
     }
 
+    fn supports_stroke_paint_fields(&self) -> bool {
+        true
+    }
+    fn push_paint_space(&mut self, rect: Rect) {
+        self.inner.push_paint_space(rect);
+    }
+    fn pop_paint_space(&mut self) {
+        self.inner.pop_paint_space();
+    }
+    fn stroke_geometry(
+        &mut self,
+        geometry: op_editor_ui::StrokeGeometry<'_>,
+        options: &op_editor_ui::StrokeMaskOptions<'_>,
+        color: Color,
+    ) -> bool {
+        self.inner
+            .stroke_geometry(self.canvas, geometry, options, color);
+        true
+    }
+
     fn supports_pixel_masks(&self) -> bool {
         true
     }

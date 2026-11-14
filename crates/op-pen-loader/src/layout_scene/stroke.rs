@@ -67,9 +67,13 @@ pub(super) fn is_unpainted_widget_stroke(
     var_table: &VariableTable,
 ) -> bool {
     node.widget.is_some()
-        && node
-            .stroke
-            .as_ref()
-            .is_some_and(|stroke| stroke.color.is_none())
+        && node.stroke.as_ref().is_some_and(|stroke| {
+            stroke.color.is_none()
+                && stroke
+                    .detail
+                    .as_deref()
+                    .and_then(|s| s.fill.as_ref())
+                    .is_none_or(Vec::is_empty)
+        })
         && var_table.stroke_color_for(node_id).is_none()
 }

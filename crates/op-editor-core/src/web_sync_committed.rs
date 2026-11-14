@@ -47,6 +47,8 @@ pub(crate) enum Operation {
     Node(NodeValue),
     #[serde(rename = "replace-children")]
     Children(Children),
+    #[serde(rename = "set-component-label")]
+    CatalogLabel(CatalogLabel),
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -65,12 +67,20 @@ pub(crate) struct Children {
     pub expected_present: bool,
     pub value: Option<Vec<PenNode>>,
 }
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CatalogLabel {
+    pub id: String,
+    pub expected_name: String,
+    pub name: String,
+}
 impl Operation {
     pub(crate) fn page(&self) -> Option<&Page> {
         match self {
             Self::Metadata(value) => value.page.as_ref(),
             Self::Node(value) => value.page.as_ref(),
             Self::Children(value) => value.page.as_ref(),
+            Self::CatalogLabel(_) => None,
         }
     }
 }
@@ -195,6 +205,15 @@ impl CommittedMetadata {
                     return Err(CommittedFeedError::InvalidResponse);
                 }
                 match &operation {
+                    Operation::CatalogLabel(value) => {
+                        if value.id.is_empty()
+                            || value.id.len() > 16 * 1024
+                            || value.name.len().saturating_add(value.expected_name.len())
+                                > 256 * 1024
+                        {
+                            return Err(CommittedFeedError::InvalidResponse);
+                        }
+                    }
                     Operation::Metadata(value) => {
                         if value.path.is_empty() || value.path.len() > 128 {
                             return Err(CommittedFeedError::InvalidResponse);

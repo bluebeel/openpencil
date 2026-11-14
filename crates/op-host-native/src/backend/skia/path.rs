@@ -34,7 +34,7 @@ struct SvgRasterRequest<'a> {
 }
 
 impl NativeBackend {
-    fn cached_svg_path(&mut self, d: &str) -> Option<(u64, skia_safe::Path, bool)> {
+    pub(super) fn cached_svg_path(&mut self, d: &str) -> Option<(u64, skia_safe::Path, bool)> {
         let key = svg_path_key(d);
         if let Some(entry) = self.svg_path_cache.get(&key) {
             if entry.d == d {
@@ -670,7 +670,7 @@ fn has_multiple_close_commands(d: &str) -> bool {
 fn fit_path_to_rect(path: &skia_safe::Path, rect: Rect) -> skia_safe::Path {
     fit_path_to_rect_with_rule(path, rect, false)
 }
-fn fit_path_to_rect_with_rule(
+pub(super) fn fit_path_to_rect_with_rule(
     path: &skia_safe::Path,
     rect: Rect,
     even_odd: bool,

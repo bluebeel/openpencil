@@ -30,6 +30,19 @@ pub(super) fn apply(
     metrics: &metrics::Metrics,
     capture: &mut Option<CommandEditCapture>,
 ) -> Outcome {
+    if matches!(
+        command,
+        EditorCommand::AddPage { .. }
+            | EditorCommand::DuplicatePage { .. }
+            | EditorCommand::DeletePage { .. }
+            | EditorCommand::ReorderPage { .. }
+    ) {
+        let result = editor.try_apply_captured_pages(command.clone(), capture, |state, bytes| {
+            let ok = budget.reserve_pages(state, command, input, bytes).is_ok();
+            reserve(budget, quota, metrics, ok)
+        });
+        return result.map_or(Outcome::Isolated, Outcome::Applied);
+    }
     if matches!(command, EditorCommand::Undo | EditorCommand::Redo) {
         let result = editor.try_apply_captured_history(command.clone(), capture, |state, bytes| {
             let ok = budget.reserve_history(state, command, input, bytes).is_ok();
@@ -37,14 +50,18 @@ pub(super) fn apply(
         });
         return result.map_or(Outcome::Isolated, Outcome::Applied);
     }
-    if let Some(result) =
-        crate::mcp_serve::cohort_generation::apply(editor, command, tool, capture, |state, extra| {
+    if let Some(result) = crate::mcp_serve::cohort_generation::apply(
+        editor,
+        command,
+        tool,
+        capture,
+        |state, extra| {
             let ok = budget
                 .reserve_generated(state, command, input, extra)
                 .is_ok();
             reserve(budget, quota, metrics, ok)
-        })
-    {
+        },
+    ) {
         return match result {
             crate::mcp_serve::cohort_generation::Outcome::Applied(ok) => Outcome::Applied(ok),
             crate::mcp_serve::cohort_generation::Outcome::Isolated => Outcome::Isolated,

@@ -90,3 +90,8 @@ pub(crate) mod agent_indicator_test_support {
 
 /// Shared indexed edge/center snapping for native, web and headless hosts.
 pub use jian_scene::snapping;
+
+pub use jian_widgets::{
+    StrokeCurve, StrokeGeometry, StrokeMaskOptions, StrokePaintCap, StrokePaintJoin,
+    StrokePaintStyle, StrokePlacement,
+};

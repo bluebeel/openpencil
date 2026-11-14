@@ -18,7 +18,7 @@ pub(super) struct Region<'a> {
 }
 impl Region<'_> {
     fn intersects(self, other: Region<'_>) -> bool {
-        if self.scope != other.scope {
+        if !self.scope.same_authority(other.scope) {
             return false;
         }
         let covers = |a: Region<'_>, b: Region<'_>| match a.kind {
@@ -76,7 +76,7 @@ impl Patch {
         }
         match (self, other) {
             (Self::Node(a), Self::Node(b)) => {
-                if a.scope != b.scope {
+                if !a.scope.same_authority(&b.scope) {
                     return false;
                 }
                 a.overlaps_affected(b)
@@ -95,7 +95,14 @@ impl Patch {
 }
 impl ScopedEditorSnapshot {
     pub(crate) fn actor_conflicts(&self, other: &Self) -> bool {
-        !self.actor_safe
+        self.page_patch
+            .as_ref()
+            .is_some_and(|page| page.conflicts(other))
+            || other
+                .page_patch
+                .as_ref()
+                .is_some_and(|page| page.conflicts(self))
+            || !self.actor_safe
             || !other.actor_safe
             || self
                 .auxiliary_patches
@@ -125,16 +132,23 @@ impl ScopedEditorSnapshot {
         state: &mut EditorState,
         rollback: bool,
     ) -> Result<(), ScopedHistoryError> {
-        self.validate_shape(state)?;
+        super::pages::validate_actor_shape(self, state)?;
         if !self.actor_safe {
             return Err(ScopedHistoryError::NodePathChanged);
         }
         let auxiliary = super::auxiliary::Prepared::capture(state, &self.auxiliary_patches, true)?;
+        let page = self
+            .page_patch
+            .as_ref()
+            .map(|patch| super::pages::Prepared::capture(state, patch))
+            .transpose()?;
+        let active = super::pages::Active::capture(state);
         super::actor_rebase::paths(&state.doc, &mut self.patches)?;
         if !rollback {
             super::actor_rebase::restored_node_collisions(&state.doc, &self.patches)?;
         }
-        let catalog = super::splice_exchange::Catalog::new(&state.history, &self.patches);
+        let catalog =
+            super::splice_exchange::Catalog::new(&state.history, &self.patches, &state.doc);
         let splices = super::splice_exchange::Prepared::capture(
             &state.doc,
             &self.patches,
@@ -163,9 +177,12 @@ impl ScopedEditorSnapshot {
                 patch.rebase(&reordered);
             }
         }
+        if let Some(page) = page {
+            page.exchange(state, self.page_patch.as_mut().unwrap());
+        }
         auxiliary.exchange(state, &mut self.auxiliary_patches);
         std::mem::swap(&mut self.selection, &mut state.selection);
-        std::mem::swap(&mut self.active_page_index, &mut state.ui.active_page_index);
+        super::pages::exchange_active(self, state, active);
         self.revision = state.revision;
         state.mark_document_changed();
         Ok(())

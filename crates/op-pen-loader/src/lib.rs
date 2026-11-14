@@ -26,6 +26,8 @@ mod geometry_cache;
 pub use geometry_cache::editor_state_to_page_item_geometry_cached;
 pub use geometry_cache::editor_state_to_page_parent_geometry_cached;
 mod editor_meta;
+mod inline_editor_document;
+pub use inline_editor_document::InlineEditorDocument;
 mod editor_meta_error;
 mod editor_meta_family;
 mod editor_meta_import;

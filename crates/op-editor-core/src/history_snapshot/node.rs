@@ -66,6 +66,23 @@ impl SharedNode {
         super::sensitivity::write(&super::BorrowedNodeMetadata(node), scratch);
         self.sensitivity.as_ref() == scratch.as_slice()
     }
+    /// Compare schema-complete compatibility headers without cloning either
+    /// side or visiting child payloads. Catalog roots deliberately omit children.
+    pub(crate) fn metadata_equal_ignoring_children(a: &PenNode, b: &PenNode) -> bool {
+        if !header::ignoring_children(a, b) {
+            return false;
+        }
+        struct Header<'a>(&'a PenNode);
+        impl serde::Serialize for Header<'_> {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                self.0
+                    .serialize(super::node_wire::ReplaceChildren::omitting_children(
+                        serializer,
+                    ))
+            }
+        }
+        super::sensitivity::bytes(&Header(a)) == super::sensitivity::bytes(&Header(b))
+    }
     pub(crate) fn capture_header(node: &PenNode) -> Arc<Self> {
         Self::capture_owned(clone_without_children(node))
     }

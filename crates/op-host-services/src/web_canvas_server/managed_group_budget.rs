@@ -244,6 +244,17 @@ impl Budget {
     ) -> Result<(), Refusal> {
         self.reserve_inner(state, command, input, None, None)
     }
+    pub(crate) fn reserve_pages(
+        &mut self,
+        state: &EditorState,
+        command: &C,
+        input: usize,
+        bytes: usize,
+    ) -> Result<(), Refusal> {
+        // Complete affected page payloads, routing/catalog deltas and table
+        // scratch are in Core's bound. Unchanged catalog graphs stay shared.
+        self.reserve_inner(state, command, input, None, Some((bytes, false)))
+    }
     pub(crate) fn reserve_history(
         &mut self,
         state: &EditorState,

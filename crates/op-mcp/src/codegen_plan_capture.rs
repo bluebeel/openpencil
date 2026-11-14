@@ -14,6 +14,13 @@ pub(crate) fn create_plan_for_roots(
     plan: &Value,
     roots: &[PenNode],
 ) -> Result<Value, PlanStoreError> {
+    create_plan_for_state(plan, roots, None)
+}
+pub(crate) fn create_plan_for_state(
+    plan: &Value,
+    roots: &[PenNode],
+    state: Option<&op_editor_core::EditorState>,
+) -> Result<Value, PlanStoreError> {
     create_plan_with_index(plan, || {
         let wanted: HashSet<&str> = plan
             .get("chunks")
@@ -23,8 +30,22 @@ pub(crate) fn create_plan_for_roots(
             .flat_map(chunk_node_ids)
             .filter_map(Value::as_str)
             .collect();
+        if wanted.is_empty() {
+            return HashMap::new();
+        }
         let mut selected = HashMap::with_capacity(wanted.len());
-        index_requested(roots, &wanted, &mut selected);
+        if let Some(lookup) = state
+            .and_then(|state| state.trusted_node_lookup(roots))
+            .filter(|lookup| lookup.is_indexed())
+        {
+            for id in wanted {
+                if let Some(found) = lookup.find(id, op_editor_core::NodeReadOrder::Last) {
+                    selected.insert(found.node.id_str(), found.node);
+                }
+            }
+        } else {
+            index_requested(roots, &wanted, &mut selected);
+        }
         selected
             .into_iter()
             .filter_map(|(id, node)| {

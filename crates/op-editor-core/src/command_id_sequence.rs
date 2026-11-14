@@ -11,6 +11,9 @@ use std::{
 #[path = "command_id_lookup.rs"]
 mod lookup;
 pub(crate) use lookup::Order as LookupOrder;
+#[path = "command_read_lookup.rs"]
+mod read_lookup;
+pub use read_lookup::{NodeRead, NodeReadOrder, TrustedNodeLookup};
 type Seed = Result<u64, IdAllocError>;
 
 /// One receipt owned by a locked cohort, never by an agent, revision or file
