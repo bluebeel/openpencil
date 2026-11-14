@@ -62,6 +62,8 @@ op-i18n = { path = "../op-i18n" }
 # Canonical JSON/HTML string escaping (dependency-free).
 op-util = { path = "../op-util" }
 jian-ops-schema = { path = "../../vendor/jian/crates/jian-ops-schema" }
+# Exact font-file registration is used by headless startup as well as tests.
+jian-skia = { path = "../../vendor/jian/crates/jian-skia", features = ["textlayout"] }
 agent = { path = "../../vendor/agent/crates/agent", default-features = false }
 anthropic-agent-sdk = { path = "../../vendor/anthropic-agent-sdk" }
 # Collaboration runtime — the daemon runs the same owner/guest actors the
@@ -119,7 +121,6 @@ libc = "0.2"
 [dev-dependencies]
 jian-core = { path = "../../vendor/jian/crates/jian-core" }
 op-preview-core = { path = "../op-preview-core", features = ["testing", "gl-host"] }
-jian-skia = { path = "../../vendor/jian/crates/jian-skia", features = ["textlayout"] }
 # Controlled collaboration fixtures so the collab_state tests can drive the
 # real begin -> install -> reject/fail path instead of asserting on a
 # hand-built outcome value. Dev-only: the normal dependency above (line 53)
