@@ -179,7 +179,7 @@ fn collect(
     let path = if matches!(command, C::ReplaceNode { .. } | C::ReplaceSubtree { .. }) {
         find_path(nodes, id, &mut Vec::new())?
     } else {
-        splice::read_path(nodes, id)?
+        splice::indexed_read_path(state, &scope, nodes, id)?
     };
     let mut node = nodes.get(path[0])?;
     if matches!(node, PenNode::Ref(_)) {

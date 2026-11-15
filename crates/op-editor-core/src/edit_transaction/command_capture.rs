@@ -15,6 +15,8 @@ mod command_scope;
 mod history_cohort;
 #[path = "command_metadata_apply.rs"]
 mod metadata;
+#[path = "command_metadata_preflight.rs"]
+mod metadata_preflight;
 #[path = "command_pages.rs"]
 mod pages;
 #[path = "command_ref_target.rs"]
