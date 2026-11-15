@@ -1,4 +1,5 @@
 import { createTextMaskCapture, drawTextMaskImage } from './op_ck_text_mask.js';
+import { createGradientShaderCache } from './op_ck_gradient_cache.js';
 import { drawExplicitImageField } from './op_ck_image_geometry.js';
 import { strokePaintGeometry, imagePaintField, drawMeshPaintField, releasePaintHandle } from './op_ck_stroke_paint.js';
 import { opCkBuildMeshGradientData } from './op_ck_mesh_geometry.js';
@@ -795,7 +796,11 @@ export async function opCkInit(canvasId, dpr = 1, logicalWidth = 0, logicalHeigh
     }
     return entry.width;
   };
-  const shaderPaint = (shader) => { const p = new CK.Paint(); p.setAntiAlias(true); setPaintStyle(p, CK.PaintStyle.Fill); p.setShader(shader); return p; };
+  const shaderPaint = (shader) => {
+    const paint = new CK.Paint();
+    try { paint.setAntiAlias(true); setPaintStyle(paint, CK.PaintStyle.Fill); paint.setShader(shader); return paint; }
+    catch (error) { releasePaintHandle(paint); throw error; }
+  };
   const firstStopColor = (stops, opacity) => stops.length >= 5
     ? col(
       opCkClampUnit(stops[1]),
@@ -899,49 +904,32 @@ export async function opCkInit(canvasId, dpr = 1, logicalWidth = 0, logicalHeigh
       releasePaintHandle(shader);
     }
   };
+  const gradientShaders = createGradientShaderCache();
   const makeLinearGradient = (x, y, w, h, stops, angleDeg, opacity) => {
-    const gradient = gradientStops(stops, opacity);
-    if (!gradient.colors.length) return null;
     [x,y,w,h]=paintSpace(x,y,w,h);
-    const points = linearGradientPoints(x, y, w, h, angleDeg);
-    try {
-      // Flag 1 requests interpolation in premultiplied colour space, matching
-      // the native Skia backend and avoiding halos around transparent stops.
-      return CK.Shader.MakeLinearGradient(
-        points.start,
-        points.end,
-        gradient.colors,
-        gradient.offsets,
-        CK.TileMode.Clamp,
-        null,
-        1,
-      );
-    } catch (_error) {
-      return null;
-    }
+    return gradientShaders.get(0,[x,y,w,h,angleDeg],stops,opacity,()=>{
+      const gradient = gradientStops(stops, opacity);
+      if (!gradient.colors.length) return null;
+      const points = linearGradientPoints(x, y, w, h, angleDeg);
+      try {
+        // Keep the original premultiplied-color interpolation flag.
+        return CK.Shader.MakeLinearGradient(points.start,points.end,
+          gradient.colors,gradient.offsets,CK.TileMode.Clamp,null,1);
+      } catch (_error) { return null; }
+    });
   };
   const makeRadialGradient = (x, y, w, h, stops, cxFrac, cyFrac, radiusFrac, opacity) => {
     [x,y,w,h]=paintSpace(x,y,w,h);
-    const gradient = gradientStops(stops, opacity);
-    if (!gradient.colors.length) return null;
-    const center = [
-      x + w * opCkClampUnit(cxFrac),
-      y + h * opCkClampUnit(cyFrac),
-    ];
-    const radius = Math.max(0.01, Math.max(w, h) * opCkClampUnit(radiusFrac));
-    try {
-      return CK.Shader.MakeRadialGradient(
-        center,
-        radius,
-        gradient.colors,
-        gradient.offsets,
-        CK.TileMode.Clamp,
-        null,
-        1,
-      );
-    } catch (_error) {
-      return null;
-    }
+    return gradientShaders.get(1,[x,y,w,h,cxFrac,cyFrac,radiusFrac],stops,opacity,()=>{
+      const gradient = gradientStops(stops, opacity);
+      if (!gradient.colors.length) return null;
+      const center = [x+w*opCkClampUnit(cxFrac),y+h*opCkClampUnit(cyFrac)];
+      const radius = Math.max(0.01,Math.max(w,h)*opCkClampUnit(radiusFrac));
+      try {
+        return CK.Shader.MakeRadialGradient(center,radius,
+          gradient.colors,gradient.offsets,CK.TileMode.Clamp,null,1);
+      } catch (_error) { return null; }
+    });
   };
   const drawMeshGradientRRect = (rrect, x, y, w, h, rows, cols, colors, opacity) => {
     if (paintSpaces.length) {
@@ -1309,6 +1297,7 @@ export async function opCkInit(canvasId, dpr = 1, logicalWidth = 0, logicalHeigh
       try { textMasks.cancel(); } catch (_error) {}
       imageCaches.dispose?.();
       runtimeEffects.dispose();
+      gradientShaders.dispose();
       for (const font of registeredFamilyFontCache.values()) release(font);
       registeredFamilyFontCache.clear();
       registeredCoverageCache.clear(); coverageCache.clear();
@@ -1538,41 +1527,27 @@ export async function opCkInit(canvasId, dpr = 1, logicalWidth = 0, logicalHeigh
     },
     fillSvgPathInRectLinearGradient(d, x, y, w, h, evenOdd, stops, angleDeg, opacity) {
       const path = cachedSvgPath(d); if (!path) return;
-      if (evenOdd) path.setFillType(CK.FillType.EvenOdd);
-      fitPathToRect(path, x, y, w, h);
-      if (stops.length < 5) { path.delete(); return; }
-      const shader = makeLinearGradient(x, y, w, h, stops, angleDeg, opacity);
-      if (shader) {
-        // shaderPaint always allocates fresh (one-off effect, excluded from
-        // the shared cache) — this instance owns its own delete.
-        const p = shaderPaint(shader);
-        canvas.drawPath(path, p);
-        p.delete();
-        if (shader.delete) shader.delete();
-      } else {
-        const p = fillPaint(...firstStopColor(stops, opacity));
-        canvas.drawPath(path, p);
-      }
-      path.delete();
+      let shader=null,paint=null;
+      try {
+        if(evenOdd)path.setFillType(CK.FillType.EvenOdd);
+        fitPathToRect(path,x,y,w,h);
+        if(stops.length<5)return;
+        shader=makeLinearGradient(x,y,w,h,stops,angleDeg,opacity);
+        if(shader){paint=shaderPaint(shader);canvas.drawPath(path,paint);}
+        else canvas.drawPath(path,fillPaint(...firstStopColor(stops,opacity)));
+      }finally{releasePaintHandle(paint);releasePaintHandle(shader);releasePaintHandle(path);}
     },
     fillSvgPathInRectRadialGradient(d, x, y, w, h, evenOdd, stops, cxFrac, cyFrac, radiusFrac, opacity) {
       const path = cachedSvgPath(d); if (!path) return;
-      if (evenOdd) path.setFillType(CK.FillType.EvenOdd);
-      fitPathToRect(path, x, y, w, h);
-      if (stops.length < 5) { path.delete(); return; }
-      const shader = makeRadialGradient(x, y, w, h, stops, cxFrac, cyFrac, radiusFrac, opacity);
-      if (shader) {
-        // shaderPaint always allocates fresh (one-off effect, excluded from
-        // the shared cache) — this instance owns its own delete.
-        const p = shaderPaint(shader);
-        canvas.drawPath(path, p);
-        p.delete();
-        if (shader.delete) shader.delete();
-      } else {
-        const p = fillPaint(...firstStopColor(stops, opacity));
-        canvas.drawPath(path, p);
-      }
-      path.delete();
+      let shader=null,paint=null;
+      try {
+        if(evenOdd)path.setFillType(CK.FillType.EvenOdd);
+        fitPathToRect(path,x,y,w,h);
+        if(stops.length<5)return;
+        shader=makeRadialGradient(x,y,w,h,stops,cxFrac,cyFrac,radiusFrac,opacity);
+        if(shader){paint=shaderPaint(shader);canvas.drawPath(path,paint);}
+        else canvas.drawPath(path,fillPaint(...firstStopColor(stops,opacity)));
+      }finally{releasePaintHandle(paint);releasePaintHandle(shader);releasePaintHandle(path);}
     },
     fillInnerShadowSvgPath(d, x, y, w, h, evenOdd, offsetX, offsetY, blur, r, g, b, a) {
       const path = cachedSvgPath(d); if (!path) return;

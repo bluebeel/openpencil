@@ -90,5 +90,14 @@ pub(super) fn image_blend_mode_code(mode: ImageBlendMode) -> u8 {
 }
 
 pub(super) fn svg_path_even_odd(d: &str) -> bool {
-    d.matches(['Z', 'z']).count() > 1
+    let mut first = false;
+    for byte in d.bytes() {
+        if matches!(byte, b'Z' | b'z') {
+            if first {
+                return true;
+            }
+            first = true;
+        }
+    }
+    false
 }
