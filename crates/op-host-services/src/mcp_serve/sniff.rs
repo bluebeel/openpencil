@@ -12,6 +12,10 @@
 /// "method" in another field can't shadow the real top-level
 /// method (mirrors `arguments_field`'s discipline in shell-core).
 pub(super) fn sniff_method(line: &str) -> Option<String> {
+    borrowed_method(line).map(str::to_owned)
+}
+
+fn borrowed_method(line: &str) -> Option<&str> {
     let bytes = line.as_bytes();
     // Skip past the leading `{` if present.
     let mut i = 0usize;
@@ -29,7 +33,7 @@ pub(super) fn sniff_method(line: &str) -> Option<String> {
 /// document retargeting, or agent UI admission.
 pub(super) fn is_control_message(line: &str) -> bool {
     matches!(
-        sniff_method(line).as_deref(),
+        borrowed_method(line),
         Some("initialize" | "tools/list" | "notifications/initialized" | "initialized" | "ping")
     )
 }
@@ -48,22 +52,35 @@ pub(super) fn sniff_id_raw(line: &str) -> Option<String> {
         return None;
     }
     i += 1;
-    walk_top_level_for_raw_value(bytes, &mut i, "id")
+    walk_top_level_for_raw_value(bytes, &mut i, "id").map(str::to_owned)
 }
 
 /// Generic top-level key walker — returns the value for `target`
 /// when seen at depth 0 of the object body starting at `*i`.
 /// `string_only` extracts the inner contents (without quotes);
 /// the verbatim variant returns the full literal.
-fn walk_top_level_for_string_value(bytes: &[u8], i: &mut usize, target: &str) -> Option<String> {
+fn walk_top_level_for_string_value<'a>(
+    bytes: &'a [u8],
+    i: &mut usize,
+    target: &str,
+) -> Option<&'a str> {
     walk_top_level(bytes, i, target, /*string_only=*/ true)
 }
 
-fn walk_top_level_for_raw_value(bytes: &[u8], i: &mut usize, target: &str) -> Option<String> {
+fn walk_top_level_for_raw_value<'a>(
+    bytes: &'a [u8],
+    i: &mut usize,
+    target: &str,
+) -> Option<&'a str> {
     walk_top_level(bytes, i, target, /*string_only=*/ false)
 }
 
-fn walk_top_level(bytes: &[u8], i: &mut usize, target: &str, string_only: bool) -> Option<String> {
+fn walk_top_level<'a>(
+    bytes: &'a [u8],
+    i: &mut usize,
+    target: &str,
+    string_only: bool,
+) -> Option<&'a str> {
     loop {
         // Skip whitespace + commas.
         while *i < bytes.len() && (bytes[*i].is_ascii_whitespace() || bytes[*i] == b',') {
@@ -121,13 +138,9 @@ fn walk_top_level(bytes: &[u8], i: &mut usize, target: &str, string_only: bool) 
                 *i += 1;
                 if key == target {
                     if string_only {
-                        return std::str::from_utf8(&bytes[inner_start..inner_end])
-                            .ok()
-                            .map(|s| s.to_string());
+                        return std::str::from_utf8(&bytes[inner_start..inner_end]).ok();
                     } else {
-                        return std::str::from_utf8(&bytes[val_start..*i])
-                            .ok()
-                            .map(|s| s.to_string());
+                        return std::str::from_utf8(&bytes[val_start..*i]).ok();
                     }
                 }
             }
@@ -172,9 +185,7 @@ fn walk_top_level(bytes: &[u8], i: &mut usize, target: &str, string_only: bool) 
                     *i += 1;
                 }
                 if key == target {
-                    return std::str::from_utf8(&bytes[val_start..*i])
-                        .ok()
-                        .map(|s| s.to_string());
+                    return std::str::from_utf8(&bytes[val_start..*i]).ok();
                 }
             }
         }
