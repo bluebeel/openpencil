@@ -55,3 +55,19 @@ pub(super) fn parts(bytes: &[u8]) -> Option<Option<Span>> {
         .find_map(|(key, value)| (key == "children").then_some(value)),
     )
 }
+
+/// A SharedNode header has children=None even when its separately retained
+/// wire witness is Some(empty). Reconstitute that exact proven presence using
+/// an empty placeholder, never the actual descendant tree or geometry kind.
+pub(super) fn old_metadata(node: &PenNode, children_present: bool) -> Option<Vec<u8>> {
+    let bytes = metadata(node)?; // cap the original metadata before cloning it
+    if children_present && node.children().is_none() {
+        let mut header = node.clone(); // supplied old metadata has no children
+        header.children_mut()?;
+        metadata(&header)
+    } else if children_present == node.children().is_some() {
+        Some(bytes)
+    } else {
+        None
+    }
+}

@@ -22,6 +22,7 @@ impl Deref for TrackedEditor {
 }
 impl DerefMut for TrackedEditor {
     fn deref_mut(&mut self) -> &mut EditorState {
+        super::hit(super::Event::MutableInvalidation);
         self.chain.invalidate();
         &mut self.state
     }
@@ -36,6 +37,7 @@ impl TrackedEditor {
         if chain.matches(&self.state) {
             self.chain = chain;
         } else {
+            super::hit(super::Event::RestoreMismatch);
             self.chain.invalidate();
         }
     }

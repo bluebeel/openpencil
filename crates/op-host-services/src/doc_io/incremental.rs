@@ -1,19 +1,23 @@
-//! Exact, authority-owned incremental compact saves. Mutable access invalidates
-//! the cache; only completed metadata receipts may advance an extracted chain.
+//! Exact, authority-owned incremental compact saves. Completed staging files
+//! back unchanged ranges; only completed metadata receipts advance a chain.
 use super::DocIoError;
 use crate::mcp_serve::file_ownership::FileVersion;
 use jian_ops_schema::{image_thumbs::ImageThumbSnapshot, node::PenNode};
 use op_editor_core::{EditorState, PenNodeExt};
 use std::{
     collections::BTreeMap,
-    io::Write,
+    fs::File,
+    io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
 };
 mod budget;
 mod index;
 mod splice;
+mod stats;
 mod tracked;
 use index::{Index, Span};
+pub(crate) use stats::snapshot as snapshot_stats;
+use stats::{hit, Event};
 pub(crate) use tracked::TrackedEditor;
 
 /// Writer-derived byte cache, never a second canonical document. A caller may
@@ -23,7 +27,7 @@ pub(crate) struct SaveChain {
     base: Option<Base>,
 }
 struct Base {
-    raw: Vec<u8>,
+    raw: File,
     index: Index,
     replacements: BTreeMap<Span, Vec<u8>>,
     replacement_bytes: usize,
@@ -61,8 +65,14 @@ impl SaveChain {
                 return;
             }
             valid = old.id_str() == current.id_str() && base.patch(old, current).is_some();
+            if !valid {
+                hit(Event::MetadataMismatch);
+            }
         });
         if !exact || !valid {
+            if !exact {
+                hit(Event::ReceiptRefusal);
+            }
             self.invalidate();
         }
     }
@@ -80,35 +90,42 @@ impl SaveChain {
                         match base.write(path) {
                             Ok(true) => {
                                 base.revision = state.document_revision();
+                                hit(Event::IncrementalSave);
                                 return Ok(());
                             }
-                            Ok(false) => (),
+                            Ok(false) => hit(Event::SourceDrift),
                             Err(error) => {
                                 self.base = None;
                                 return Err(error);
                             }
                         }
                     }
+                } else {
+                    hit(Event::MetaLimit);
                 }
+            } else {
+                hit(Event::ThumbChange);
             }
         }
         self.base = None;
-        let mut seed = Seed::new();
+        hit(Event::FullSave);
+        let mut seed = Seed::new(thumbs.storage_bytes());
         super::save_compact_recorded(state, path, seed.as_mut(), &thumbs)?;
-        if let Some(seed) = seed {
-            if let (Some(path), Some(stamp)) = (seed.path, seed.stamp) {
-                if let Some(index) = Index::new(&seed.raw) {
+        if let Some(mut seed) = seed {
+            if let (Some(path), Some(stamp), Some(mut raw)) =
+                (seed.path.take(), seed.stamp.take(), seed.raw.take())
+            {
+                if let Some(index) = Index::new(&mut raw) {
                     let mut reservation = seed.reservation;
-                    let retained = seed.raw.capacity()
-                        + index.bytes()
-                        + budget::EDITS
-                        + thumbs.storage_bytes();
+                    let retained =
+                        index.bytes() + budget::EDITS + thumbs.storage_bytes() + budget::IO;
                     if retained > reservation.0 {
+                        hit(Event::SeedCharge);
                         return Ok(());
                     }
                     reservation.shrink(retained);
                     self.base = Some(Base {
-                        raw: seed.raw,
+                        raw,
                         index,
                         replacements: BTreeMap::new(),
                         replacement_bytes: 0,
@@ -119,7 +136,12 @@ impl SaveChain {
                         thumbnails: thumbs,
                         _reservation: reservation,
                     });
+                    hit(Event::SeedReady);
+                } else {
+                    hit(Event::SeedIndex);
                 }
+            } else {
+                hit(Event::SeedSource);
             }
         }
         Ok(())
@@ -153,22 +175,33 @@ impl Base {
         self.replacements.insert(span, replacement);
         Some(())
     }
-    fn current(&self, span: Span) -> &[u8] {
-        self.replacements
-            .get(&span)
-            .map_or(&self.raw[span.start..span.end], Vec::as_slice)
+    fn current_matches(&mut self, span: Span, expected: &[u8]) -> Option<()> {
+        if let Some(bytes) = self.replacements.get(&span) {
+            return (bytes.as_slice() == expected).then_some(());
+        }
+        if span.end.checked_sub(span.start)? != expected.len() {
+            return None;
+        }
+        // Only the bounded typed metadata/header pieces are read here. Complete
+        // descendant bytes are never copied into a metadata comparison buffer.
+        let mut bytes = vec![0; expected.len()];
+        self.raw
+            .seek(SeekFrom::Start(span.start.try_into().ok()?))
+            .ok()?;
+        self.raw.read_exact(&mut bytes).ok()?;
+        (bytes == expected).then_some(())
     }
     fn patch(&mut self, old: &PenNode, current: &PenNode) -> Option<()> {
         let node = self.index.nodes.get(old.id_str()).copied().flatten()?;
-        let before = splice::metadata(old)?;
+        // visit_metadata_changes proved the old SharedNode child wire witness
+        // equals the current node's presence, before exposing either header.
+        let before = splice::old_metadata(old, current.children().is_some())?;
         let after = splice::metadata(current)?;
         let old_parts = splice::parts(&before)?;
         let new_parts = splice::parts(&after)?;
         match (node.children, old_parts, new_parts) {
             (None, None, None) => {
-                if self.current(node.object) != before.as_slice() {
-                    return None;
-                }
+                self.current_matches(node.object, &before)?;
                 self.replace(node.object, after)
             }
             (Some(children), Some(a), Some(b)) => {
@@ -180,11 +213,8 @@ impl Base {
                     start: children.end,
                     end: node.object.end,
                 };
-                if self.current(prefix) != &before[..a.start]
-                    || self.current(suffix) != &before[a.end..]
-                {
-                    return None;
-                }
+                self.current_matches(prefix, &before[..a.start])?;
+                self.current_matches(suffix, &before[a.end..])?;
                 self.replace(prefix, after[..b.start].to_vec())?;
                 self.replace(suffix, after[b.end..].to_vec())
             }
@@ -212,17 +242,23 @@ impl Base {
             super::save_buffer::with_shared_buffered_file(file, |writer| {
                 let mut at = 0;
                 for (span, bytes) in &self.replacements {
-                    writer
-                        .write_all(&self.raw[at..span.start])
-                        .map_err(|e| DocIoError::Io(e.to_string()))?;
+                    copy_range(&mut self.raw, at, span.start, writer)?;
                     writer
                         .write_all(bytes)
                         .map_err(|e| DocIoError::Io(e.to_string()))?;
                     at = span.end;
                 }
-                writer
-                    .write_all(&self.raw[at..])
-                    .map_err(|e| DocIoError::Io(e.to_string()))
+                let end = self
+                    .raw
+                    .metadata()
+                    .map_err(|e| DocIoError::Io(e.to_string()))?
+                    .len();
+                copy_range(
+                    &mut self.raw,
+                    at,
+                    usize::try_from(end).map_err(|e| DocIoError::Io(e.to_string()))?,
+                    writer,
+                )
             })?;
             let next = std::fs::metadata(&temp)
                 .map(|m| FileVersion::metadata(&m))
@@ -237,19 +273,25 @@ impl Base {
         result
     }
 }
-/// Optional bounded tee populated by the real canonical writer itself. Reading
-/// a later destination file cannot establish that its bytes match the editor.
+/// The writer seals this descriptor after flushing its sibling staging file,
+/// before the existing identity-checked atomic rename. Reading an arbitrary
+/// later destination never establishes canonical byte provenance.
 pub(super) struct Seed {
-    raw: Vec<u8>,
+    raw: Option<File>,
     reservation: budget::Reservation,
     path: Option<PathBuf>,
     stamp: Option<FileVersion>,
 }
 impl Seed {
-    fn new() -> Option<Self> {
+    fn new(thumbnails: usize) -> Option<Self> {
+        hit(Event::SeedAttempt);
+        let Some(reservation) = budget::Reservation::new(thumbnails) else {
+            hit(Event::SeedBudget);
+            return None;
+        };
         Some(Self {
-            raw: Vec::new(),
-            reservation: budget::Reservation::new()?,
+            raw: None,
+            reservation,
             path: None,
             stamp: None,
         })
@@ -258,56 +300,41 @@ impl Seed {
         self.path = Some(path.to_path_buf());
     }
     pub(super) fn staged(&mut self, path: &Path) {
-        self.stamp = std::fs::metadata(path)
-            .ok()
-            .map(|m| FileVersion::metadata(&m));
-    }
-    pub(super) fn writer<'a, W: Write>(&'a mut self, writer: &'a mut W) -> SeedWriter<'a, W> {
-        SeedWriter { writer, seed: self }
-    }
-}
-pub(super) struct SeedWriter<'a, W> {
-    writer: &'a mut W,
-    seed: &'a mut Seed,
-}
-impl<W: Write> Write for SeedWriter<'_, W> {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        self.writer.write_all(bytes)?;
-        if self.seed.path.is_some() {
-            if let Some(next) = self
-                .seed
-                .raw
-                .len()
-                .checked_add(bytes.len())
-                .filter(|n| *n <= budget::RAW)
-            {
-                let capacity = self
-                    .seed
-                    .raw
-                    .capacity()
-                    .saturating_mul(2)
-                    .max(next)
-                    .min(budget::RAW);
-                if next > self.seed.raw.capacity()
-                    && self
-                        .seed
-                        .raw
-                        .try_reserve_exact(capacity - self.seed.raw.len())
-                        .is_err()
+        if let Ok(file) = File::open(path) {
+            if let Ok(meta) = file.metadata() {
+                if usize::try_from(meta.len())
+                    .is_ok_and(|bytes| self.reservation.reserve_source(bytes))
                 {
-                    self.seed.path = None;
-                    self.seed.raw = Vec::new();
-                } else {
-                    self.seed.raw.extend_from_slice(bytes);
+                    self.stamp = Some(FileVersion::metadata(&meta));
+                    self.raw = Some(file);
                 }
-            } else {
-                self.seed.path = None;
-                self.seed.raw = Vec::new();
             }
         }
-        Ok(bytes.len())
     }
-    fn flush(&mut self) -> std::io::Result<()> {
-        self.writer.flush()
+    pub(super) fn writer<'a, W: Write>(&'a mut self, writer: &'a mut W) -> &'a mut W {
+        writer
     }
+}
+fn copy_range(
+    source: &mut File,
+    start: usize,
+    end: usize,
+    writer: &mut impl Write,
+) -> Result<(), DocIoError> {
+    let len = end
+        .checked_sub(start)
+        .ok_or_else(|| DocIoError::Io("invalid canonical source range".into()))?;
+    source
+        .seek(SeekFrom::Start(start.try_into().map_err(
+            |e: std::num::TryFromIntError| DocIoError::Io(e.to_string()),
+        )?))
+        .map_err(|e| DocIoError::Io(e.to_string()))?;
+    let copied = std::io::copy(&mut source.take(len as u64), writer)
+        .map_err(|e| DocIoError::Io(e.to_string()))?;
+    if copied != len as u64 {
+        return Err(DocIoError::Io(
+            "canonical source range became truncated".into(),
+        ));
+    }
+    Ok(())
 }

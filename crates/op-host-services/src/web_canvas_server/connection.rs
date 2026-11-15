@@ -415,6 +415,7 @@ fn dispatch_inner<S: Read + Write>(
                 if let Ok(mut body) = serde_json::from_str::<serde_json::Value>(&reply.body) {
                     body["durableGroups"] = ctx.authority.managed_groups.metrics.snapshot();
                     if !ctx.mode.is_online() {
+                        body["incrementalSaves"] = crate::doc_io::incremental::snapshot_stats();
                         body["residentDurableGroups"] =
                             crate::mcp_serve::resident_groups::snapshot();
                     }

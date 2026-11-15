@@ -16,68 +16,13 @@ pub(super) struct Index {
     pub nodes: HashMap<String, Option<Node>>,
     pub meta: Span,
 }
-const MAX_INDEX: usize = 64 * 1024 * 1024;
+#[path = "index_stream.rs"]
+mod stream;
+const MAX_INDEX: usize = 224 * 1024 * 1024;
 
 impl Index {
-    pub fn new(bytes: &[u8]) -> Option<Self> {
-        let mut nodes = HashMap::new();
-        let root = fields(
-            bytes,
-            Span {
-                start: 0,
-                end: bytes.len(),
-            },
-        )?;
-        let meta = root.iter().find(|entry| entry.0 == "editorMeta")?.1;
-        let mut pending = Vec::new();
-        for (name, value) in root {
-            if name == "children" {
-                pending.extend(items(bytes, value)?);
-            }
-            if name == "pages" && bytes[value.start] == b'[' {
-                for page in items(bytes, value)? {
-                    for (name, children) in fields(bytes, page)? {
-                        if name == "children" {
-                            pending.extend(items(bytes, children)?);
-                        }
-                    }
-                }
-            }
-        }
-        let mut names = 0usize;
-        while let Some(object) = pending.pop() {
-            let mut id = None;
-            let mut children = None;
-            for (name, value) in fields(bytes, object)? {
-                if name == "id" {
-                    if value.end - value.start > 16 * 1024 {
-                        return None;
-                    }
-                    id = Some(
-                        serde_json::from_slice::<String>(&bytes[value.start..value.end]).ok()?,
-                    );
-                }
-                if name == "children" {
-                    children = Some(value);
-                    pending.extend(items(bytes, value)?);
-                }
-            }
-            let id = id?;
-            names = names.checked_add(id.capacity() + 32)?;
-            if nodes.contains_key(&id) {
-                nodes.insert(id, None);
-            } else {
-                nodes.insert(id, Some(Node { object, children }));
-            }
-            if names
-                + nodes.capacity() * (std::mem::size_of::<(String, Option<Node>)>() + 16)
-                + pending.capacity() * std::mem::size_of::<Span>()
-                > MAX_INDEX
-            {
-                return None;
-            }
-        }
-        Some(Self { nodes, meta })
+    pub fn new(file: &mut std::fs::File) -> Option<Self> {
+        stream::build(file)
     }
     pub fn bytes(&self) -> usize {
         self.nodes.capacity() * (std::mem::size_of::<(String, Option<Node>)>() + 16)
