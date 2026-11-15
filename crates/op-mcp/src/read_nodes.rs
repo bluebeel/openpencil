@@ -79,26 +79,24 @@ fn read_nodes_result<'a>(
         Err((code, msg)) => return ToolOutcome::Err(code, msg),
     };
 
-    let selected: Vec<&PenNode> = match node_ids {
-        Some(ids) if !ids.is_empty() => find(&ids),
-        _ => roots.iter().collect(),
-    };
-    let nodes: Vec<Value> = selected
-        .iter()
-        .map(|node| node_snapshot_value(node, depth))
-        .collect();
     // Match TS read-nodes EXACTLY: { nodes, variables?, themes? } with
     // NATIVE JSON values and NO Rust-only `count` key (TS ReadNodesResult
     // has none; cf. batch_get which also dropped `count`). The old path
     // stringified the nodes/variables/themes arrays into String values.
-    let mut out = serde_json::Map::new();
-    out.insert("nodes".into(), Value::Array(nodes));
-    if include_variables {
-        let (variables, themes) = metadata();
-        out.insert("variables".into(), variables);
-        out.insert("themes".into(), themes);
+    let metadata = || include_variables.then(metadata);
+    let encoded = match node_ids {
+        Some(ids) if !ids.is_empty() => {
+            node_snapshot_stream::encode(find(&ids), depth, |_| {}, metadata)
+        }
+        _ => node_snapshot_stream::encode(roots, depth, |_| {}, metadata),
+    };
+    match encoded {
+        Ok(json) => ToolOutcome::OkJson(json),
+        Err(error) => ToolOutcome::Err(
+            ToolErrorCode::Internal,
+            format!("serialize nodes failed: {error}"),
+        ),
     }
-    ToolOutcome::OkJson(Value::Object(out).to_string())
 }
 
 /// Request-specific immutable result; call with the same arguments used here.
@@ -298,6 +296,10 @@ pub(crate) fn node_snapshot_value(node: &PenNode, depth: i32) -> Value {
 
 #[path = "node_snapshot.rs"]
 mod node_snapshot;
+
+#[path = "node_snapshot_stream.rs"]
+mod node_snapshot_stream;
+pub(crate) use node_snapshot_stream::encode as encode_node_snapshots;
 
 fn arg_alias<'a>(args: &'a BTreeMap<String, String>, keys: &[&str]) -> Option<&'a str> {
     keys.iter()
