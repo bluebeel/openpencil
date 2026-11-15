@@ -7,7 +7,7 @@
 
 #[path = "batch_design_fill_normalize.rs"]
 mod fill_normalize;
-use fill_normalize::normalize_fill;
+use fill_normalize::{normalize_fill, solid_fill};
 
 pub(crate) fn normalize_node_shape(value: &mut serde_json::Value) {
     // Canonicalize authoring-only video nodes before any shape normalizer or
@@ -95,10 +95,7 @@ fn normalize_pencil_autolayout_dialect(obj: &mut serde_json::Map<String, serde_j
     // Figma one M3 uses. First alias present wins.
     if !obj.contains_key("layout") {
         for alias in ["layoutMode", "direction"] {
-            let Some(s) = obj
-                .remove(alias)
-                .and_then(|v| v.as_str().map(str::to_string))
-            else {
+            let Some(serde_json::Value::String(s)) = obj.remove(alias) else {
                 continue;
             };
             let mapped = match s.trim().to_ascii_lowercase().as_str() {
@@ -130,20 +127,22 @@ fn normalize_pencil_autolayout_dialect(obj: &mut serde_json::Map<String, serde_j
         if obj.contains_key(to) {
             continue;
         }
-        let Some(s) = obj
-            .remove(from)
-            .and_then(|v| v.as_str().map(str::to_string))
-        else {
+        let Some(serde_json::Value::String(s)) = obj.remove(from) else {
             continue;
         };
-        let mapped = match s.trim().to_ascii_uppercase().as_str() {
-            "MIN" => "start",
-            "MAX" => "end",
-            "CENTER" => "center",
-            "SPACE_BETWEEN" => "space_between",
-            _ => s.as_str(), // leave for normalize_layout_keyword
-        };
-        obj.insert(to.into(), serde_json::Value::String(mapped.to_string()));
+        let raw = s.trim();
+        let mapped = [
+            ("MIN", "start"),
+            ("MAX", "end"),
+            ("CENTER", "center"),
+            ("SPACE_BETWEEN", "space_between"),
+        ]
+        .into_iter()
+        .find_map(|(alias, value)| raw.eq_ignore_ascii_case(alias).then_some(value));
+        obj.insert(
+            to.into(),
+            serde_json::Value::String(mapped.map_or(s, str::to_owned)),
+        );
     }
     // strokeWeight → stroke thickness (Figma names the width apart from the color)
     if let Some(weight) = obj
@@ -155,7 +154,7 @@ fn normalize_pencil_autolayout_dialect(obj: &mut serde_json::Map<String, serde_j
                 s.entry("thickness").or_insert(weight);
             }
             Some(serde_json::Value::String(color)) => {
-                let color = color.clone();
+                let color = std::mem::take(color);
                 obj.insert(
                     "stroke".into(),
                     serde_json::json!({ "thickness": weight, "fill": color }),
@@ -178,42 +177,54 @@ fn normalize_pencil_autolayout_dialect(obj: &mut serde_json::Map<String, serde_j
 /// node (only where the node doesn't already set them). Unknown directions are
 /// left untouched rather than guessed.
 fn normalize_layout_object(obj: &mut serde_json::Map<String, serde_json::Value>) {
-    let layout = match obj.get("layout") {
-        Some(serde_json::Value::Object(m)) => m.clone(),
-        _ => return,
+    use serde_json::Value;
+    let Some(Value::Object(layout)) = obj.get("layout") else {
+        return;
     };
-    // `{type:"horizontal",…}` (type-keyed) OR `{Horizontal:{…}}` (variant-keyed).
-    let (raw_dir, inner) = if let Some(t) = layout.get("type").and_then(|v| v.as_str()) {
-        (t.to_string(), None)
-    } else if let Some((k, v)) = layout.iter().next() {
-        (k.clone(), v.as_object().cloned())
+    let (raw, variant) = if let Some(raw) = layout.get("type").and_then(Value::as_str) {
+        (raw, false)
+    } else if let Some((key, value)) = layout.iter().next() {
+        (key.as_str(), value.is_object())
     } else {
         return;
     };
-    let dir = match raw_dir.trim().to_ascii_lowercase().as_str() {
-        "horizontal" | "row" => "horizontal",
-        "vertical" | "column" => "vertical",
-        "none" => "none",
-        _ => return,
+    let Some(direction) = layout_direction(raw) else {
+        return;
     };
-    let source = inner.as_ref().unwrap_or(&layout);
-    let gap = source.get("gap").cloned();
-    let padding = source.get("padding").cloned();
-    let justify = source.get("justifyContent").cloned();
-    let align = source.get("alignItems").cloned();
-    obj.insert("layout".into(), serde_json::Value::String(dir.into()));
-    if let Some(g) = gap {
-        obj.entry("gap").or_insert(g);
+    // Replacing the existing slot preserves preserve_order map position while
+    // taking ownership of the structured spacing data instead of cloning it.
+    let Some(Value::Object(layout)) = obj
+        .get_mut("layout")
+        .map(|value| std::mem::replace(value, Value::String(direction.into())))
+    else {
+        return;
+    };
+    let mut source = if variant {
+        match layout.into_iter().next() {
+            Some((_, Value::Object(inner))) => inner,
+            _ => return,
+        }
+    } else {
+        layout
+    };
+    for key in ["gap", "padding", "justifyContent", "alignItems"] {
+        if let Some(value) = source.remove(key) {
+            obj.entry(key).or_insert(value);
+        }
     }
-    if let Some(p) = padding {
-        obj.entry("padding").or_insert(p);
-    }
-    if let Some(j) = justify {
-        obj.entry("justifyContent").or_insert(j);
-    }
-    if let Some(a) = align {
-        obj.entry("alignItems").or_insert(a);
-    }
+}
+
+fn layout_direction(raw: &str) -> Option<&'static str> {
+    let raw = raw.trim();
+    [
+        ("horizontal", "horizontal"),
+        ("row", "horizontal"),
+        ("vertical", "vertical"),
+        ("column", "vertical"),
+        ("none", "none"),
+    ]
+    .into_iter()
+    .find_map(|(alias, direction)| raw.eq_ignore_ascii_case(alias).then_some(direction))
 }
 
 /// `width` / `height` accept `fill_container` / `fit_content` / a number. A weak
@@ -227,6 +238,11 @@ fn normalize_sizing_keyword(obj: &mut serde_json::Map<String, serde_json::Value>
     let Some(serde_json::Value::String(raw)) = obj.get(key) else {
         return;
     };
+    if matches!(raw.as_str(), "fill_container" | "fit_content")
+        || !raw.bytes().any(|byte| byte.is_ascii_alphabetic())
+    {
+        return;
+    }
     let mut canon = raw.trim().to_ascii_lowercase().replace([' ', '-'], "_");
     for suffix in ["_str", "_string", "_val", "_value"] {
         if let Some(stripped) = canon.strip_suffix(suffix) {
@@ -273,11 +289,15 @@ fn normalize_image_src(obj: &mut serde_json::Map<String, serde_json::Value>) {
         return;
     }
     for alias in ["url", "source", "imageUrl", "image_url", "uri", "href"] {
-        if let Some(v) = obj.get(alias).cloned() {
-            if v.as_str().is_some_and(|t| !t.trim().is_empty()) {
-                obj.insert("src".into(), v);
-                return;
+        if obj
+            .get(alias)
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|text| !text.trim().is_empty())
+        {
+            if let Some(value) = obj.get(alias).cloned() {
+                obj.insert("src".into(), value);
             }
+            return;
         }
     }
     obj.insert("src".into(), serde_json::Value::String(String::new()));
@@ -292,6 +312,9 @@ fn normalize_text_growth(obj: &mut serde_json::Map<String, serde_json::Value>) {
     let Some(raw) = obj.get("textGrowth").and_then(serde_json::Value::as_str) else {
         return;
     };
+    if matches!(raw, "auto" | "fixed-width" | "fixed-width-height") {
+        return;
+    }
     let canon = raw.trim().to_ascii_lowercase().replace([' ', '_'], "-");
     let normalized = match canon.as_str() {
         "auto" | "fit-content" | "hug" | "fill-container" | "fill" | "fit" => Some("auto"),
@@ -334,12 +357,16 @@ fn normalize_text_align(obj: &mut serde_json::Map<String, serde_json::Value>) {
     let Some(serde_json::Value::String(value)) = obj.get_mut("textAlign") else {
         return;
     };
-    let normalized = match value.trim().to_ascii_lowercase().as_str() {
-        "start" => "left",
-        "end" => "right",
-        _ => return,
+    let raw = value.trim();
+    let normalized = if raw.eq_ignore_ascii_case("start") {
+        "left"
+    } else if raw.eq_ignore_ascii_case("end") {
+        "right"
+    } else {
+        return;
     };
-    *value = normalized.to_string();
+    value.clear();
+    value.push_str(normalized);
 }
 
 /// Text node `content` must be a string or a styled-text-segment array. A weak
@@ -386,35 +413,35 @@ fn normalize_layout_keyword(obj: &mut serde_json::Map<String, serde_json::Value>
 }
 
 fn normalize_padding(value: &mut serde_json::Value) {
-    if let Some(items) = value.as_array() {
-        if items.len() == 1 {
-            *value = items[0].clone();
-        } else if items.len() == 3 {
-            // CSS shorthand: top, horizontal, bottom. The canonical schema
-            // accepts scalar, 2-side, or 4-side padding; expand the standard
-            // 3-value form models commonly emit before deserialization.
-            *value = serde_json::json!([
-                items[0].clone(),
-                items[1].clone(),
-                items[2].clone(),
-                items[1].clone()
-            ]);
+    let serde_json::Value::Array(items) = value else {
+        return;
+    };
+    match items.len() {
+        1 => {
+            *value = items.pop().expect("one padding item");
         }
+        3 => {
+            items.push(items[1].clone());
+        }
+        _ => {}
     }
 }
 
 fn normalize_stroke(value: &mut serde_json::Value) {
     match value {
         serde_json::Value::String(color) => {
-            *value = serde_json::json!({
-                "thickness": 1,
-                "fill": [{ "type": "solid", "color": color }]
-            });
+            let fill = serde_json::Value::Array(vec![solid_fill(serde_json::Value::String(
+                std::mem::take(color),
+            ))]);
+            *value = serde_json::Value::Object(serde_json::Map::from_iter([
+                ("thickness".into(), serde_json::json!(1)),
+                ("fill".into(), fill),
+            ]));
         }
         serde_json::Value::Object(obj) => {
             if let Some(color) = obj.remove("color") {
                 obj.entry("fill")
-                    .or_insert_with(|| serde_json::json!([{ "type": "solid", "color": color }]));
+                    .or_insert_with(|| serde_json::Value::Array(vec![solid_fill(color)]));
             }
             if let Some(fill) = obj.get_mut("fill") {
                 normalize_fill(fill);

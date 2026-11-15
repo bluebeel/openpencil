@@ -1,7 +1,9 @@
 pub(super) fn normalize_fill(value: &mut serde_json::Value) {
     match value {
         serde_json::Value::String(color) => {
-            *value = serde_json::json!([{ "type": "solid", "color": color }]);
+            *value = serde_json::Value::Array(vec![solid_fill(serde_json::Value::String(
+                std::mem::take(color),
+            ))]);
         }
         serde_json::Value::Object(_) => {
             let single = std::mem::take(value);
@@ -14,6 +16,13 @@ pub(super) fn normalize_fill(value: &mut serde_json::Value) {
             normalize_fill_item(item);
         }
     }
+}
+
+pub(super) fn solid_fill(color: serde_json::Value) -> serde_json::Value {
+    serde_json::Value::Object(serde_json::Map::from_iter([
+        ("type".into(), serde_json::Value::String("solid".into())),
+        ("color".into(), color),
+    ]))
 }
 
 fn normalize_fill_item(value: &mut serde_json::Value) {
@@ -40,11 +49,15 @@ fn normalize_fill_item(value: &mut serde_json::Value) {
     let has_url = obj.get("url").and_then(serde_json::Value::as_str).is_some();
     if !has_url {
         for alias in ["src", "source", "imageUrl", "image_url", "uri", "href"] {
-            if let Some(value) = obj.get(alias).cloned() {
-                if value.as_str().is_some_and(|text| !text.trim().is_empty()) {
+            if obj
+                .get(alias)
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|text| !text.trim().is_empty())
+            {
+                if let Some(value) = obj.get(alias).cloned() {
                     obj.insert("url".into(), value);
-                    break;
                 }
+                break;
             }
         }
         obj.entry("url")
@@ -121,6 +134,12 @@ fn normalize_fill_type_name(obj: &mut serde_json::Map<String, serde_json::Value>
     let Some(raw) = type_value.as_str() else {
         return;
     };
+    if matches!(
+        raw,
+        "solid" | "linear_gradient" | "radial_gradient" | "mesh_gradient" | "shader" | "image"
+    ) {
+        return;
+    }
     let canon = raw.trim().to_ascii_lowercase().replace('-', "_");
     let normalized = match canon.as_str() {
         "solid" => Some("solid"),

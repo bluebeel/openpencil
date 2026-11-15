@@ -7,6 +7,7 @@
 use super::batch_design_wire_error::WireParseError;
 use super::write_tools::{validate_hex, ALLOWED_KINDS};
 use super::BatchInsertItem;
+use std::borrow::Cow;
 
 /// Hand-rolled parser for the `nodes_json` payload. Shell-core
 /// stays serde-free so the wasm32 bundle doesn't grow. Returns a
@@ -20,14 +21,17 @@ use super::BatchInsertItem;
 ///   string     = '"' chars '"'
 ///   value      = string | number
 ///
-/// Strings handle `\"` and `\\` escapes inline; no `\u` decode
-/// (the wire never carries unicode escapes in tool args today).
+/// Strings retain ordinary UTF-8 spans and decode JSON escapes, including
+/// Unicode surrogate pairs, directly from their original quoted token.
 pub(crate) fn parse_batch_items(input: &str) -> Result<Vec<BatchInsertItem>, WireParseError> {
-    // The wire-level parser doesn't unescape JSON string contents
-    // — `{"nodes_json":"[\"x\"]"}` arrives here as the raw bytes
-    // `[\"x\"]` (backslash + quote). Pre-pass: unescape so the
-    // grammar below sees real `"` / `\` / `\n` etc.
-    let unescaped = unescape_wire_string(input)?;
+    // The envelope parser already decoded its JSON string. Only historical
+    // callers that escaped descriptor KEY quotes need the extra outer layer.
+    // Ordinary inner JSON escapes (names, paths, Unicode) must stay intact.
+    let unescaped = if uses_escaped_descriptor_keys(input.as_bytes()) {
+        Cow::Owned(unescape_wire_string(input)?)
+    } else {
+        Cow::Borrowed(input)
+    };
     let bytes = unescaped.as_bytes();
     let mut i = 0usize;
     skip_ws(bytes, &mut i);
@@ -38,6 +42,11 @@ pub(crate) fn parse_batch_items(input: &str) -> Result<Vec<BatchInsertItem>, Wir
     skip_ws(bytes, &mut i);
     let mut out = Vec::new();
     if i < bytes.len() && bytes[i] == b']' {
+        i += 1;
+        skip_ws(bytes, &mut i);
+        if i != bytes.len() {
+            return Err(WireParseError::TrailingGarbage);
+        }
         return Ok(out); // empty array — caller surfaces InvalidArgument
     }
     loop {
@@ -92,14 +101,14 @@ fn parse_item(bytes: &[u8], i: &mut usize) -> Result<BatchInsertItem, WireParseE
         let key = parse_string(bytes, i)?;
         skip_ws(bytes, i);
         if *i >= bytes.len() || bytes[*i] != b':' {
-            return Err(WireParseError::ExpectedColonAfterKey(key));
+            return Err(WireParseError::ExpectedColonAfterKey(key.into_owned()));
         }
         *i += 1;
         skip_ws(bytes, i);
-        match key.as_str() {
-            "kind" => kind = Some(parse_string(bytes, i)?),
-            "name" => name = Some(parse_string(bytes, i)?),
-            "fill_hex" => fill_hex = Some(parse_string(bytes, i)?),
+        match key.as_ref() {
+            "kind" => kind = Some(parse_string(bytes, i)?.into_owned()),
+            "name" => name = Some(parse_string(bytes, i)?.into_owned()),
+            "fill_hex" => fill_hex = Some(parse_string(bytes, i)?.into_owned()),
             // Generic `fill` passthrough: a full canonical PenFill stack
             // (array of fill objects, or a single fill object) so a batch
             // item can carry gradient / mesh / image fills, not just a
@@ -170,7 +179,7 @@ fn parse_fill_stack(raw: &str) -> Result<Vec<jian_ops_schema::style::PenFill>, W
 /// `true` / `false` / `null`) starting at `*i`, advance `*i` past it,
 /// and return the raw slice. Respects nesting + string escapes so a
 /// `}`/`]` inside a string doesn't prematurely close the value.
-fn capture_raw_json_value(bytes: &[u8], i: &mut usize) -> Result<String, WireParseError> {
+fn capture_raw_json_value<'a>(bytes: &'a [u8], i: &mut usize) -> Result<&'a str, WireParseError> {
     skip_ws(bytes, i);
     if *i >= bytes.len() {
         return Err(WireParseError::ExpectedJsonValue);
@@ -227,10 +236,24 @@ fn capture_raw_json_value(bytes: &[u8], i: &mut usize) -> Result<String, WirePar
     }
 }
 
-fn slice_utf8(bytes: &[u8], start: usize, end: usize) -> Result<String, WireParseError> {
-    std::str::from_utf8(&bytes[start..end])
-        .map(|s| s.to_string())
-        .map_err(|_| WireParseError::InvalidUtf8("JSON value"))
+fn slice_utf8(bytes: &[u8], start: usize, end: usize) -> Result<&str, WireParseError> {
+    std::str::from_utf8(&bytes[start..end]).map_err(|_| WireParseError::InvalidUtf8("JSON value"))
+}
+
+fn uses_escaped_descriptor_keys(bytes: &[u8]) -> bool {
+    let mut i = 0;
+    skip_ws(bytes, &mut i);
+    if bytes.get(i) != Some(&b'[') {
+        return false;
+    }
+    i += 1;
+    skip_ws(bytes, &mut i);
+    if bytes.get(i) != Some(&b'{') {
+        return false;
+    }
+    i += 1;
+    skip_ws(bytes, &mut i);
+    bytes.get(i..i + 2) == Some(b"\\\"")
 }
 
 /// Reverse the JSON-string escaping the wire parser left intact.
@@ -242,8 +265,8 @@ fn unescape_wire_string(input: &str) -> Result<String, WireParseError> {
     let mut i = 0;
     while i < bytes.len() {
         let c = bytes[i];
-        if c == b'\\' && i + 1 < bytes.len() {
-            let next = bytes[i + 1];
+        if c == b'\\' {
+            let next = *bytes.get(i + 1).ok_or(WireParseError::UnterminatedEscape)?;
             match next {
                 b'"' => out.push('"'),
                 b'\\' => out.push('\\'),
@@ -278,44 +301,45 @@ fn skip_ws(bytes: &[u8], i: &mut usize) {
     }
 }
 
-fn parse_string(bytes: &[u8], i: &mut usize) -> Result<String, WireParseError> {
-    if *i >= bytes.len() || bytes[*i] != b'"' {
+fn parse_string<'a>(bytes: &'a [u8], i: &mut usize) -> Result<Cow<'a, str>, WireParseError> {
+    if bytes.get(*i) != Some(&b'"') {
         return Err(WireParseError::ExpectedString);
     }
+    let start = *i;
     *i += 1;
-    let mut out = String::new();
-    while *i < bytes.len() {
-        let c = bytes[*i];
-        if c == b'"' {
+    let mut escaped = false;
+    while let Some(&byte) = bytes.get(*i) {
+        if byte == b'"' {
             *i += 1;
-            return Ok(out);
+            if escaped {
+                let token = std::str::from_utf8(&bytes[start..*i])
+                    .map_err(|_| WireParseError::InvalidUtf8("string"))?;
+                return serde_json::from_str::<String>(token)
+                    .map(Cow::Owned)
+                    .map_err(|error| WireParseError::InvalidJsonString(error.to_string()));
+            }
+            return std::str::from_utf8(&bytes[start + 1..*i - 1])
+                .map(Cow::Borrowed)
+                .map_err(|_| WireParseError::InvalidUtf8("string"));
         }
-        if c == b'\\' {
-            *i += 1;
-            if *i >= bytes.len() {
-                return Err(WireParseError::UnterminatedEscape);
+        if byte == b'\\' {
+            escaped = true;
+            let escape = *bytes
+                .get(*i + 1)
+                .ok_or(WireParseError::UnterminatedEscape)?;
+            if !matches!(
+                escape,
+                b'"' | b'\\' | b'n' | b't' | b'r' | b'/' | b'b' | b'f' | b'u'
+            ) {
+                return Err(WireParseError::UnsupportedEscape(escape as char));
             }
-            let esc = bytes[*i];
-            match esc {
-                b'"' => out.push('"'),
-                b'\\' => out.push('\\'),
-                b'n' => out.push('\n'),
-                b't' => out.push('\t'),
-                b'r' => out.push('\r'),
-                b'/' => out.push('/'),
-                other => return Err(WireParseError::UnsupportedEscape(other as char)),
-            }
-            *i += 1;
+            *i += 2;
+        } else if byte < 0x20 {
+            return Err(WireParseError::InvalidJsonString(
+                "unescaped control character".into(),
+            ));
         } else {
-            // Find the next escape/quote and slice so multi-byte
-            // chars stay intact (per-byte append would split them).
-            let start = *i;
-            while *i < bytes.len() && bytes[*i] != b'"' && bytes[*i] != b'\\' {
-                *i += 1;
-            }
-            let slice = std::str::from_utf8(&bytes[start..*i])
-                .map_err(|_| WireParseError::InvalidUtf8("string"))?;
-            out.push_str(slice);
+            *i += 1;
         }
     }
     Err(WireParseError::UnterminatedString)
