@@ -251,17 +251,7 @@ impl<'s, 'q> Transaction<'s, 'q> {
                         budget.retain_unanchored_components();
                     }
                     if applied && changed {
-                        save_chain.observe_deltas(editor, |nodes, headers, appends| {
-                            capture.as_ref().is_some_and(|capture| {
-                                capture.visit_canonical_deltas(
-                                    editor,
-                                    crate::doc_io::incremental::HEADER_VALUE_LIMIT,
-                                    nodes,
-                                    headers,
-                                    appends,
-                                )
-                            })
-                        });
+                        save_chain.observe_capture(editor, capture.as_ref());
                     }
                     operation.complete();
                     result

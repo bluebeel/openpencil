@@ -28,6 +28,7 @@ pub(super) struct Children {
 #[derive(Clone, Copy)]
 pub(super) struct Node {
     pub flags: u8,
+    pub own_flags: u8,
     pub object: Span,
     pub children: Option<Children>,
 }

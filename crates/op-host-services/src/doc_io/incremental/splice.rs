@@ -81,6 +81,60 @@ pub(super) fn metadata(node: &PenNode) -> Option<Vec<u8>> {
     let _ = node.children();
     Some(bytes)
 }
+/// One isolated collector assigns collision-safe short identities across BOTH
+/// headers. Exact field equality therefore compares original ImageSrc contents
+/// without escaping/copying their large payloads. Its tables are never emitted.
+pub(super) fn resource_metadata_pair(
+    old: &PenNode,
+    current: &PenNode,
+    thumbnails: &jian_ops_schema::image_thumbs::ImageThumbSnapshot,
+) -> Option<(Vec<u8>, Vec<u8>)> {
+    // Compare actual typed sources as well as the compact representation:
+    // unresolved op-image: text must not alias a different real source, and
+    // equal hash text alone is never proof. Arc clones do not copy payloads.
+    let mut sources = Vec::new();
+    let mut valid = true;
+    jian_ops_schema::image_table::visit_node_image_sources(old, &mut |source| {
+        if sources.len() == 4096 {
+            valid = false;
+        } else {
+            sources.push(source.clone());
+        }
+    });
+    if !valid {
+        return None;
+    }
+    let mut at = 0;
+    jian_ops_schema::image_table::visit_node_image_sources(current, &mut |source| {
+        if sources.get(at) != Some(source) {
+            valid = false;
+        }
+        if at < 4096 {
+            at += 1;
+        } else {
+            valid = false;
+        }
+    });
+    if !valid || at != sources.len() {
+        return None;
+    }
+    jian_ops_schema::image_table::with_save_scope(thumbnails, |_| {
+        let before = if current.children().is_some() && old.children().is_none() {
+            // Completed metadata snapshots have no descendants. Restore only
+            // their separately certified child-array presence, as old_metadata.
+            let mut header = old.clone();
+            header.children_mut()?;
+            encode(&BorrowedNodeMetadata::new(&header))?
+        } else if current.children().is_some() == old.children().is_some() {
+            encode(&BorrowedNodeMetadata::new(old))?
+        } else {
+            return None;
+        };
+        let after = encode(&BorrowedNodeMetadata::new(current))?;
+        Some((before, after))
+    })
+}
+
 pub(super) fn parts(bytes: &[u8]) -> Option<Option<Span>> {
     Some(
         fields(

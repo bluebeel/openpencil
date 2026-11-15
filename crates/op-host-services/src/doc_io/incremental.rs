@@ -12,6 +12,8 @@ use std::{
 };
 mod budget;
 mod index;
+mod resource_metadata;
+mod capture;
 mod splice;
 mod stats;
 mod tracked;
@@ -343,7 +345,17 @@ impl Base {
         Some(())
     }
     fn patch(&mut self, old: &PenNode, current: &PenNode) -> Option<()> {
-        if !append::eligible(old) || !append::eligible(current) {
+        self.patch_metadata(old, current, false)
+    }
+    fn patch_metadata(
+        &mut self,
+        old: &PenNode,
+        current: &PenNode,
+        certified_ref: bool,
+    ) -> Option<()> {
+        let sealed_ref = certified_ref
+            && matches!((old, current), (PenNode::Ref(_), PenNode::Ref(_)));
+        if !sealed_ref && (!append::eligible(old) || !append::eligible(current)) {
             return None;
         }
         if self.appends.nodes.contains_key(old.id_str()) {
@@ -352,6 +364,9 @@ impl Base {
         let Some(node) = self.index.nodes.get(old.id_str()).copied().flatten() else {
             return self.patch_appended(old, current);
         };
+        if node.own_flags & index::RESOURCE != 0 {
+            return self.patch_resource_metadata(node, old, current);
+        }
         // visit_metadata_changes proved the old SharedNode child wire witness
         // equals the current node's presence, before exposing either header.
         let before = splice::old_metadata(old, current.children().is_some())?;

@@ -114,6 +114,7 @@ impl Scan<'_> {
             id?,
             Node {
                 flags: 0,
+                own_flags: 0,
                 object: Span {
                     start,
                     end: self.at,

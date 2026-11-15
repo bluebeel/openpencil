@@ -84,15 +84,7 @@ fn apply_command(
         return Ok(false);
     }
     if editor.document_revision() != revision {
-        save_chain.observe_deltas(editor, |nodes, headers, appends| {
-            capture.visit_canonical_deltas(
-                editor,
-                crate::doc_io::incremental::HEADER_VALUE_LIMIT,
-                nodes,
-                headers,
-                appends,
-            )
-        });
+        save_chain.observe_capture(editor, Some(&capture));
         if let Err(source) = save_chain.save(editor, path) {
             let rollback = capture.abort(editor).err();
             if rollback.is_some() {

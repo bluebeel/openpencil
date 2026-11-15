@@ -366,6 +366,7 @@ impl Scan<'_> {
                 }
             }
         }
+        let own_flags = flags;
         flags |= children.map_or(0, |children| children.flags);
         if matches!(role, Role::Page) {
             let id = id?;
@@ -381,6 +382,7 @@ impl Scan<'_> {
             self.names = self.names.checked_add(id.capacity().checked_add(32)?)?;
             let node = Node {
                 flags,
+                own_flags,
                 object: Span {
                     start,
                     end: self.at,
