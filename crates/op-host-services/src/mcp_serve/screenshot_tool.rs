@@ -94,17 +94,11 @@ impl McpTool for GetScreenshot {
         // (see `export/screenshot.rs` and `export/tests.rs`).
         let image_base64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
 
-        let metadata = serde_json::json!({
-            "nodeId": node_id,
-            "format": "png",
-            // include image_base64 in metadata for the in-app chat agent path —
-            // the MCP path uses the `image` field on ToolResponse::Ok separately
-            "image_base64": image_base64,
-        });
+        let metadata = super::export_result::screenshot_metadata(node_id, &image_base64);
         ToolOutcome::OkImageContent {
             image_base64,
             mime_type: "image/png".into(),
-            metadata_json: Some(metadata.to_string()),
+            metadata_json: Some(metadata),
         }
     }
 }

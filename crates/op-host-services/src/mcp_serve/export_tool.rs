@@ -20,6 +20,7 @@
 
 use std::collections::BTreeMap;
 
+#[cfg(test)]
 use base64::Engine as _;
 use op_editor_core::EditorState;
 use op_editor_ui::layout_scene::LayoutScene;
@@ -179,29 +180,11 @@ fn render_raster(
         RasterFormat::Jpeg => "jpeg",
         RasterFormat::Webp => "webp",
     };
-    let mut files: Vec<serde_json::Value> = Vec::new();
+    let mut files = super::export_result::Files::new();
     scene.render_active_nodes(node_ids, format, scale, |id, result| {
-        match result {
-            Ok(bytes) => {
-                let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
-                files.push(serde_json::json!({
-                    "nodeId": id,
-                    "bytes_base64": b64,
-                    "format": format_label,
-                }));
-            }
-            Err(e) => {
-                // Skip with a note — partial success is more useful for
-                // multi-node batches than an all-or-nothing failure.
-                files.push(serde_json::json!({
-                    "nodeId": id,
-                    "error": e.to_string(),
-                    "format": format_label,
-                }));
-            }
-        }
+        files.node(id, format_label, result);
     });
-    ToolOutcome::OkJson(serde_json::json!({ "files": files }).to_string())
+    ToolOutcome::OkJson(files.finish())
 }
 
 fn render_svg(scene: &LayoutScene, node_ids: &[String], scale: f32) -> ToolOutcome {
@@ -209,30 +192,23 @@ fn render_svg(scene: &LayoutScene, node_ids: &[String], scale: f32) -> ToolOutco
         return ToolOutcome::Err(ToolErrorCode::ToolFailed, "no active page".into());
     };
     let batch = op_render_export::NodeSvgBatch::new(page, node_ids);
-    let mut files = Vec::with_capacity(node_ids.len());
+    let mut files = super::export_result::Files::new();
     batch.render_each(node_ids, scale, |id, result| {
-        files.push(match result {
-            Ok(bytes) => serde_json::json!({"nodeId":id,"format":"svg", "bytes_base64":base64::engine::general_purpose::STANDARD.encode(bytes)}),
-            Err(error) => serde_json::json!({"nodeId":id,"format":"svg","error":error.to_string()}),
-        });
+        files.node(id, "svg", result);
         true
     });
-    ToolOutcome::OkJson(serde_json::json!({"files":files}).to_string())
+    ToolOutcome::OkJson(files.finish())
 }
 
 /// Per-node PDF output is linear in requested content. Combined mode emits
 /// one shared document once, avoiding a full multipage blob copied per node.
 fn render_pdf(scene: &LayoutScene, node_ids: &[String], scale: f32, mode: &str) -> ToolOutcome {
     let Some(page) = scene.active_page() else {
-        let files: Vec<_> = node_ids
-            .iter()
-            .map(|id| {
-                serde_json::json!({
-                    "nodeId":id,"format":"pdf","error":"no active page"
-                })
-            })
-            .collect();
-        return ToolOutcome::OkJson(serde_json::json!({"files":files}).to_string());
+        let mut files = super::export_result::Files::new();
+        for id in node_ids {
+            files.error(id, "pdf", "no active page");
+        }
+        return ToolOutcome::OkJson(files.finish());
     };
     if !matches!(mode, "separate" | "combined") {
         return ToolOutcome::Err(
@@ -244,10 +220,9 @@ fn render_pdf(scene: &LayoutScene, node_ids: &[String], scale: f32, mode: &str) 
         op_render_export::SceneSelectionBatch::new(page, node_ids.iter().map(String::as_str));
     if mode == "separate" {
         let mut cursor = resolved.cursor();
-        let files: Vec<_> = op_render_export::with_batch_preparation(|| {
-            node_ids
-            .iter()
-            .map(|id| {
+        let mut files = super::export_result::Files::new();
+        op_render_export::with_batch_preparation(|| {
+            for id in node_ids {
                 let result = cursor
                     .get(&resolved, id.as_str())
                     .ok_or_else(|| crate::export::ExportError::NodeNotFoundOnPage {
@@ -257,17 +232,10 @@ fn render_pdf(scene: &LayoutScene, node_ids: &[String], scale: f32, mode: &str) 
                     .and_then(|selected| {
                         crate::export_pdf::render_selected_node_pdf_bytes_scaled(selected, scale)
                     });
-                match result {
-                    Ok(bytes) => serde_json::json!({"nodeId":id,"format":"pdf",
-                    "bytes_base64":base64::engine::general_purpose::STANDARD.encode(bytes)}),
-                    Err(error) => {
-                        serde_json::json!({"nodeId":id,"format":"pdf","error":error.to_string()})
-                    }
-                }
-            })
-            .collect()
+                files.node(id, "pdf", result);
+            }
         });
-        return ToolOutcome::OkJson(serde_json::json!({"files":files}).to_string());
+        return ToolOutcome::OkJson(files.finish());
     }
     let mut valid = Vec::new();
     let mut errors = Vec::new();
@@ -275,19 +243,27 @@ fn render_pdf(scene: &LayoutScene, node_ids: &[String], scale: f32, mode: &str) 
     for id in node_ids {
         match cursor.get(&resolved, id.as_str()) {
             Some(selected) if selected.is_visible() => valid.push(id.as_str()),
-            _ => errors.push(serde_json::json!({"nodeId":id,"format":"pdf",
-                "error":format!("node {id} is missing or hidden on the active page")})),
+            _ => errors.push((
+                id,
+                format!("node {id} is missing or hidden on the active page"),
+            )),
         }
     }
     if valid.is_empty() {
-        return ToolOutcome::OkJson(serde_json::json!({"files":errors}).to_string());
+        let mut files = super::export_result::Files::new();
+        for (id, error) in errors {
+            files.error(id, "pdf", &error);
+        }
+        return ToolOutcome::OkJson(files.finish());
     }
     match crate::export_pdf::render_selection_batch_pdf_bytes(&resolved, &valid, scale) {
         Ok(bytes) => {
-            let mut files = vec![serde_json::json!({"nodeIds":valid,"format":"pdf",
-                "bytes_base64":base64::engine::general_purpose::STANDARD.encode(bytes)})];
-            files.extend(errors);
-            ToolOutcome::OkJson(serde_json::json!({"files":files}).to_string())
+            let mut files = super::export_result::Files::new();
+            files.combined(&valid, "pdf", &bytes);
+            for (id, error) in errors {
+                files.error(id, "pdf", &error);
+            }
+            ToolOutcome::OkJson(files.finish())
         }
         Err(error) => ToolOutcome::Err(ToolErrorCode::ToolFailed, error.to_string()),
     }

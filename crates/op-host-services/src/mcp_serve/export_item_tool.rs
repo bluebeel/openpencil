@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+#[cfg(test)]
 use base64::Engine as _;
 use op_editor_core::EditorState;
 use op_mcp::{McpTool, ToolErrorCode, ToolOutcome};
@@ -150,15 +151,12 @@ impl McpTool for ExportItem {
             };
 
         match bytes {
-            Ok(bytes) => ToolOutcome::OkJson(
-                serde_json::json!({
-                    "itemId": item_id,
-                    "itemType": item_type,
-                    "format": canonical_format(format),
-                    "bytes_base64": base64::engine::general_purpose::STANDARD.encode(bytes),
-                })
-                .to_string(),
-            ),
+            Ok(bytes) => ToolOutcome::OkJson(super::export_result::item(
+                item_id,
+                item_type,
+                canonical_format(format),
+                &bytes,
+            )),
             Err(error) => ToolOutcome::Err(ToolErrorCode::ToolFailed, error.to_string()),
         }
     }
