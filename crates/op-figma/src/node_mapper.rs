@@ -265,18 +265,25 @@ pub fn figma_node_changes_to_pen_nodes(
     resolve_style_references_with_mode(&mut decoded.node_changes, layout_mode);
     let tree = build_tree(&decoded.node_changes);
 
-    let top_nodes: Vec<TreeNode> = if let Some(tree) = &tree {
-        let pages: Vec<&TreeNode> = tree.children.iter().filter(|c| is_user_page(c)).collect();
-        if let Some(page) = pages.first() {
-            page.children.clone()
-        } else if !tree.children.is_empty() {
-            tree.children.clone()
+    // Keep the complete source tree for symbols but borrow its selected roots;
+    // cloning that forest duplicated every nested style/geometry packet.
+    let fallback = if tree.is_none() {
+        build_tree_for_clipboard(&decoded.node_changes)
+    } else {
+        Vec::new()
+    };
+    let top_nodes: &[TreeNode] = if let Some(tree) = &tree {
+        if let Some(page) = tree.children.iter().find(|child| is_user_page(child)) {
+            &page.children
         } else {
-            Vec::new()
+            &tree.children
         }
     } else {
-        build_tree_for_clipboard(&decoded.node_changes)
+        &fallback
     };
+    // Both possible complete tree representations now own all source data.
+    // Retaining the decoded staging forest adds no semantic information.
+    drop(std::mem::take(&mut decoded.node_changes));
 
     if top_nodes.is_empty() {
         return FigmaClipboardResult {
@@ -289,13 +296,13 @@ pub fn figma_node_changes_to_pen_nodes(
     let mut component_map: HashMap<String, String> = HashMap::new();
     let mut symbol_tree: HashMap<String, &TreeNode> = HashMap::new();
     let mut counter: u32 = 1;
-    for node in &top_nodes {
+    for node in top_nodes {
         collect_components(node, &mut component_map, &mut counter);
     }
     if let Some(tree) = &tree {
         collect_symbol_tree(tree, &mut symbol_tree);
     }
-    for node in &top_nodes {
+    for node in top_nodes {
         collect_symbol_tree(node, &mut symbol_tree);
     }
     let mut instance_assignments: HashMap<String, String> = HashMap::new();
@@ -306,7 +313,7 @@ pub fn figma_node_changes_to_pen_nodes(
             &mut instance_assignments,
         );
     }
-    for node in &top_nodes {
+    for node in top_nodes {
         crate::instance::seed_assignments_from_instances(
             node,
             &symbol_tree,
@@ -326,7 +333,7 @@ pub fn figma_node_changes_to_pen_nodes(
         instance_expansions: Default::default(),
     };
     let mut nodes = Vec::new();
-    for tree_node in &top_nodes {
+    for tree_node in top_nodes {
         let omitted = tree_node.figma.get_bool("visible") == Some(false);
         if let Some(node) = ctx.retain_hidden_ids(omitted, |ctx| convert_node(tree_node, None, ctx))
         {

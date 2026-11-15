@@ -55,7 +55,8 @@ pub(crate) fn apply_layout_positioning(
         return;
     }
 
-    let absolute = is_absolute_child(figma, parent_stack_mode);
+    // The parent auto-layout predicate was proved above.
+    let absolute = figma.get_str("stackPositioning") == Some("ABSOLUTE");
     let base = base_mut(node);
     if layout_mode == FigLayoutMode::OpenPencil && !absolute {
         base.x = None;
@@ -72,7 +73,7 @@ pub(crate) fn apply_layout_positioning(
 /// Preserve mode keeps authored coordinates and bypasses flex layout, so its
 /// child list can honor Figma's reversed paint order without changing flow.
 pub(crate) fn order_children(
-    children: Vec<PenNode>,
+    mut children: Vec<PenNode>,
     figma: &FigValue,
     layout_mode: FigLayoutMode,
 ) -> Vec<PenNode> {
@@ -81,11 +82,10 @@ pub(crate) fn order_children(
             FigLayoutMode::OpenPencil => true,
             FigLayoutMode::Preserve => figma.get_bool("stackReverseZIndex") == Some(true),
         };
-    if reverse && children.len() > 1 {
-        children.into_iter().rev().collect()
-    } else {
-        children
+    if reverse {
+        children.reverse();
     }
+    children
 }
 
 fn map_figma_constraints(figma: &FigValue) -> Constraints {
