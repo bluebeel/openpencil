@@ -128,6 +128,10 @@ fn collect(
         | C::SetNodeStrokeSideWidth { node_id, .. }
         | C::SetNodeFillHex { node_id, .. }
         | C::SetNodeName { node_id, .. }
+        | C::SetImageVideoSrc { node_id, .. }
+        | C::SetImageVideoPlayback { node_id, .. }
+        | C::AddImageVideo { node_id, .. }
+        | C::RemoveImageVideo { node_id, .. }
         | C::SetNodeLayoutProp { node_id, .. } => (node_id, None),
         C::SetVariableColor { .. }
         | C::SetVariableScalar { .. }

@@ -4,7 +4,17 @@ use op_editor_core::EditorCommand as C;
 pub(crate) fn tool(name: &str) -> bool {
     matches!(
         name,
-        "add_page"
+        "set_effect_param"
+            | "set_effect_color"
+            | "set_image_video_src"
+            | "set_image_video_playback"
+            | "add_image_video"
+            | "remove_image_video"
+            | "set_node_layout_property"
+            | "set_variables"
+            | "upsert_variables"
+            | "set_themes"
+            | "add_page"
             | "duplicate_page"
             | "delete_page"
             | "reorder_page"
@@ -109,7 +119,10 @@ pub(crate) fn command(command: &C) -> bool {
         }
         if !matches!(
             command,
-            C::SetVariableColor { .. }
+            C::SetVariables { .. }
+                | C::UpsertVariables { .. }
+                | C::SetThemes { .. }
+                | C::SetVariableColor { .. }
                 | C::SetVariableScalar { .. }
                 | C::CreateVariable { .. }
                 | C::RenamePage { .. }
@@ -128,6 +141,10 @@ pub(crate) fn command(command: &C) -> bool {
                 | C::SetNodeStrokeWidth { .. }
                 | C::SetNodeFillHex { .. }
                 | C::SetNodeName { .. }
+                | C::SetImageVideoSrc { .. }
+                | C::SetImageVideoPlayback { .. }
+                | C::AddImageVideo { .. }
+                | C::RemoveImageVideo { .. }
                 | C::SetNodeFlag { .. }
                 | C::SetNodeFlip { .. }
                 | C::SetEllipseArc { .. }

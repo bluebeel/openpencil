@@ -169,6 +169,10 @@ fn target<'a>(state: &'a EditorState, command: &C) -> Option<&'a PenNode> {
         | C::SetNodeStrokeWidth { node_id, .. }
         | C::SetNodeFillHex { node_id, .. }
         | C::SetNodeName { node_id, .. }
+        | C::SetImageVideoSrc { node_id, .. }
+        | C::SetImageVideoPlayback { node_id, .. }
+        | C::AddImageVideo { node_id, .. }
+        | C::RemoveImageVideo { node_id, .. }
         | C::SetNodeFlag { node_id, .. }
         | C::SetNodeFlip { node_id, .. }
         | C::SetEllipseArc { node_id, .. }

@@ -22,7 +22,7 @@ impl EditorState {
     /// A request-local proof for the live atomic driver, consumed before any
     /// unsupported command runs. It owns no routes or catalog snapshots.
     pub(crate) fn metadata_command_preserves_components(&self, command: &EditorCommand) -> bool {
-        if bulk::prepare(command).is_none() {
+        if bulk::prepare_metadata(command).is_none() {
             return false;
         }
         target_plan::plan(self, command)
@@ -45,7 +45,7 @@ impl EditorState {
         if capture.is_some() {
             return None;
         }
-        let prepared = bulk::prepare(&command)?;
+        let prepared = bulk::prepare_metadata(&command)?;
         let command_scope::Classification::Scoped(plan) = command_scope::classify(self, &command)
         else {
             return None;

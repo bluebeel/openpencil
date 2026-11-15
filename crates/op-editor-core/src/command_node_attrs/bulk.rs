@@ -22,6 +22,7 @@ pub(crate) enum Prepared {
 /// null, sizing-keyword and structural patches remain ordinary boundaries.
 pub(crate) fn prepare(command: &C) -> Option<Prepared> {
     match command {
+        command if video_command(command) => None,
         C::PatchNodeData { patch_json, .. } => {
             crate::node_json::parse_numeric_geometry_patch(patch_json).map(Prepared::NumericPatch)
         }
@@ -29,8 +30,39 @@ pub(crate) fn prepare(command: &C) -> Option<Prepared> {
     }
 }
 
+// Video's ordinary instance-override path has additional editable-node
+// semantics. Keep it a boundary in general Batch fusion; only the lexical
+// canonical-node metadata route (which refuses virtual anchors) prepares it.
+fn video_command(command: &C) -> bool {
+    matches!(
+        command,
+        C::SetImageVideoSrc { .. }
+            | C::SetImageVideoPlayback { .. }
+            | C::AddImageVideo { .. }
+            | C::RemoveImageVideo { .. }
+    )
+}
+pub(crate) fn prepare_metadata(command: &C) -> Option<Prepared> {
+    if video_command(command) {
+        Some(Prepared::Direct)
+    } else {
+        prepare(command)
+    }
+}
+
 pub(crate) fn target(command: &C) -> Option<&NodeId> {
+    if video_command(command)
+        && (!node.base().visible.unwrap_or(true) || node.base().locked.unwrap_or(false))
+    {
+        return false;
+    }
     match command {
+        C::SetImageVideoSrc { src, .. } => crate::video_node_props::set_video_node_src(node, src),
+        C::SetImageVideoPlayback { field, value, .. } => {
+            crate::video_node_props::set_video_node_playback(node, *field, *value)
+        }
+        C::AddImageVideo { .. } => crate::video_node_props::add_video_to_image_node(node),
+        C::RemoveImageVideo { .. } => crate::video_node_props::remove_video_from_image_node(node),
         C::UpdateNode { node_id, .. }
         | C::PatchNodeData { node_id, .. }
         | C::SetNodeRotation { node_id, .. }
@@ -43,6 +75,10 @@ pub(crate) fn target(command: &C) -> Option<&NodeId> {
         | C::SetNodeStrokeSideWidth { node_id, .. }
         | C::SetNodeFillHex { node_id, .. }
         | C::SetNodeName { node_id, .. }
+        | C::SetImageVideoSrc { node_id, .. }
+        | C::SetImageVideoPlayback { node_id, .. }
+        | C::AddImageVideo { node_id, .. }
+        | C::RemoveImageVideo { node_id, .. }
         | C::SetNodeFlag { node_id, .. }
         | C::SetNodeFlip { node_id, .. }
         | C::AddNodeEffect { node_id, .. }

@@ -183,6 +183,10 @@ fn preserves_sequential_seed(command: &EditorCommand) -> bool {
             | C::SetNodeRotation { .. }
             | C::SetNodeText { .. }
             | C::SetNodeName { .. }
+            | C::SetImageVideoSrc { .. }
+            | C::SetImageVideoPlayback { .. }
+            | C::AddImageVideo { .. }
+            | C::RemoveImageVideo { .. }
             | C::SetNodeFontSize { .. }
             | C::SetNodeFontWeight { .. }
             | C::SetNodeFillHex { .. }

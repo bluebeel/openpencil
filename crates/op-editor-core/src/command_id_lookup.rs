@@ -566,6 +566,10 @@ fn preserves_locations(command: &C) -> bool {
                 | C::SetNodeStrokeSideWidth { .. }
                 | C::SetNodeFillHex { .. }
                 | C::SetNodeName { .. }
+                | C::SetImageVideoSrc { .. }
+                | C::SetImageVideoPlayback { .. }
+                | C::AddImageVideo { .. }
+                | C::RemoveImageVideo { .. }
                 | C::SetNodeFlag { .. }
                 | C::SetNodeFlip { .. }
                 | C::SetEllipseArc { .. }
