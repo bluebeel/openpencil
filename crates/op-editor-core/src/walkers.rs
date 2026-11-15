@@ -11,6 +11,8 @@ use crate::node_id::NodeId;
 use crate::pen_node_ext::PenNodeExt;
 use jian_ops_schema::node::PenNode;
 use std::collections::HashSet;
+#[path = "walker_stack.rs"]
+pub(crate) mod stack;
 
 /// Direction for `reorder_selected` — picks which sibling the
 /// selected node swaps with in its parent's children vec.
@@ -27,14 +29,21 @@ pub enum ReorderDirection {
 /// Find a node by id anywhere in a children forest. Returns a shared
 /// reference, or `None` when the id resolves to no node.
 pub fn find_node<'a>(children: &'a [PenNode], id: &NodeId) -> Option<&'a PenNode> {
-    for child in children {
-        if child.id_str() == id.as_str() {
-            return Some(child);
+    if children.is_empty() {
+        return None;
+    }
+    let mut pending = stack::Stack::<_, 16>::new();
+    pending.push(children.iter());
+    while let Some(siblings) = pending.last_mut() {
+        let Some(node) = siblings.next() else {
+            pending.pop();
+            continue;
+        };
+        if node.id_str() == id.as_str() {
+            return Some(node);
         }
-        if let Some(grand) = child.children() {
-            if let Some(hit) = find_node(grand, id) {
-                return Some(hit);
-            }
+        if let Some(children) = node.children().filter(|children| !children.is_empty()) {
+            pending.push(children.iter());
         }
     }
     None
@@ -42,17 +51,23 @@ pub fn find_node<'a>(children: &'a [PenNode], id: &NodeId) -> Option<&'a PenNode
 
 /// Mutable form of [`find_node`].
 pub fn find_node_mut<'a>(children: &'a mut [PenNode], id: &NodeId) -> Option<&'a mut PenNode> {
-    for child in children.iter_mut() {
-        if child.id_str() == id.as_str() {
-            return Some(child);
+    if children.is_empty() {
+        return None;
+    }
+    let mut pending = stack::Stack::<_, 16>::new();
+    pending.push(children.iter_mut());
+    while let Some(siblings) = pending.last_mut() {
+        let Some(node) = siblings.next() else {
+            pending.pop();
+            continue;
+        };
+        if node.id_str() == id.as_str() {
+            return Some(node);
         }
-        // Looking through a node must not author a previously absent child
-        // vector. Insertion deliberately uses children_mut separately.
-        if child.children().is_some() {
-            if let Some(grand) = child.children_mut() {
-                if let Some(hit) = find_node_mut(grand, id) {
-                    return Some(hit);
-                }
+        // Search must never author a previously absent Ref child override.
+        if node.children().is_some() {
+            if let Some(children) = node.children_mut().filter(|children| !children.is_empty()) {
+                pending.push(children.iter_mut());
             }
         }
     }
@@ -67,13 +82,10 @@ pub fn contains_node(children: &[PenNode], id: &NodeId) -> bool {
 /// True when `target` equals `node` or appears anywhere in its
 /// subtree. Used to reject reparenting cycles.
 pub fn descendant_contains(node: &PenNode, target: &NodeId) -> bool {
-    if node.id_str() == target.as_str() {
-        return true;
-    }
-    if let Some(children) = node.children() {
-        return children.iter().any(|c| descendant_contains(c, target));
-    }
-    false
+    node.id_str() == target.as_str()
+        || node
+            .children()
+            .is_some_and(|children| find_node(children, target).is_some())
 }
 
 /// Remove the first node matching `target` from `children` or any

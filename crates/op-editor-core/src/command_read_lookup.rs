@@ -260,42 +260,72 @@ fn fresh<'a>(
     id: &str,
     order: NodeReadOrder,
 ) -> Option<NodeRead<'a>> {
+    struct Frame<'a> {
+        nodes: std::slice::Iter<'a, PenNode>,
+        parent: Option<&'a PenNode>,
+        depth: usize,
+        post: Option<&'a PenNode>,
+    }
+    if nodes.is_empty() {
+        return None;
+    }
+    let mut pending = crate::walkers::stack::Stack::<_, 16>::new();
+    pending.push(Frame {
+        nodes: nodes.iter(),
+        parent,
+        depth,
+        post: None,
+    });
     let mut found = None;
-    for node in nodes {
+    while let Some(frame) = pending.last_mut() {
+        // LastNonEmptyChildren records a parent AFTER its descendants, and
+        // deliberately never records a leaf/empty child-list node.
+        if let Some(node) = frame.post.take() {
+            if node.id_str() == id {
+                found = Some(NodeRead {
+                    node,
+                    parent: frame.parent,
+                    depth: frame.depth,
+                });
+            }
+            continue;
+        }
+        let Some(node) = frame.nodes.next() else {
+            pending.pop();
+            continue;
+        };
         if matches!(order, NodeReadOrder::LastNonEmptyChildren) {
             if let Some(children) = node.children().filter(|children| !children.is_empty()) {
-                if let Some(result) = fresh(children, Some(node), depth + 1, id, order) {
-                    found = Some(result);
-                }
-                if node.id_str() == id {
-                    found = Some(NodeRead {
-                        node,
-                        parent,
-                        depth,
-                    });
-                }
-            }
-        } else {
-            if node.id_str() == id {
-                let result = NodeRead {
-                    node,
-                    parent,
+                frame.post = Some(node);
+                let depth = frame.depth + 1;
+                pending.push(Frame {
+                    nodes: children.iter(),
+                    parent: Some(node),
                     depth,
-                };
-                if matches!(order, NodeReadOrder::First) {
-                    return Some(result);
-                }
-                found = Some(result);
+                    post: None,
+                });
             }
-            if let Some(result) = node
-                .children()
-                .and_then(|children| fresh(children, Some(node), depth + 1, id, order))
-            {
-                if matches!(order, NodeReadOrder::First) {
-                    return Some(result);
-                }
-                found = Some(result);
+            continue;
+        }
+        if node.id_str() == id {
+            let result = NodeRead {
+                node,
+                parent: frame.parent,
+                depth: frame.depth,
+            };
+            if matches!(order, NodeReadOrder::First) {
+                return Some(result);
             }
+            found = Some(result);
+        }
+        if let Some(children) = node.children().filter(|children| !children.is_empty()) {
+            let depth = frame.depth + 1;
+            pending.push(Frame {
+                nodes: children.iter(),
+                parent: Some(node),
+                depth,
+                post: None,
+            });
         }
     }
     found
