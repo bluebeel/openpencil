@@ -93,6 +93,7 @@ pub(super) fn emit_definition(
     ancestor: bool,
 ) {
     let Some(op) = operation(node) else { return };
+    let _coverage = text_layers::coverage::Scope::mask_parent(parent_xform, ancestor);
     let id = resource_id(node, op, ancestor);
     if matches!(op, Operation::Clip) {
         let xform = parent_xform * node_transform(node);

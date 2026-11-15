@@ -49,6 +49,10 @@ extern "C" {
     pub(super) fn push_paint_space(this: &OpCk, x: f32, y: f32, w: f32, h: f32);
     #[wasm_bindgen(method,js_name=popPaintSpace)]
     pub(super) fn pop_paint_space(this: &OpCk);
+    #[wasm_bindgen(method, js_name = paintFieldBounds)]
+    pub(super) fn paint_field_bounds(this: &OpCk) -> Vec<f32>;
+    #[wasm_bindgen(method, js_name = textMaskCapture)]
+    pub(super) fn text_mask_capture(this: &OpCk, action: u32) -> Vec<f32>;
     #[wasm_bindgen(method,js_name=strokeGeometry)]
     pub(super) fn stroke_geometry(
         this: &OpCk,

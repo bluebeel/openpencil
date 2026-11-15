@@ -235,6 +235,7 @@ impl ShapedText {
                 // `Paragraph::paint` places the line-box top; callers hand us a
                 // baseline.
                 let top = baseline_y - paragraph.alphabetic_baseline();
+                crate::backend::text_mask_capture::unproven(canvas);
                 paragraph.paint(canvas, (x, top));
             });
         });

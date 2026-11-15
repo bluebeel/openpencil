@@ -47,6 +47,7 @@ pub(crate) fn apply_text_content(p: &mut NodePayload, n: &TextNode) {
                             .find_map(crate::style_payload::fill_fallback_color),
                         None => seg.fill.as_deref().and_then(parse_color),
                     },
+                    fill_paints: seg.fill_paints.clone(),
                     fill_disabled: crate::style_payload::disabled_fills(seg.fill_paints.as_deref()),
                     italic: seg
                         .font_style

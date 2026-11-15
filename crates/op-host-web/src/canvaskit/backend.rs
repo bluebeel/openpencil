@@ -56,6 +56,15 @@ impl RenderBackend for CanvasKitBackend {
         self.ck
             .push_paint_space(rect.origin.x, rect.origin.y, rect.size.x, rect.size.y);
     }
+    fn text_mask_capture(
+        &mut self,
+        action: op_editor_ui::TextMaskAction,
+    ) -> op_editor_ui::TextMaskResult {
+        ops::text_mask_capture(&self.ck, action)
+    }
+    fn paint_field_bounds(&mut self) -> Option<Rect> {
+        ops::paint_field_bounds(&self.ck)
+    }
     fn pop_paint_space(&mut self) {
         self.ck.pop_paint_space();
     }
@@ -389,51 +398,7 @@ impl RenderBackend for CanvasKitBackend {
     }
 
     fn draw_text(&mut self, layout: &TextLayout, origin: Point2D) {
-        let italic = layout.italic();
-        for run in layout.runs() {
-            let x = origin.x + run.origin.x;
-            let y = origin.y + run.origin.y;
-            // `TextRun.color` is `jian_core::scene::Color` (0-255 u8 channels),
-            // unlike the f32-channel `Color` the fill ops take.
-            let c = run.color;
-            let (cr, cg, cb, ca) = (
-                f32::from(c.r()) / 255.0,
-                f32::from(c.g()) / 255.0,
-                f32::from(c.b()) / 255.0,
-                f32::from(c.a()) / 255.0,
-            );
-            // Same predicate the native host uses, so the two never disagree
-            // about which runs need bidi + contextual joining.
-            if op_editor_core::text_script::needs_complex_shaping(run.content.as_str()) {
-                self.ck.draw_shaped_text(
-                    run.content.as_str(),
-                    run.font_family.as_str(),
-                    x,
-                    y,
-                    run.font_size,
-                    run.font_weight as i32,
-                    italic,
-                    cr,
-                    cg,
-                    cb,
-                    ca,
-                );
-                continue;
-            }
-            self.ck.draw_text(
-                run.content.as_str(),
-                run.font_family.as_str(),
-                x,
-                y,
-                run.font_size,
-                run.font_weight as i32,
-                italic,
-                cr,
-                cg,
-                cb,
-                ca,
-            );
-        }
+        ops::draw_text(&self.ck, layout, origin);
     }
     fn image_decoded(&mut self, image_id: u64, encoded: &[u8], max_edge_px: u32) -> bool {
         let _ = encoded;

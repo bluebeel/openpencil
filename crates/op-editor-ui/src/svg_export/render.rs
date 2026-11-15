@@ -16,6 +16,7 @@ fn emit_node_inner(out: &mut String, n: &SceneNode, suppress_node_blend: bool) {
     if n.hidden {
         return;
     }
+    let _text_coverage = text_layers::coverage::Scope::node(n);
     let local_xform = node_transform(n);
     let needs_g = local_xform != glam::Affine2::IDENTITY;
     if needs_g {

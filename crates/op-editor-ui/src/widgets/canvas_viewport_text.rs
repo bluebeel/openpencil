@@ -21,18 +21,17 @@
 //!   every line except the last (TS `ck.TextAlign.Justify` behaviour);
 //!   gap-free (e.g. CJK) lines are left-aligned.
 
-use crate::layout_scene::{SceneNode, SceneTextAlign, SceneTextRun};
+use crate::layout_scene::{SceneFillLayer, SceneNode, SceneTextAlign, SceneTextRun};
+mod fill_layers;
 use crate::widgets::canvas_text_edit::text_edit_layout;
 use crate::widgets::canvas_viewport::EditCaret;
 use crate::widgets::PaintCx;
-use crate::{
-    Color, Point2D, Rect, RenderBackend, TextBaselineRequest, TextDecorationRequest, TextLayout,
-};
+use crate::{Color, Point2D, Rect, RenderBackend, TextBaselineRequest, TextLayout};
 use jian_core::text_input::prev_char_boundary;
 
 /// Fully resolved paint style for one line slice.
 #[derive(Clone, Copy)]
-struct SliceStyle {
+struct SliceStyle<'a> {
     font_size: f32,
     weight: u16,
     italic: bool,
@@ -41,6 +40,7 @@ struct SliceStyle {
     text_decoration_skip_ink: Option<bool>,
     color: Color,
     enabled: bool,
+    paints: Option<&'a [SceneFillLayer]>,
 }
 
 /// Map a painted line's byte range `[line_start, line_end)` onto run
@@ -113,13 +113,13 @@ pub(crate) fn justify_extra_per_gap(residual: f32, line: &str) -> f32 {
     }
 }
 
-fn resolved_slice_style(
-    node: &SceneNode,
+fn resolved_slice_style<'a>(
+    node: &'a SceneNode,
     base_font_size: f32,
     base_weight: u16,
     ink: Color,
-    run: Option<&SceneTextRun>,
-) -> SliceStyle {
+    run: Option<&'a SceneTextRun>,
+) -> SliceStyle<'a> {
     match run {
         None => SliceStyle {
             font_size: base_font_size,
@@ -130,6 +130,7 @@ fn resolved_slice_style(
             text_decoration_skip_ink: node.text_decoration_skip_ink,
             color: ink,
             enabled: !node.fill_disabled,
+            paints: (!node.fill_layers.is_empty()).then_some(node.fill_layers.as_slice()),
         },
         Some(r) => SliceStyle {
             font_size: if r.font_size > 0.0 {
@@ -147,7 +148,13 @@ fn resolved_slice_style(
             strikethrough: r.strikethrough,
             text_decoration_skip_ink: r.text_decoration_skip_ink.or(node.text_decoration_skip_ink),
             color: r.fill.unwrap_or(ink),
-            enabled: !r.fill_disabled && (!node.fill_disabled || r.fill.is_some()),
+            enabled: !r.fill_disabled
+                && (!node.fill_disabled || r.fill.is_some() || r.fill_layers.is_some()),
+            paints: match r.fill_layers.as_deref() {
+                Some(layers) => Some(layers.as_slice()),
+                None if r.fill.is_some() => None,
+                None => (!node.fill_layers.is_empty()).then_some(node.fill_layers.as_slice()),
+            },
         },
     }
 }
@@ -198,7 +205,7 @@ fn measure_line_slices(
 fn draw_slice(
     backend: &mut dyn RenderBackend,
     slice: &str,
-    style: SliceStyle,
+    style: SliceStyle<'_>,
     family: &str,
     x: f32,
     baseline_y: f32,
@@ -281,7 +288,7 @@ fn draw_slice(
 /// below the baseline, strikethrough near half the x-height above it.
 fn decorate_slice(
     backend: &mut dyn RenderBackend,
-    style: SliceStyle,
+    style: SliceStyle<'_>,
     x0: f32,
     x1: f32,
     baseline_y: f32,
@@ -391,10 +398,11 @@ pub(crate) fn paint_text_node(
         if device_px < GREEK_TEXT_MAX_DEVICE_PX {
             if !text.is_empty()
                 && (!paint_node.fill_disabled
-                    || paint_node
-                        .text_runs
-                        .iter()
-                        .any(|run| !run.fill_disabled && run.fill.is_some()))
+                    || paint_node.text_runs.iter().any(|run| {
+                        !run.fill_disabled
+                            && (run.fill.is_some()
+                                || run.fill_layers.as_ref().is_some_and(|l| !l.is_empty()))
+                    }))
             {
                 cx.backend
                     .fill_rect(world_rect, ink.with_alpha(ink.a * 0.18));
@@ -504,43 +512,21 @@ pub(crate) fn paint_text_node(
                         );
                         let slice = &text[start..end];
                         let slice_x0 = x;
-                        let (next_x, glyph_end) = draw_slice(
-                            backend,
+                        let mut slice_cx = PaintCx {
+                            backend: &mut *backend,
+                        };
+                        let next_x = fill_layers::paint_slice(
+                            &mut slice_cx,
+                            paint_node,
+                            Rect::xywh(0.0, 0.0, world_rect.size.x, world_rect.size.y),
                             slice,
                             style,
                             family,
-                            x,
+                            slice_x0,
                             baseline_y,
                             letter_spacing,
                             justify_extra,
-                            paint_node.font_kerning,
-                            &paint_node.font_features,
                         );
-                        let handled = style.enabled
-                            && style.text_decoration_skip_ink.is_some_and(|skip_ink| {
-                                (style.underline || style.strikethrough)
-                                    && backend.draw_text_decoration(&TextDecorationRequest {
-                                        text: slice,
-                                        font_family: family,
-                                        font_size: style.font_size,
-                                        font_weight: style.weight,
-                                        italic: style.italic,
-                                        kerning: paint_node.font_kerning,
-                                        letter_spacing,
-                                        line_height: paint_node.line_height,
-                                        justify_extra,
-                                        font_features: &paint_node.font_features,
-                                        origin: Point2D::new(slice_x0, baseline_y),
-                                        width: glyph_end - slice_x0,
-                                        color: style.color,
-                                        underline: style.underline,
-                                        strikethrough: style.strikethrough,
-                                        skip_ink,
-                                    })
-                            });
-                        if !handled {
-                            decorate_slice(backend, style, slice_x0, glyph_end, baseline_y);
-                        }
                         x = next_x;
                     },
                 );

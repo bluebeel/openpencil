@@ -53,6 +53,28 @@ pub(super) fn draw(
     modern: bool,
     metadata: Option<&std::cell::RefCell<MetadataCache>>,
 ) -> bool {
+    if crate::backend::text_mask_capture::skip(canvas) {
+        return true;
+    }
+    let painted = draw_inner(
+        canvas, font, glyphs, positions, origin, paint, modern, metadata,
+    );
+    if !painted {
+        crate::backend::text_mask_capture::unproven(canvas);
+    }
+    painted
+}
+
+fn draw_inner(
+    canvas: &Canvas,
+    font: &Font,
+    glyphs: &[GlyphId],
+    positions: &[Point],
+    origin: Point,
+    paint: &Paint,
+    modern: bool,
+    metadata: Option<&std::cell::RefCell<MetadataCache>>,
+) -> bool {
     let point = jian_skia::raster_sampling::is_point_sampling();
     if (!modern && !point) || glyphs.len() != positions.len() || glyphs.len() > MAX_GLYPHS {
         if point {
@@ -127,6 +149,7 @@ fn build_outline(
 /// The same bounded fill coverage is shared with ordinary glyph outlines.
 pub(super) fn draw_decoration_rect(canvas: &Canvas, rect: Rect, paint: &Paint) -> bool {
     if super::vector_document::is_pdf() {
+        crate::backend::text_mask_capture::unproven(canvas);
         canvas.draw_rect(rect, paint);
         return true;
     }
@@ -152,6 +175,9 @@ fn draw_coverage(canvas: &Canvas, path: &Path, paint: &Paint, point: bool, grid:
     let Some((shader, bounds)) = stencil::coverage(path, &matrix, clip, grid) else {
         return false;
     };
+    if !crate::backend::text_mask_capture::coverage(canvas, bounds) {
+        return true;
+    }
     let mut source = paint.clone();
     if point {
         jian_skia::raster_sampling::configure_final_src_over(&mut source);
@@ -203,6 +229,7 @@ pub(super) fn draw_path(canvas: &Canvas, path: &Path, paint: &Paint) -> bool {
         // build_outline already owns exact shaped glyph positions and the
         // same font-unit/local-baseline rules. PDF must retain those paths;
         // clip_shader cannot encode the native A16 device-coverage mask.
+        crate::backend::text_mask_capture::unproven(canvas);
         canvas.draw_path(path, paint);
         return true;
     }

@@ -165,6 +165,12 @@ impl Charge {
                 std::mem::size_of::<jian_scene::path_coordinates::ScenePathGeometry>() + 32
             })
             + node.text_runs.capacity() * size_of::<SceneTextRun>()
+            + node
+                .text_runs
+                .iter()
+                .filter_map(|run| run.fill_layers.as_ref())
+                .map(|layers| 64 + layers.capacity() * size_of::<SceneFillLayer>())
+                .sum::<usize>()
             + node.points.capacity() * size_of::<op_editor_core::render_backend::Point2D>()
             + node.path_anchors.capacity() * size_of::<SceneAnchor>()
             + node.effects.capacity() * size_of::<Effect>()
@@ -197,6 +203,11 @@ impl Charge {
                     node.stroke_paint
                         .iter()
                         .flat_map(|paint| paint.layers.iter()),
+                )
+                .chain(
+                    node.text_runs
+                        .iter()
+                        .flat_map(|run| run.fill_layers.iter().flat_map(|layers| layers.iter())),
                 )
                 .map(|layer| match layer {
                     SceneFillLayer::Solid { .. } => 0,

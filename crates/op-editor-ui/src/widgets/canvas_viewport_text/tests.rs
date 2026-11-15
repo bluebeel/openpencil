@@ -9,6 +9,7 @@ use crate::widgets::PaintCx;
 
 fn run(start: usize, end: usize) -> SceneTextRun {
     SceneTextRun {
+        fill_layers: None,
         fill_disabled: false,
         start,
         end,
@@ -247,6 +248,7 @@ fn styled_runs_paint_separate_slices_with_run_weight() {
     let mut node = text_node("boldplain");
     node.text_runs = vec![
         SceneTextRun {
+            fill_layers: None,
             font_weight: 700,
             ..run(0, 4)
         },
@@ -272,6 +274,7 @@ fn styled_runs_paint_separate_slices_with_run_weight() {
 fn italic_run_sets_layout_italic_flag() {
     let mut node = text_node("ab");
     node.text_runs = vec![SceneTextRun {
+        fill_layers: None,
         italic: true,
         ..run(0, 2)
     }];
@@ -310,6 +313,7 @@ fn authored_line_height_requests_a_text_aware_first_baseline() {
 fn underline_and_strikethrough_stroke_at_metrics_offsets() {
     let mut node = text_node("abc");
     node.text_runs = vec![SceneTextRun {
+        fill_layers: None,
         underline: true,
         strikethrough: true,
         text_decoration_skip_ink: None,
@@ -387,6 +391,7 @@ fn segment_boundary_maps_onto_wrapped_lines() {
     node.text_runs = vec![
         run(0, 8),
         SceneTextRun {
+            fill_layers: None,
             font_weight: 700,
             ..run(8, 11)
         },
@@ -416,16 +421,19 @@ fn explicit_decoration_metadata_keeps_utf8_styled_line_ranges_and_portable_fallb
     node.underline = true;
     node.text_runs = vec![
         SceneTextRun {
+            fill_layers: None,
             underline: true,
             text_decoration_skip_ink: Some(false),
             ..run(0, 3)
         },
         SceneTextRun {
+            fill_layers: None,
             underline: true,
             text_decoration_skip_ink: Some(true),
             ..run(3, 5)
         },
         SceneTextRun {
+            fill_layers: None,
             underline: true,
             ..run(6, 11)
         },

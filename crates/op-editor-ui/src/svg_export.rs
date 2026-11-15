@@ -10,6 +10,7 @@ use std::fmt::Write as _;
 mod batch;
 mod gradient_geometry;
 mod stroke_paint;
+mod text_layers;
 mod text_paints;
 pub use batch::SvgNodeBatch;
 
@@ -64,6 +65,17 @@ pub enum SvgExportError {
     /// The requested node exists but paints no geometry.
     NodePaintsNothing(String),
     InvalidScale,
+    InvalidStyledText {
+        node_id: String,
+    },
+    StyledTextLimit {
+        node_id: String,
+        limit: usize,
+    },
+    UnsupportedStyledTextPaint {
+        node_id: String,
+        kind: &'static str,
+    },
     ResourceNestingLimit {
         limit: usize,
     },
@@ -93,6 +105,9 @@ impl std::fmt::Display for SvgExportError {
             SvgExportError::InvalidGradient{node_id,source}=>write!(f,"node {node_id}: {source}"),
             SvgExportError::InvalidImage{node_id,source}=>write!(f,"node {node_id}: {source}"),
             SvgExportError::ResourceNestingLimit{limit}=>write!(f,"SVG resource callback nesting exceeds {limit}"),
+            SvgExportError::InvalidStyledText { node_id } => write!(f, "node {node_id} has invalid styled text geometry or coordinates"),
+            SvgExportError::StyledTextLimit { node_id, limit } => write!(f, "node {node_id} exceeds the SVG styled text definition budget ({limit} bytes)"),
+            SvgExportError::UnsupportedStyledTextPaint { node_id, kind } => write!(f, "node {node_id} has a styled text {kind} that SVG cannot represent exactly"),
             SvgExportError::InvalidScale => write!(f, "SVG scale must be finite and positive"),
         }
     }
@@ -202,6 +217,8 @@ fn serialize_svg(
     if !scale.is_finite() || scale <= 0.0 || !output_w.is_finite() || !output_h.is_finite() {
         return Err(SvgExportError::InvalidScale);
     }
+    let _text_coverage =
+        text_layers::coverage::Scope::root(Rect::xywh(view_x, view_y, view_w, view_h), root_xform);
     let mut svg = String::with_capacity(4096);
     let _ = write!(
         svg,
@@ -257,7 +274,9 @@ fn emit_node_defs(
         return Ok(());
     }
     let _coordinates = crate::svg_path_coordinates::Scope::new(n.svg_view_box.as_deref());
+    let _text_coverage = text_layers::coverage::Scope::node(n);
     let id = svg_id(&n.id);
+    text_layers::emit_defs(out, n)?;
     fill_layers::emit_defs(out, n)?;
     if n.fill_layers.is_empty() {
         if n.image_src.is_some() {
@@ -455,6 +474,10 @@ fn emit_line(out: &mut String, n: &SceneNode) {
 }
 
 fn emit_text(out: &mut String, n: &SceneNode) {
+    if text_layers::eligible(n) {
+        text_layers::emit(out, n);
+        return;
+    }
     if n.fill_disabled
         && !n
             .text_runs

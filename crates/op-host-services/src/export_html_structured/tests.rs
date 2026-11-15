@@ -183,6 +183,7 @@ fn a_non_wrapping_text_node_keeps_its_newlines_without_wrapping() {
 fn styled_runs_become_spans_without_breaking_the_flat_text() {
     let mut node = text_node("t", 0.0, 0.0, "plain BOLD plain");
     node.text_runs = vec![op_editor_ui::layout_scene::SceneTextRun {
+        fill_layers: None,
         fill_disabled: false,
         start: 6,
         end: 10,

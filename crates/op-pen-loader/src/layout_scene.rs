@@ -162,6 +162,7 @@ pub fn pen_document_to_layout_scene_for_preview_with_measure(
 fn text_runs_to_scene(
     runs: &[crate::payload::TextRunPayload],
     paint_opacity: f32,
+    size: [f32; 2],
 ) -> Vec<SceneTextRun> {
     let mut start = 0usize;
     runs.iter()
@@ -171,6 +172,10 @@ fn text_runs_to_scene(
                 start,
                 end,
                 fill_disabled: run.fill_disabled,
+                fill_layers: run
+                    .fill_paints
+                    .as_ref()
+                    .map(|fills| Arc::new(fill_layers_to_scene(fills, None, size))),
                 font_size: run.font_size,
                 font_weight: run.font_weight,
                 fill: run

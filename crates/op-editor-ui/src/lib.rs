@@ -59,7 +59,7 @@ pub use layout_scene::{SceneTextAlign, SceneTextVerticalAlign};
 pub use op_editor_core::render_backend::{
     Color, ImageAdjustments, ImageBlendMode, ImageDrawMode, ImagePaintOptions, ImagePaintThumbnail,
     Point2D, Rect, RenderBackend, RoundRectShadowOptions, ShadowBlurKernel, TextBaselineRequest,
-    TextDecorationRequest, TextLayout,
+    TextDecorationRequest, TextLayout, TextMaskAction, TextMaskResult,
 };
 pub use theme::Theme;
 // Brand-logo catalog registration, surfaced at the crate root so non-widget

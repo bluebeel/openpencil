@@ -27,6 +27,7 @@ pub(super) fn draw(
     for rect in rectangles {
         let modern = request.kerning.is_some() || !request.font_features.is_empty();
         if !modern || !sampled_rect(canvas, rect, request.color) {
+            crate::backend::text_mask_capture::unproven(canvas);
             backend.fill_rect(canvas, rect, request.color);
         }
     }
@@ -42,6 +43,7 @@ fn sampled_rect(canvas: &Canvas, rect: Rect, color: op_editor_ui::Color) -> bool
     ) {
         return true;
     }
+    crate::backend::text_mask_capture::unproven(canvas);
     let matrix = canvas.local_to_device_as_3x3();
     if !matrix.is_finite() || matrix.has_perspective() || matrix.invert().is_none() {
         return false;

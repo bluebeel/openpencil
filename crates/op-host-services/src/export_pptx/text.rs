@@ -396,6 +396,7 @@ mod tests {
         let mut n = text_node("plain bold");
         n.font_weight = 400;
         n.text_runs = vec![SceneTextRun {
+            fill_layers: None,
             fill_disabled: false,
             start: 6,
             end: 10,

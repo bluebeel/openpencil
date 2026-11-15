@@ -1,3 +1,4 @@
+import { createTextMaskCapture, drawTextMaskImage } from './op_ck_text_mask.js';
 import { drawExplicitImageField } from './op_ck_image_geometry.js';
 import { strokePaintGeometry, imagePaintField, drawMeshPaintField } from './op_ck_stroke_paint.js';
 // Thin CanvasKit FFI bridge for the Rust web shell.
@@ -471,6 +472,9 @@ export async function opCkInit(canvasId) {
   let canvas = surface.getCanvas();
   let shadowBasis = Float32Array.from(canvas.getTotalMatrix());
   const el = document.getElementById(canvasId);
+  let textFontGeneration=0;
+  const textMasks=createTextMaskCapture(CK,()=>canvas,c=>{canvas=c;},
+    ()=>[el.width,el.height],()=>textFontGeneration);
   const runtimeEffects = opCkCreateRuntimeEffectCache(CK);
   let shadowKernelSource = '';
   let cornerShadowKernelSource = '';
@@ -507,6 +511,7 @@ export async function opCkInit(canvasId) {
   // system registry change invalidates them so later exact-name matches use
   // the newly registered face.
   const clearRegisteredFontCaches = () => {
+    textFontGeneration++;
     registeredCoverageCache.clear();
     for (const f of registeredFamilyFontCache.values()) f.delete();
     registeredFamilyFontCache.clear();
@@ -515,6 +520,7 @@ export async function opCkInit(canvasId) {
   const browserTextCtx = browserTextCanvas.getContext('2d', { willReadFrequently: true });
   const browserTextCache = new Map();
   const clearBrowserTextCache = () => {
+    textFontGeneration++;
     for (const entry of browserTextCache.values()) {
       if (entry && entry.image && entry.image.delete) entry.image.delete();
     }
@@ -777,6 +783,7 @@ export async function opCkInit(canvasId) {
   // image sampling matches the prior no-paint drawImage exactly.
   const cachedTintPaint = new CK.Paint();
   const drawBrowserText = (t, x, y, sz, weight, italic, r, g, b, a, emoji, family = '') => {
+    if(textMasks.skipping())return browserTextMeasure(t,sz,weight,italic,family);
     const entry = browserTextImage(t, sz, weight, italic, emoji, r, g, b, a, family);
     if (!entry) return 0;
     // Emoji rasters bake their own colour and draw UNTINTED (legacy path);
@@ -790,21 +797,8 @@ export async function opCkInit(canvasId) {
       paint.setColorFilter(tintColorFilter(r, g, b) || null);
       paint.setAlphaf(a < 0 ? 0 : a > 1 ? 1 : a);
     }
-    const ss = entry.ss || 1;
-    if (ss !== 1) {
-      // The bitmap is `ss`x oversampled; place it in logical space at
-      // (x-2, y-baseline) then scale down by `ss` so its device footprint
-      // matches the intended CSS box at native resolution.
-      canvas.save();
-      canvas.translate(x - 2, y - entry.baseline);
-      canvas.scale(1 / ss, 1 / ss);
-      if (paint) canvas.drawImage(entry.image, 0, 0, paint);
-      else canvas.drawImage(entry.image, 0, 0);
-      canvas.restore();
-    } else if (paint) {
-      canvas.drawImage(entry.image, x - 2, y - entry.baseline, paint);
-    } else {
-      canvas.drawImage(entry.image, x - 2, y - entry.baseline);
+    if (!textMasks.image(entry, paint, x, y)) {
+      drawTextMaskImage(canvas, entry, paint, x, y);
     }
     return entry.width;
   };
@@ -1150,7 +1144,7 @@ export async function opCkInit(canvasId) {
       }
       const f = new CK.Font(tfFor(seg.text, seg.emoji), sz);
       if (italic && !seg.emoji) f.setSkewX(-0.25);
-      canvas.drawText(seg.text, cx, y, p, f);
+      if (!textMasks.glyphs(seg.text, cx, y, p, f)) canvas.drawText(seg.text, cx, y, p, f);
       cx += runWidth(f, seg.text);
       f.delete();
     }
@@ -1295,8 +1289,39 @@ export async function opCkInit(canvasId) {
   };
 
   return {
+    textMaskCapture(action) {return textMasks.command(action);},
     pushPaintSpace(x,y,w,h) {if(paintSpaces.length>=16)throw new Error('stroke paint-space nesting exceeds16');paintSpaces.push([x,y,w,h]);},
     popPaintSpace() {if(!paintSpaces.length)throw new Error('unbalanced stroke paint-space');paintSpaces.pop();},
+    // Bound rich text fields by the current output support, never the logical
+    // text box: italic/mark/descender ink can extend beyond its authored box.
+    paintFieldBounds() {
+      const m = canvas.getTotalMatrix();
+      if (!affineShadowMatrix(m)) return Float32Array.of();
+      const det = m[0]*m[4]-m[1]*m[3];
+      if (!Number.isFinite(det) || det === 0) return Float32Array.of();
+      const points = [[0,0],[el.width,0],[0,el.height],[el.width,el.height]].map(([x,y]) => {
+        x -= m[2]; y -= m[5];
+        return [(m[4]*x-m[1]*y)/det, (m[0]*y-m[3]*x)/det];
+      });
+      const xs=points.map(p=>p[0]), ys=points.map(p=>p[1]);
+      const l=Math.min(...xs), t=Math.min(...ys), r=Math.max(...xs), b=Math.max(...ys);
+      if (![l,t,r,b].every(Number.isFinite) || !(r>l && b>t)) return Float32Array.of();
+      // Outward float32 rounding bounds storage/interpolation precision;
+      // it changes only the coverage allocation, never glyph/paint geometry.
+      const f=new Float32Array(1), bits=new Uint32Array(f.buffer);
+      const outward=(value,up)=>{
+        f[0]=value;
+        if(!Number.isFinite(f[0]))return NaN;
+        if(f[0]===0){bits[0]=up?1:0x80000001;}
+        else bits[0]+=((f[0]>0)===up)?1:-1;
+        return f[0];
+      };
+      const left=outward(l,false), top=outward(t,false);
+      const right=outward(r,true), bottom=outward(b,true);
+      const width=outward(right-left,true), height=outward(bottom-top,true);
+      return [left,top,width,height].every(Number.isFinite)
+        ? Float32Array.of(left,top,width,height) : Float32Array.of();
+    },
     setSvgPathViewBox(value) {
       const old = svgPathViewBox;
       svgPathViewBox = value && value.length === 4 && Array.from(value).every(Number.isFinite)
@@ -1305,6 +1330,7 @@ export async function opCkInit(canvasId) {
     },
     strokeGeometry(kind,data,values,evenOdd,width,sides,placement,cap,join,dashes,phase,color) {strokePaintGeometry(CK,canvas,cachedSvgPath,fitPathToRect,kind,data,values,evenOdd,width,sides,placement,cap,join,dashes,phase,color);},
     beginFrame() {
+      textMasks.cancel();
       paintSpaces.length=0;
       // Discard any leaked save / clip / matrix state from a prior (possibly
       // unbalanced) paint pass, then open a clean frame baseline. This mirrors
@@ -1433,7 +1459,10 @@ export async function opCkInit(canvasId) {
     },
     fillOval(x, y, w, h, r, g, b, a) { const p = fillPaint(r, g, b, a); canvas.drawOval(CK.LTRBRect(x, y, x + w, y + h), p); },
     strokeOval(x, y, w, h, r, g, b, a, sw) { const p = strokePaint(r, g, b, a, sw); canvas.drawOval(CK.LTRBRect(x, y, x + w, y + h), p); },
-    strokeLine(x1, y1, x2, y2, r, g, b, a, sw) { const p = strokePaint(r, g, b, a, sw); canvas.drawLine(x1, y1, x2, y2, p); },
+    strokeLine(x1, y1, x2, y2, r, g, b, a, sw) {
+      const p = strokePaint(r, g, b, a, sw);
+      if (!textMasks.line(x1, y1, x2, y2, p)) canvas.drawLine(x1, y1, x2, y2, p);
+    },
 
     fillPolygon(pts, r, g, b, a) {
       const path = new CK.Path(); path.moveTo(pts[0], pts[1]);
@@ -1647,7 +1676,7 @@ export async function opCkInit(canvasId) {
     },
 
     drawText(t, family, x, y, sz, weight, italic, r, g, b, a) {
-      if (!t) return;
+      if (!t || !textMasks.text(t)) return;
       // Per-CHARACTER family resolution: chars the selected named face covers draw
       // with it; the rest fall to the script-segmented path — so a mixed run
       // keeps the named family where it applies and never renders tofu,
@@ -1668,7 +1697,7 @@ export async function opCkInit(canvasId) {
       for (const seg of covSegs) {
         if (seg.registered) {
           const f = registeredFamilyFont(familyEntry.key, familyEntry.tf, sz, italic);
-          canvas.drawText(seg.text, cx, y, p, f);
+          if (!textMasks.glyphs(seg.text, cx, y, p, f)) canvas.drawText(seg.text, cx, y, p, f);
           cx += runWidth(f, seg.text);
         } else {
           cx += drawScriptRun(seg.text, cx, y, sz, weight, italic, r, g, b, a);
@@ -1676,7 +1705,7 @@ export async function opCkInit(canvasId) {
       }
     },
     drawShapedText(t, family, x, y, sz, weight, italic, r, g, b, a) {
-      if (!t) return;
+      if (!t || !textMasks.text(t)) return;
       if (shapedTextUnavailable()) {
         // No 2D context (headless embed / hostile sandbox). The segmented
         // path at least paints glyphs rather than nothing, though it cannot
@@ -2139,6 +2168,7 @@ export async function opCkInit(canvasId) {
     rotate(deg, px, py) { canvas.rotate(deg, px, py); },
 
     resize(w, h) {
+      textMasks.cancel();
       el.width = w; el.height = h;
       try { surface.delete(); } catch (e) {}
       surface = CK.MakeWebGLCanvasSurface(canvasId);

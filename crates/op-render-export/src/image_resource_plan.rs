@@ -170,11 +170,20 @@ fn build(root: &SceneNode) -> Plan {
                 }
             }
         }
-        for layer in node.fill_layers.iter().chain(
-            node.stroke_paint
-                .iter()
-                .flat_map(|stroke| stroke.layers.iter()),
-        ) {
+        for layer in node
+            .fill_layers
+            .iter()
+            .chain(
+                node.stroke_paint
+                    .iter()
+                    .flat_map(|stroke| stroke.layers.iter()),
+            )
+            .chain(
+                node.text_runs
+                    .iter()
+                    .flat_map(|run| run.fill_layers.iter().flat_map(|layers| layers.iter())),
+            )
+        {
             if let SceneFillLayer::Image {
                 src,
                 src_id,

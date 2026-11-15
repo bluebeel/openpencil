@@ -22,6 +22,12 @@ pub struct NativeFrameBackend<'a> {
     pub(super) shadow_basis: skia_safe::Matrix,
 }
 
+impl Drop for NativeFrameBackend<'_> {
+    fn drop(&mut self) {
+        super::text_mask_capture::command(self.canvas, op_editor_ui::TextMaskAction::Discard);
+    }
+}
+
 impl<'a> RenderBackend for NativeFrameBackend<'a> {
     fn begin_frame(&mut self) {}
     fn end_frame(&mut self) {}
@@ -35,11 +41,11 @@ impl<'a> RenderBackend for NativeFrameBackend<'a> {
     }
 
     fn draw_text(&mut self, layout: &TextLayout, origin: Point2D) {
-        self.inner.draw_text(self.canvas, layout, origin);
+        super::text_mask_capture::draw_text(self, layout, origin);
     }
 
     fn draw_text_decoration(&mut self, request: &op_editor_ui::TextDecorationRequest<'_>) -> bool {
-        self.inner.draw_text_decoration(self.canvas, request)
+        super::text_mask_capture::decoration(self, request)
     }
 
     fn clip_rect(&mut self, rect: Rect) {
@@ -91,6 +97,17 @@ impl<'a> RenderBackend for NativeFrameBackend<'a> {
     }
     fn push_paint_space(&mut self, rect: Rect) {
         self.inner.push_paint_space(rect);
+    }
+    fn text_mask_capture(
+        &mut self,
+        action: op_editor_ui::TextMaskAction,
+    ) -> op_editor_ui::TextMaskResult {
+        super::text_mask_capture::command(self.canvas, action)
+    }
+    fn paint_field_bounds(&mut self) -> Option<Rect> {
+        self.canvas
+            .local_clip_bounds()
+            .map(|r| Rect::xywh(r.left, r.top, r.width(), r.height()))
     }
     fn pop_paint_space(&mut self) {
         self.inner.pop_paint_space();
@@ -144,7 +161,7 @@ impl<'a> RenderBackend for NativeFrameBackend<'a> {
     }
 
     fn stroke_line(&mut self, from: Point2D, to: Point2D, color: Color, width: f32) {
-        self.inner.stroke_line(self.canvas, from, to, color, width);
+        super::text_mask_capture::stroke_line(self, from, to, color, width);
     }
 
     fn fill_round_rect(&mut self, rect: Rect, radius: f32, color: Color) {

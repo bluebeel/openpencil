@@ -128,7 +128,7 @@ pub(crate) fn node_payload_to_scene(
             Some(SceneFillLayer::Image { paint, .. }) => paint.clone(),
             _ => None,
         });
-    let text_runs = text_runs_to_scene(&node.text_runs, paint_opacity);
+    let text_runs = text_runs_to_scene(&node.text_runs, paint_opacity, [node.w, node.h]);
     drop(node.text_runs);
     let children: Vec<SceneNode> = node
         .children

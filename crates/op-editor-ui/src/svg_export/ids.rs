@@ -32,6 +32,9 @@ const RESERVED: &[&str] = &[
     "stroke-coverage-",
     "stroke-sides-",
     "stroke-paint-",
+    "text-shape-",
+    "text-mask-",
+    "text-paint-",
 ];
 
 pub(super) fn node_id(id: &str) -> String {

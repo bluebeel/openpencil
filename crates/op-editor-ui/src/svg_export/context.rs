@@ -65,6 +65,7 @@ pub(super) fn emit_defs(out: &mut String, effects: &[AncestorEffect<'_>]) {
             AncestorEffect::Mask {
                 node, parent_xform, ..
             } => {
+                let _coverage = text_layers::coverage::Scope::world(*parent_xform);
                 // The inherited mask is a sibling, not part of the selected
                 // subtree. Retain its actual paint resources and descendants.
                 emit_node_defs(out, node, false);

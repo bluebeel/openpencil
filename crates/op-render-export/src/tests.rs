@@ -749,6 +749,7 @@ fn export_paints_styled_text_runs_with_decorations() {
         a: 1.0,
     });
     node.text_runs = vec![SceneTextRun {
+        fill_layers: None,
         fill_disabled: false,
         start: 0,
         end: 5,

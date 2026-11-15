@@ -11,6 +11,7 @@
 mod frame_backend;
 mod frame_offscreen;
 pub mod skia;
+mod text_mask_capture;
 
 pub use frame_backend::NativeFrameBackend;
 pub use skia::{

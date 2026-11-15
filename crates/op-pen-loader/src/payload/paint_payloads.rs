@@ -50,6 +50,9 @@ pub struct TextRunPayload {
     pub font_weight: u16,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fill: Option<[f32; 4]>,
+    /// None inherits legacy/node paint; Some(empty) explicitly paints nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fill_paints: Option<Vec<jian_ops_schema::style::PenFill>>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub fill_disabled: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
