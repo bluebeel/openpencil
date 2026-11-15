@@ -675,95 +675,12 @@ pub fn get_active_theme_snapshot(state: &EditorState) -> GetActiveTheme {
     GetActiveTheme { active, options }
 }
 
-// --- list_components / get_component ---------------------------------
-
-/// First-party `list_components` tool.
-pub struct ListComponents {
-    pub items: Vec<(String, String)>,
-}
-
-impl McpTool for ListComponents {
-    fn name(&self) -> &str {
-        "list_components"
-    }
-    fn call(&self, _args: &BTreeMap<String, String>) -> ToolOutcome {
-        let encoded: Vec<String> = self
-            .items
-            .iter()
-            .map(|(name, id)| format!("{}|{}", escape_record_field(name), id))
-            .collect();
-        let mut out = BTreeMap::new();
-        out.insert("count".into(), self.items.len().to_string());
-        out.insert("components".into(), encoded.join(";"));
-        ToolOutcome::Ok(out)
-    }
-}
-
-pub fn list_components_snapshot(state: &EditorState) -> ListComponents {
-    ListComponents {
-        items: state
-            .components
-            .components
-            .iter()
-            .map(|c| (c.name.clone(), c.id.as_str().to_string()))
-            .collect(),
-    }
-}
-
-/// First-party `get_component` tool.
-pub struct GetComponent {
-    pub snapshot: Vec<(String, String, String, usize)>,
-}
-
-impl McpTool for GetComponent {
-    fn name(&self) -> &str {
-        "get_component"
-    }
-    fn call(&self, args: &BTreeMap<String, String>) -> ToolOutcome {
-        let Some(raw) = args.get("component_id") else {
-            return ToolOutcome::Err(
-                ToolErrorCode::MissingArgument,
-                "component_id is required".into(),
-            );
-        };
-        let component_id: &str = raw.as_str();
-        let Some((_, name, kind, leaf_count)) = self
-            .snapshot
-            .iter()
-            .find(|(id, _, _, _)| id == component_id)
-        else {
-            return ToolOutcome::Err(
-                ToolErrorCode::ToolFailed,
-                format!("component {component_id} not found"),
-            );
-        };
-        let mut out = BTreeMap::new();
-        out.insert("name".into(), name.clone());
-        out.insert("kind".into(), kind.clone());
-        out.insert("leaf_count".into(), leaf_count.to_string());
-        ToolOutcome::Ok(out)
-    }
-}
-
-pub fn get_component_snapshot(state: &EditorState) -> GetComponent {
-    GetComponent {
-        snapshot: state
-            .components
-            .components
-            .iter()
-            .filter_map(|c| {
-                let root = state.components.resolved_root(&state.doc, &c.id)?;
-                Some((
-                    c.id.as_str().to_string(),
-                    c.name.clone(),
-                    kind_label(root).to_string(),
-                    count_subtree(root),
-                ))
-            })
-            .collect(),
-    }
-}
-
+#[path = "component_read_tools.rs"]
+pub(crate) mod component_reads;
+pub use component_reads::{
+    get_component_snapshot, get_component_snapshot_cached_for_call,
+    get_component_snapshot_for_call, list_components_snapshot, GetComponent, ListComponents,
+};
 // The remaining read tools live in `read_tools.rs` (800-line cap).
 pub use super::read_tools::{
     find_empty_space_snapshot, find_empty_space_snapshot_cached_for_call,

@@ -333,6 +333,7 @@ pub use tools::{
     find_empty_space_snapshot_cached_for_call, find_empty_space_snapshot_for_call,
     find_node_by_name_snapshot, find_node_by_name_snapshot_for_call, get_active_theme_snapshot,
     get_canvas_bounds_snapshot, get_canvas_bounds_snapshot_cached, get_component_snapshot,
+    get_component_snapshot_cached_for_call, get_component_snapshot_for_call,
     get_history_depth_snapshot, get_node_parent_snapshot, get_node_parent_snapshot_for_call,
     get_node_snapshot, get_node_snapshot_for_call, get_selection_set_snapshot,
     get_viewport_snapshot, list_components_snapshot, list_node_kinds_snapshot, list_pages_snapshot,

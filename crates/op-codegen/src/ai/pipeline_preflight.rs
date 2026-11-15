@@ -136,9 +136,10 @@ pub(super) fn chunk_nodes_json(
     fallback_json: &str,
     node_ids: &[String],
 ) -> String {
+    let found = find_requested_values(node_forest, node_ids.iter().map(String::as_str));
     let subset = node_ids
         .iter()
-        .filter_map(|id| find_node_by_id(node_forest, id))
+        .filter_map(|id| found.get(id.as_str()).copied())
         .collect::<Vec<_>>();
     if subset.is_empty() {
         return fallback_json.to_string();
@@ -152,18 +153,49 @@ pub(super) fn chunk_nodes_json(
 /// sibling subtrees into every chunk request.
 pub(super) fn ancestor_context_json(node_forest: &Value, node_ids: &[String]) -> Option<String> {
     let targets = node_ids.iter().map(String::as_str).collect::<HashSet<_>>();
-    let mut contexts = HashMap::<String, Vec<Value>>::new();
+    let mut contexts = HashMap::<&str, Vec<&Value>>::new();
     collect_ancestor_contexts(node_forest, &targets, &mut Vec::new(), &mut contexts);
-
+    let mut wrappers = HashMap::<usize, Value>::new();
     let mut grouped = Vec::<(Vec<Value>, Vec<String>)>::new();
     let mut group_indices = HashMap::<String, usize>::new();
     for node_id in node_ids {
-        let Some(ancestors) = contexts.get(node_id).filter(|items| !items.is_empty()) else {
+        let Some(path) = contexts
+            .get(node_id.as_str())
+            .filter(|path| !path.is_empty())
+        else {
             continue;
         };
-        let key = serde_json::to_string(ancestors).ok()?;
+        let ancestors = path
+            .iter()
+            .map(|value| {
+                wrappers
+                    .entry(*value as *const Value as usize)
+                    .or_insert_with(|| {
+                        let map = value.as_object().expect("captured ancestor object");
+                        // Preserve field order/unknown metadata, excluding child trees
+                        // BEFORE copying. The old clone-then-remove copied every child.
+                        let mut wrapper = map
+                            .iter()
+                            .filter(|(key, _)| key.as_str() != "children")
+                            .map(|(key, value)| (key.clone(), value.clone()))
+                            .collect::<serde_json::Map<_, _>>();
+                        let count = map
+                            .get("children")
+                            .and_then(Value::as_array)
+                            .map_or(0, Vec::len);
+                        wrapper.insert("childCount".into(), Value::from(count as u64));
+                        let mut wrapper = Value::Object(wrapper);
+                        super::prompts::strip_ancestor_noise(&mut wrapper);
+                        wrapper
+                    })
+                    .clone()
+            })
+            .collect::<Vec<_>>();
+        // Group by the same serialized metadata, not address equality: distinct
+        // duplicate wrappers with equal content retain the original grouping.
+        let key = serde_json::to_string(&ancestors).ok()?;
         let index = *group_indices.entry(key).or_insert_with(|| {
-            grouped.push((ancestors.clone(), Vec::new()));
+            grouped.push((ancestors, Vec::new()));
             grouped.len() - 1
         });
         if !grouped[index].1.contains(node_id) {
@@ -173,21 +205,17 @@ pub(super) fn ancestor_context_json(node_forest: &Value, node_ids: &[String]) ->
     if grouped.is_empty() {
         return None;
     }
-
     let payload = grouped
         .into_iter()
-        .map(|(ancestors, node_ids)| {
-            serde_json::json!({"nodeIds": node_ids, "ancestors": ancestors})
-        })
+        .map(|(ancestors, node_ids)| serde_json::json!({"nodeIds":node_ids,"ancestors":ancestors}))
         .collect::<Vec<_>>();
     serde_json::to_string(&payload).ok()
 }
-
-fn collect_ancestor_contexts(
-    value: &Value,
+fn collect_ancestor_contexts<'a>(
+    value: &'a Value,
     targets: &HashSet<&str>,
-    path: &mut Vec<Value>,
-    out: &mut HashMap<String, Vec<Value>>,
+    path: &mut Vec<&'a Value>,
+    out: &mut HashMap<&'a str, Vec<&'a Value>>,
 ) {
     match value {
         Value::Array(items) => {
@@ -198,18 +226,13 @@ fn collect_ancestor_contexts(
         Value::Object(map) => {
             if let Some(id) = map.get("id").and_then(Value::as_str) {
                 if targets.contains(id) {
-                    out.entry(id.to_string()).or_insert_with(|| path.clone());
+                    out.entry(id).or_insert_with(|| path.clone());
                 }
             }
             let Some(children) = map.get("children").and_then(Value::as_array) else {
                 return;
             };
-            let mut wrapper = map.clone();
-            wrapper.remove("children");
-            wrapper.insert("childCount".into(), Value::from(children.len() as u64));
-            let mut wrapper = Value::Object(wrapper);
-            super::prompts::strip_ancestor_noise(&mut wrapper);
-            path.push(wrapper);
+            path.push(value);
             for child in children {
                 collect_ancestor_contexts(child, targets, path, out);
             }
@@ -302,6 +325,12 @@ pub(super) fn plan_dispatch_issue(
                 .map(move |node_id| (chunk.plan.id.as_str(), node_id.as_str()))
         })
         .collect::<Vec<_>>();
+    if claimed.len() < 2 {
+        return None;
+    }
+    let targets = claimed.iter().map(|(_, id)| *id).collect::<HashSet<_>>();
+    let found = find_requested_values(node_forest, targets.iter().copied());
+    let mut descendants = HashMap::<usize, HashSet<&str>>::new();
     for (index, (left_chunk, left_id)) in claimed.iter().enumerate() {
         for (right_chunk, right_id) in claimed.iter().skip(index + 1) {
             if left_id == right_id {
@@ -309,10 +338,19 @@ pub(super) fn plan_dispatch_issue(
                     "chunks {left_chunk} and {right_chunk} both claim node {left_id}"
                 ));
             }
-            let overlaps = find_node_by_id(node_forest, left_id)
-                .is_some_and(|node| node_contains_id(node, right_id))
-                || find_node_by_id(node_forest, right_id)
-                    .is_some_and(|node| node_contains_id(node, left_id));
+            let mut contains = |id: &str, target: &str| {
+                found.get(id).is_some_and(|node| {
+                    descendants
+                        .entry(*node as *const Value as usize)
+                        .or_insert_with(|| {
+                            let mut wanted = HashSet::new();
+                            collect_descendant_targets(node, &targets, &mut wanted);
+                            wanted
+                        })
+                        .contains(target)
+                })
+            };
+            let overlaps = contains(left_id, right_id) || contains(right_id, left_id);
             if overlaps {
                 return Some(format!(
                     "chunks {left_chunk} and {right_chunk} claim overlapping ancestor/descendant nodes {left_id} and {right_id}"
@@ -323,31 +361,61 @@ pub(super) fn plan_dispatch_issue(
     None
 }
 
-fn find_node_by_id<'a>(value: &'a Value, target_id: &str) -> Option<&'a Value> {
-    match value {
-        Value::Array(items) => items
-            .iter()
-            .find_map(|item| find_node_by_id(item, target_id)),
-        Value::Object(map) => {
-            if map.get("id").and_then(Value::as_str) == Some(target_id) {
-                return Some(value);
-            }
-            map.get("children")
-                .and_then(|children| find_node_by_id(children, target_id))
+/// Same first-DFS semantics as the old per-ID search, including unusual
+/// JSON children shapes; stop once every requested ID has its first match.
+fn find_requested_values<'a, 'b>(
+    value: &'a Value,
+    ids: impl IntoIterator<Item = &'b str>,
+) -> HashMap<&'a str, &'a Value> {
+    fn visit<'a>(
+        value: &'a Value,
+        wanted: &mut HashSet<&str>,
+        out: &mut HashMap<&'a str, &'a Value>,
+    ) {
+        if wanted.is_empty() {
+            return;
         }
-        _ => None,
+        match value {
+            Value::Array(items) => {
+                for item in items {
+                    visit(item, wanted, out);
+                }
+            }
+            Value::Object(map) => {
+                if let Some(id) = map.get("id").and_then(Value::as_str) {
+                    if wanted.remove(id) {
+                        out.insert(id, value);
+                    }
+                }
+                if let Some(children) = map.get("children") {
+                    visit(children, wanted, out);
+                }
+            }
+            _ => {}
+        }
     }
+    let mut wanted = ids.into_iter().collect::<HashSet<_>>();
+    let mut out = HashMap::new();
+    visit(value, &mut wanted, &mut out);
+    out
 }
-
-fn node_contains_id(node: &Value, target_id: &str) -> bool {
-    node.get("children")
-        .and_then(Value::as_array)
-        .is_some_and(|children| {
-            children.iter().any(|child| {
-                child.get("id").and_then(Value::as_str) == Some(target_id)
-                    || node_contains_id(child, target_id)
-            })
-        })
+/// Preserve node_contains_id's child-array-only semantics. Each requested
+/// source subtree is visited at most once, rather than once per root pair.
+fn collect_descendant_targets<'a>(
+    node: &'a Value,
+    targets: &HashSet<&str>,
+    out: &mut HashSet<&'a str>,
+) {
+    if let Some(children) = node.get("children").and_then(Value::as_array) {
+        for child in children {
+            if let Some(id) = child.get("id").and_then(Value::as_str) {
+                if targets.contains(id) {
+                    out.insert(id);
+                }
+            }
+            collect_descendant_targets(child, targets, out);
+        }
+    }
 }
 
 #[cfg(test)]

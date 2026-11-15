@@ -12,9 +12,10 @@ use std::sync::{Arc, Mutex, OnceLock, Weak};
 const MAX_ENTRIES: usize = 128;
 const MAX_BYTES: usize = 2 * 1024 * 1024;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 enum Kind {
     Counts,
+    Component(String),
     Kinds(usize),
 }
 struct Key {
@@ -42,11 +43,19 @@ impl Key {
 #[derive(Clone)]
 enum Summary {
     Counts(Arc<Vec<usize>>),
+    Component(Option<Arc<(String, String, String, usize)>>),
     Kinds(Arc<Vec<(String, u32)>>),
 }
 impl Summary {
     fn bytes(&self) -> usize {
         std::mem::size_of::<Entry>().saturating_add(match self {
+            Self::Component(record) => record.as_ref().map_or(0, |r| {
+                std::mem::size_of::<(String, String, String, usize)>()
+                    + 32
+                    + r.0.capacity()
+                    + r.1.capacity()
+                    + r.2.capacity()
+            }),
             Self::Counts(values) => values
                 .capacity()
                 .saturating_mul(std::mem::size_of::<usize>()),
@@ -81,7 +90,15 @@ fn get_or_build(key: Key, build: impl FnOnce() -> Summary) -> Summary {
     // Different files build independently; no tree walk under a global mutex.
     // One document's host authority already serializes its own cold readers.
     let value = build();
-    let bytes = value.bytes();
+    // Unproved/missing/external prototype records remain fresh. A cached
+    // positive entry was admitted only under canonical backing ownership.
+    if matches!(&value, Summary::Component(None)) {
+        return value;
+    }
+    let bytes = value.bytes().saturating_add(match &key.kind {
+        Kind::Component(id) => id.capacity(),
+        _ => 0,
+    });
     if bytes > MAX_BYTES {
         return value;
     }
@@ -131,7 +148,7 @@ fn counts(state: &EditorState) -> Arc<Vec<usize>> {
     });
     match value {
         Summary::Counts(values) => values,
-        Summary::Kinds(_) => unreachable!("summary key kind"),
+        Summary::Kinds(_) | Summary::Component(_) => unreachable!("summary key kind"),
     }
 }
 
@@ -175,6 +192,21 @@ pub fn list_node_kinds_snapshot_cached(state: &EditorState) -> ListNodeKinds {
         Summary::Kinds(histogram) => ListNodeKinds {
             histogram: (*histogram).clone(),
         },
-        Summary::Counts(_) => unreachable!("summary key kind"),
+        Summary::Counts(_) | Summary::Component(_) => unreachable!("summary key kind"),
+    }
+}
+
+/// Exact requested prototype count under locked canonical authority. Shares the
+/// existing2MiB/128-entry summary budget, not an unbounded per-ID cache.
+pub(crate) fn component_record_cached(
+    state: &EditorState,
+    id: &str,
+    build: impl FnOnce() -> Option<(String, String, String, usize)>,
+) -> Option<(String, String, String, usize)> {
+    match get_or_build(Key::new(state, Kind::Component(id.into())), || {
+        Summary::Component(build().map(Arc::new))
+    }) {
+        Summary::Component(record) => record.map(|record| (*record).clone()),
+        _ => unreachable!("component summary key kind"),
     }
 }

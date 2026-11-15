@@ -180,7 +180,15 @@ pub(super) fn rebuild_registry_with_authority(
     register_tool!("get_active_theme", get_active_theme_snapshot(doc));
     register_tool!("list_components", list_components_snapshot(doc));
     register_tool!("list_ui_kits", list_ui_kits_snapshot(doc));
-    register_tool!("get_component", get_component_snapshot(doc));
+    register_tool!(
+        "get_component",
+        match arguments {
+            Some(args) if trusted_authority && requested_tool.is_some() =>
+                op_mcp::get_component_snapshot_cached_for_call(doc, args),
+            Some(args) => op_mcp::get_component_snapshot_for_call(doc, args),
+            None => get_component_snapshot(doc),
+        }
+    );
     register_tool!(
         "batch_get",
         match arguments {
