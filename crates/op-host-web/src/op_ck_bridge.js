@@ -1,5 +1,6 @@
 import { createTextMaskCapture, drawTextMaskImage } from './op_ck_text_mask.js';
 import { createGradientShaderCache } from './op_ck_gradient_cache.js';
+import { createValueCache } from './op_ck_value_cache.js';
 import { drawExplicitImageField } from './op_ck_image_geometry.js';
 import { strokePaintGeometry, imagePaintField, drawMeshPaintField, releasePaintHandle } from './op_ck_stroke_paint.js';
 import { opCkBuildMeshGradientData } from './op_ck_mesh_geometry.js';
@@ -486,7 +487,7 @@ export async function opCkInit(canvasId, dpr = 1, logicalWidth = 0, logicalHeigh
   // below system fonts: the browser has no bundled fonts of its own, so these
   // are fetched from the daemon at mount and registered here.
   const bundledTypefaces = new Map();
-  const coverageCache = new Map();
+  const coverageCache = createValueCache(512, 1024 * 1024);
   // Per-CHARACTER coverage segments for explicitly selected family text,
   // keyed on `(registry + family key, size, text)`. This used to
   // rebuild a throwaway CK.Font + call getGlyphIDs over the whole string on
@@ -494,30 +495,29 @@ export async function opCkInit(canvasId, dpr = 1, logicalWidth = 0, logicalHeigh
   // cache like `browserTextCache` below (values are plain JS arrays, no
   // wasm handles, so eviction is a plain `.delete()` on the Map).
   const REGISTERED_COVERAGE_CACHE_CAP = 512;
-  const registeredCoverageCache = new Map();
+  const registeredCoverageCache = createValueCache(512,4*1024*1024);
   // Per-(registry + family key, size) CK.Font instances shared by the
   // family-aware draw + measure paths (`registeredFamilyFont`). Bounded,
   // full-wipe eviction mirroring `svgPathCache` below (these ARE wasm
   // handles and must be `.delete()`d before the Map entry is dropped).
   const REGISTERED_FONT_CACHE_CAP = 512;
-  const registeredFamilyFontCache = new Map();
+  const registeredFamilyFontCache = createValueCache(512,4*1024*1024,releasePaintHandle);
+  let transientRegisteredFont=null;
   // These caches key off the selected registry identity. Any imported or
   // system registry change invalidates them so later exact-name matches use
   // the newly registered face.
   const clearRegisteredFontCaches = () => {
     textFontGeneration++;
     registeredCoverageCache.clear();
-    for (const f of registeredFamilyFontCache.values()) f.delete();
     registeredFamilyFontCache.clear();
+    releasePaintHandle(transientRegisteredFont);transientRegisteredFont=null;
   };
   const browserTextCanvas = document.createElement('canvas');
   const browserTextCtx = browserTextCanvas.getContext('2d', { willReadFrequently: true });
-  const browserTextCache = new Map();
+  const browserTextCache = createValueCache(512,128*1024*1024,
+    entry=>releasePaintHandle(entry?.image));
   const clearBrowserTextCache = () => {
     textFontGeneration++;
-    for (const entry of browserTextCache.values()) {
-      if (entry && entry.image && entry.image.delete) entry.image.delete();
-    }
     browserTextCache.clear();
   };
   // Retain DPR so display changes can immediately invalidate stale handles;
@@ -603,15 +603,15 @@ export async function opCkInit(canvasId, dpr = 1, logicalWidth = 0, logicalHeigh
   // Split text into consecutive {text, emoji} runs so each draws with the right
   // typeface (CanvasKit drawText is single-typeface, no per-glyph fallback).
   const segments = (t) => {
-    const out = []; let cur = '', curEmoji = null;
-    for (const ch of t) {
-      const c = ch.codePointAt(0);
-      const e = isEmojiMod(c) ? (curEmoji === null ? false : curEmoji) : isEmojiCp(c);
-      if (curEmoji === null) { curEmoji = e; cur = ch; }
-      else if (e === curEmoji) { cur += ch; }
-      else { out.push({ text: cur, emoji: curEmoji }); cur = ch; curEmoji = e; }
+    const out=[];let start=0,offset=0,curEmoji=null;
+    for(const ch of t){
+      const c=ch.codePointAt(0);
+      const emoji=isEmojiMod(c)?(curEmoji===null?false:curEmoji):isEmojiCp(c);
+      if(curEmoji===null)curEmoji=emoji;
+      else if(emoji!==curEmoji){out.push({text:t.slice(start,offset),emoji:curEmoji});start=offset;curEmoji=emoji;}
+      offset+=ch.length;
     }
-    if (cur) out.push({ text: cur, emoji: curEmoji });
+    if(curEmoji!==null)out.push({text:t.slice(start,offset),emoji:curEmoji});
     return out;
   };
 
@@ -642,7 +642,11 @@ export async function opCkInit(canvasId, dpr = 1, logicalWidth = 0, logicalHeigh
   // fighting over the same object mid-loop. Kept as a plain allocation
   // rather than a second cache since text draws are far less frequent than
   // the primitive-shape hot path this task targets.
-  const allocFillPaint = (r, g, b, a) => { const p = new CK.Paint(); p.setColor(col(r, g, b, a)); p.setAntiAlias(true); setPaintStyle(p, CK.PaintStyle.Fill); return p; };
+  const allocFillPaint = (r,g,b,a) => {
+    const paint=new CK.Paint();
+    try{paint.setColor(col(r,g,b,a));paint.setAntiAlias(true);setPaintStyle(paint,CK.PaintStyle.Fill);return paint;}
+    catch(error){releasePaintHandle(paint);throw error;}
+  };
   // Quote the authored family so names with spaces stay one CSS token, and
   // strip quote/backslash so a family name can't break out of the shorthand.
   // Only families the BROWSER knows resolve here; faces registered into
@@ -691,12 +695,10 @@ export async function opCkInit(canvasId, dpr = 1, logicalWidth = 0, logicalHeigh
     // `family` participates in the key: the same string shaped in two
     // different families is two different bitmaps.
     const key = emoji
-      ? ['e', t, sz, weight, italic ? 1 : 0, r, g, b, a, ss, family].join('\n')
-      : [t, sz, weight, italic ? 1 : 0, ss, family].join('\n');
+      ? ['e', t, sz, weight, italic ? 1 : 0, r, g, b, a, ss, family]
+      : ['t', t, sz, weight, italic ? 1 : 0, ss, family];
     const hit = browserTextCache.get(key);
     if (hit) {
-      browserTextCache.delete(key);
-      browserTextCache.set(key, hit);
       return hit;
     }
     const font = browserTextFont(sz, weight, italic, family);
@@ -712,10 +714,14 @@ export async function opCkInit(canvasId, dpr = 1, logicalWidth = 0, logicalHeigh
     // rasterized glyphs carry device-resolution detail. Setting canvas.width/
     // height resets the 2D context, so (re)apply font/baseline/fill + the
     // supersample transform here.
-    browserTextCanvas.width = Math.max(1, Math.ceil(width * ss));
-    browserTextCanvas.height = Math.max(1, Math.ceil(height * ss));
-    browserTextCtx.setTransform(ss, 0, 0, ss, 0, 0);
-    browserTextCtx.clearRect(0, 0, width, height);
+    const left = Number.isFinite(metrics.actualBoundingBoxLeft) ? metrics.actualBoundingBoxLeft : 0;
+    const right = Number.isFinite(metrics.actualBoundingBoxRight) ? metrics.actualBoundingBoxRight : metrics.width;
+    const extendLeft = Math.max(0,Math.ceil((left-2)*ss));
+    const extendRight = Math.max(0,Math.ceil((right-width+2)*ss));
+    browserTextCanvas.width = Math.max(1,Math.ceil(width*ss)+extendLeft+extendRight);
+    browserTextCanvas.height = Math.max(1,Math.ceil(height*ss));
+    browserTextCtx.setTransform(ss,0,0,ss,extendLeft,0);
+    browserTextCtx.clearRect(-extendLeft/ss,0,browserTextCanvas.width/ss,height);
     browserTextCtx.font = font;
     browserTextCtx.textBaseline = 'alphabetic';
     // Emoji bake their colour (legacy path); text rasters a WHITE mask that is
@@ -727,14 +733,10 @@ export async function opCkInit(canvasId, dpr = 1, logicalWidth = 0, logicalHeigh
     browserTextCtx.setTransform(1, 0, 0, 1, 0, 0);
     const image = CK.MakeImageFromCanvasImageSource(browserTextCanvas);
     if (!image) return null;
-    const entry = { image, width: metrics.width, baseline, ss, emoji: Boolean(emoji) };
-    browserTextCache.set(key, entry);
-    if (browserTextCache.size > 512) {
-      const firstKey = browserTextCache.keys().next().value;
-      const old = browserTextCache.get(firstKey);
-      if (old && old.image && old.image.delete) old.image.delete();
-      browserTextCache.delete(firstKey);
-    }
+    const entry = { image,width:metrics.width,baseline,ss,emoji:Boolean(emoji),
+      offsetX:2+extendLeft/ss,cached:false };
+    const storage=image.width()*image.height()*4+4096;
+    entry.cached=browserTextCache.set(key,entry,storage);
     return entry;
   };
   // Bounded rgb→ColorFilter cache for tinting the WHITE text raster at draw.
@@ -785,6 +787,7 @@ export async function opCkInit(canvasId, dpr = 1, logicalWidth = 0, logicalHeigh
     // cached SrcIn ColorFilter with opacity `a` riding the paint — SrcIn keeps
     // alpha = coverage × a and rgb = colour, pixel-identical to the old
     // baked-colour raster.
+    try {
     let paint = null;
     if (!entry.emoji) {
       paint = cachedTintPaint;
@@ -795,6 +798,7 @@ export async function opCkInit(canvasId, dpr = 1, logicalWidth = 0, logicalHeigh
       drawTextMaskImage(canvas, entry, paint, x, y);
     }
     return entry.width;
+    } finally { if(!entry.cached)releasePaintHandle(entry.image); }
   };
   const shaderPaint = (shader) => {
     const paint = new CK.Paint();
@@ -986,30 +990,23 @@ export async function opCkInit(canvasId, dpr = 1, logicalWidth = 0, logicalHeigh
   };
   const fontCovers = (entry, text) => {
     if (!entry || !entry.tf || !text) return false;
-    const cacheKey = entry.key + '\n' + text;
-    if (coverageCache.has(cacheKey)) return coverageCache.get(cacheKey);
-    const f = new CK.Font(entry.tf, 16);
-    const ids = f.getGlyphIDs(text);
-    const ok = ids.length > 0 && ids.every((id) => id !== 0);
-    f.delete();
-    coverageCache.set(cacheKey, ok);
-    return ok;
+    const cacheKey = [entry.key,text];
+    const cached=coverageCache.get(cacheKey);
+    if(cached!==undefined)return cached;
+    const f = new CK.Font(entry.tf,16);
+    try {
+      const ids=f.getGlyphIDs(text),ok=ids.length>0&&ids.every(id=>id!==0);
+      coverageCache.set(cacheKey,ok);return ok;
+    }finally{releasePaintHandle(f);}
   };
-  const systemTypefaceFor = (t, emojiRun) => {
-    const preferred = emojiRun
-      ? systemTypefaces.filter((entry) => entry.emoji)
-      : hasCjk(t)
-        ? systemTypefaces.filter((entry) => entry.cjk)
-        : hasSystemFallbackText(t)
-          ? systemTypefaces.filter((entry) => entry.textFallback)
-          : [];
-    for (const entry of preferred) {
-      if (fontCovers(entry, t)) return entry.tf;
-    }
-    if (!emojiRun && hasSystemFallbackText(t)) {
-      for (const entry of systemTypefaces) {
-        if (fontCovers(entry, t)) return entry.tf;
-      }
+  const systemTypefaceFor = (t,emojiRun) => {
+    const nonAscii=!emojiRun&&hasSystemFallbackText(t);
+    const group=emojiRun?0:hasCjk(t)?1:nonAscii?2:3;
+    const preferred=entry=>group===0?entry.emoji:group===1?entry.cjk:group===2?entry.textFallback:false;
+    for(const entry of systemTypefaces)if(preferred(entry)&&fontCovers(entry,t))return entry.tf;
+    if(!emojiRun&&nonAscii){
+      // Preferred entries already proved uncovered in this synchronous lookup.
+      for(const entry of systemTypefaces)if(!preferred(entry)&&fontCovers(entry,t))return entry.tf;
     }
     return null;
   };
@@ -1049,17 +1046,14 @@ export async function opCkInit(canvasId, dpr = 1, logicalWidth = 0, logicalHeigh
   // every cached wasm Font before wiping the map. Invalidated wholesale by
   // `clearRegisteredFontCaches` whenever either font registry changes.
   const registeredFamilyFont = (key, tf, sz, italic) => {
-    const cacheKey = key + '\n' + sz;
-    let f = registeredFamilyFontCache.get(cacheKey);
-    if (!f) {
-      f = new CK.Font(tf, sz);
-      if (registeredFamilyFontCache.size >= REGISTERED_FONT_CACHE_CAP) {
-        for (const v of registeredFamilyFontCache.values()) v.delete();
-        registeredFamilyFontCache.clear();
-      }
-      registeredFamilyFontCache.set(cacheKey, f);
+    releasePaintHandle(transientRegisteredFont);transientRegisteredFont=null;
+    const cacheKey=[key,sz];
+    let f=registeredFamilyFontCache.get(cacheKey);
+    if(!f){
+      f=new CK.Font(tf,sz);
+      if(!registeredFamilyFontCache.set(cacheKey,f,4096))transientRegisteredFont=f;
     }
-    f.setSkewX(italic ? -0.25 : 0);
+    f.setSkewX(italic?-0.25:0);
     return f;
   };
   // Split a run into maximal {text, registered} segments by whether the named
@@ -1071,50 +1065,27 @@ export async function opCkInit(canvasId, dpr = 1, logicalWidth = 0, logicalHeigh
   // codepoint, so it aligns with the codepoint iteration; if the counts don't
   // line up we conservatively treat the whole run as uncovered.
   const registeredCoverageSegments = (key, tf, sz, t) => {
-    const cacheKey = key + '\n' + sz + '\n' + t;
-    const cached = registeredCoverageCache.get(cacheKey);
-    if (cached) return cached;
-    const cps = Array.from(t);
+    const cacheKey=[key,sz,t],cached=registeredCoverageCache.get(cacheKey);
+    if(cached)return cached;
     let segs;
-    if (cps.length === 0) {
-      segs = [];
-    } else {
-      const f = new CK.Font(tf, sz);
-      let ids = null;
-      try {
-        ids = f.getGlyphIDs(t);
-      } catch (e) {
-        ids = null;
-      }
-      f.delete();
-      if (!ids || ids.length !== cps.length) {
-        segs = [{ text: t, registered: false }];
-      } else {
-        const out = [];
-        let cur = '';
-        let curRegistered = null;
-        for (let i = 0; i < cps.length; i++) {
-          const registered = ids[i] !== 0;
-          if (curRegistered === null) {
-            curRegistered = registered;
-            cur = cps[i];
-          } else if (registered === curRegistered) {
-            cur += cps[i];
-          } else {
-            out.push({ text: cur, registered: curRegistered });
-            cur = cps[i];
-            curRegistered = registered;
-          }
+    if(!t.length)segs=[];
+    else {
+      const f=new CK.Font(tf,sz);let ids=null;
+      try{ids=f.getGlyphIDs(t);}catch(_coverageRefusal){}finally{releasePaintHandle(f);}
+      if(!ids)segs=[{text:t,registered:false}];
+      else {
+        const out=[];let count=0,start=0,offset=0,current=null;
+        for(const ch of t){
+          const registered=ids[count++]!==0;
+          if(current===null)current=registered;
+          else if(registered!==current){out.push({text:t.slice(start,offset),registered:current});start=offset;current=registered;}
+          offset+=ch.length;
         }
-        if (cur) out.push({ text: cur, registered: curRegistered });
-        segs = out;
+        if(current!==null)out.push({text:t.slice(start,offset),registered:current});
+        segs=count===ids.length?out:[{text:t,registered:false}];
       }
     }
-    registeredCoverageCache.set(cacheKey, segs);
-    if (registeredCoverageCache.size > REGISTERED_COVERAGE_CACHE_CAP) {
-      const firstKey = registeredCoverageCache.keys().next().value;
-      registeredCoverageCache.delete(firstKey);
-    }
+    registeredCoverageCache.set(cacheKey,segs,t.length*4+segs.length*96+128);
     return segs;
   };
   // Draw a run via the script-segmented fallback (system / CJK / emoji /
@@ -1130,6 +1101,7 @@ export async function opCkInit(canvasId, dpr = 1, logicalWidth = 0, logicalHeigh
       return cx - x;
     }
     const p = allocFillPaint(r, g, b, a);
+    try {
     if (weight >= 600 && isPaintStyle(CK.PaintStyle.StrokeAndFill)) {
       setPaintStyle(p, CK.PaintStyle.StrokeAndFill);
       p.setStrokeWidth(sz * 0.06);
@@ -1140,14 +1112,15 @@ export async function opCkInit(canvasId, dpr = 1, logicalWidth = 0, logicalHeigh
         cx += drawBrowserText(seg.text, cx, y, sz, weight, italic, r, g, b, a, seg.emoji);
         continue;
       }
-      const f = new CK.Font(tfFor(seg.text, seg.emoji), sz);
-      if (italic && !seg.emoji) f.setSkewX(-0.25);
-      if (!textMasks.glyphs(seg.text, cx, y, p, f)) canvas.drawText(seg.text, cx, y, p, f);
-      cx += runWidth(f, seg.text);
-      f.delete();
+      const tf=tfFor(seg.text,seg.emoji),f=new CK.Font(tf,sz),skew=italic&&!seg.emoji?-0.25:0;
+      try{
+        if(skew)f.setSkewX(skew);
+        if(!textMasks.glyphs(seg.text,cx,y,p,f,tf,sz,skew))canvas.drawText(seg.text,cx,y,p,f);
+        cx+=runWidth(f,seg.text);
+      }finally{releasePaintHandle(f);}
     }
-    p.delete();
-    return cx - x;
+    return cx-x;
+    }finally{releasePaintHandle(p);}
   };
   const pathIsFinite = (bounds) => bounds && bounds.length >= 4 && bounds.every((v) => Number.isFinite(v));
   let svgPathViewBox = null;
@@ -1298,10 +1271,9 @@ export async function opCkInit(canvasId, dpr = 1, logicalWidth = 0, logicalHeigh
       imageCaches.dispose?.();
       runtimeEffects.dispose();
       gradientShaders.dispose();
-      for (const font of registeredFamilyFontCache.values()) release(font);
       registeredFamilyFontCache.clear();
+      release(transientRegisteredFont);transientRegisteredFont=null;
       registeredCoverageCache.clear(); coverageCache.clear();
-      for (const entry of browserTextCache.values()) release(entry?.image);
       browserTextCache.clear();
       // Paint may retain a tint filter; release it before its cached filters.
       release(cachedFillPaint); release(cachedStrokePaint); release(cachedTintPaint);
@@ -1713,7 +1685,7 @@ export async function opCkInit(canvasId, dpr = 1, logicalWidth = 0, logicalHeigh
       for (const seg of covSegs) {
         if (seg.registered) {
           const f = registeredFamilyFont(familyEntry.key, familyEntry.tf, sz, italic);
-          if (!textMasks.glyphs(seg.text, cx, y, p, f)) canvas.drawText(seg.text, cx, y, p, f);
+          if (!textMasks.glyphs(seg.text,cx,y,p,f,familyEntry.tf,sz,italic?-0.25:0)) canvas.drawText(seg.text, cx, y, p, f);
           cx += runWidth(f, seg.text);
         } else {
           cx += drawScriptRun(seg.text, cx, y, sz, weight, italic, r, g, b, a);

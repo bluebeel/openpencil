@@ -111,10 +111,34 @@ impl EditorUiState {
     }
 
     pub fn touch_recent_file(&mut self, path: String, modified_at: u64) {
+        if self
+            .recent_files
+            .first()
+            .is_some_and(|recent| recent.path == path)
+        {
+            self.recent_files[0].modified_at = modified_at;
+            let mut first = true;
+            self.recent_files.retain(|recent| {
+                if first {
+                    first = false;
+                    true
+                } else {
+                    recent.path != path
+                }
+            });
+            self.recent_files.truncate(RECENT_FILE_CAP);
+            return;
+        }
         self.recent_files.retain(|recent| recent.path != path);
+        if RECENT_FILE_CAP == 0 {
+            self.recent_files.clear();
+            return;
+        }
+        // Discard the already-doomed tail before insertion, so a full capped
+        // Vec does not grow merely to drop that last item immediately afterward.
+        self.recent_files.truncate(RECENT_FILE_CAP - 1);
         self.recent_files
             .insert(0, RecentFile { path, modified_at });
-        self.recent_files.truncate(RECENT_FILE_CAP);
     }
 
     pub fn remove_recent_file(&mut self, path: &str) -> bool {
@@ -249,7 +273,15 @@ impl EditorUiState {
             return false;
         };
         let mut changed = self.pinned_style_guide.as_deref() != Some(guide);
-        self.pinned_style_guide = Some(guide.to_string());
+        if changed {
+            match self.pinned_style_guide.as_mut() {
+                Some(current) => {
+                    current.clear();
+                    current.push_str(guide);
+                }
+                None => self.pinned_style_guide = Some(guide.to_string()),
+            }
+        }
 
         let center = &mut self.scene_template_center;
         let filter = crate::editor_ui_state::SceneFilter::Scene(template.scene);
@@ -266,8 +298,13 @@ impl EditorUiState {
         center.focus = SceneTemplateFocus::Generate;
         changed |= !center.input_focus_active;
         center.input_focus_active = true;
-        changed |= center.generate_basis.as_deref() != Some(template.id.as_str());
-        center.generate_basis = Some(template.id.clone());
+        if center.generate_basis.as_deref() != Some(template.id.as_str()) {
+            match center.generate_basis.as_mut() {
+                Some(current) => current.clone_from(&template.id),
+                None => center.generate_basis = Some(template.id.clone()),
+            }
+            changed = true;
+        }
         changed
     }
 
@@ -457,7 +494,8 @@ impl EditorUiState {
             || self.font_picker.hover.is_some()
             || self.font_picker.pressed.is_some()
             || self.font_picker.scroll.offset != 0.0
-            || !self.font_picker_search.is_empty();
+            || !self.font_picker_search.is_empty()
+            || self.font_picker_import_hover;
         self.font_picker.open = false;
         self.font_picker_purpose = None;
         self.font_picker.hover = None;
@@ -716,18 +754,15 @@ impl EditorUiState {
     /// dispatch to reopen Code in a Compact layout. Returns whether the stored
     /// value changed.
     pub fn set_property_tab(&mut self, requested: crate::PropertyTab) -> bool {
-        let next = if !self.code_property_tab_available()
-            && matches!(requested, crate::PropertyTab::Code)
-        {
+        let code_available = self.code_property_tab_available();
+        let next = if !code_available && matches!(requested, crate::PropertyTab::Code) {
             crate::PropertyTab::Design
         } else {
             requested
         };
         let changed = self.property_tab != next;
         self.property_tab = next;
-        if !self.code_property_tab_available()
-            && matches!(self.property_tab_hover, Some(crate::PropertyTab::Code))
-        {
+        if !code_available && matches!(self.property_tab_hover, Some(crate::PropertyTab::Code)) {
             self.property_tab_hover = None;
         }
         changed

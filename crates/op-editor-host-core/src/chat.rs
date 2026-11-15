@@ -1,10 +1,13 @@
 //! Shared chat turn worker and transcript folding logic.
 
 use std::collections::VecDeque;
+use std::fmt::Write as _;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, SyncSender, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::thread;
+
+use serde::Deserialize;
 
 use op_ai::chat_provider::{
     BlockerReport, ChatDelta, ChatHistoryRole, ChatProvider, ChatRequest, ChatToolExecutor,
@@ -12,6 +15,19 @@ use op_ai::chat_provider::{
     LOOP_FINALIZE_OP,
 };
 use op_editor_core::{ChatMessage, ChatRole, ChatToolCall};
+
+/// A chat worker could not run to completion. Host-facing error deltas retain
+/// the existing turn protocol instead of panicking the caller or ending silently.
+#[derive(Debug, thiserror::Error)]
+enum ChatWorkerError {
+    #[error("Could not start chat: {source}")]
+    ThreadSpawn {
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("Chat failed unexpectedly")]
+    WorkerPanicked,
+}
 
 /// One tool call forwarded from an agent-loop worker to a host UI thread.
 pub struct ChatToolRequest {
@@ -23,12 +39,27 @@ pub struct ChatToolRequest {
 /// Worker-side [`ChatToolExecutor`] that forwards calls over a channel and
 /// blocks until the host acks with the real tool result.
 pub struct UiChatToolExecutor {
-    tx: Mutex<Sender<ChatToolRequest>>,
+    tx: Mutex<ToolSender>,
+}
+
+enum ToolSender {
+    Legacy(Sender<ChatToolRequest>),
+    Bounded(SyncSender<ChatToolRequest>),
+}
+impl ToolSender {
+    fn send(&self, request: ChatToolRequest) -> Result<(), mpsc::SendError<ChatToolRequest>> {
+        match self {
+            Self::Legacy(tx) => tx.send(request),
+            Self::Bounded(tx) => tx.send(request),
+        }
+    }
 }
 
 impl UiChatToolExecutor {
     pub fn new(tx: Sender<ChatToolRequest>) -> Self {
-        Self { tx: Mutex::new(tx) }
+        Self {
+            tx: Mutex::new(ToolSender::Legacy(tx)),
+        }
     }
 }
 
@@ -46,9 +77,15 @@ impl ChatToolExecutor for UiChatToolExecutor {
     /// envelope every other tool result already rides.
     fn finalize(&self) -> FinalizeReport {
         let ack = self.forward(LOOP_FINALIZE_OP, r#"{"checkOnly":false}"#);
-        FinalizeReport {
-            screens: unfilled_report_from_ack(&ack),
-            quality: quality_summary_from_ack(&ack),
+        match serde_json::from_str::<serde_json::Value>(&ack.content) {
+            Ok(value) => FinalizeReport {
+                screens: unfilled_report_from_value(&value),
+                quality: quality_summary_from_value(&value),
+            },
+            Err(_) => FinalizeReport {
+                screens: UnfilledScreensReport::default(),
+                quality: QualitySummary::default(),
+            },
         }
     }
 
@@ -80,10 +117,14 @@ fn unfilled_report_from_ack(result: &ChatToolResult) -> UnfilledScreensReport {
     let Ok(v) = serde_json::from_str::<serde_json::Value>(&result.content) else {
         return UnfilledScreensReport::default();
     };
+    unfilled_report_from_value(&v)
+}
+
+fn unfilled_report_from_value(value: &serde_json::Value) -> UnfilledScreensReport {
     let names = |key: &str| {
-        v.get(key)
-            .cloned()
-            .and_then(|v| serde_json::from_value::<Vec<String>>(v).ok())
+        value
+            .get(key)
+            .and_then(|value| Vec::<String>::deserialize(value).ok())
             .unwrap_or_default()
     };
     UnfilledScreensReport {
@@ -97,11 +138,8 @@ fn unfilled_report_from_ack(result: &ChatToolResult) -> UnfilledScreensReport {
 /// any other shape (transport error, an older host build that predates the
 /// field) — and an empty summary renders NO credential, so a host that can't
 /// report what it checked never gets credited for checking.
-fn quality_summary_from_ack(result: &ChatToolResult) -> QualitySummary {
-    let Ok(v) = serde_json::from_str::<serde_json::Value>(&result.content) else {
-        return QualitySummary::default();
-    };
-    let Some(quality) = v.get("quality") else {
+fn quality_summary_from_value(value: &serde_json::Value) -> QualitySummary {
+    let Some(quality) = value.get("quality") else {
         return QualitySummary::default();
     };
     let checks = quality
@@ -221,8 +259,17 @@ fn aborted_result() -> ChatToolResult {
 
 /// Create the worker-to-host tool channel for one chat turn.
 pub fn chat_tool_channel() -> (UiChatToolExecutor, Receiver<ChatToolRequest>) {
-    let (tx, rx) = std::sync::mpsc::channel::<ChatToolRequest>();
-    (UiChatToolExecutor::new(tx), rx)
+    // One chat turn cannot queue an unlimited number of owned tool packets.
+    // Producers keep normal ACK semantics and wait for host consumption rather
+    // than receiving fabricated success/rejection. Custom public senders keep
+    // their existing constructor/transport behavior.
+    let (tx, rx) = std::sync::mpsc::sync_channel::<ChatToolRequest>(64);
+    (
+        UiChatToolExecutor {
+            tx: Mutex::new(ToolSender::Bounded(tx)),
+        },
+        rx,
+    )
 }
 
 /// One in-flight chat turn.
@@ -291,7 +338,7 @@ pub fn apply_poll_to_message_with(message: &mut ChatMessage, poll: &ChatPoll, de
         message.content.push_str(&poll.text);
     }
     message.thinking.push_str(&poll.thinking);
-    if poll.tool_calls.iter().any(tool_call_defaults_open) {
+    if message.tools_collapsed && poll.tool_calls.iter().any(tool_call_defaults_open) {
         message.tools_collapsed = false;
     }
     // Stamp where each call landed in the narration so the transcript can
@@ -393,32 +440,42 @@ fn history_content(message: &ChatMessage) -> Option<String> {
     let completion = (message.role == ChatRole::Assistant)
         .then_some(message.completion)
         .flatten();
-    let mut text = message.content.clone();
-    if let Some(completion) = completion {
-        if !text.trim().is_empty() {
-            text.push_str("\n\n");
-        }
-        text.push_str(&format!(
-            "Design work completed: {} succeeded, {} failed.",
-            completion.succeeded, completion.failed
-        ));
-    }
-    let sections: Vec<&str> = message
+    let mut sections = message
         .activities
         .iter()
         .filter(|activity| !activity.id.starts_with("__"))
         .map(|activity| activity.title.trim())
         .filter(|title| !title.is_empty())
-        .collect();
-    if !sections.is_empty() {
-        if !text.trim().is_empty() {
+        .peekable();
+    let mut nonempty = !message.content.trim().is_empty();
+    if !nonempty && completion.is_none() && sections.peek().is_none() {
+        return None;
+    }
+    let mut text = message.content.clone();
+    if let Some(completion) = completion {
+        if nonempty {
+            text.push_str("\n\n");
+        }
+        let _ = write!(
+            text,
+            "Design work completed: {} succeeded, {} failed.",
+            completion.succeeded, completion.failed
+        );
+        nonempty = true;
+    }
+    if let Some(first) = sections.next() {
+        if nonempty {
             text.push(' ');
         }
         text.push_str("Sections: ");
-        text.push_str(&sections.join("; "));
+        text.push_str(first);
+        for section in sections {
+            text.push_str("; ");
+            text.push_str(section);
+        }
         text.push('.');
     }
-    (!text.trim().is_empty()).then_some(text)
+    Some(text)
 }
 
 /// Add an explicit screen label to a primary/worker projection. Worker prose
@@ -498,16 +555,29 @@ impl ChatSession {
         let (tx, rx) = mpsc::channel();
         let cancel = Arc::new(AtomicBool::new(false));
         let worker_cancel = Arc::clone(&cancel);
-        thread::Builder::new()
+        let terminal_tx = tx.clone();
+        let spawned = thread::Builder::new()
             .name("op-chat-turn".into())
             .spawn(move || {
-                for delta in provider.send_cancellable(req, worker_cancel) {
-                    if tx.send(delta).is_err() {
-                        return;
+                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    for delta in provider.send_cancellable(req, worker_cancel) {
+                        if tx.send(delta).is_err() {
+                            return;
+                        }
                     }
+                }));
+                if outcome.is_err() {
+                    let _ = tx.send(ChatDelta::Error(
+                        ChatWorkerError::WorkerPanicked.to_string(),
+                    ));
                 }
-            })
-            .expect("spawn op-chat-turn thread");
+            });
+        if let Err(source) = spawned {
+            let _ = terminal_tx.send(ChatDelta::Error(
+                ChatWorkerError::ThreadSpawn { source }.to_string(),
+            ));
+        }
+        drop(terminal_tx);
         Self {
             rx,
             cancel: Some(cancel),
@@ -614,8 +684,20 @@ impl ChatSession {
         let mut error = None;
         loop {
             match self.rx.try_recv() {
-                Ok(ChatDelta::TextDelta(s)) => text.push_str(&s),
-                Ok(ChatDelta::Thinking(s)) => thinking.push_str(&s),
+                Ok(ChatDelta::TextDelta(s)) => {
+                    if text.is_empty() {
+                        text = s;
+                    } else {
+                        text.push_str(&s);
+                    }
+                }
+                Ok(ChatDelta::Thinking(s)) => {
+                    if thinking.is_empty() {
+                        thinking = s;
+                    } else {
+                        thinking.push_str(&s);
+                    }
+                }
                 Ok(ChatDelta::ToolUse { name, args }) => {
                     tool_calls.push(ChatToolCall {
                         name,
