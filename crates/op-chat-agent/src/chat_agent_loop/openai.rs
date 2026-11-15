@@ -38,21 +38,7 @@ pub(super) async fn run_openai_agent_loop_inner(
     cfg: AgentLoopConfig,
     tx: &mpsc::Sender<ChatDelta>,
 ) -> Result<bool, BuiltinHttpError> {
-    let tools_json: Vec<Value> = cfg
-        .tools
-        .iter()
-        .map(|t| {
-            json!({
-                "type": "function",
-                "function": {
-                    "name": t.name,
-                    "description": t.description,
-                    "parameters": serde_json::from_str::<Value>(&t.input_schema_json)
-                        .unwrap_or_else(|_| json!({ "type": "object" })),
-                },
-            })
-        })
-        .collect();
+    let tools_json = tool_definitions(&cfg.tools, true);
     let mut messages: Vec<Value> = Vec::new();
     if !cfg.system_prompt.trim().is_empty() {
         messages.push(json!({ "role": "system", "content": cfg.system_prompt }));
@@ -134,8 +120,6 @@ pub(super) async fn run_openai_agent_loop_inner(
             "model": cfg.model,
             "stream": true,
             "max_tokens": cfg.max_output_tokens,
-            "messages": messages,
-            "tools": tools_json,
         });
         // Turn OFF hidden reasoning for the families that can express it.
         // Without this a reasoning model's design turn spends its whole
@@ -167,7 +151,16 @@ pub(super) async fn run_openai_agent_loop_inner(
             &cfg.url,
             max_retries,
             min_gap,
-            || client.post(&cfg.url).bearer_auth(&cfg.api_key).json(&body),
+            || {
+                client
+                    .post(&cfg.url)
+                    .bearer_auth(&cfg.api_key)
+                    .json(&AgentRequest {
+                        controls: &body,
+                        messages: &messages,
+                        tools: &tools_json,
+                    })
+            },
         )
         .await?;
         let mut collector = OpenAiCollector::default();

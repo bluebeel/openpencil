@@ -73,7 +73,7 @@ fn assistant_turn_content(collector: &AnthropicCollector) -> Value {
     if content.is_empty() {
         json!([{ "type": "text", "text": "(no visible output this turn)" }])
     } else {
-        json!(content)
+        Value::Array(content)
     }
 }
 
@@ -81,18 +81,7 @@ pub(super) async fn run_anthropic_agent_loop_inner(
     cfg: AgentLoopConfig,
     tx: &mpsc::Sender<ChatDelta>,
 ) -> Result<bool, BuiltinHttpError> {
-    let tools_json: Vec<Value> = cfg
-        .tools
-        .iter()
-        .map(|t| {
-            json!({
-                "name": t.name,
-                "description": t.description,
-                "input_schema": serde_json::from_str::<Value>(&t.input_schema_json)
-                    .unwrap_or_else(|_| json!({ "type": "object" })),
-            })
-        })
-        .collect();
+    let tools_json = tool_definitions(&cfg.tools, false);
     let mut messages: Vec<Value> = Vec::new();
     for (role, text) in &cfg.history {
         messages.push(json!({ "role": role.as_str(), "content": text }));
@@ -184,8 +173,6 @@ pub(super) async fn run_anthropic_agent_loop_inner(
             "model": cfg.model,
             "max_tokens": cfg.max_output_tokens,
             "stream": true,
-            "messages": messages,
-            "tools": tools_json,
         });
         if !cfg.system_prompt.trim().is_empty() {
             body.as_object_mut()
@@ -215,7 +202,11 @@ pub(super) async fn run_anthropic_agent_loop_inner(
                     .post(&cfg.url)
                     .header("x-api-key", &cfg.api_key)
                     .header("anthropic-version", "2023-06-01")
-                    .json(&body)
+                    .json(&AgentRequest {
+                        controls: &body,
+                        messages: &messages,
+                        tools: &tools_json,
+                    })
             },
         )
         .await?;

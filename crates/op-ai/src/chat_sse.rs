@@ -77,6 +77,12 @@ pub fn parse_openai_sse_data(data: &str) -> Option<ChatDelta> {
 /// Parse one Anthropic Messages-API SSE `data:` payload.
 pub fn parse_anthropic_sse_data(data: &str) -> Option<ChatDelta> {
     let value: Value = serde_json::from_str(data.trim()).ok()?;
+    parse_anthropic_sse_value(&value)
+}
+
+/// Parse an already-decoded payload without repeating JSON decoding. The
+/// borrowed form preserves callers that also validate usage and completion.
+pub fn parse_anthropic_sse_value(value: &Value) -> Option<ChatDelta> {
     match value.get("type").and_then(Value::as_str).unwrap_or("") {
         "content_block_delta" => {
             let delta = value.get("delta")?;

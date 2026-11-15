@@ -144,29 +144,40 @@ pub(super) fn request_body(
     if !request.attachments.is_empty() {
         return Err(HostedRuntimeError::UnsupportedAttachments);
     }
-    let mut messages: Vec<_> = request
-        .history
-        .iter()
-        .map(|(role, content)| json!({"role":role.as_str(),"content":content}))
-        .collect();
-    messages.push(json!({ "role": "user", "content": request.user_message }));
-    let mut body = json!({ "model": route.model_id(), "stream": true,
-        "max_tokens": request.max_output_tokens.clamp(1, 65536), "messages": messages });
+    let mut system_prompt = request.system_prompt;
+    let has_system = !system_prompt.trim().is_empty();
+    let openai_system = has_system && route.protocol() == HostedProtocol::OpenAiCompatible;
+    let mut messages = Vec::with_capacity(
+        request
+            .history
+            .len()
+            .saturating_add(1 + usize::from(openai_system)),
+    );
+    if openai_system {
+        messages.push(message("system", std::mem::take(&mut system_prompt)));
+    }
+    for (role, content) in request.history {
+        messages.push(message(role.as_str(), content));
+    }
+    messages.push(message("user", request.user_message));
+    let mut body = serde_json::Map::new();
+    body.insert("model".into(), Value::String(route.model_id().into()));
+    body.insert("stream".into(), Value::Bool(true));
+    body.insert(
+        "max_tokens".into(),
+        request.max_output_tokens.clamp(1, 65536).into(),
+    );
+    body.insert("messages".into(), Value::Array(messages));
+    let mut body = Value::Object(body);
     let path = match route.protocol() {
         HostedProtocol::AnthropicMessages => {
-            if !request.system_prompt.trim().is_empty() {
-                body["system"] = json!(request.system_prompt);
+            if has_system {
+                body["system"] = Value::String(system_prompt);
             }
             "/messages"
         }
         HostedProtocol::OpenAiCompatible => {
             body["stream_options"] = json!({"include_usage": true});
-            if !request.system_prompt.trim().is_empty() {
-                body["messages"]
-                    .as_array_mut()
-                    .unwrap()
-                    .insert(0, json!({"role":"system","content":request.system_prompt}));
-            }
             op_chat_agent::backoff::apply_reasoning_wire_control(
                 &mut body,
                 route.model_id(),
@@ -177,4 +188,11 @@ pub(super) fn request_body(
         HostedProtocol::OpenAiResponses => return Err(HostedRuntimeError::UnsupportedProtocol),
     };
     Ok((path, body))
+}
+
+fn message(role: &str, content: String) -> Value {
+    let mut message = serde_json::Map::new();
+    message.insert("role".into(), Value::String(role.into()));
+    message.insert("content".into(), Value::String(content));
+    Value::Object(message)
 }

@@ -42,8 +42,8 @@ pub(super) fn parse(
     if catalog.object != "list" || catalog.data.len() > op_editor_core::MAX_HOSTED_MODEL_ROUTES {
         return Err(HostedRuntimeError::CatalogInvalid);
     }
-    let mut ids = HashSet::new();
-    let mut routes = Vec::new();
+    let mut ids = HashSet::with_capacity(catalog.data.len());
+    let mut routes = Vec::with_capacity(catalog.data.len());
     for model in catalog.data {
         if model.object != "model"
             || model.owned_by.len() > 128
@@ -67,14 +67,13 @@ pub(super) fn parse(
             return Err(HostedRuntimeError::CatalogInvalid);
         }
         let has = |name: &str| model.capabilities.iter().any(|value| value == name);
-        let digest = Sha256::digest(format!("{namespace}\0{}\0{}", model.protocol, model.id));
-        let route_id = format!(
-            "hosted-{}",
-            digest
-                .iter()
-                .map(|byte| format!("{byte:02x}"))
-                .collect::<String>()
-        );
+        let mut digest = Sha256::new();
+        digest.update(namespace.as_bytes());
+        digest.update([0_u8]);
+        digest.update(model.protocol.as_bytes());
+        digest.update([0_u8]);
+        digest.update(model.id.as_bytes());
+        let route_id = format!("hosted-{}", super::hex_bytes(&digest.finalize()));
         // Intersect server capabilities with this host's implemented transport.
         // Hosted Billing currently rejects unpriced vision before reservation,
         // even when an underlying upstream supports images. Do not advertise
@@ -119,8 +118,12 @@ pub(super) async fn fetch(
     {
         return Err(HostedRuntimeError::CatalogTooLarge);
     }
+    let size = response
+        .content_length()
+        .unwrap_or(0)
+        .min(MAX_CATALOG_BYTES as u64) as usize;
     let mut stream = response.bytes_stream();
-    let mut bytes = Vec::new();
+    let mut bytes = Vec::with_capacity(size);
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|_| HostedRuntimeError::Network)?;
         if bytes.len().saturating_add(chunk.len()) > MAX_CATALOG_BYTES {

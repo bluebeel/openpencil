@@ -36,7 +36,7 @@ impl ProtocolState {
         }
         match self.protocol {
             HostedProtocol::OpenAiCompatible => self.openai(&value),
-            HostedProtocol::AnthropicMessages => self.anthropic(&value, data),
+            HostedProtocol::AnthropicMessages => self.anthropic(&value),
             HostedProtocol::OpenAiResponses => Err(HostedRuntimeError::UnsupportedProtocol),
         }
     }
@@ -92,11 +92,7 @@ impl ProtocolState {
         Ok(output)
     }
 
-    fn anthropic(
-        &mut self,
-        value: &Value,
-        data: &str,
-    ) -> Result<Vec<ChatDelta>, HostedRuntimeError> {
+    fn anthropic(&mut self, value: &Value) -> Result<Vec<ChatDelta>, HostedRuntimeError> {
         match value["type"].as_str() {
             Some("message_start") => {
                 self.input_usage = value
@@ -114,7 +110,7 @@ impl ProtocolState {
             Some("message_stop") => return self.complete(),
             _ => {}
         }
-        Ok(match op_ai::chat_sse::parse_anthropic_sse_data(data) {
+        Ok(match op_ai::chat_sse::parse_anthropic_sse_value(value) {
             Some(delta @ (ChatDelta::TextDelta(_) | ChatDelta::Thinking(_))) => vec![delta],
             _ => Vec::new(),
         })
