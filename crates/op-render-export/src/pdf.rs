@@ -4,7 +4,7 @@
 //! global-export → exportDocumentPdf flow, except the TS app
 //! hand-rolls a PDF stream (Catalog + Pages + Image XObjects with
 //! DCTDecode JPEG blobs); skia's backend emits real vector PDF ops,
-//! which keeps glyphs + shapes selectable + zoom-clean.
+//! which retains zoom-clean vector shapes and font/outline paths.
 //!
 //! The export consumes a layout-resolved [`LayoutScene`] — every node
 //! kind paints through the shared [`crate::paint_nodes`], the same
@@ -22,6 +22,15 @@ mod selection;
 pub use selection::{render_selected_node_pdf_bytes_scaled, render_selection_batch_pdf_bytes};
 
 const PDF_MARGIN: f32 = 16.0;
+
+/// Deflate level1 is lossless; it trades somewhat larger PDF streams for
+/// lower CPU without changing decoded images, vectors or font subset data.
+fn metadata() -> skia_safe::pdf::Metadata<'static> {
+    skia_safe::pdf::Metadata {
+        compression_level: skia_safe::pdf::CompressionLevel::LowButFast,
+        ..Default::default()
+    }
+}
 
 fn render_pdf_item(
     bounds: Rect,
@@ -41,13 +50,14 @@ fn render_pdf_item(
     }
     let mut buf = Vec::new();
     {
-        let mut pdf = skia_safe::pdf::new_document(&mut buf, None);
+        let metadata = metadata();
+        let mut pdf = skia_safe::pdf::new_document(&mut buf, Some(&metadata));
         let page_size = skia_safe::Size::new(width, height);
         let mut page = pdf.begin_page(page_size, None);
         let canvas = page.canvas();
         canvas.scale((scale, scale));
         canvas.translate((PDF_MARGIN - bounds.origin.x, PDF_MARGIN - bounds.origin.y));
-        paint(canvas);
+        op_host_native::NativeBackend::with_pdf_document(|| paint(canvas));
         pdf = page.end_page();
         pdf.close();
     }
@@ -170,7 +180,8 @@ pub fn render_resolved_nodes_pdf_bytes(
     }
     let mut buf: Vec<u8> = Vec::new();
     {
-        let mut pdf = skia_safe::pdf::new_document(&mut buf, None);
+        let metadata = metadata();
+        let mut pdf = skia_safe::pdf::new_document(&mut buf, Some(&metadata));
         for (node, bounds) in &pairs {
             let page_w = (bounds.size.x + PDF_MARGIN * 2.0) * scale;
             let page_h = (bounds.size.y + PDF_MARGIN * 2.0) * scale;
@@ -180,7 +191,7 @@ pub fn render_resolved_nodes_pdf_bytes(
             // Position the node's content with PDF_MARGIN inset from the page
             // edges, the same translation strategy as the multi-page exporter.
             canvas.translate((PDF_MARGIN - bounds.origin.x, PDF_MARGIN - bounds.origin.y));
-            crate::paint_node(canvas, node);
+            op_host_native::NativeBackend::with_pdf_document(|| crate::paint_node(canvas, node));
             pdf = on_page.end_page();
         }
         pdf.close();
@@ -211,13 +222,16 @@ pub fn render_pdf_bytes(scene: &LayoutScene) -> Result<Vec<u8>, ExportError> {
     };
     let mut buf: Vec<u8> = Vec::new();
     {
-        let mut pdf = skia_safe::pdf::new_document(&mut buf, None);
+        let metadata = metadata();
+        let mut pdf = skia_safe::pdf::new_document(&mut buf, Some(&metadata));
         for (page, bounds_opt) in scene.pages.iter().zip(bounds_per_page.iter()) {
             let Some(bounds) = bounds_opt else { continue };
             let mut on_page = pdf.begin_page(skia_safe::Size::new(page_w, page_h), None);
             let canvas = on_page.canvas();
             canvas.translate((PDF_MARGIN - bounds.origin.x, PDF_MARGIN - bounds.origin.y));
-            crate::paint_nodes(canvas, &page.children);
+            op_host_native::NativeBackend::with_pdf_document(|| {
+                crate::paint_nodes(canvas, &page.children)
+            });
             pdf = on_page.end_page();
         }
         pdf.close();
@@ -327,14 +341,15 @@ pub fn render_deck_pdf_boards_bytes(
     }
     let mut buf: Vec<u8> = Vec::new();
     {
-        let mut pdf = skia_safe::pdf::new_document(&mut buf, None);
+        let metadata = metadata();
+        let mut pdf = skia_safe::pdf::new_document(&mut buf, Some(&metadata));
         for node in slides {
             let bounds = node.bounds;
             let mut on_page =
                 pdf.begin_page(skia_safe::Size::new(bounds.size.x, bounds.size.y), None);
             let canvas = on_page.canvas();
             canvas.translate((-bounds.origin.x, -bounds.origin.y));
-            crate::paint_node(canvas, node);
+            op_host_native::NativeBackend::with_pdf_document(|| crate::paint_node(canvas, node));
             pdf = on_page.end_page();
         }
         pdf.close();

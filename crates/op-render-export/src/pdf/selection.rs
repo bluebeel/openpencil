@@ -63,7 +63,8 @@ fn render_batch_inner(
     }
     let mut buffer = Vec::new();
     {
-        let mut pdf = skia_safe::pdf::new_document(&mut buffer, None);
+        let metadata = super::metadata();
+        let mut pdf = skia_safe::pdf::new_document(&mut buffer, Some(&metadata));
         for (id, bounds) in pairs {
             let Some(selection) = cursor.get(batch, id) else {
                 continue;
@@ -76,7 +77,9 @@ fn render_batch_inner(
             let canvas = page.canvas();
             canvas.scale((scale, scale));
             canvas.translate((PDF_MARGIN - bounds.origin.x, PDF_MARGIN - bounds.origin.y));
-            crate::scene_painter::paint_selection(canvas, selection, output_cull(bounds));
+            op_host_native::NativeBackend::with_pdf_document(|| {
+                crate::scene_painter::paint_selection(canvas, selection, output_cull(bounds));
+            });
             pdf = page.end_page();
         }
         pdf.close();

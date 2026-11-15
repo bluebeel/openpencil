@@ -74,6 +74,14 @@ pub(super) fn with_four_samples<R>(draw: impl FnOnce() -> R) -> R {
 }
 
 pub(super) fn clip_rrect(canvas: &Canvas, rrect: &RRect) {
+    if super::vector_document::is_pdf() {
+        canvas.clip_rrect(
+            rrect,
+            skia_safe::ClipOp::Intersect,
+            jian_skia::raster_sampling::geometry_antialias(),
+        );
+        return;
+    }
     let matrix = canvas.local_to_device_as_3x3();
     let shader = (!matrix.has_perspective())
         .then(|| matrix.invert())

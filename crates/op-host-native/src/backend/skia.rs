@@ -11,7 +11,6 @@
 //! The backend deliberately does **not** `impl RenderBackend` for OP's
 //! widget-facing trait (spec §5.2.1 mirror surface, no direct impl in
 //! Step 1a; saved for Step 1c+ widget tree).
-
 use op_editor_ui::{Color, Point2D, Rect};
 
 /// OP `Rect` (`origin / size: Vec2`) → Jian `euclid::Rect<f32>`.
@@ -87,6 +86,7 @@ mod shaped_text;
 mod stroke_paint;
 mod svg_raster_cache;
 mod text;
+mod vector_document;
 mod vector_text;
 #[cfg(test)]
 use image::{cover_rect, figma_image_local_matrix, image_adjustment_matrix};

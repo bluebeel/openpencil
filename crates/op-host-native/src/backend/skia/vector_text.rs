@@ -126,6 +126,10 @@ fn build_outline(
 /// Decorations use the same fixed-point top-left rule as glyph triangles.
 /// The same bounded fill coverage is shared with ordinary glyph outlines.
 pub(super) fn draw_decoration_rect(canvas: &Canvas, rect: Rect, paint: &Paint) -> bool {
+    if super::vector_document::is_pdf() {
+        canvas.draw_rect(rect, paint);
+        return true;
+    }
     if paint.style() != skia_safe::PaintStyle::Fill {
         return false;
     }
@@ -162,6 +166,14 @@ fn draw_coverage(canvas: &Canvas, path: &Path, paint: &Paint, point: bool, grid:
 /// The same binary point-camera path geometry can clip painted content.
 /// Image circle clips retain their separate analytic ellipse contract.
 pub(super) fn clip_path(canvas: &Canvas, path: &Path) -> bool {
+    if super::vector_document::is_pdf() {
+        canvas.clip_path(
+            path,
+            skia_safe::ClipOp::Intersect,
+            jian_skia::raster_sampling::geometry_antialias(),
+        );
+        return true;
+    }
     if !jian_skia::raster_sampling::is_point_sampling() {
         return false;
     }
@@ -187,6 +199,13 @@ pub(super) fn clip_path(canvas: &Canvas, path: &Path) -> bool {
 }
 
 pub(super) fn draw_path(canvas: &Canvas, path: &Path, paint: &Paint) -> bool {
+    if super::vector_document::is_pdf() {
+        // build_outline already owns exact shaped glyph positions and the
+        // same font-unit/local-baseline rules. PDF must retain those paths;
+        // clip_shader cannot encode the native A16 device-coverage mask.
+        canvas.draw_path(path, paint);
+        return true;
+    }
     if path.is_empty() {
         return true;
     }
