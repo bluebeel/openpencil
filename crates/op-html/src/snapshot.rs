@@ -434,6 +434,8 @@ impl<'a> SnapshotCtx<'a> {
         );
         base.blend_mode = blend_mode;
         Some(PenNode::Image(ImageNode {
+            nearest_sampling: None,
+            geometry: None,
             limits: Default::default(),
             base,
             src: ImageSrc::from(

@@ -24,7 +24,16 @@ pub(super) fn single_image<'a>(
             * transform_list(&node.attrs).map_err(|_| SvgResourceError::Invalid {
                 attribute: "pattern child transform",
             })?;
-        let opacity = opacity * svg_node_opacity(&node.attrs).unwrap_or(1.0);
+        let child_opacity = match svg_node_opacity(&node.attrs) {
+            None => 1.0,
+            Some(jian_ops_schema::node::base::NumberOrExpression::Number(value)) => value,
+            Some(_) => {
+                return Err(SvgResourceError::Invalid {
+                    attribute: "pattern child opacity",
+                })
+            }
+        };
+        let opacity = opacity * child_opacity;
         let child = match node.tag.as_str() {
             "image" => Some(ImageContent {
                 node,

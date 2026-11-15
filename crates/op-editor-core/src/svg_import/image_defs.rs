@@ -62,7 +62,7 @@ fn source(resources: &SvgResources<'_>, uri: &str) -> (ImageSrc, Option<[u32; 2]
         .push(result.clone());
     result
 }
-fn href<'a>(el: &'a SvgTree, resources: &SvgResources<'a>) -> Option<&'a str> {
+fn href<'a>(el: &'a SvgTree, resources: &'a SvgResources<'_>) -> Option<&'a str> {
     let mut raw = resource_attr(el, "href").or_else(|| resource_attr(el, "xlink:href"))?;
     for _ in 0..64 {
         let Some(id) = raw.strip_prefix('#') else {

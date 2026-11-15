@@ -51,18 +51,7 @@ pub(crate) fn prepare_metadata(command: &C) -> Option<Prepared> {
 }
 
 pub(crate) fn target(command: &C) -> Option<&NodeId> {
-    if video_command(command)
-        && (!node.base().visible.unwrap_or(true) || node.base().locked.unwrap_or(false))
-    {
-        return false;
-    }
     match command {
-        C::SetImageVideoSrc { src, .. } => crate::video_node_props::set_video_node_src(node, src),
-        C::SetImageVideoPlayback { field, value, .. } => {
-            crate::video_node_props::set_video_node_playback(node, *field, *value)
-        }
-        C::AddImageVideo { .. } => crate::video_node_props::add_video_to_image_node(node),
-        C::RemoveImageVideo { .. } => crate::video_node_props::remove_video_from_image_node(node),
         C::UpdateNode { node_id, .. }
         | C::PatchNodeData { node_id, .. }
         | C::SetNodeRotation { node_id, .. }
@@ -177,7 +166,18 @@ pub(crate) fn write(node: &mut PenNode, command: &C, prepared: &Prepared) -> boo
     if target(command).is_none_or(|id| !id.is_real()) {
         return false;
     }
+    if video_command(command)
+        && (!node.base().visible.unwrap_or(true) || node.base().locked.unwrap_or(false))
+    {
+        return false;
+    }
     match command {
+        C::SetImageVideoSrc { src, .. } => crate::video_node_props::set_video_node_src(node, src),
+        C::SetImageVideoPlayback { field, value, .. } => {
+            crate::video_node_props::set_video_node_playback(node, *field, *value)
+        }
+        C::AddImageVideo { .. } => crate::video_node_props::add_video_to_image_node(node),
+        C::RemoveImageVideo { .. } => crate::video_node_props::remove_video_from_image_node(node),
         C::UpdateNode {
             node_id,
             x,
