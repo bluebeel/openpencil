@@ -11,6 +11,8 @@ use crate::node_id::NodeId;
 use crate::pen_node_ext::PenNodeExt;
 use jian_ops_schema::node::PenNode;
 use std::collections::HashSet;
+#[path = "walker_preorder.rs"]
+mod preorder;
 #[path = "walker_stack.rs"]
 pub(crate) mod stack;
 
@@ -293,12 +295,9 @@ pub fn reorder_in_children(
 
 /// Insert every descendant id of the forest into `out`.
 pub fn collect_ids(children: &[PenNode], out: &mut HashSet<NodeId>) {
-    for child in children {
-        if let Some(id) = NodeId::new_opt(child.id_str()) {
+    for node in preorder::Nodes::new(children) {
+        if let Some(id) = NodeId::new_opt(node.id_str()) {
             out.insert(id);
-        }
-        if let Some(grand) = child.children() {
-            collect_ids(grand, out);
         }
     }
 }
@@ -308,21 +307,21 @@ pub fn collect_ids(children: &[PenNode], out: &mut HashSet<NodeId>) {
 /// arbitrary canonical-schema id).
 pub fn parse_n_id(id: &str) -> Option<u64> {
     let digits = id.strip_prefix('n')?;
-    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+    if digits.is_empty() {
         return None;
     }
-    digits.parse::<u64>().ok()
+    digits.bytes().try_fold(0u64, |value, byte| {
+        let digit = byte.checked_sub(b'0').filter(|digit| *digit < 10)?;
+        value.checked_mul(10)?.checked_add(u64::from(digit))
+    })
 }
 
 /// Largest `n{N}` suffix in the subtree (0 when none exists).
 pub fn max_id_walk(node: &PenNode) -> u64 {
-    let mut max = parse_n_id(node.id_str()).unwrap_or(0);
-    if let Some(children) = node.children() {
-        for child in children {
-            max = max.max(max_id_walk(child));
-        }
-    }
-    max
+    preorder::Nodes::new(std::slice::from_ref(node))
+        .filter_map(|node| parse_n_id(node.id_str()))
+        .max()
+        .unwrap_or(0)
 }
 
 /// Allocate the next free editor-minted id. Formats `n{*next_id}`,
@@ -337,13 +336,7 @@ pub fn alloc_n_id(next_id: &mut u64, taken: &mut HashSet<NodeId>) -> Option<Node
 
 /// Node count in `node`'s subtree, including `node` itself.
 pub fn subtree_size(node: &PenNode) -> u64 {
-    let mut n = 1u64;
-    if let Some(children) = node.children() {
-        for child in children {
-            n = n.saturating_add(subtree_size(child));
-        }
-    }
-    n
+    preorder::Nodes::new(std::slice::from_ref(node)).fold(0u64, |count, _| count.saturating_add(1))
 }
 
 /// Deep-clone `node`, minting a fresh `n{N}` id for it and every
@@ -382,19 +375,48 @@ pub fn deep_clone_with_allocator(
     allocator: &mut dyn IdAllocator,
     taken: &mut HashSet<NodeId>,
 ) -> Result<PenNode, IdAllocError> {
-    // Clone metadata once per node; cloning the complete subtree at every
-    // recursive level made a deep chain quadratic in time and peak storage.
-    let mut clone = crate::pen_node_ext::clone_without_children(node);
-    let new_id = allocator.allocate(taken)?;
-    clone.base_mut().id = new_id.into();
-    if let Some(children) = node.children() {
-        let fresh: Result<Vec<PenNode>, IdAllocError> = children
-            .iter()
-            .map(|child| deep_clone_with_allocator(child, allocator, taken))
-            .collect();
-        *clone.children_mut().expect("source has canonical children") = fresh?;
+    struct Frame<'a> {
+        node: PenNode,
+        remaining: std::slice::Iter<'a, PenNode>,
+        children: Vec<PenNode>,
     }
-    Ok(clone)
+    // A small number of open ancestors lives inline; deep canonical trees
+    // spill to explicit cursors rather than recursive Rust call frames.
+    let mut parents = stack::Stack::<Frame<'_>, 4>::new();
+    let mut source = node;
+    loop {
+        let mut cloned = crate::pen_node_ext::clone_without_children(source);
+        cloned.base_mut().id = allocator.allocate(taken)?.into();
+        if let Some(children) = source.children().filter(|children| !children.is_empty()) {
+            let mut remaining = children.iter();
+            if let Some(first) = remaining.next() {
+                parents.push(Frame {
+                    node: cloned,
+                    remaining,
+                    children: Vec::with_capacity(children.len()),
+                });
+                source = first;
+                continue;
+            }
+        }
+        // Attach a completed child, then finish as many exhausted parents as
+        // needed before visiting the next sibling. Allocation remains preorder.
+        loop {
+            let Some(parent) = parents.last_mut() else {
+                return Ok(cloned);
+            };
+            parent.children.push(cloned);
+            if let Some(next) = parent.remaining.next() {
+                source = next;
+                break;
+            }
+            let parent = parents.pop().expect("open clone parent");
+            cloned = parent.node;
+            *cloned
+                .children_mut()
+                .expect("source has canonical children") = parent.children;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -493,17 +515,26 @@ pub fn is_flow_child_of_flex(children: &[PenNode], target: &NodeId) -> bool {
 /// True when any ancestor of `target` within the forest is also in
 /// `set` — used by `translate_selected` to dedupe a double-shift.
 pub fn is_ancestor_in_set(children: &[PenNode], target: &NodeId, set: &[NodeId]) -> bool {
-    for child in children {
-        if child.id_str() != target.as_str()
-            && descendant_contains(child, target)
-            && set.iter().any(|s| s.as_str() == child.id_str())
-        {
+    if children.is_empty() || set.is_empty() {
+        return false;
+    }
+    let selected: HashSet<&str> = set.iter().map(NodeId::as_str).collect();
+    let mut pending = stack::Stack::<_, 16>::new();
+    pending.push((children.iter(), false));
+    while let Some((siblings, ancestor_selected)) = pending.last_mut() {
+        let Some(node) = siblings.next() else {
+            pending.pop();
+            continue;
+        };
+        if node.id_str() == target.as_str() && *ancestor_selected {
             return true;
         }
-        if let Some(grand) = child.children() {
-            if is_ancestor_in_set(grand, target, set) {
-                return true;
-            }
+        // An ancestor with the target's identical ID was explicitly excluded
+        // by the legacy predicate, including malformed duplicate-ID trees.
+        let inherited = *ancestor_selected
+            || (node.id_str() != target.as_str() && selected.contains(node.id_str()));
+        if let Some(children) = node.children().filter(|children| !children.is_empty()) {
+            pending.push((children.iter(), inherited));
         }
     }
     false
@@ -554,27 +585,31 @@ pub fn translate_editable_subtree(
     parent_is_flex: bool,
     ancestor_in_set: bool,
 ) -> bool {
+    if children.is_empty() || editable.is_empty() || ancestor_in_set {
+        return false;
+    }
     let mut moved = false;
-    for child in children.iter_mut() {
-        let in_set = editable.contains(child.id_str());
-        if in_set && !parent_is_flex && !ancestor_in_set {
-            translate_subtree(child, dx, dy);
-            moved = true;
+    let mut pending = stack::Stack::<_, 16>::new();
+    pending.push((children.iter_mut(), parent_is_flex));
+    while let Some((siblings, parent_is_flex)) = pending.last_mut() {
+        let Some(node) = siblings.next() else {
+            pending.pop();
+            continue;
+        };
+        let in_set = editable.contains(node.id_str());
+        if in_set {
+            if !*parent_is_flex {
+                translate_subtree(node, dx, dy);
+                moved = true;
+            }
+            // All proper descendants are excluded by ancestor-in-set even
+            // when this selected node itself is a flex child and cannot move.
+            continue;
         }
-        let child_is_flex = child.is_auto_layout_container();
-        let child_ancestor_in_set = ancestor_in_set || in_set;
-        if child.children().is_some() {
-            if let Some(grand) = child.children_mut() {
-                if translate_editable_subtree(
-                    grand,
-                    editable,
-                    dx,
-                    dy,
-                    child_is_flex,
-                    child_ancestor_in_set,
-                ) {
-                    moved = true;
-                }
+        if node.children().is_some_and(|children| !children.is_empty()) {
+            let node_is_flex = node.is_auto_layout_container();
+            if let Some(children) = node.children_mut() {
+                pending.push((children.iter_mut(), node_is_flex));
             }
         }
     }
@@ -584,14 +619,27 @@ pub fn translate_editable_subtree(
 /// First duplicate id found in the forest, or `None` when all ids
 /// are unique.
 pub fn find_duplicate(children: &[PenNode], seen: &mut HashSet<String>) -> Option<NodeId> {
-    for child in children {
-        if !seen.insert(child.id_str().to_string()) {
-            return NodeId::new_opt(child.id_str());
-        }
-        if let Some(grand) = child.children() {
-            if let Some(dup) = find_duplicate(grand, seen) {
-                return Some(dup);
+    let mut pending = stack::Stack::<_, 16>::new();
+    if !children.is_empty() {
+        pending.push(children.iter());
+    }
+    while let Some(siblings) = pending.last_mut() {
+        let Some(node) = siblings.next() else {
+            pending.pop();
+            continue;
+        };
+        if !seen.insert(node.id_str().to_string()) {
+            if let Some(id) = NodeId::new_opt(node.id_str()) {
+                return Some(id);
             }
+            // The old recursive call returned None immediately on a duplicate
+            // empty/sentinel ID: skip the rest of exactly this sibling scope,
+            // then let its parent's next sibling continue.
+            pending.pop();
+            continue;
+        }
+        if let Some(children) = node.children().filter(|children| !children.is_empty()) {
+            pending.push(children.iter());
         }
     }
     None
