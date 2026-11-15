@@ -29,7 +29,9 @@ pub trait DocSink: Send {
         parent_id: &NodeId,
     ) -> Option<Vec<String>> {
         // Diff child ids around the apply so immediate sinks report remapped ids.
-        let before = child_ids_under(self.state(), parent_id);
+        let before: std::collections::HashSet<_> = child_ids_under(self.state(), parent_id)
+            .into_iter()
+            .collect();
         let applied = self.apply(EditorCommand::InsertSubtree {
             nodes,
             parent_id: parent_id.clone(),

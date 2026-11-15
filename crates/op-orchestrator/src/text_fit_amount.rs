@@ -131,7 +131,7 @@ pub(super) fn collect_measured_amount_fixes(
     }
     // Re-lay the candidates as single-line hugging text on a scratch copy
     // to read their natural width from the real layout.
-    let mut scratch = state.clone();
+    let mut scratch = state.clone_for_command_simulation();
     for Candidate { text, .. } in &candidates {
         if let Some(id) = text.get("id").and_then(Value::as_str) {
             scratch.apply(EditorCommand::PatchNodeData {
@@ -204,7 +204,7 @@ struct Fit {
 /// estimate's floor).
 fn verify_fitted_sizes(state: &EditorState, single_line: &mut EditorState, fits: &mut [Fit]) {
     const MAX_STEPS: usize = 16;
-    let mut authored = state.clone();
+    let mut authored = state.clone_for_command_simulation();
     for _ in 0..MAX_STEPS {
         for fit in fits.iter() {
             for doc in [&mut *single_line, &mut authored] {

@@ -64,8 +64,8 @@ pub fn apply_image_fallback_policy_to_state(state: &mut EditorState, after_enric
             continue;
         }
         let rects = resolved_rects(state);
-        let roots: Vec<PenNode> = state.active_children().to_vec();
-        let patches: Vec<_> = roots
+        let patches: Vec<_> = state
+            .active_children()
             .iter()
             .flat_map(|root| image_fallback_policy(root, &rects, after_enrich))
             .collect();

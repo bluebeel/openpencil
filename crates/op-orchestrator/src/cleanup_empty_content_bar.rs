@@ -43,14 +43,14 @@ pub(super) fn remove_empty_content_bars(sink: &mut dyn DocSink, root_id: &str) {
     let Some(root_width) = root_value.get("width").and_then(Value::as_f64) else {
         return;
     };
-    let document = {
-        let mut document = sink.state().doc.clone();
-        document.children = sink.state().active_children().to_vec();
-        document.pages = None;
-        document
-    };
-    let variables = document.variables.clone().unwrap_or_default();
-    let theme = op_design_lint::node_util::default_theme(document.themes.as_ref());
+    let empty_variables = op_design_lint::node_util::Variables::new();
+    let variables = sink
+        .state()
+        .doc
+        .variables
+        .as_ref()
+        .unwrap_or(&empty_variables);
+    let theme = op_design_lint::node_util::default_theme(sink.state().doc.themes.as_ref());
     let context = EmptyBarContext {
         root_id,
         root_width,
@@ -58,7 +58,7 @@ pub(super) fn remove_empty_content_bars(sink: &mut dyn DocSink, root_id: &str) {
         theme: &theme,
     };
     let mut ids = Vec::new();
-    collect_candidates(&root_value, None, &[], &context, &mut ids);
+    collect_candidates(&root_value, None, &mut Vec::new(), &context, &mut ids);
     for id in ids {
         sink.apply(EditorCommand::DeleteNode {
             node_id: NodeId::new(id),
@@ -70,7 +70,7 @@ pub(super) fn remove_empty_content_bars(sink: &mut dyn DocSink, root_id: &str) {
 fn collect_candidates<'a>(
     node: &'a Value,
     parent: Option<&'a Value>,
-    ancestors: &[&'a Value],
+    ancestors: &mut Vec<&'a Value>,
     context: &EmptyBarContext<'_>,
     ids: &mut Vec<String>,
 ) {
@@ -81,13 +81,13 @@ fn collect_candidates<'a>(
             }
         }
     }
-    let mut next_ancestors = ancestors.to_vec();
-    next_ancestors.push(node);
+    ancestors.push(node);
     if let Some(children) = node.get("children").and_then(Value::as_array) {
         for child in children {
-            collect_candidates(child, Some(node), &next_ancestors, context, ids);
+            collect_candidates(child, Some(node), ancestors, context, ids);
         }
     }
+    ancestors.pop();
 }
 
 fn is_empty_content_bar(

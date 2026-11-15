@@ -44,9 +44,9 @@ pub(crate) fn enforce(sink: &mut dyn DocSink, plan: &OrchestratorPlan, root_id: 
     }
 
     let Some(children) = section_value
-        .get("children")
-        .and_then(Value::as_array)
-        .cloned()
+        .get_mut("children")
+        .and_then(Value::as_array_mut)
+        .map(std::mem::take)
     else {
         return 0;
     };
@@ -71,14 +71,14 @@ pub(crate) fn enforce(sink: &mut dyn DocSink, plan: &OrchestratorPlan, root_id: 
         .and_then(Value::as_str)
         .unwrap_or(section_id.as_str())
         .to_string();
-    let document = {
-        let mut document = sink.state().doc.clone();
-        document.children = sink.state().active_children().to_vec();
-        document.pages = None;
-        document
-    };
-    let variables = document.variables.clone().unwrap_or_default();
-    let theme = op_design_lint::node_util::default_theme(document.themes.as_ref());
+    let empty_variables = op_design_lint::node_util::Variables::new();
+    let variables = sink
+        .state()
+        .doc
+        .variables
+        .as_ref()
+        .unwrap_or(&empty_variables);
+    let theme = op_design_lint::node_util::default_theme(sink.state().doc.themes.as_ref());
     let mut next_children = children;
     let chosen_original_width = value_at_path_mut(&mut next_children, &media_path)
         .and_then(|media| media.get("width").and_then(Value::as_f64));
@@ -162,7 +162,7 @@ pub(crate) fn enforce(sink: &mut dyn DocSink, plan: &OrchestratorPlan, root_id: 
     };
     if !trailing.is_empty() {
         let wrapper_id = unique_wrapper_id(sink.state(), &section_id);
-        next_children.push(json!({
+        let mut wrapper = json!({
             "type": "frame",
             "id": wrapper_id,
             "name": format!("{original_name} inset"),
@@ -171,8 +171,9 @@ pub(crate) fn enforce(sink: &mut dyn DocSink, plan: &OrchestratorPlan, root_id: 
             "padding": [0, 24],
             "width": "fill_container",
             "height": "fit_content",
-            "children": trailing,
-        }));
+        });
+        wrapper["children"] = Value::Array(trailing);
+        next_children.push(wrapper);
     }
     section_value["children"] = Value::Array(next_children);
     if is_overlay_section && media_path.len() == 1 {
@@ -186,17 +187,18 @@ pub(crate) fn enforce(sink: &mut dyn DocSink, plan: &OrchestratorPlan, root_id: 
         );
     }
 
-    let Ok(patch_json) = serde_json::to_string(&json!({
-        "name": section_value.get("name").cloned().unwrap_or(Value::Null),
-        "padding": section_value
-            .get("padding")
-            .cloned()
-            .unwrap_or(Value::Null),
-        "children": section_value
-            .get("children")
-            .cloned()
-            .unwrap_or(Value::Array(Vec::new())),
-    })) else {
+    let fields = section_value
+        .as_object_mut()
+        .expect("typed section serializes as an object");
+    let mut patch = serde_json::Map::new();
+    for (name, default) in [
+        ("name", Value::Null),
+        ("padding", Value::Null),
+        ("children", Value::Array(Vec::new())),
+    ] {
+        patch.insert(name.into(), fields.remove(name).unwrap_or(default));
+    }
+    let Ok(patch_json) = serde_json::to_string(&Value::Object(patch)) else {
         return 0;
     };
 
@@ -736,21 +738,36 @@ fn unique_wrapper_id(state: &op_editor_core::EditorState, section_id: &str) -> S
 }
 
 pub(super) fn unique_id(state: &op_editor_core::EditorState, base: &str) -> String {
+    if let Some(lookup) = state
+        .trusted_node_lookup(state.active_children())
+        .filter(|lookup| lookup.is_ready())
+    {
+        let mut candidate = base.to_string();
+        let mut suffix = 2;
+        while lookup
+            .find(&candidate, op_editor_core::NodeReadOrder::First)
+            .is_some()
+        {
+            candidate = format!("{base}-{suffix}");
+            suffix += 1;
+        }
+        return candidate;
+    }
     let mut ids = HashSet::new();
     collect_ids(state.active_children(), &mut ids);
     let base = base.to_string();
     let mut candidate = base.clone();
     let mut suffix = 2;
-    while ids.contains(&candidate) {
+    while ids.contains(candidate.as_str()) {
         candidate = format!("{base}-{suffix}");
         suffix += 1;
     }
     candidate
 }
 
-fn collect_ids(nodes: &[PenNode], ids: &mut HashSet<String>) {
+fn collect_ids<'a>(nodes: &'a [PenNode], ids: &mut HashSet<&'a str>) {
     for node in nodes {
-        ids.insert(node.id_str().to_string());
+        ids.insert(node.id_str());
         if let Some(children) = node.children() {
             collect_ids(children, ids);
         }

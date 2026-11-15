@@ -46,6 +46,9 @@ pub struct FigMatrix {
 
 impl FigMatrix {
     pub fn from_value(v: &FigValue) -> Option<FigMatrix> {
+        if !v.is_object() {
+            return None;
+        }
         Some(FigMatrix {
             m00: v.get_f64("m00").unwrap_or(0.0),
             m01: v.get_f64("m01").unwrap_or(0.0),
@@ -54,7 +57,6 @@ impl FigMatrix {
             m11: v.get_f64("m11").unwrap_or(0.0),
             m12: v.get_f64("m12").unwrap_or(0.0),
         })
-        .filter(|_| v.is_object())
     }
 }
 
@@ -111,9 +113,11 @@ pub enum BlobOrString {
 
 impl PartialEq for BlobOrString {
     fn eq(&self, other: &Self) -> bool {
-        match (self.as_bytes(), other.as_bytes()) {
-            (Some(a), Some(b)) => a == b,
-            _ => matches!((self,other),(Self::Str(a),Self::Str(b))if a==b),
+        match (self, other) {
+            (Self::Str(a), Self::Str(b)) => a == b,
+            (Self::Str(_), _) | (_, Self::Str(_)) => false,
+            (Self::Packed(a), Self::Packed(b)) if std::sync::Arc::ptr_eq(a, b) => true,
+            _ => self.as_bytes() == other.as_bytes(),
         }
     }
 }
@@ -127,20 +131,27 @@ impl BlobOrString {
             other => other,
         }
     }
-    pub(crate) fn into_image(self) -> Option<Vec<u8>> {
+    pub(crate) fn is_image(&self) -> bool {
         match self {
             Self::Bytes(bytes) => {
-                let image = bytes.len() > 8
+                bytes.len() > 8
                     && matches!(
                         &bytes[..2],
                         [0x89, 0x50] | [0xff, 0xd8] | [0x47, 0x49] | [0x52, 0x49]
-                    );
-                image.then_some(bytes)
+                    )
             }
-            Self::Packed(bytes) if bytes.image() => {
-                Some(crate::packed_blob::PackedBlob::into_vec(bytes))
-            }
-            _ => None,
+            Self::Packed(bytes) => bytes.image(),
+            Self::Str(_) => false,
+        }
+    }
+    pub(crate) fn into_image(self) -> Option<Vec<u8>> {
+        if !self.is_image() {
+            return None;
+        }
+        match self {
+            Self::Bytes(bytes) => Some(bytes),
+            Self::Packed(bytes) => Some(crate::packed_blob::PackedBlob::into_vec(bytes)),
+            Self::Str(_) => None,
         }
     }
 
@@ -299,6 +310,7 @@ fn decode_binary_parts(
     std::io::Read::read_to_end(&mut schema_chunk.reader(), &mut schema_bytes)
         .map_err(|_| FigFileError::Kiwi(KiwiError::OutOfBounds))?;
     let schema = decode_binary_schema(&schema_bytes).map_err(FigFileError::Kiwi)?;
+    drop(schema_bytes);
     observer(FigImportPhase::Decode);
     let data = crate::container::stream::chunk(&container.parts[1]);
     let (raw, packed) = crate::kiwi::stream::decode_with_blobs(
@@ -308,6 +320,7 @@ fn decode_binary_parts(
         pack,
     )
     .map_err(FigFileError::Kiwi)?;
+    drop(schema);
     observer(FigImportPhase::Extract);
     drop(container.parts);
     let (node_changes, mut blobs) = extract_decoded_root(raw).ok_or(FigFileError::NoNodeChanges)?;
