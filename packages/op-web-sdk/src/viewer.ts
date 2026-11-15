@@ -7,6 +7,7 @@ import type { ViewerEvent } from './events.js';
 import { viewerWheelInput } from './wheel.js';
 
 let canvasSeq = 0;
+const documentDecoder = new TextDecoder();
 
 /** Ensure the canvas element has an id, assigning one if absent. */
 function ensureCanvasId(canvas: HTMLCanvasElement): string {
@@ -16,7 +17,7 @@ function ensureCanvasId(canvas: HTMLCanvasElement): string {
 
 /** Convert a string-or-binary source to UTF-8 text for the wasm load_str call. */
 function toText(src: string | Uint8Array): string {
-  return typeof src === 'string' ? src : new TextDecoder().decode(src);
+  return typeof src === 'string' ? src : documentDecoder.decode(src);
 }
 
 /** Read-only wrapper around the wasm Viewer. Returns typed PenDocument / PenPage snapshots. */
@@ -35,6 +36,7 @@ export class OpViewer {
 
   /** Subscribe to a viewer event. Returns an unsubscribe function. */
   on(event: ViewerEvent, cb: () => void): () => void {
+    this.assertLive();
     return this.emitter.on(event, cb);
   }
 
@@ -101,16 +103,14 @@ export class OpViewer {
   /** Change zoom level while keeping current pan position. */
   setZoom(z: number): void {
     this.assertLive();
-    const c = this.viewport;
-    this.inner.set_viewport(c.panX, c.panY, z);
+    this.inner.set_zoom(z);
     this.emitter.emit('viewportchange');
   }
 
   /** Pan to a new position while keeping current zoom level. */
   panTo(panX: number, panY: number): void {
     this.assertLive();
-    const c = this.viewport;
-    this.inner.set_viewport(panX, panY, c.zoom);
+    this.inner.pan_to(panX, panY);
     this.emitter.emit('viewportchange');
   }
 
@@ -138,9 +138,19 @@ export class OpViewer {
     this.destroyed = true;
     if (this.canvas && this.wheelHandler)
       this.canvas.removeEventListener('wheel', this.wheelHandler);
-    this.inner.detach();
-    this.inner.free();
-    this.emitter.clear();
+    this.canvas = undefined;
+    this.wheelHandler = undefined;
+    // Release the instance and subscriptions even if the canvas backend has
+    // already failed or disappeared during teardown.
+    try {
+      this.inner.detach();
+    } finally {
+      try {
+        this.inner.free();
+      } finally {
+        this.emitter.clear();
+      }
+    }
   }
 
   /** @internal Expose the underlying wasm instance for sub-class access. */
@@ -155,25 +165,36 @@ export async function createViewer(opts: CreateViewerOptions): Promise<OpViewer>
   await ensureWasm(opts.wasmUrl);
   const inner = new WasmViewer();
   const viewer = new OpViewer(inner);
-  if (opts.doc !== undefined) viewer.load(opts.doc);
-  const id = ensureCanvasId(opts.canvas);
-  await inner.attach_canvas(id);
-  // Store canvas reference and attach a non-passive wheel listener to forward
-  // scroll/pinch events to the wasm renderer with cursor-relative coordinates.
-  viewer.canvas = opts.canvas;
-  viewer.wheelHandler = (e: WheelEvent) => {
-    e.preventDefault();
-    const r = opts.canvas.getBoundingClientRect();
-    const wheel = viewerWheelInput(e, r.width, r.height);
-    inner.forward_wheel(
-      wheel.deltaX,
-      wheel.deltaY,
-      wheel.zoom,
-      e.clientX - r.left,
-      e.clientY - r.top,
-    );
-    viewer.emit('viewportchange');
-  };
-  opts.canvas.addEventListener('wheel', viewer.wheelHandler, { passive: false });
-  return viewer;
+  try {
+    if (opts.doc !== undefined) viewer.load(opts.doc);
+    const id = ensureCanvasId(opts.canvas);
+    await inner.attach_canvas(id);
+    // Store canvas reference and attach a non-passive wheel listener to forward
+    // scroll/pinch events to the wasm renderer with cursor-relative coordinates.
+    viewer.canvas = opts.canvas;
+    viewer.wheelHandler = (e: WheelEvent) => {
+      e.preventDefault();
+      const r = opts.canvas.getBoundingClientRect();
+      const wheel = viewerWheelInput(e, r.width, r.height);
+      inner.forward_wheel(
+        wheel.deltaX,
+        wheel.deltaY,
+        wheel.zoom,
+        e.clientX - r.left,
+        e.clientY - r.top,
+      );
+      viewer.emit('viewportchange');
+    };
+    opts.canvas.addEventListener('wheel', viewer.wheelHandler, { passive: false });
+    return viewer;
+  } catch (error) {
+    // Loading or attaching can fail after allocating a complete wasm viewer.
+    // Preserve the original failure while releasing any partial attachment.
+    try {
+      viewer.destroy();
+    } catch {
+      // The original failure is authoritative.
+    }
+    throw error;
+  }
 }

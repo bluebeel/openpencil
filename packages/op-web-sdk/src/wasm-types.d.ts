@@ -14,6 +14,8 @@ declare module 'virtual:op_web_sdk_wasm' {
     mark_dirty(): void;
     push_scene(): void;
     set_viewport(pan_x: number, pan_y: number, zoom: number): void;
+    set_zoom(zoom: number): void;
+    pan_to(pan_x: number, pan_y: number): void;
     zoom_to_fit(w: number, h: number): void;
     forward_wheel(dx: number, dy: number, ctrl_or_meta: boolean, cursor_x: number, cursor_y: number): void;
     document_json(): string;

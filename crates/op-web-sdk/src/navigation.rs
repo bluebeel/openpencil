@@ -42,6 +42,16 @@ impl Viewer {
         self.push_viewport();
     }
 
+    /// Change zoom without serializing the existing viewport through JS.
+    pub fn set_zoom(&mut self, zoom: f32) {
+        self.set_viewport(self.viewport.pan_x, self.viewport.pan_y, zoom);
+    }
+
+    /// Change pan while retaining the current zoom inside the same viewer.
+    pub fn pan_to(&mut self, pan_x: f32, pan_y: f32) {
+        self.set_viewport(pan_x, pan_y, self.viewport.zoom);
+    }
+
     /// Fit the active page's content into a `w × h` canvas (in CSS px).
     ///
     /// Computes the union AABB of all top-level nodes on the active page
