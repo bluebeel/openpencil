@@ -1,6 +1,6 @@
 //! Argument normalization for the `insert_node` write tool.
 
-use std::collections::BTreeMap;
+use std::{borrow::Cow, collections::BTreeMap};
 
 use op_editor_core::default_leaf_node_size;
 use serde_json::Value;
@@ -107,9 +107,10 @@ fn parse_i32_arg(args: &BTreeMap<String, String>, key: &str) -> Result<i32, Tool
 }
 
 fn normalize_node_kind(kind: String) -> String {
-    match kind.as_str() {
-        "rectangle" => "rect".into(),
-        other => other.into(),
+    if kind == "rectangle" {
+        "rect".into()
+    } else {
+        kind
     }
 }
 
@@ -127,7 +128,15 @@ fn json_i32_field(
             )
         });
     };
-    let Some(raw) = json_scalar_to_string(value) else {
+    // String dimensions parse from the original buffer; numeric/bool wire
+    // spellings retain their old decimal-i32 parsing and error messages.
+    let raw = match value {
+        Value::String(raw) => Some(Cow::Borrowed(raw.as_str())),
+        Value::Number(raw) => Some(Cow::Owned(raw.to_string())),
+        Value::Bool(raw) => Some(Cow::Owned(raw.to_string())),
+        _ => None,
+    };
+    let Some(raw) = raw else {
         return Err(ToolOutcome::Err(
             ToolErrorCode::InvalidArgument,
             format!("data.{key} must be a string or number"),

@@ -152,8 +152,15 @@ fn walk_dump(node: &PenNode, depth: usize, lines: &mut Vec<String>) {
 
     // text-specific fields
     if let PenNode::Text(t) = node {
-        if let Some(fs) = t.font_size {
-            props.push(format!("fontSize={fs}"));
+        if let Some(fs) = &t.font_size {
+            props.push(match fs {
+                jian_ops_schema::node::NumberOrExpression::Number(value) => {
+                    format!("fontSize={value}")
+                }
+                jian_ops_schema::node::NumberOrExpression::Expression(value) => {
+                    format!("fontSize={value:?}")
+                }
+            });
         }
         if let Some(fw) = &t.font_weight {
             props.push(format!("fontWeight={}", format_font_weight(fw)));
@@ -434,8 +441,8 @@ fn first_stroke_color(stroke: &PenStroke) -> Option<&str> {
 fn stroke_thickness_value(thickness: &StrokeThickness) -> f32 {
     // TS: `typeof s.thickness === 'number' ? s.thickness : Array.isArray ? s.thickness[0] : 0`
     match thickness {
-        StrokeThickness::Uniform(v) => *v,
-        StrokeThickness::PerSide(arr) => arr[0],
+        StrokeThickness::Uniform(v) => *v as f32,
+        StrokeThickness::PerSide(arr) => arr[0] as f32,
         StrokeThickness::Sided(_) => 0.0,
     }
 }

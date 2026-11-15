@@ -224,8 +224,8 @@ fn repeated_struct_instances_share_schema_object_keys() {
 
     assert_eq!(first[0].0.as_ref(), "x");
     assert_eq!(second[0].0.as_ref(), "x");
-    assert!(Arc::ptr_eq(&first[0].0, &second[0].0));
-    assert!(Arc::ptr_eq(&first[1].0, &second[1].0));
+    assert!(FigKey::ptr_eq(&first[0].0, &second[0].0));
+    assert!(FigKey::ptr_eq(&first[1].0, &second[1].0));
 }
 
 #[test]
@@ -292,10 +292,16 @@ fn truncated_buffer_errors() {
 
 #[test]
 fn mutable_object_and_array_lookups_update_in_place() {
-    let mut value = FigValue::Object(vec![
-        ("items".into(), FigValue::Array(vec![FigValue::Uint(1)])),
-        ("missing".into(), FigValue::Null),
-    ]);
+    let mut value = FigValue::Object(
+        vec![
+            (
+                "items".into(),
+                FigValue::Array(vec![FigValue::Uint(1)].into()),
+            ),
+            ("missing".into(), FigValue::Null),
+        ]
+        .into(),
+    );
 
     value
         .get_array_mut("items")

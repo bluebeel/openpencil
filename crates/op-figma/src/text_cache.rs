@@ -2,6 +2,11 @@
 
 use crate::kiwi::FigValue;
 
+#[path = "text_cache/evidence.rs"]
+pub(crate) mod evidence;
+#[path = "text_cache/layout.rs"]
+pub(crate) mod layout;
+
 /// Drop decoded layout caches after they have served style resolution.
 ///
 /// Figma repeats glyph, baseline, and font metadata under both direct
@@ -12,6 +17,16 @@ use crate::kiwi::FigValue;
 /// compact semantic payload in nested entries.
 pub(crate) fn compact_transient_text_caches(node_changes: &mut [FigValue]) {
     for node in node_changes {
+        let saved_layout = layout::has_unordered_list(node)
+            .then(|| node.get("derivedTextData"))
+            .flatten()
+            .and_then(|cache| evidence::TextEvidence::from_cache(cache).layout.clone());
+        if let Some(mut saved) = saved_layout {
+            saved.source_size = node
+                .get("size")
+                .and_then(|size| Some((size.get_f64("x")?, size.get_f64("y")?)));
+            node.set(layout::PRESERVED_TEXT_LAYOUT, FigValue::TextLayout(saved));
+        }
         let FigValue::Object(fields) = node else {
             continue;
         };
@@ -32,6 +47,9 @@ pub(crate) fn compact_transient_text_caches(node_changes: &mut [FigValue]) {
 
 fn compact_instance_text_caches(value: &mut FigValue) {
     match value {
+        FigValue::Deferred(deferred) => {
+            crate::kiwi::deferred::Deferred::map(deferred, 0, compact_instance_text_caches)
+        }
         FigValue::Array(values) => {
             for value in values {
                 compact_instance_text_caches(value);
@@ -82,33 +100,35 @@ mod tests {
             ("characters", FigValue::Str("Updated".into())),
             (
                 "glyphs",
-                FigValue::Array(vec![object(vec![("fontSize", FigValue::Float(16.0))])]),
+                FigValue::Array(vec![object(vec![("fontSize", FigValue::Float(16.0))])].into()),
             ),
             (
                 "fontMetaData",
-                FigValue::Array(vec![object(vec![(
-                    "family",
-                    FigValue::Str("Inter".into()),
-                )])]),
+                FigValue::Array(
+                    vec![object(vec![("family", FigValue::Str("Inter".into()))])].into(),
+                ),
             ),
         ]);
         let marker = object(vec![(
             "glyphs",
-            FigValue::Array(vec![object(vec![("fontSize", FigValue::Float(12.0))])]),
+            FigValue::Array(vec![object(vec![("fontSize", FigValue::Float(12.0))])].into()),
         )]);
         let mut changes = vec![object(vec![
             ("derivedTextData", marker.clone()),
             ("legacyDerivedTextData", marker.clone()),
             (
                 "derivedSymbolData",
-                FigValue::Array(vec![
-                    object(vec![
-                        ("size", object(vec![("x", FigValue::Float(10.0))])),
-                        ("derivedTextData", with_characters),
-                        ("legacyDerivedTextData", marker.clone()),
-                    ]),
-                    object(vec![("derivedTextData", marker)]),
-                ]),
+                FigValue::Array(
+                    vec![
+                        object(vec![
+                            ("size", object(vec![("x", FigValue::Float(10.0))])),
+                            ("derivedTextData", with_characters),
+                            ("legacyDerivedTextData", marker.clone()),
+                        ]),
+                        object(vec![("derivedTextData", marker)]),
+                    ]
+                    .into(),
+                ),
             ),
         ])];
 
@@ -133,5 +153,67 @@ mod tests {
         assert!(entries[1]
             .get("derivedTextData")
             .is_some_and(FigValue::is_object));
+    }
+    #[test]
+    fn only_authored_lists_keep_compact_line_geometry_after_style_resolution() {
+        let mut evidence = evidence::TextEvidence::default();
+        evidence.layout = Some(Box::new(layout::SavedTextLayout {
+            baselines: vec![layout::SavedBaseline {
+                x: 24.0,
+                y: 17.5,
+                line_y: 0.0,
+                line_height: 24.0,
+                first: 0,
+                end: 4,
+            }],
+            markers: vec![layout::SavedMarker {
+                x: 9.25,
+                y: 17.5,
+                font_size: 16.0,
+            }],
+            source_size: None,
+        }));
+        let make_node = |line_type: &str| {
+            object(vec![
+                (
+                    "size",
+                    object(vec![
+                        ("x", FigValue::Float(100.0)),
+                        ("y", FigValue::Float(24.0)),
+                    ]),
+                ),
+                (
+                    "textData",
+                    object(vec![
+                        ("characters", FigValue::Str("List".into())),
+                        (
+                            "lines",
+                            FigValue::Array(
+                                vec![object(vec![("lineType", FigValue::Str(line_type.into()))])]
+                                    .into(),
+                            ),
+                        ),
+                    ]),
+                ),
+                (
+                    "derivedTextData",
+                    FigValue::TextEvidence(Box::new(evidence.clone())),
+                ),
+            ])
+        };
+        let mut nodes = vec![make_node("UNORDERED_LIST"), make_node("PLAIN")];
+        compact_transient_text_caches(&mut nodes);
+        let FigValue::TextLayout(saved) = nodes[0].get(layout::PRESERVED_TEXT_LAYOUT).unwrap()
+        else {
+            panic!("typed line layout expected");
+        };
+        assert_eq!(saved.baselines.len(), 1);
+        assert_eq!(saved.markers.len(), 1);
+        assert_eq!(saved.source_size, Some((100.0, 24.0)));
+        assert!(nodes[0].get("derivedTextData").is_none());
+        assert!(
+            nodes[1].get(layout::PRESERVED_TEXT_LAYOUT).is_none(),
+            "ordinary text does not retain layout records"
+        );
     }
 }

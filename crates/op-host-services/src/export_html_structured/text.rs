@@ -60,6 +60,9 @@ pub fn emit(out: &mut String, n: &SceneNode, rect: Rect) {
 
     let mut style = String::new();
     css::place(&mut style, rect);
+    if n.fill_disabled {
+        css::decl(&mut style, "visibility", "hidden");
+    }
     css::decl(
         &mut style,
         "font-size",
@@ -175,6 +178,11 @@ fn is_char_boundary_pair(text: &str, start: usize, end: usize) -> bool {
 /// omitted declaration already does.
 fn run_style(run: &SceneTextRun) -> String {
     let mut style = String::new();
+    if run.fill_disabled {
+        css::decl(&mut style, "visibility", "hidden");
+    } else if run.fill.is_some() {
+        css::decl(&mut style, "visibility", "visible");
+    }
     if run.font_size > 0.0 {
         css::decl(
             &mut style,

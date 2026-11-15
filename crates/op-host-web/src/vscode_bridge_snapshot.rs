@@ -1,10 +1,8 @@
 //! VS Code bridge document snapshot with separate sync and disk representations.
 //!
-//! Live sync hashes the typed `PenDocument` bytes plus editor metadata as
-//! separate fields. The extension's on-disk snapshot embeds the same metadata
-//! into `editorMeta`. Keeping those representations separate prevents the
-//! bridge from poisoning the periodic-sync baseline with differently shaped
-//! JSON and triggering a redundant whole-document push.
+//! Live sync and disk snapshots both carry the same captured editor metadata.
+//! This keeps catalog labels/prototypes authoritative across a bridge save,
+//! and hashes the same inline representation as the periodic sync path.
 
 use std::rc::Rc;
 
@@ -21,10 +19,15 @@ pub(super) struct BridgeDocumentSnapshot {
 
 impl BridgeDocumentSnapshot {
     pub(super) fn capture(state: &EditorState) -> Option<Self> {
+        let editor_meta = EditorMeta::from_state(state);
+        let document_json = serde_json::to_string(
+            &op_pen_loader::InlineEditorDocument::with_metadata(&state.doc, &editor_meta),
+        )
+        .ok()?;
         Some(Self {
             pair: (state.document_generation(), state.document_revision()),
-            document_json: serde_json::to_string(&state.doc).ok()?.into(),
-            editor_meta: EditorMeta::from_state(state),
+            document_json: document_json.into(),
+            editor_meta,
         })
     }
 
@@ -93,6 +96,7 @@ mod tests {
                 pinned_style_guide: None,
                 share_recipe: None,
                 imported_from: None,
+                component_catalog: None,
             })
         );
     }

@@ -64,6 +64,7 @@ fn parse_sizing(v: &Value) -> Option<SizingBehavior> {
 
 fn solid_fill_from_hex(hex: &str) -> Vec<PenFill> {
     vec![PenFill::Solid(SolidFillBody {
+        enabled: None,
         color: hex.to_string(),
         explain: None,
         opacity: None,
@@ -82,7 +83,7 @@ fn parse_interactivity(
 ) -> (
     Option<jian_ops_schema::state::StateSchema>,
     Option<jian_ops_schema::events::Bindings>,
-    Option<jian_ops_schema::events::EventHandlers>,
+    Option<Box<jian_ops_schema::events::EventHandlers>>,
 ) {
     let state = obj
         .get("state")
@@ -240,6 +241,7 @@ fn build_container_node(
         width,
         height,
         layout,
+        preserve_geometry: None,
         gap,
         padding,
         justify_content,
@@ -327,7 +329,9 @@ fn build_text_node(
         .map(|s| TextContent::Plain(s.to_string()))
         .unwrap_or_else(|| TextContent::Plain(String::new()));
 
-    let font_size = obj.get("fontSize").and_then(|v| v.as_f64());
+    let font_size = obj.get("fontSize").and_then(|value| {
+        serde_json::from_value::<jian_ops_schema::node::NumberOrExpression>(value.clone()).ok()
+    });
     let font_weight = obj
         .get("fontWeight")
         .and_then(|v| v.as_u64())
@@ -341,6 +345,8 @@ fn build_text_node(
     let (state, bindings, events) = parse_interactivity(obj);
 
     Some(PenNode::Text(TextNode {
+        font_features: None,
+        font_kerning: None,
         base,
         width,
         height,
@@ -356,6 +362,7 @@ fn build_text_node(
         text_growth: None,
         underline: None,
         strikethrough: None,
+        text_decoration_skip_ink: None,
         fill,
         effects: None,
         state,
@@ -413,7 +420,7 @@ fn build_path_node(
     //   if (icon.style === 'stroke') { stroke = ...; fill = [] }
     //   else { fill = [solid(color)] }
     // Without icon resolution we default to stroke style.
-    let stroke = Some(PenStroke {
+    let stroke = Some(PenStroke::from(jian_ops_schema::style::PenStrokeBody {
         thickness: StrokeThickness::Uniform(2.0),
         align: None,
         join: None,
@@ -421,11 +428,12 @@ fn build_path_node(
         dash_pattern: None,
         dash_offset: None,
         fill: Some(solid_fill_from_hex(&color)),
-    });
+    }));
 
     let (state, bindings, events) = parse_interactivity(obj);
 
     Some(PenNode::Path(PathNode {
+        view_box: None,
         base,
         icon_id: None, // TODO: icon resolver
         d: None,       // TODO: icon resolver

@@ -4,7 +4,6 @@ use crate::image_fallback_policy::image_fallback_policy;
 use crate::map_placeholder::map_placeholder;
 use crate::repair_summary::{CheckCategory, RepairCounter, RepairSummary};
 use crate::types::DocSink;
-use jian_ops_schema::node::PenNode;
 use op_editor_core::{first_solid_fill_hex, walkers, EditorCommand, NodeId};
 
 #[path = "map_template_geometry.rs"]
@@ -68,8 +67,9 @@ pub(super) fn repair_image_fallback_policy(
     counter: &mut RepairCounter,
 ) {
     let rects = crate::image_fallback_policy::resolved_rects(sink.state());
-    let roots: Vec<PenNode> = sink.state().active_children().to_vec();
-    let patches: Vec<_> = roots
+    let patches: Vec<_> = sink
+        .state()
+        .active_children()
         .iter()
         .flat_map(|root| image_fallback_policy(root, &rects, false))
         .collect();

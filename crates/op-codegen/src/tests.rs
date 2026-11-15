@@ -62,6 +62,7 @@ fn axis(name: &str, value: &str) -> BTreeMap<String, String> {
 
 fn solid(color: &str) -> Vec<PenFill> {
     vec![PenFill::Solid(SolidFillBody {
+        enabled: None,
         color: color.into(),
         explain: None,
         opacity: None,
@@ -126,6 +127,8 @@ fn ellipse(id: &str, x: f64, y: f64, w: f64, h: f64) -> PenNode {
 
 fn text(id: &str, x: f64, y: f64, w: f64, h: f64, body: &str) -> PenNode {
     PenNode::Text(TextNode {
+        font_features: None,
+        font_kerning: None,
         base: PenNodeBase {
             id: id.into(),
             x: Some(x),
@@ -146,6 +149,7 @@ fn text(id: &str, x: f64, y: f64, w: f64, h: f64, body: &str) -> PenNode {
         text_growth: None,
         underline: None,
         strikethrough: None,
+        text_decoration_skip_ink: None,
         fill: None,
         effects: None,
         state: None,

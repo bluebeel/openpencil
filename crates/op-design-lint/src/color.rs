@@ -29,15 +29,20 @@ pub fn parse_hex_color(s: &str) -> Option<Rgb> {
 
 /// WCAG 2.x relative luminance for sRGB. Returns 0.0–1.0.
 pub fn relative_luminance(c: Rgb) -> f64 {
-    fn lin(v: u8) -> f64 {
-        let s = v as f64 / 255.0;
-        if s <= 0.039_28 {
-            s / 12.92
-        } else {
-            ((s + 0.055) / 1.055).powf(2.4)
-        }
-    }
-    0.2126 * lin(c.r) + 0.7152 * lin(c.g) + 0.0722 * lin(c.b)
+    // This is the same original floating-point formula, evaluated once for
+    // each of its 256 possible channel inputs on the current platform.
+    // Fixed 2 KiB storage; no input/scene/font identity is retained.
+    static LINEAR: std::sync::LazyLock<[f64; 256]> = std::sync::LazyLock::new(|| {
+        std::array::from_fn(|index| {
+            let s = index as f64 / 255.0;
+            if s <= 0.039_28 {
+                s / 12.92
+            } else {
+                ((s + 0.055) / 1.055).powf(2.4)
+            }
+        })
+    });
+    0.2126 * LINEAR[c.r as usize] + 0.7152 * LINEAR[c.g as usize] + 0.0722 * LINEAR[c.b as usize]
 }
 
 /// WCAG relative-luminance contrast ratio between two color strings.
@@ -51,6 +56,9 @@ pub fn color_contrast(a: &str, b: &str) -> f64 {
     let (Some(pa), Some(pb)) = (parse_hex_color(a), parse_hex_color(b)) else {
         return f64::INFINITY;
     };
+    if pa == pb {
+        return 1.0;
+    }
     let lum_a = relative_luminance(pa);
     let lum_b = relative_luminance(pb);
     let lighter = lum_a.max(lum_b);

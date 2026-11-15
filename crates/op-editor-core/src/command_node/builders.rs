@@ -149,6 +149,8 @@ pub fn build_leaf_node(
             route: None,
         }),
         "text" => PenNode::Text(TextNode {
+            font_features: None,
+            font_kerning: None,
             base,
             width: Some(w),
             height: Some(h),
@@ -164,6 +166,7 @@ pub fn build_leaf_node(
             text_growth: None,
             underline: None,
             strikethrough: None,
+            text_decoration_skip_ink: None,
             fill: None,
             effects: None,
             state: None,
@@ -176,6 +179,7 @@ pub fn build_leaf_node(
             limits: Default::default(),
         }),
         "path" => PenNode::Path(PathNode {
+            view_box: None,
             base,
             icon_id: None,
             d: None,

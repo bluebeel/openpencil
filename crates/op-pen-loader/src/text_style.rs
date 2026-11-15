@@ -25,6 +25,7 @@ pub(crate) fn apply_text_content(p: &mut NodePayload, n: &TextNode) {
     p.italic = matches!(n.font_style, Some(NodeFontStyle::Italic));
     p.underline = n.underline.unwrap_or(false);
     p.strikethrough = n.strikethrough.unwrap_or(false);
+    p.text_decoration_skip_ink = n.text_decoration_skip_ink;
     match &n.content {
         TextContent::Plain(s) => {
             p.text = Some(s.clone());
@@ -35,12 +36,19 @@ pub(crate) fn apply_text_content(p: &mut NodePayload, n: &TextNode) {
                 .iter()
                 .map(|seg| TextRunPayload {
                     text: seg.text.clone(),
-                    font_size: seg.font_size.unwrap_or(0.0).max(0.0),
+                    font_size: (seg.font_size.unwrap_or(0.0) as f32).max(0.0),
                     font_weight: seg
                         .font_weight
                         .map(|w| w.min(u16::MAX as u32) as u16)
                         .unwrap_or(0),
-                    fill: seg.fill.as_deref().and_then(parse_color),
+                    fill: match seg.fill_paints.as_deref() {
+                        Some(fills) => fills
+                            .iter()
+                            .find_map(crate::style_payload::fill_fallback_color),
+                        None => seg.fill.as_deref().and_then(parse_color),
+                    },
+                    fill_paints: seg.fill_paints.clone(),
+                    fill_disabled: crate::style_payload::disabled_fills(seg.fill_paints.as_deref()),
                     italic: seg
                         .font_style
                         .as_ref()
@@ -48,8 +56,40 @@ pub(crate) fn apply_text_content(p: &mut NodePayload, n: &TextNode) {
                         .unwrap_or(p.italic),
                     underline: seg.underline.unwrap_or(p.underline),
                     strikethrough: seg.strikethrough.unwrap_or(p.strikethrough),
+                    text_decoration_skip_ink: seg
+                        .text_decoration_skip_ink
+                        .or(p.text_decoration_skip_ink),
                 })
                 .collect();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn decoration_skip_ink_inherits_node_and_preserves_segment_false() {
+        let node: TextNode = serde_json::from_value(serde_json::json!({
+            "id":"text", "textDecorationSkipInk":true,
+            "content":[{"text":"A", "textDecorationSkipInk":false}, {"text":"é"}]
+        }))
+        .unwrap();
+        let mut payload = crate::style_payload::base_payload(&node.base, "text");
+        apply_text_content(&mut payload, &node);
+        assert_eq!(payload.text.as_deref(), Some("Aé"));
+        assert_eq!(payload.text_decoration_skip_ink, Some(true));
+        assert_eq!(
+            payload
+                .text_runs
+                .iter()
+                .map(|r| r.text_decoration_skip_ink)
+                .collect::<Vec<_>>(),
+            vec![Some(false), Some(true)]
+        );
+        let legacy: TextNode =
+            serde_json::from_value(serde_json::json!({"id":"old","content":"legacy"})).unwrap();
+        apply_text_content(&mut payload, &legacy);
+        assert_eq!(payload.text_decoration_skip_ink, None);
     }
 }

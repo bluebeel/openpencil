@@ -10,6 +10,10 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct StrokePayload {
+    /// Retained only when the legacy one-solid/default-style projection loses
+    /// paint layers or stroke styling. Canonical fields remain fully typed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<Box<jian_ops_schema::style::PenStrokeBody>>,
     /// The stroke's resolved solid paint, or `None` when the author declared
     /// a stroke with no resolvable colour at all (`"stroke": {"thickness": 1}`
     /// with no `fill` key, `"fill": []`, or a gradient with no usable stops).
@@ -46,12 +50,19 @@ pub struct TextRunPayload {
     pub font_weight: u16,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fill: Option<[f32; 4]>,
+    /// None inherits legacy/node paint; Some(empty) explicitly paints nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fill_paints: Option<Vec<jian_ops_schema::style::PenFill>>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub fill_disabled: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub italic: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub underline: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub strikethrough: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text_decoration_skip_ink: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
@@ -142,6 +153,8 @@ pub struct ShaderUniformPayload {
 /// visible colour.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ShaderPayload {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gradient: Option<Box<jian_ops_schema::style::GradientPaint>>,
     pub sksl: String,
     #[serde(default)]
     pub uniforms: Vec<ShaderUniformPayload>,

@@ -19,6 +19,9 @@ use jian_ops_schema::PenDocument;
 #[path = "web_sync_error.rs"]
 mod web_sync_error;
 pub use web_sync_error::WebSyncError;
+#[path = "web_sync_committed.rs"]
+pub(crate) mod committed;
+pub use committed::{CommittedFeedError, CommittedMetadata};
 
 /// A whole-document live-sync payload plus editor-only view state carried by
 /// the response wrapper. These fields intentionally stay outside
@@ -27,6 +30,7 @@ pub use web_sync_error::WebSyncError;
 pub struct WebSyncDocument {
     pub document: PenDocument,
     pub version: u64,
+    pub change_cursor: Option<String>,
     pub active_page_index: usize,
     pub preserve_authored_geometry: bool,
     /// The document's scene tag (`"slides"` marks a deck), when the daemon
@@ -34,6 +38,7 @@ pub struct WebSyncDocument {
     /// means "unknown", not "no scenario", so appliers keep their current
     /// value rather than clearing it.
     pub scenario: Option<crate::scene_template_catalog::TemplateScene>,
+    pub component_catalog: Option<crate::ComponentCatalog>,
 }
 
 #[derive(Debug, Default, serde::Deserialize)]
@@ -60,6 +65,10 @@ struct WireEditorMeta {
 pub struct WebSyncClient {
     applied_version: u64,
     initialized: bool,
+    /// Cursor belongs only to the exact document/version successfully applied.
+    change_cursor: Option<String>,
+    change_authority: Option<String>,
+    force_snapshot: bool,
     /// FNV-1a hash of the last document serialization this client either
     /// applied from the daemon or successfully pushed to it. `None` until the
     /// first sync — pushes are gated on `initialized` (daemon is the document
@@ -135,7 +144,7 @@ impl WebSyncClient {
             .and_then(serde_json::Value::as_u64)
             .ok_or(WebSyncError::MissingVersion)?;
         // Already up to date (and past the first sync) → nothing to apply.
-        if self.initialized && version <= self.applied_version {
+        if self.initialized && !self.force_snapshot && version <= self.applied_version {
             return Ok(None);
         }
         let document = value.get("document").ok_or(WebSyncError::MissingDocument)?;
@@ -143,6 +152,13 @@ impl WebSyncClient {
             .get("editorMeta")
             .and_then(|meta| serde_json::from_value::<WireEditorMeta>(meta.clone()).ok())
             .unwrap_or_default();
+        let component_catalog = document
+            .get("editorMeta")
+            .and_then(|meta| meta.get("componentCatalog"))
+            .filter(|value| !value.is_null())
+            .map(|value| serde_json::from_value::<crate::ComponentCatalog>(value.clone()))
+            .transpose()
+            .map_err(|error| WebSyncError::DocumentParse(error.to_string()))?;
         let active_page_index = value
             .get("activePageIndex")
             .and_then(serde_json::Value::as_u64)
@@ -163,9 +179,15 @@ impl WebSyncClient {
         Ok(Some(WebSyncDocument {
             document: doc,
             version,
+            change_cursor: value
+                .get("changeCursor")
+                .and_then(serde_json::Value::as_str)
+                .filter(|cursor| committed::valid_cursor(cursor))
+                .map(str::to_owned),
             active_page_index,
             preserve_authored_geometry,
             scenario,
+            component_catalog,
         }))
     }
 
@@ -174,6 +196,8 @@ impl WebSyncClient {
     /// un-committed (and thus retried on the next poll). Prefer [`sync`](Self::sync),
     /// which commits the version atomically and only on success.
     pub fn mark_applied(&mut self, version: u64) {
+        self.change_cursor = None;
+        self.force_snapshot = false;
         self.applied_version = version;
         self.initialized = true;
     }
@@ -222,17 +246,49 @@ impl WebSyncClient {
             Option<crate::scene_template_catalog::TemplateScene>,
         ) -> bool,
     {
+        self.sync_with_component_catalog(
+            body,
+            |doc, version, page, preserve, scenario, _catalog| {
+                apply(doc, version, page, preserve, scenario)
+            },
+        )
+    }
+
+    /// Catalog-aware additive companion; existing callbacks stay compatible.
+    pub fn sync_with_component_catalog<F>(
+        &mut self,
+        body: &str,
+        apply: F,
+    ) -> Result<bool, WebSyncError>
+    where
+        F: FnOnce(
+            PenDocument,
+            u64,
+            usize,
+            bool,
+            Option<crate::scene_template_catalog::TemplateScene>,
+            Option<crate::ComponentCatalog>,
+        ) -> bool,
+    {
         match self.next_document_with_metadata(body)? {
             Some(next) => {
                 let version = next.version;
+                let change_cursor = next.change_cursor;
                 if apply(
                     next.document,
                     version,
                     next.active_page_index,
                     next.preserve_authored_geometry,
                     next.scenario,
+                    next.component_catalog,
                 ) {
                     self.mark_applied(version);
+                    self.change_authority = change_cursor.as_deref().and_then(|cursor| {
+                        cursor
+                            .rsplit_once('.')
+                            .map(|(authority, _)| authority.to_owned())
+                    });
+                    self.change_cursor = change_cursor;
                     Ok(true)
                 } else {
                     Ok(false)
@@ -328,13 +384,68 @@ impl WebSyncClient {
     /// the cheap `GET /api/mcp/version` probe so the (potentially large)
     /// document is only fetched when it actually changed.
     pub fn wants_version(&self, version: u64) -> bool {
-        !self.initialized || version > self.applied_version
+        self.force_snapshot || !self.initialized || version > self.applied_version
     }
 
     /// Parse the `GET /api/mcp/version` probe body (`{"version":N}`).
     pub fn parse_version_probe(body: &str) -> Option<u64> {
         let value: serde_json::Value = serde_json::from_str(body).ok()?;
         value.get("version")?.as_u64()
+    }
+
+    pub fn change_cursor(&self) -> Option<&str> {
+        self.change_cursor.as_deref()
+    }
+    pub fn clear_change_cursor(&mut self) {
+        self.change_cursor = None;
+    }
+    /// Adopt a head cursor only when this exact server version already matches
+    /// our applied snapshot/ack. A newer notification must never advance it.
+    pub fn adopt_change_cursor(&mut self, version: u64, cursor: &str) -> bool {
+        if version != self.applied_version {
+            return false;
+        }
+        self.commit_change_cursor(version, cursor)
+    }
+    /// Commit only after exact delta application and repaint both succeed.
+    /// Failure leaves version/cursor unchanged so the caller can roll back.
+    pub fn commit_change_cursor(&mut self, version: u64, cursor: &str) -> bool {
+        if !self.initialized
+            || self.force_snapshot
+            || version < self.applied_version
+            || !committed::valid_cursor(cursor)
+            || cursor
+                .rsplit('.')
+                .next()
+                .and_then(|value| value.parse::<u64>().ok())
+                != Some(version)
+            || self.change_authority.as_deref()
+                != cursor.rsplit_once('.').map(|(authority, _)| authority)
+        {
+            return false;
+        }
+        self.mark_applied(version);
+        self.change_cursor = Some(cursor.to_owned());
+        true
+    }
+    pub fn require_change_resync(&mut self) {
+        self.change_cursor = None;
+        self.force_snapshot = true;
+    }
+    pub fn change_authority_differs(&self, cursor: &str) -> bool {
+        self.change_authority.as_deref().is_some_and(|known| {
+            cursor
+                .rsplit_once('.')
+                .is_none_or(|(authority, _)| authority != known)
+        })
+    }
+    pub fn parse_change_cursor(body: &str) -> Option<String> {
+        let value: serde_json::Value = serde_json::from_str(body).ok()?;
+        value
+            .get("changeCursor")?
+            .as_str()
+            .filter(|cursor| committed::valid_cursor(cursor))
+            .map(str::to_owned)
     }
 
     /// Record the local serialization of the document JUST applied from the

@@ -2,17 +2,12 @@
 //!
 //! Models `openpencil-shell-core::document`'s `History` +
 //! `DocumentSnapshot` pair, retargeted onto the canonical document
-//! model: a snapshot is a deep copy of the editable subset —
-//! `PenDocument` (which now carries the node tree, pages, variables
-//! and themes) plus the selection and active-page index.
+//! model: snapshots recursively share unchanged document nodes and component
+//! metadata, alongside the selection and active-page index.
 //!
 //! In shell-core the snapshot had a separate `var_table` field because
-//! variables lived outside the node model; here they are part of
-//! `PenDocument`, so cloning the document captures them automatically
-//! (spec §5.2 — single canonical document model, no second table).
-//!
-//! Mutators push onto `past` BEFORE a transactional edit; this task is
-//! types-only (Task 4.5 ports the mutator `impl`s).
+//! variables lived outside the node model; here `PenDocument` carries them
+//! with the canonical document metadata.
 
 use crate::history_snapshot::{SharedComponents, SharedDoc};
 use crate::node_id::NodeId;
@@ -20,6 +15,19 @@ use crate::selection::SelectionState;
 use crate::state::EditorState;
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
+mod actor;
+mod entry;
+mod retention;
+mod scoped;
+pub use actor::{ActorHistoryError, HistoryActor, HistoryTag};
+pub use entry::HistoryEntry;
+pub use retention::{HistoryLimitError, HistoryLimits, HistoryRetentionStatus};
+pub(crate) use scoped::{
+    auxiliary_command_forecast, auxiliary_command_supported, boolean_command_bound,
+    contains_header_token, deletion_command_bound, structural_payload_bound, PendingScopedSnapshot,
+    Scope, SpliceSpec, TargetSpec, TopologyKind, TopologyLocation, TopologyRequest, TopologySpec,
+};
+pub use scoped::{CommittedMetadataApply, ScopedEditorSnapshot, ScopedHistoryError};
 
 /// Document-dependent comparison state. Camera and other view-only state stay
 /// outside history; picking a direction must be undoable as a usable comparison.
@@ -37,7 +45,7 @@ pub const HISTORY_CAP: usize = 100;
 /// Snapshot of the editor state covered by undo / redo.
 ///
 /// Holds a **structurally-shared** view of the canonical document
-/// ([`SharedDoc`] — top-level nodes shared by `Arc` across adjacent
+/// ([`SharedDoc`] — unchanged descendants shared by `Arc` across adjacent
 /// snapshots) and the component prototypes ([`SharedComponents`]) plus
 /// the transient registries whose behavior depends on document edits.
 /// A variable-table edit can therefore be undone the same way a node
@@ -47,8 +55,9 @@ pub const HISTORY_CAP: usize = 100;
 /// `PenDocument` on every restore.
 #[derive(Debug, Clone, PartialEq)]
 pub struct EditorSnapshot {
-    /// The canonical document at snapshot time, shared at top-level-node
-    /// granularity.
+    /// Runtime-only operation ownership; never part of the canonical schema.
+    pub history_tag: HistoryTag,
+    /// The canonical document at snapshot time, shared recursively.
     pub doc: SharedDoc,
     /// Selection at snapshot time.
     pub selection: SelectionState,
@@ -86,8 +95,14 @@ pub struct EditorSnapshot {
 /// O(1) `pop_front` rather than an O(n) `Vec::remove(0)`.
 #[derive(Debug, Clone, Default)]
 pub struct History {
-    pub past: VecDeque<EditorSnapshot>,
-    pub future: VecDeque<EditorSnapshot>,
+    pub past: VecDeque<HistoryEntry>,
+    pub future: VecDeque<HistoryEntry>,
+    actor: Option<HistoryActor>,
+    actor_error: Option<ActorHistoryError>,
+    conflicts: std::collections::BTreeSet<u64>,
+    limits: HistoryLimits,
+    mixed_actors: bool,
+    retention: retention::HistoryRetention,
 }
 
 impl History {
@@ -98,12 +113,12 @@ impl History {
 
     /// True when there is at least one undo entry.
     pub fn can_undo(&self) -> bool {
-        !self.past.is_empty()
+        self.validate_actor(false).is_ok()
     }
 
     /// True when there is at least one redo entry.
     pub fn can_redo(&self) -> bool {
-        !self.future.is_empty()
+        self.validate_actor(true).is_ok()
     }
 }
 
@@ -113,17 +128,54 @@ impl EditorState {
     /// entries are collapsed and revision-only writes gain a recovery snapshot.
     /// The closure must not call undo/redo or reset the
     /// document. A no-op preserves both history stacks, including existing redo.
+    /// If the closure unwinds, history bookkeeping is restored and any changed
+    /// prefix remains undoable as one step before the panic resumes.
     pub fn with_history_group<T>(&mut self, operation: impl FnOnce(&mut Self) -> T) -> T {
-        let before = self.snapshot_for_history();
-        let history = self.history.clone();
-        let result = operation(self);
+        self.with_history_group_anchored(None, operation)
+    }
+
+    pub(crate) fn with_history_group_anchored<T>(
+        &mut self,
+        anchor: Option<&EditorSnapshot>,
+        operation: impl FnOnce(&mut Self) -> T,
+    ) -> T {
+        self.with_history_checkpoint(anchor, |state, _| operation(state))
+    }
+
+    /// The callback receives a checkpoint captured immediately before it runs.
+    /// Only a direct command may forward it to its own rollback path; a nested
+    /// group receives None because an earlier callback may already have edited.
+    pub(crate) fn with_history_checkpoint<T>(
+        &mut self,
+        anchor: Option<&EditorSnapshot>,
+        operation: impl FnOnce(&mut Self, Option<&EditorSnapshot>) -> T,
+    ) -> T {
+        // A containing operation already owns the checkpoint. This also keeps
+        // nested helper groups from repeatedly capturing the same document.
+        if self.undo_capture_suspended {
+            return operation(self, None);
+        }
+        let before = match anchor {
+            Some(anchor) => self.snapshot_for_history_with_anchor(Some(anchor)),
+            None => self.snapshot_for_history(),
+        };
+        let history = std::mem::take(&mut self.history);
+        // Rollback captures inside a command still need its actual current
+        // state. Give them a sharing anchor without exposing the real stacks.
+        self.history.past.push_back(before.clone().into());
+        self.undo_capture_suspended = true;
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            operation(self, Some(&before))
+        }));
+        self.undo_capture_suspended = false;
+        self.history = history;
         if self.revision != before.revision {
-            // Restore the old stacks before pushing the group so reaching the
-            // cap inside a large operation cannot evict unrelated past entries.
-            self.history = history;
             self.history_push_past(before);
         }
-        result
+        match result {
+            Ok(result) => result,
+            Err(panic) => std::panic::resume_unwind(panic),
+        }
     }
 
     /// Snapshot the editor's undoable state without pushing it.
@@ -138,18 +190,27 @@ impl EditorState {
         let anchor = self
             .history
             .future
-            .back()
-            .or_else(|| self.history.past.back());
+            .iter()
+            .rev()
+            .find_map(HistoryEntry::full_snapshot)
+            .or_else(|| {
+                self.history
+                    .past
+                    .iter()
+                    .rev()
+                    .find_map(HistoryEntry::full_snapshot)
+            });
         self.snapshot_for_history_with_anchor(anchor)
     }
 
     /// [`snapshot_for_history`](Self::snapshot_for_history) with an explicit
-    /// adjacent snapshot whose unchanged top-level subtrees may be shared.
+    /// adjacent snapshot whose unchanged descendants may be shared.
     pub fn snapshot_for_history_with_anchor(
         &self,
         anchor: Option<&EditorSnapshot>,
     ) -> EditorSnapshot {
         EditorSnapshot {
+            history_tag: HistoryTag::capture(self.history.actor),
             doc: SharedDoc::capture(&self.doc, anchor.map(|snapshot| &snapshot.doc)),
             selection: self.selection.clone(),
             active_page_index: self.ui.active_page_index,
@@ -168,19 +229,41 @@ impl EditorState {
 
     /// Push a snapshot onto the undo stack, clear redo, and enforce the cap.
     pub fn history_push_past(&mut self, snapshot: EditorSnapshot) {
-        self.history_push_count = self.history_push_count.saturating_add(1);
-        self.history.past.push_back(snapshot);
-        if self.history.past.len() > HISTORY_CAP {
-            self.history.past.pop_front();
+        if self.undo_capture_suspended {
+            self.mark_document_changed();
+            return;
         }
-        self.history.future.clear();
+        self.history_push_entry(snapshot.into());
+    }
+
+    pub(crate) fn history_push_entry(&mut self, entry: HistoryEntry) {
+        self.history_push_count = self.history_push_count.saturating_add(1);
+        self.history.mixed_actors |= entry.history_tag().actor.is_some();
+        self.history.invalidate_redo(&entry, true);
+        self.history.past.push_back(entry);
+        self.history.enforce_retention();
         self.mark_document_changed();
     }
 
     /// Push the current state before a transactional edit.
     pub fn commit_history(&mut self) {
-        let snapshot = self.snapshot_for_history();
-        self.history_push_past(snapshot);
+        let snapshot = self.snapshot_for_undo();
+        self.push_undo(snapshot);
+    }
+
+    /// Capture only for undo storage. Callers that compare or restore a local
+    /// checkpoint must continue using `snapshot_for_history` instead.
+    pub(crate) fn snapshot_for_undo(&self) -> Option<EditorSnapshot> {
+        (!self.undo_capture_suspended).then(|| self.snapshot_for_history())
+    }
+
+    pub(crate) fn push_undo(&mut self, snapshot: Option<EditorSnapshot>) {
+        if let Some(snapshot) = snapshot {
+            self.history_push_past(snapshot);
+        } else {
+            debug_assert!(self.undo_capture_suspended);
+            self.mark_document_changed();
+        }
     }
 
     /// Materialize and restore all undoable editor state from a snapshot.
@@ -243,26 +326,23 @@ impl EditorState {
         workspace.fitted_bounds = None;
     }
 
-    /// Undo the last change. Returns false when the undo stack is empty.
+    /// Undo this actor's latest disjoint edit, or the latest global edit when
+    /// no host actor context is installed. Conflicts never mutate the document.
     pub fn undo(&mut self) -> bool {
-        let Some(previous) = self.history.past.pop_back() else {
-            return false;
-        };
-        let current = self.snapshot_for_history_with_anchor(Some(&previous));
-        self.history.future.push_back(current);
-        self.restore(previous);
-        true
+        self.exchange_history(false)
     }
-
-    /// Redo the last undone change. Returns false when redo is empty.
+    /// Redo this actor's retained branch, preserving unrelated actors' branches.
     pub fn redo(&mut self) -> bool {
-        let Some(next) = self.history.future.pop_back() else {
-            return false;
+        self.exchange_history(true)
+    }
+}
+
+fn rebase_scoped_prefix(entries: &mut VecDeque<HistoryEntry>, generation: u64) {
+    for entry in entries.iter_mut().rev() {
+        let HistoryEntry::Scoped(snapshot) = entry else {
+            break;
         };
-        let current = self.snapshot_for_history_with_anchor(Some(&next));
-        self.history.past.push_back(current);
-        self.restore(next);
-        true
+        ScopedEditorSnapshot::rebase_generation(snapshot, generation);
     }
 }
 
@@ -275,5 +355,69 @@ mod tests {
         let h = History::new();
         assert!(!h.can_undo());
         assert!(!h.can_redo());
+    }
+}
+
+impl EditorSnapshot {
+    /// Heap copied by History::clone; document/component/workspace owners are
+    /// immutable Arc graphs and are accounted separately by the group ledger.
+    pub fn command_clone_bytes(&self) -> usize {
+        let ids = |selection: &SelectionState| {
+            selection.set.len() * std::mem::size_of::<NodeId>()
+                + selection
+                    .set
+                    .iter()
+                    .map(|id| 64 + 8 * id.as_str().len())
+                    .sum::<usize>()
+                + 64
+                + 8 * selection.anchor.as_str().len()
+        };
+        let refs = |map: &HashMap<NodeId, String>| {
+            map.capacity() * (std::mem::size_of::<(NodeId, String)>() + 32) * 2
+                + map
+                    .iter()
+                    .map(|(key, value)| 64 + 8 * (key.as_str().len() + value.len()))
+                    .sum::<usize>()
+        };
+        std::mem::size_of::<Self>()
+            + ids(&self.selection)
+            + refs(&self.fill_refs)
+            + refs(&self.stroke_refs)
+            + self.app_state_owner.len() * 128
+            + self
+                .app_state_owner
+                .keys()
+                .map(|key| 64 + key.len() * 8)
+                .sum::<usize>()
+    }
+    pub fn command_workspace_identity(&self) -> Option<usize> {
+        self.workspace_directions
+            .as_ref()
+            .map(|workspace| Arc::as_ptr(&workspace.variants) as usize)
+    }
+    pub fn command_workspace_retention(
+        &self,
+        limit: usize,
+    ) -> Result<Option<(usize, usize)>, crate::history_snapshot::CaptureSizeError> {
+        let Some(workspace) = &self.workspace_directions else {
+            return Ok(None);
+        };
+        let mut bytes = std::mem::size_of_val(workspace.variants.as_ref());
+        for variant in workspace.variants.iter() {
+            let metadata = (
+                &variant.name,
+                &variant.style_guide,
+                &variant.style_label,
+                &variant.name_prefix,
+                &variant.root_ids,
+                &variant.variables,
+                &variant.themes,
+            );
+            bytes = bytes.saturating_add(crate::history_snapshot::command_capture_value_bytes(
+                &metadata,
+                limit.saturating_sub(bytes),
+            )?);
+        }
+        Ok(Some((Arc::as_ptr(&workspace.variants) as usize, bytes)))
     }
 }

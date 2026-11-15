@@ -35,32 +35,84 @@ pub enum ExportError {
     /// rather than a shared one with a branchy `Display`.
     NothingToCapture,
     /// A named page resolved but contributes no visible pixels.
-    PageEmpty { page_id: String },
+    PageEmpty {
+        page_id: String,
+    },
+    PageNotFound {
+        page_id: String,
+    },
+    RenderWorkerBusy {
+        max_admitted: usize,
+    },
+    SharedWorkBusy,
+    WorkAdmissionCancelled,
+    WorkAdmissionQueueFull {
+        max_queued: usize,
+    },
+    SceneBuildUnavailable,
+    RenderWorkerStart {
+        message: String,
+    },
+    RenderWorkerUnavailable,
+    RenderConsumerReentry,
     /// The requested node id is absent from the scene's active page.
-    NodeNotFoundOnActivePage { node_id: String },
+    NodeNotFoundOnActivePage {
+        node_id: String,
+    },
     /// The requested node id is absent from the explicitly named page.
-    NodeNotFoundOnPage { node_id: String, page_id: String },
+    NodeNotFoundOnPage {
+        node_id: String,
+        page_id: String,
+    },
     /// The node exists but its subtree paints nothing, so there are no
     /// bounds to size a surface from.
-    NodePaintsNothing { node_id: String },
+    NodePaintsNothing {
+        node_id: String,
+    },
     /// The node is hidden; exporting it would produce an empty image, so the
     /// request is refused rather than silently satisfied.
-    NodeHidden { node_id: String },
+    NodeHidden {
+        node_id: String,
+    },
     /// Corrupt bounds or scale produced a non-finite surface size.
     NonFiniteOutputSize,
     /// The requested surface exceeds [`MAX_RASTER_SIDE_PX`] per side or
     /// [`MAX_RASTER_TOTAL_PX`] in total — the guard against a giant
     /// UI-thread allocation.
-    OutputTooLarge { width_px: i64, height_px: i64 },
+    OutputTooLarge {
+        width_px: i64,
+        height_px: i64,
+    },
+    WebpOutputTooLarge {
+        width_px: i64,
+        height_px: i64,
+    },
     /// Skia refused to allocate the offscreen raster surface.
     SurfaceAlloc,
+    UnknownRasterSampling {
+        value: String,
+    },
+    CorrelatedPhysicalSize {
+        width_px: i64,
+        height_px: i64,
+        max_side_px: i64,
+    },
+    CorrelatedWorkingSet {
+        requested_bytes: u64,
+        max_bytes: u64,
+    },
+    PointSampling(op_host_native::raster_sampling::PointSamplingError),
     /// Skia's encoder failed for the requested format ("PNG" / "JPEG" /
     /// "WEBP").
-    Encode { format: &'static str },
+    Encode {
+        format: &'static str,
+    },
     /// The selected build deliberately omits an optional encoder. Mobile
     /// release archives omit WebP, so callers must not fall through to a
     /// generic Skia encode failure.
-    UnsupportedFormat { format: &'static str },
+    UnsupportedFormat {
+        format: &'static str,
+    },
     /// Skia's PDF backend closed the document without emitting any bytes.
     PdfEncoderEmpty,
     /// A multi-node PDF export was asked for an empty id list.
@@ -87,6 +139,22 @@ impl fmt::Display for ExportError {
             ExportError::PageEmpty { page_id } => {
                 write!(f, "page {page_id} has no visible content to export")
             }
+            ExportError::PageNotFound { page_id } => write!(f, "page {page_id} not found"),
+            ExportError::RenderWorkerBusy { max_admitted } => write!(
+                f,
+                "raster renderer is busy ({max_admitted} requests admitted); retry later"
+            ),
+            ExportError::SharedWorkBusy => f.write_str(
+                "shared raster/conversion capacity is busy; retry later"
+            ),
+            ExportError::WorkAdmissionCancelled => f.write_str("render/conversion admission was cancelled"),
+            ExportError::WorkAdmissionQueueFull { max_queued } => write!(f,"render/conversion admission queue is full ({max_queued} pending requests)"),
+            ExportError::SceneBuildUnavailable => f.write_str("the immutable export scene build did not complete; retry the request"),
+            ExportError::RenderWorkerStart { message } => {
+                write!(f, "could not start raster renderer: {message}")
+            }
+            ExportError::RenderWorkerUnavailable => f.write_str("raster renderer is unavailable"),
+            ExportError::RenderConsumerReentry => f.write_str("a raster batch consumer cannot submit nested renderer work"),
             ExportError::NodeNotFoundOnActivePage { node_id } => {
                 write!(f, "node {node_id} not found on the active page")
             }
@@ -112,6 +180,13 @@ impl fmt::Display for ExportError {
                  lower the scale / padding or export a smaller node"
             ),
             ExportError::SurfaceAlloc => f.write_str("alloc surface"),
+            ExportError::WebpOutputTooLarge { width_px, height_px } => write!(
+                f, "WebP output {width_px}x{height_px} px exceeds the codec limit (16383 px per side)"
+            ),
+            ExportError::UnknownRasterSampling { value } => write!(f, "unknown raster sampling {value}; expected native or correlated4x2"),
+            ExportError::CorrelatedPhysicalSize { width_px, height_px, max_side_px } => write!(f, "correlated source {width_px}x{height_px} exceeds the physical edge cap {max_side_px}"),
+            ExportError::CorrelatedWorkingSet { requested_bytes, max_bytes } => write!(f, "correlated raster working set {requested_bytes} bytes exceeds {max_bytes} bytes"),
+            ExportError::PointSampling(error) => error.fmt(f),
             ExportError::Encode { format } => write!(f, "encode {format} failed"),
             ExportError::UnsupportedFormat { format } => {
                 write!(f, "{format} export is not supported by this build")

@@ -24,7 +24,7 @@ use jian_ops_schema::node::{
     PolygonNode, RectangleNode, RefNode, TextContent, TextInputNode, TextNode,
 };
 use jian_ops_schema::style::{PenFill, SolidFillBody};
-use std::collections::HashMap;
+use std::{borrow::Cow, collections::HashMap};
 
 use crate::common::FigLayoutMode;
 use crate::figma_types;
@@ -59,15 +59,15 @@ pub fn is_figma_clipboard_html(html: &str) -> bool {
 ///
 /// Returns `None` on any unrecognised / malformed input.
 pub fn extract_figma_clipboard_data(html: &str) -> Option<FigmaClipboardData> {
-    let (mut meta_b64, mut buf_b64) = (None::<String>, None::<String>);
+    let (mut meta_b64, mut buf_b64) = (None::<Cow<'_, str>>, None::<Cow<'_, str>>);
 
     // Strategy 1: bare comment-wrapped form.
     if let (Some(m), Some(b)) = (
         scan_between(html, "<!--(figmeta)", "<!--(figmeta)-->"),
         scan_between(html, "<!--(figma)", "<!--(figma)-->"),
     ) {
-        meta_b64 = Some(strip_opening_marker(m).trim().to_string());
-        buf_b64 = Some(strip_opening_marker(b).trim().to_string());
+        meta_b64 = Some(Cow::Borrowed(strip_opening_marker(m).trim()));
+        buf_b64 = Some(Cow::Borrowed(strip_opening_marker(b).trim()));
     }
 
     // Strategy 2: `data-metadata` / `data-buffer` attributes — comment
@@ -77,8 +77,12 @@ pub fn extract_figma_clipboard_data(html: &str) -> Option<FigmaClipboardData> {
             scan_attr(html, "data-metadata"),
             scan_attr(html, "data-buffer"),
         ) {
-            meta_b64 = Some(strip_embedded_markers(m, "figmeta").trim().to_string());
-            buf_b64 = Some(strip_embedded_markers(b, "figma").trim().to_string());
+            meta_b64 = Some(Cow::Owned(
+                strip_embedded_markers(m, "figmeta").trim().to_string(),
+            ));
+            buf_b64 = Some(Cow::Owned(
+                strip_embedded_markers(b, "figma").trim().to_string(),
+            ));
         }
     }
 
@@ -88,18 +92,18 @@ pub fn extract_figma_clipboard_data(html: &str) -> Option<FigmaClipboardData> {
             scan_between(html, "&lt;!--(figmeta)--&gt;", "&lt;!--(figmeta)--&gt;"),
             scan_between(html, "&lt;!--(figma)--&gt;", "&lt;!--(figma)--&gt;"),
         ) {
-            meta_b64 = Some(m.trim().to_string());
-            buf_b64 = Some(b.trim().to_string());
+            meta_b64 = Some(Cow::Borrowed(m.trim()));
+            buf_b64 = Some(Cow::Borrowed(b.trim()));
         }
     }
 
     let meta_b64 = meta_b64?;
     let buf_b64 = buf_b64?;
 
-    let meta_raw = String::from_utf8(decode_base64(&meta_b64)?).ok()?;
-    // Trim any trailing padding-induced junk past the JSON object.
-    let json_end = meta_raw.rfind('}').map(|i| i + 1).unwrap_or(meta_raw.len());
-    let meta = meta_raw[..json_end].to_string();
+    let mut meta = String::from_utf8(decode_base64(&meta_b64)?).ok()?;
+    // Keep the decoded allocation; trim padding-induced trailing junk in place.
+    let json_end = meta.rfind('}').map(|i| i + 1).unwrap_or(meta.len());
+    meta.truncate(json_end);
     let buffer = decode_base64(&buf_b64)?;
     Some(FigmaClipboardData { meta, buffer })
 }
@@ -111,7 +115,7 @@ pub fn extract_figma_clipboard_data(html: &str) -> Option<FigmaClipboardData> {
 /// missing color/font hints from inline CSS in the HTML). Mirrors TS
 /// `figmaClipboardToNodes`.
 pub fn figma_clipboard_to_nodes(buffer: &[u8], html: Option<&str>) -> FigmaClipboardResult {
-    let decoded = match figma_types::parse_fig_file(buffer) {
+    let mut decoded = match figma_types::parse_fig_file(buffer) {
         Ok(d) => d,
         Err(e) => {
             return FigmaClipboardResult {
@@ -121,13 +125,13 @@ pub fn figma_clipboard_to_nodes(buffer: &[u8], html: Option<&str>) -> FigmaClipb
             };
         }
     };
-    let image_files = decoded.image_files.clone();
+    let image_files = std::mem::take(&mut decoded.image_files);
     // Clipboard uses the same `preserve` mode the TS clipboard path
     // uses — keeps auto-layout flow + numeric pixel sizes on images.
     let mut out = figma_node_changes_to_pen_nodes(decoded, FigLayoutMode::Preserve);
 
     if !out.image_blobs.is_empty() || !image_files.is_empty() {
-        let mut doc = build_doc_for_resolve(out.nodes.clone());
+        let mut doc = build_doc_for_resolve(std::mem::take(&mut out.nodes));
         resolve_image_blobs_with(&mut doc, &out.image_blobs, &image_files, None);
         out.nodes = extract_doc_children(doc);
     }
@@ -150,27 +154,27 @@ pub fn figma_clipboard_to_nodes(buffer: &[u8], html: Option<&str>) -> FigmaClipb
 /// `\t`, ` `), normalises URL-safe `-` / `_`, accepts missing or
 /// extra `=` padding. Matches TS `decodeBase64ToBytes` accept-set.
 fn decode_base64(input: &str) -> Option<Vec<u8>> {
-    let mut cleaned = String::with_capacity(input.len());
-    for c in input.chars() {
-        if matches!(
-            c,
-            'A'..='Z' | 'a'..='z' | '0'..='9' | '+' | '/' | '-' | '_' | '='
-        ) {
-            // Normalise URL-safe.
-            cleaned.push(match c {
-                '-' => '+',
-                '_' => '/',
-                other => other,
-            });
+    if input
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'='))
+    {
+        return STANDARD_NO_PAD
+            .decode(input.trim_end_matches('=').as_bytes())
+            .ok();
+    }
+    let mut cleaned = Vec::with_capacity(input.len());
+    for byte in input.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'+' | b'/' | b'=' => cleaned.push(byte),
+            b'-' => cleaned.push(b'+'),
+            b'_' => cleaned.push(b'/'),
+            _ => (),
         }
     }
-    // Strip trailing padding so STANDARD_NO_PAD accepts; the engine
-    // handles missing padding fine. Manual trim avoids the decoder
-    // bailing on `==` count mismatches.
-    while cleaned.ends_with('=') {
+    while cleaned.last() == Some(&b'=') {
         cleaned.pop();
     }
-    STANDARD_NO_PAD.decode(cleaned.as_bytes()).ok()
+    STANDARD_NO_PAD.decode(&cleaned).ok()
 }
 
 // ── HTML scanning helpers ───────────────────────────────────────────
@@ -235,14 +239,11 @@ fn css_color_to_hex(css: &str) -> Option<String> {
     }
     let rest = c.strip_prefix("rgba(").or_else(|| c.strip_prefix("rgb("))?;
     let rest = rest.strip_suffix(')')?;
-    let parts: Vec<&str> = rest.split(',').map(|s| s.trim()).collect();
-    if parts.len() < 3 {
-        return None;
-    }
-    let r: u32 = parts[0].parse().ok()?;
-    let g: u32 = parts[1].parse().ok()?;
-    let b: u32 = parts[2].parse().ok()?;
-    if let Some(a_str) = parts.get(3) {
+    let mut parts = rest.split(',').map(str::trim);
+    let r: u32 = parts.next()?.parse().ok()?;
+    let g: u32 = parts.next()?.parse().ok()?;
+    let b: u32 = parts.next()?.parse().ok()?;
+    if let Some(a_str) = parts.next() {
         let a_f: f32 = a_str.parse().ok()?;
         let a = (a_f * 255.0).round() as u32;
         if a < 255 {
@@ -261,8 +262,14 @@ fn decode_html_entities(text: &str) -> String {
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] != b'&' {
-            out.push(bytes[i] as char);
-            i += 1;
+            // Ampersands are ASCII UTF-8 boundaries. Copy an unchanged run,
+            // rather than re-encoding each byte of a multibyte character.
+            let end = bytes[i..]
+                .iter()
+                .position(|byte| *byte == b'&')
+                .map_or(bytes.len(), |n| i + n);
+            out.push_str(&text[i..end]);
+            i = end;
             continue;
         }
         // Numeric entity: &#NN; or &#xHH;
@@ -538,6 +545,7 @@ pub fn fix_unresolved_images(nodes: &mut [PenNode]) {
 
 fn placeholder_fill() -> PenFill {
     PenFill::Solid(SolidFillBody {
+        enabled: None,
         color: "#E5E7EB".to_string(),
         explain: None,
         opacity: None,
@@ -641,6 +649,7 @@ fn enrich_text(t: &mut TextNode, hints: &HashMap<String, HtmlStyleHint>) {
     if t.fill.is_none() {
         if let Some(color) = &hint.color {
             t.fill = Some(vec![PenFill::Solid(SolidFillBody {
+                enabled: None,
                 color: color.clone(),
                 explain: None,
                 opacity: None,
@@ -655,7 +664,7 @@ fn enrich_text(t: &mut TextNode, hints: &HashMap<String, HtmlStyleHint>) {
     }
     if t.font_size.is_none() {
         if let Some(size) = hint.font_size {
-            t.font_size = Some(size);
+            t.font_size = Some(size.into());
         }
     }
     if t.font_weight.is_none() {
@@ -683,6 +692,7 @@ fn enrich_container_bg(
     if let Some(hint) = hints.get(trimmed) {
         if let Some(bg) = &hint.background_color {
             container.fill = Some(vec![PenFill::Solid(SolidFillBody {
+                enabled: None,
                 color: bg.clone(),
                 explain: None,
                 opacity: None,

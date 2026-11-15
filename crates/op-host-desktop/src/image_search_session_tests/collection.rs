@@ -289,12 +289,17 @@ fn apply_result_overwrites_only_url_of_empty_image_fill_rectangle() {
     state.active_children_mut().push(rectangle_node(
         "photo",
         "Album Cover",
-        Some(vec![PenFill::Image(ImageFillBody {
+        Some(vec![PenFill::Image(Box::new(ImageFillBody {
+            enabled: None,
+            geometry: None,
             url: "".into(),
+            thumbnail_url: None,
+            nearest_sampling: None,
             mode: Some(ImageFillMode::Fill),
             original_size: None,
             transform: None,
             tile_scale: Some(2.0),
+            rotation: None,
             explain: None,
             opacity: Some(0.75),
             blend_mode: None,
@@ -305,7 +310,7 @@ fn apply_result_overwrites_only_url_of_empty_image_fill_rectangle() {
             tint: None,
             highlights: None,
             shadows: None,
-        })]),
+        }))]),
     ));
     let revision_before = state.document_revision();
 

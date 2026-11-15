@@ -6,7 +6,9 @@ use jian_ops_schema::style::{PenFill, StrokeThickness};
 fn rectangle_child(name: &str, fill: FigValue) -> TreeNode {
     let mut child = vector_node(name);
     child.figma.set("type", FigValue::Str("RECTANGLE".into()));
-    child.figma.set("fillPaints", FigValue::Array(vec![fill]));
+    child
+        .figma
+        .set("fillPaints", FigValue::Array(vec![fill].into()));
     child
 }
 
@@ -26,11 +28,11 @@ fn empty_boolean(operation: &str) -> TreeNode {
         .set("booleanOperation", FigValue::Str(operation.into()));
     parent.figma.set(
         "fillPaints",
-        FigValue::Array(vec![solid_paint(1.0, 1.0, 1.0)]),
+        FigValue::Array(vec![solid_paint(1.0, 1.0, 1.0)].into()),
     );
     parent.figma.set(
         "strokePaints",
-        FigValue::Array(vec![solid_paint(1.0, 0.0, 0.0)]),
+        FigValue::Array(vec![solid_paint(1.0, 0.0, 0.0)].into()),
     );
     parent.figma.set("strokeWeight", FigValue::Float(3.0));
     parent.children = vec![

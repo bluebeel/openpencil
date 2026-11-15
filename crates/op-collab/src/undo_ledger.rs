@@ -1,10 +1,15 @@
-use std::collections::{BTreeMap, VecDeque};
+use std::{
+    collections::{BTreeMap, VecDeque},
+    io::Write,
+    sync::Arc,
+};
 
 use jian_ops_schema::PenDocument;
 
 use crate::{
-    apply_txn, canonical_node_hash,
-    diff_fields::{apply_changes_to_node, current_field_value},
+    apply::apply_txn_owned,
+    canonical_node_hash,
+    diff_fields::{apply_changes_to_node, node_map},
     diff_index::TreeIndex,
     ApplyContext, ApplyLimits, ClientOpId, CollabOp, CollabTxn, CommitSeq, EditChanges, FieldValue,
     NodeFieldChange, PageRef, PeerId, SessionError, SupportedNodeField,
@@ -12,21 +17,21 @@ use crate::{
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct OperationKey {
-    peer_id: String,
+    peer_id: Arc<str>,
     counter: u64,
 }
 
 impl OperationKey {
     pub(crate) fn from_client_op_id(id: &ClientOpId) -> Self {
         Self {
-            peer_id: id.peer_id.as_ref().to_owned(),
+            peer_id: Arc::from(id.peer_id.as_ref()),
             counter: id.local_counter,
         }
     }
 
     fn client_op_id(&self) -> ClientOpId {
         ClientOpId {
-            peer_id: PeerId::from(self.peer_id.clone()),
+            peer_id: PeerId::from(self.peer_id.to_string()),
             local_counter: self.counter,
         }
     }
@@ -68,7 +73,7 @@ impl FieldKey {
 pub(crate) struct UndoRecord {
     pub(crate) author_peer_id: PeerId,
     pub(crate) seq: CommitSeq,
-    pub(crate) changes: Vec<NodeFieldChange>,
+    pub(crate) changes: Arc<[NodeFieldChange]>,
     pub(crate) undone: bool,
     weight: usize,
 }
@@ -107,7 +112,7 @@ impl UndoLedger {
             let record = UndoRecord {
                 author_peer_id: client_op_id.peer_id.clone(),
                 seq,
-                changes: changes.clone(),
+                changes: Arc::from(changes.as_slice()),
                 undone: false,
                 weight,
             };
@@ -204,11 +209,11 @@ impl UndoLedger {
     ) -> Result<UndoSelection, SessionError> {
         let target_key = OperationKey::from_client_op_id(target);
         let index = TreeIndex::build(document).map_err(SessionError::UndoDiff)?;
-        let preorder = index.preorder.clone();
         let mut reverse_by_node: BTreeMap<String, Vec<NodeFieldChange>> = BTreeMap::new();
         let mut reverted_fields = Vec::new();
+        let mut fields_by_node = BTreeMap::new();
 
-        for change in &record.changes {
+        for change in record.changes.iter() {
             let field_key = FieldKey::from_change(change);
             if self.last_writer.get(&field_key) != Some(&target_key) {
                 continue;
@@ -219,9 +224,19 @@ impl UndoLedger {
             if entry.page != change.page {
                 continue;
             }
-            let current =
-                current_field_value(entry.node, change.field).map_err(SessionError::UndoDiff)?;
-            if current != change.desired {
+            if !fields_by_node.contains_key(change.node_id.as_str()) {
+                fields_by_node.insert(
+                    change.node_id.as_str(),
+                    node_map(entry.node).map_err(SessionError::UndoDiff)?,
+                );
+            }
+            let fields = &fields_by_node[change.node_id.as_str()];
+            let matches = match (&change.desired, fields.get(change.field.wire_name())) {
+                (FieldValue::Missing, None) => true,
+                (FieldValue::Value(expected), Some(actual)) => expected == actual,
+                _ => false,
+            };
+            if !matches {
                 continue;
             }
             reverse_by_node
@@ -238,25 +253,26 @@ impl UndoLedger {
         }
 
         let mut candidate = document.clone();
-        for node_id in preorder {
-            let Some(changes) = reverse_by_node.remove(&node_id) else {
+        for node_id in &index.preorder {
+            let Some(changes) = reverse_by_node.remove(node_id) else {
                 continue;
             };
-            let current_index = TreeIndex::build(&candidate).map_err(SessionError::UndoDiff)?;
-            let entry = current_index.entry(&node_id).ok_or(SessionError::UndoDiff(
+            // Parent-before-descendant header edits preserve this original
+            // target subtree until its own turn; no candidate-wide reindex.
+            let entry = index.entry(node_id).ok_or(SessionError::UndoDiff(
                 crate::DiffError::StructuralPlanningMismatch,
             ))?;
             let replacement =
                 apply_changes_to_node(entry.node, &changes).map_err(SessionError::UndoDiff)?;
             let operation = CollabOp::ReplaceExact {
                 page: entry.page.clone(),
-                node_id,
+                node_id: node_id.clone(),
                 expected_hash: canonical_node_hash(entry.node)?,
                 node: replacement,
             };
             let mut context = ApplyContext::standalone_trusted();
             context.limits = limits;
-            candidate = apply_txn(&candidate, &CollabTxn::new(vec![operation]), &context)
+            candidate = apply_txn_owned(candidate, &CollabTxn::new(vec![operation]), &context)
                 .map_err(SessionError::UndoApply)?;
         }
         debug_assert!(reverse_by_node.is_empty());
@@ -290,7 +306,19 @@ fn value_weight(value: &FieldValue) -> usize {
     match value {
         FieldValue::Missing => 1,
         FieldValue::Value(value) => {
-            serde_json::to_vec(value).map_or(usize::MAX, |bytes| bytes.len())
+            let mut count = ByteCount(0);
+            serde_json::to_writer(&mut count, value).map_or(usize::MAX, |_| count.0)
         }
+    }
+}
+
+struct ByteCount(usize);
+impl Write for ByteCount {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0 = self.0.saturating_add(bytes.len());
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
     }
 }

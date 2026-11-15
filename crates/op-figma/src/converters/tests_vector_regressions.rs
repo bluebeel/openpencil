@@ -96,16 +96,16 @@ fn tesla_brake_expanded_stroke_geometry_is_filled_not_stroked_again() {
     );
     tree.figma.set(
         "strokePaints",
-        FigValue::Array(vec![solid_paint(0.105882354, 0.16862746, 0.3372549)]),
+        FigValue::Array(vec![solid_paint(0.105882354, 0.16862746, 0.3372549)].into()),
     );
     tree.figma.set("strokeWeight", FigValue::Float(2.0));
     tree.figma.set(
         "fillGeometry",
-        FigValue::Array(vec![obj(vec![("commandsBlob", FigValue::Uint(0))])]),
+        FigValue::Array(vec![obj(vec![("commandsBlob", FigValue::Uint(0))])].into()),
     );
     tree.figma.set(
         "strokeGeometry",
-        FigValue::Array(vec![obj(vec![("commandsBlob", FigValue::Uint(1))])]),
+        FigValue::Array(vec![obj(vec![("commandsBlob", FigValue::Uint(1))])].into()),
     );
     let mut ctx = fresh_ctx();
     ctx.blobs = vec![
@@ -147,15 +147,16 @@ fn empty_preferred_geometry_falls_to_network_not_opposite_stream() {
     );
     tree.figma.set(
         "strokePaints",
-        FigValue::Array(vec![solid_paint(0.2, 0.3, 0.4)]),
+        FigValue::Array(vec![solid_paint(0.2, 0.3, 0.4)].into()),
     );
     tree.figma.set("strokeWeight", FigValue::Float(2.0));
     // Preferred (stroke) geometry present but EMPTY; a decodable
     // fillGeometry exists that must NOT be chosen.
-    tree.figma.set("strokeGeometry", FigValue::Array(vec![]));
+    tree.figma
+        .set("strokeGeometry", FigValue::Array(vec![].into()));
     tree.figma.set(
         "fillGeometry",
-        FigValue::Array(vec![obj(vec![("commandsBlob", FigValue::Uint(1))])]),
+        FigValue::Array(vec![obj(vec![("commandsBlob", FigValue::Uint(1))])].into()),
     );
     tree.figma.set(
         "vectorData",
@@ -215,14 +216,14 @@ fn network_fallback_keeps_stroke_despite_nonempty_stroke_geometry() {
     );
     tree.figma.set(
         "strokePaints",
-        FigValue::Array(vec![solid_paint(0.2, 0.3, 0.4)]),
+        FigValue::Array(vec![solid_paint(0.2, 0.3, 0.4)].into()),
     );
     tree.figma.set("strokeWeight", FigValue::Float(2.0));
     // Non-empty strokeGeometry whose commandsBlob is degenerate (4
     // bytes) — decode fails and the vector network takes over.
     tree.figma.set(
         "strokeGeometry",
-        FigValue::Array(vec![obj(vec![("commandsBlob", FigValue::Uint(1))])]),
+        FigValue::Array(vec![obj(vec![("commandsBlob", FigValue::Uint(1))])].into()),
     );
     tree.figma.set(
         "vectorData",
@@ -271,11 +272,11 @@ fn tesla_open_tab_network_does_not_implicitly_close_visible_fill() {
     tree.figma.set("cornerRadius", FigValue::Float(2.0));
     tree.figma.set(
         "fillPaints",
-        FigValue::Array(vec![solid_paint(1.0, 0.0, 0.0)]),
+        FigValue::Array(vec![solid_paint(1.0, 0.0, 0.0)].into()),
     );
     tree.figma.set(
         "strokePaints",
-        FigValue::Array(vec![solid_paint(0.29411766, 0.32941177, 0.4)]),
+        FigValue::Array(vec![solid_paint(0.29411766, 0.32941177, 0.4)].into()),
     );
     tree.figma.set("strokeWeight", FigValue::Float(2.0));
     tree.figma.set(
@@ -343,11 +344,11 @@ fn tesla_empty_tab_booleans_use_their_single_child_real_network() {
         );
         parent.figma.set(
             "fillPaints",
-            FigValue::Array(vec![solid_paint(0.29411766, 0.32941177, 0.4)]),
+            FigValue::Array(vec![solid_paint(0.29411766, 0.32941177, 0.4)].into()),
         );
         parent.figma.set(
             "fillGeometry",
-            FigValue::Array(vec![obj(vec![("commandsBlob", FigValue::Uint(0))])]),
+            FigValue::Array(vec![obj(vec![("commandsBlob", FigValue::Uint(0))])].into()),
         );
 
         let mut child = vector_node("real child Path");
@@ -360,7 +361,7 @@ fn tesla_empty_tab_booleans_use_their_single_child_real_network() {
         );
         child.figma.set(
             "strokePaints",
-            FigValue::Array(vec![solid_paint(0.4, 0.4, 0.4)]),
+            FigValue::Array(vec![solid_paint(0.4, 0.4, 0.4)].into()),
         );
         child.figma.set("strokeWeight", FigValue::Float(2.0));
         child

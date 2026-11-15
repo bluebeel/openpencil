@@ -1,14 +1,13 @@
 //! TS-compatible style operation MCP tools.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use jian_ops_schema::node::base::NumberOrExpression;
 use jian_ops_schema::node::container::{ContainerProps, CornerRadius, Padding};
 use jian_ops_schema::node::{FontWeight, PenNode};
 use jian_ops_schema::style::{PenFill, PenStroke, StrokeThickness};
-use op_editor_core::command_style_replace::replace_matching_properties_in_roots;
+use op_editor_core::command_style_replace::preview_matching_properties_in_roots;
 use op_editor_core::pen_node_ext::PenNodeExt;
-use op_editor_core::walkers::find_node;
 use op_editor_core::{
     EditorCommand, EditorState, NodeId, StylePropValue, StylePropertyReplacement,
 };
@@ -22,71 +21,34 @@ type ToolCallError = (ToolErrorCode, String);
 pub struct SearchAllUniqueProperties {
     pages: Vec<PageNodes>,
     active_page_id: String,
+    prepared: Option<ToolOutcome>,
 }
 
 pub struct ReplaceAllMatchingProperties {
     pages: Vec<PageNodes>,
     active_page_id: String,
+    prepared: Option<ToolOutcome>,
 }
 
 impl McpTool for SearchAllUniqueProperties {
     fn name(&self) -> &str {
         "search_all_unique_properties"
     }
+    fn call_once(mut self: Box<Self>, args: &BTreeMap<String, String>) -> ToolOutcome {
+        match self.prepared.take() {
+            Some(outcome) => outcome,
+            None => self.call(args),
+        }
+    }
 
     fn call(&self, args: &BTreeMap<String, String>) -> ToolOutcome {
-        let page = match self.page_nodes(args) {
-            Ok(page) => page,
-            Err((code, msg)) => return ToolOutcome::Err(code, msg),
-        };
-        let parents = match parse_string_list_arg(args, &["parents"]) {
-            Ok(ids) => ids,
-            Err((code, msg)) => return ToolOutcome::Err(code, msg),
-        };
-        let properties = match parse_properties(args) {
-            Ok(properties) => properties,
-            Err((code, msg)) => return ToolOutcome::Err(code, msg),
-        };
-
-        let mut nodes = Vec::new();
-        for parent_id in parents {
-            let Some(node_id) = NodeId::new_opt(parent_id) else {
-                continue;
-            };
-            if let Some(node) = find_node(&page.roots, &node_id) {
-                collect_descendants(node, &mut nodes);
-            }
+        if let Some(outcome) = &self.prepared {
+            return outcome.clone();
         }
-
-        let mut result = serde_json::Map::new();
-        for property in properties {
-            let mut seen = Vec::<String>::new();
-            let mut values = Vec::<Value>::new();
-            for node in &nodes {
-                let Some(value) = property_value(node, property) else {
-                    continue;
-                };
-                let key = serde_json::to_string(&value).unwrap_or_else(|_| value.to_string());
-                if !seen.iter().any(|existing| existing == &key) {
-                    seen.push(key);
-                    values.push(value);
-                }
-            }
-            result.insert(property.as_str().to_string(), Value::Array(values));
+        match self.page_nodes(args) {
+            Ok(page) => search_properties(&page.roots, args),
+            Err((code, message)) => ToolOutcome::Err(code, message),
         }
-
-        let properties_json = match serde_json::to_string_pretty(&Value::Object(result)) {
-            Ok(json) => json,
-            Err(e) => {
-                return ToolOutcome::Err(
-                    ToolErrorCode::Internal,
-                    format!("serialize style properties failed: {e}"),
-                );
-            }
-        };
-        let mut out = BTreeMap::new();
-        out.insert("properties".into(), properties_json);
-        ToolOutcome::Ok(out)
     }
 }
 
@@ -94,45 +56,99 @@ impl McpTool for ReplaceAllMatchingProperties {
     fn name(&self) -> &str {
         "replace_all_matching_properties"
     }
+    fn call_once(mut self: Box<Self>, args: &BTreeMap<String, String>) -> ToolOutcome {
+        match self.prepared.take() {
+            Some(outcome) => outcome,
+            None => self.call(args),
+        }
+    }
 
     fn call(&self, args: &BTreeMap<String, String>) -> ToolOutcome {
-        let page = match self.page_nodes(args) {
-            Ok(page) => page,
-            Err((code, msg)) => return ToolOutcome::Err(code, msg),
-        };
-        let parent_ids = match parse_parent_node_ids(args) {
-            Ok(ids) => ids,
-            Err((code, msg)) => return ToolOutcome::Err(code, msg),
-        };
-        let replacements = match parse_replacements(args) {
-            Ok(replacements) => replacements,
-            Err((code, msg)) => return ToolOutcome::Err(code, msg),
-        };
-
-        let mut roots = page.roots.clone();
-        let replaced_count =
-            match replace_matching_properties_in_roots(&mut roots, &parent_ids, &replacements) {
-                Ok(count) => count,
-                Err(err) => {
-                    return ToolOutcome::Err(ToolErrorCode::InvalidArgument, err.to_string())
-                }
-            };
-
-        let mut out = BTreeMap::new();
-        out.insert("replacedCount".into(), replaced_count.to_string());
-        if replaced_count == 0 {
-            return ToolOutcome::Ok(out);
+        if let Some(outcome) = &self.prepared {
+            return outcome.clone();
         }
-        let page_id = arg_alias(args, &["pageId", "page_id", "page"]).map(str::to_string);
-        ToolOutcome::OkWithCommand(
-            out,
-            EditorCommand::ReplaceAllMatchingProperties {
-                page_id,
-                parent_ids,
-                replacements,
-            },
-        )
+        match self.page_nodes(args) {
+            Ok(page) => replace_properties(&page.roots, args),
+            Err((code, message)) => ToolOutcome::Err(code, message),
+        }
     }
+}
+
+fn search_properties(roots: &[PenNode], args: &BTreeMap<String, String>) -> ToolOutcome {
+    let parents = match parse_string_list_arg(args, &["parents"]) {
+        Ok(ids) => ids,
+        Err((code, msg)) => return ToolOutcome::Err(code, msg),
+    };
+    let properties = match parse_properties(args) {
+        Ok(properties) => properties,
+        Err((code, msg)) => return ToolOutcome::Err(code, msg),
+    };
+
+    let mut nodes = Vec::new();
+    for node in super::requested_nodes::find(roots, &parents) {
+        collect_descendants(node, &mut nodes);
+    }
+
+    let mut result = serde_json::Map::new();
+    for property in properties {
+        let mut seen = HashSet::<String>::new();
+        let mut values = Vec::<Value>::new();
+        for node in &nodes {
+            let Some(value) = property_value(node, property) else {
+                continue;
+            };
+            let key = serde_json::to_string(&value).unwrap_or_else(|_| value.to_string());
+            if seen.insert(key) {
+                values.push(value);
+            }
+        }
+        result.insert(property.as_str().to_string(), Value::Array(values));
+    }
+
+    let properties_json = match serde_json::to_string_pretty(&Value::Object(result)) {
+        Ok(json) => json,
+        Err(e) => {
+            return ToolOutcome::Err(
+                ToolErrorCode::Internal,
+                format!("serialize style properties failed: {e}"),
+            );
+        }
+    };
+    let mut out = BTreeMap::new();
+    out.insert("properties".into(), properties_json);
+    ToolOutcome::Ok(out)
+}
+
+fn replace_properties(roots: &[PenNode], args: &BTreeMap<String, String>) -> ToolOutcome {
+    let parent_ids = match parse_parent_node_ids(args) {
+        Ok(ids) => ids,
+        Err((code, msg)) => return ToolOutcome::Err(code, msg),
+    };
+    let replacements = match parse_replacements(args) {
+        Ok(replacements) => replacements,
+        Err((code, msg)) => return ToolOutcome::Err(code, msg),
+    };
+
+    let replaced_count =
+        match preview_matching_properties_in_roots(roots, &parent_ids, &replacements) {
+            Ok(count) => count,
+            Err(err) => return ToolOutcome::Err(ToolErrorCode::InvalidArgument, err.to_string()),
+        };
+
+    let mut out = BTreeMap::new();
+    out.insert("replacedCount".into(), replaced_count.to_string());
+    if replaced_count == 0 {
+        return ToolOutcome::Ok(out);
+    }
+    let page_id = arg_alias(args, &["pageId", "page_id", "page"]).map(str::to_string);
+    ToolOutcome::OkWithCommand(
+        out,
+        EditorCommand::ReplaceAllMatchingProperties {
+            page_id,
+            parent_ids,
+            replacements,
+        },
+    )
 }
 
 pub fn search_all_unique_properties_snapshot(state: &EditorState) -> SearchAllUniqueProperties {
@@ -140,6 +156,7 @@ pub fn search_all_unique_properties_snapshot(state: &EditorState) -> SearchAllUn
     SearchAllUniqueProperties {
         pages,
         active_page_id,
+        prepared: None,
     }
 }
 
@@ -150,6 +167,39 @@ pub fn replace_all_matching_properties_snapshot(
     ReplaceAllMatchingProperties {
         pages,
         active_page_id,
+        prepared: None,
+    }
+}
+
+/// Capture just the requested result from borrowed canonical data. Public
+/// constructors retain their detached arbitrary-argument snapshot contract.
+pub fn search_all_unique_properties_snapshot_for_call(
+    state: &EditorState,
+    args: &BTreeMap<String, String>,
+) -> SearchAllUniqueProperties {
+    let outcome = match super::read_nodes::requested_page_roots(state, args) {
+        Ok(roots) => search_properties(roots, args),
+        Err((code, message)) => ToolOutcome::Err(code, message),
+    };
+    SearchAllUniqueProperties {
+        pages: Vec::new(),
+        active_page_id: String::new(),
+        prepared: Some(outcome),
+    }
+}
+
+pub fn replace_all_matching_properties_snapshot_for_call(
+    state: &EditorState,
+    args: &BTreeMap<String, String>,
+) -> ReplaceAllMatchingProperties {
+    let outcome = match super::read_nodes::requested_page_roots(state, args) {
+        Ok(roots) => replace_properties(roots, args),
+        Err((code, message)) => ToolOutcome::Err(code, message),
+    };
+    ReplaceAllMatchingProperties {
+        pages: Vec::new(),
+        active_page_id: String::new(),
+        prepared: Some(outcome),
     }
 }
 
@@ -415,7 +465,7 @@ fn property_value(node: &PenNode, property: StyleProperty) -> Option<Value> {
             .and_then(|c| c.gap.as_ref())
             .and_then(number_or_expression_value),
         StyleProperty::FontSize => match node {
-            PenNode::Text(t) => t.font_size.and_then(number_value),
+            PenNode::Text(t) => t.font_size.as_ref().and_then(number_or_expression_value),
             _ => None,
         },
         StyleProperty::FontFamily => match node {

@@ -448,6 +448,7 @@ mod tests {
         frame.reusable = Some(true);
         if let Some(color) = fill_color {
             frame.container.fill = Some(vec![PenFill::Solid(SolidFillBody {
+                enabled: None,
                 color: color.to_string(),
                 explain: None,
                 opacity: None,

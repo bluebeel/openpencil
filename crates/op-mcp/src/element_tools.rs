@@ -19,15 +19,15 @@ use super::{McpTool, ToolErrorCode, ToolOutcome};
 /// Sanitize a `kit-id` / `component-id` for embedding in a tool name
 /// — MCP tool names are `[a-zA-Z0-9_]+`, so dashes become underscores.
 fn sanitize(s: &str) -> String {
-    s.chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '_' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect()
+    s.chars().map(sanitize_char).collect()
+}
+
+fn sanitize_char(c: char) -> char {
+    if c.is_ascii_alphanumeric() || c == '_' {
+        c
+    } else {
+        '_'
+    }
 }
 
 /// The MCP tool name for a kit component: `insert_<comp_sanitized>`.
@@ -104,12 +104,17 @@ fn parse_optional_f64(
     match args.get(key) {
         None => Ok(None),
         Some(v) if v.is_empty() => Ok(None),
-        Some(v) => v.parse::<f64>().map(Some).map_err(|_| {
-            ToolOutcome::Err(
+        Some(v) => match v.parse::<f64>() {
+            Ok(value) if value.is_finite() => Ok(Some(value)),
+            Ok(_) => Err(ToolOutcome::Err(
+                ToolErrorCode::InvalidArgument,
+                format!("{key} must be a finite number"),
+            )),
+            Err(_) => Err(ToolOutcome::Err(
                 ToolErrorCode::InvalidArgument,
                 format!("{key} must be a number"),
-            )
-        }),
+            )),
+        },
     }
 }
 
@@ -128,6 +133,33 @@ pub fn insert_kit_component_tools(state: &EditorState) -> Vec<InsertKitComponent
         .collect()
 }
 
+/// Resolve one advertised component name without building every tool. Reverse
+/// order preserves the registry's last-registration-wins collision behavior.
+pub fn insert_kit_component_tool_for_name(
+    state: &EditorState,
+    name: &str,
+) -> Option<InsertKitComponent> {
+    let suffix = name.strip_prefix("insert_")?;
+    for kit in state.ui_kits.iter().rev() {
+        if let Some(component) = kit
+            .components
+            .iter()
+            .rev()
+            .find(|component| component.id.chars().map(sanitize_char).eq(suffix.chars()))
+        {
+            return Some(InsertKitComponent::new(
+                kit.id.clone(),
+                component.id.clone(),
+            ));
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+#[path = "element_tools_lookup_tests.rs"]
+mod lookup_tests;
+
 /// JSON-encoded `tools/list` schema for one element tool. The host
 /// concatenates this into the `tools/list` response next to the static
 /// `TOOL_SCHEMAS`.
@@ -137,9 +169,19 @@ pub fn element_tool_schema(component_name: &str, component_id: &str) -> String {
 }
 
 fn canonical_element_tool_schema(tool: &str, component_name: &str) -> String {
-    format!(
-        r#"{{"name":"{tool}","description":"Insert a {component_name} from the built-in UIKit onto the active page. Optional x/y doc-px floats place the top-left; defaults to (0, 0).","inputSchema":{{"type":"object","properties":{{"x":{{"type":"string","description":"top-left doc-px (float)"}},"y":{{"type":"string","description":"top-left doc-px (float)"}}}}}}}}"#
-    )
+    serde_json::json!({
+        "name": tool,
+        "description": format!(
+            "Insert a {component_name} from the built-in UIKit onto the active page. Optional x/y doc-px floats place the top-left; defaults to (0, 0). Applied host replies include node_id and newIds for the inserted root."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "x": {"type": "string", "description": "top-left doc-px (float)"},
+                "y": {"type": "string", "description": "top-left doc-px (float)"}
+            }
+        }
+    }).to_string()
 }
 
 /// JSON-encoded schemas for every element tool the live state has —

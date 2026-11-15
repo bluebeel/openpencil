@@ -23,6 +23,10 @@ pub fn replace_node_in_children(
         }
     }
     for child in children.iter_mut() {
+        // Searching is not an insertion: preserve absent child vectors.
+        if child.children().is_none() {
+            continue;
+        }
         if let Some(grand) = child.children_mut() {
             if replace_node_in_children(grand, target, replacement) {
                 return true;
@@ -66,6 +70,10 @@ fn insert_into_parent(
     }
     let mut carry = node;
     for child in children.iter_mut() {
+        // Searching is not an insertion: preserve absent child vectors.
+        if child.children().is_none() {
+            continue;
+        }
         if let Some(grand) = child.children_mut() {
             match insert_into_parent(grand, parent, carry, index) {
                 Ok(()) => return Ok(()),
@@ -87,16 +95,28 @@ pub(super) fn apply_copy_overrides(node: &mut PenNode, overrides_json: Option<&s
     };
     overrides.remove("id");
 
-    let Ok(mut node_value) = serde_json::to_value(&*node) else {
-        return false;
+    let merge = |value: &mut serde_json::Value, root: bool| {
+        if root {
+            if let Some(object) = value.as_object_mut() {
+                for (key, value) in &overrides {
+                    object.insert(key.clone(), value.clone());
+                }
+            }
+        }
     };
-    let Some(node_object) = node_value.as_object_mut() else {
-        return false;
-    };
-    for (key, value) in overrides {
-        node_object.insert(key, value);
+    if !overrides.contains_key("children") && !overrides.contains_key("type") {
+        return crate::node_json::map_header_json_in_place(node, |value| merge(value, true))
+            .is_ok();
     }
-    let Ok(overridden) = serde_json::from_value::<PenNode>(node_value) else {
+    let result = if overrides.contains_key("children") || overrides.contains_key("type") {
+        serde_json::to_value(&*node).and_then(|mut value| {
+            merge(&mut value, true);
+            serde_json::from_value::<PenNode>(value)
+        })
+    } else {
+        crate::map_subtree_json(node, merge)
+    };
+    let Ok(overridden) = result else {
         return false;
     };
     *node = overridden;
@@ -113,7 +133,10 @@ pub fn remap_subtree_ids(
     next_id: &mut u64,
     taken: &mut HashSet<NodeId>,
 ) -> bool {
-    remap_subtree_ids_mapping(nodes, next_id, taken).is_some()
+    let mut allocator = SequentialIdAllocator::new(*next_id);
+    let result = remap_subtree_ids_with_allocator(nodes, &mut allocator, taken).is_ok();
+    *next_id = allocator.next_counter();
+    result
 }
 
 /// Allocator-aware form of [`remap_subtree_ids`].
@@ -122,7 +145,9 @@ pub(crate) fn remap_subtree_ids_with_allocator(
     allocator: &mut dyn IdAllocator,
     taken: &mut HashSet<NodeId>,
 ) -> Result<(), IdAllocError> {
-    remap_subtree_ids_mapping_with_allocator(nodes, allocator, taken).map(drop)
+    let planned = allocate_forest_ids(nodes, allocator, taken)?;
+    commit_forest_ids(nodes, &mut planned.into_iter(), &mut |_, _| {});
+    Ok(())
 }
 
 /// Like [`remap_subtree_ids`] but returns the `(old_id, new_id)` pairs in
@@ -149,30 +174,55 @@ pub fn remap_subtree_ids_mapping_with_allocator(
     allocator: &mut dyn IdAllocator,
     taken: &mut HashSet<NodeId>,
 ) -> Result<Vec<(String, String)>, IdAllocError> {
-    let mut staged = nodes.to_vec();
-    let mut map = Vec::new();
-    remap_collect(&mut staged, allocator, taken, &mut map)?;
-    for (destination, remapped) in nodes.iter_mut().zip(staged) {
-        *destination = remapped;
-    }
+    let planned = allocate_forest_ids(nodes, allocator, taken)?;
+    let mut map = Vec::with_capacity(planned.len());
+    commit_forest_ids(nodes, &mut planned.into_iter(), &mut |old, new| {
+        map.push((old, new.to_owned()))
+    });
     Ok(map)
 }
 
-fn remap_collect(
-    nodes: &mut [PenNode],
+fn allocate_forest_ids(
+    nodes: &[PenNode],
     allocator: &mut dyn IdAllocator,
     taken: &mut HashSet<NodeId>,
-    map: &mut Vec<(String, String)>,
-) -> Result<(), IdAllocError> {
-    for node in nodes.iter_mut() {
-        let fresh = allocator.allocate(taken)?;
-        let old = node.base().id.clone();
-        let new = fresh.as_str().to_string();
-        node.base_mut().id = new.clone();
-        map.push((old, new));
-        if let Some(children) = node.children_mut() {
-            remap_collect(children, allocator, taken, map)?;
+) -> Result<Vec<NodeId>, IdAllocError> {
+    let mut planned = Vec::new();
+    let mut stack = vec![nodes.iter()];
+    while let Some(siblings) = stack.last_mut() {
+        let Some(node) = siblings.next() else {
+            stack.pop();
+            continue;
+        };
+        planned.push(allocator.allocate(taken)?);
+        if let Some(children) = node.children().filter(|children| !children.is_empty()) {
+            stack.push(children.iter());
         }
     }
-    Ok(())
+    Ok(planned)
+}
+fn commit_forest_ids(
+    nodes: &mut [PenNode],
+    planned: &mut impl Iterator<Item = NodeId>,
+    record: &mut impl FnMut(String, &str),
+) {
+    let mut pending = vec![nodes.iter_mut()];
+    while let Some(siblings) = pending.last_mut() {
+        let Some(node) = siblings.next() else {
+            pending.pop();
+            continue;
+        };
+        let fresh: String = planned.next().expect("one prepared ID per node").into();
+        let old = std::mem::replace(&mut node.base_mut().id, fresh);
+        record(old, node.id_str());
+        // Preserve omitted Ref overrides; use depth-sized explicit cursors
+        // instead of one native call-stack frame for every imported level.
+        if node.children().is_some() {
+            if let Some(children) = node.children_mut() {
+                if !children.is_empty() {
+                    pending.push(children.iter_mut());
+                }
+            }
+        }
+    }
 }

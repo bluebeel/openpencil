@@ -1,37 +1,9 @@
-//! Structurally-shared snapshot representation for undo / redo.
-//!
-//! Every undoable gesture used to deep-clone the entire `PenDocument`
-//! (node tree + all component prototypes) into an [`crate::history::EditorSnapshot`],
-//! and `HISTORY_CAP = 100` kept up to 100 such clones alive at once —
-//! peak memory ~100× the document.
-//!
-//! This module replaces the snapshot's owned `PenDocument` /
-//! `ComponentLibrary` with a **share-at-top-level-node granularity**
-//! representation:
-//!
-//!   - [`SharedDoc`] keeps a children-stripped `PenDocument` *skeleton*
-//!     (all scalar / collection fields — version, name, themes,
-//!     variables, page metadata, app/state/lifecycle/… — cloned as
-//!     today) plus, for the single-page root AND every page, the
-//!     top-level nodes as `Vec<Arc<PenNode>>`.
-//!   - [`SharedComponents`] keeps the component prototypes as
-//!     `Vec<Arc<Component>>` (id-keyed sharing).
-//!
-//! On [`SharedDoc::capture`] each top-level entry is compared against
-//! the *anchor* snapshot (the adjacent history state); an unchanged
-//! subtree reuses the anchor's `Arc` (a pointer bump, no deep clone),
-//! so 100 snapshots retain one copy of every subtree that never
-//! changed plus the deltas. Matching is an index fast path (same slot,
-//! same id, deep-equal) with an id-keyed fallback map for equal-content
-//! duplicates — equality always gates reuse, so a reused `Arc` is
-//! byte-identical to what a full clone would have produced.
-//!
-//! Snapshot-stored `Arc`s are treated **copy-on-write**: the one
-//! in-place mutator of stored snapshots
-//! ([`crate::instance_override`]'s `repair_scope_snapshots`) routes
-//! through [`SharedDoc::repair_swap`], which `Arc::make_mut`s only the
-//! affected top-level entry — cloning it away from any sibling snapshot
-//! that shares it, so no other history state is contaminated.
+//! Recursive immutable undo snapshots. Canonical node metadata is preserved
+//! in full, with child presence and shared edges stored separately. Captures
+//! share unchanged descendants and document metadata; COW repair detaches only
+//! the changed path. Readers explicitly choose metadata, shared children, or
+//! owned materialization. Serialization forwards the canonical schema with a
+//! child-value override, retaining exact field order and image traversal.
 
 use crate::component_backing::DocumentComponentBacking;
 use crate::components::{Component, ComponentLibrary};
@@ -46,6 +18,47 @@ use serde::{Serialize, Serializer};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
+mod capture_budget;
+mod components;
+pub use capture_budget::{
+    command_capture_node_bytes, command_capture_value_bytes, CaptureSizeError,
+    COMMAND_CAPTURE_ALLOWANCE,
+};
+mod edges;
+mod exact;
+mod node;
+mod node_wire;
+mod sensitivity;
+pub use components::{SharedComponent, SharedComponents};
+use node::share_children;
+pub use node::SharedNode;
+pub(crate) fn metadata_sensitivity<T: Serialize + ?Sized>(value: &T) -> Box<[u8]> {
+    sensitivity::bytes(value)
+}
+/// Serialize every canonical node metadata field without traversing descendants.
+/// An authored `children` field is represented by an empty placeholder only;
+/// forward consumers must retain its exact existing value and presence.
+pub struct BorrowedNodeMetadata<'a>(pub(crate) &'a PenNode);
+impl<'a> BorrowedNodeMetadata<'a> {
+    /// Borrow complete schema metadata without cloning or visiting descendants.
+    /// The placeholder is unsuitable as a standalone replacement node.
+    pub fn new(node: &'a PenNode) -> Self {
+        Self(node)
+    }
+}
+impl Serialize for BorrowedNodeMetadata<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.0.serialize(node_wire::ReplaceChildren::new(
+            serializer,
+            self.0.children().map(|_| SharedNodes(&[][..])),
+        ))
+    }
+}
+
+pub(crate) fn metadata_matches(a: &PenNode, b: &PenNode) -> bool {
+    a == b && sensitivity::bytes(a) == sensitivity::bytes(b)
+}
+
 /// A structurally-shared mirror of a [`PenDocument`] for undo history.
 ///
 /// The `skeleton` is a full `PenDocument` with every node-children
@@ -57,51 +70,59 @@ use std::sync::Arc;
 pub struct SharedDoc {
     /// The document minus every node-children vector. Cheap to clone
     /// and, being a real `PenDocument`, robust against schema growth.
-    skeleton: PenDocument,
+    skeleton: Arc<PenDocument>,
+    metadata_sensitivity: Arc<[u8]>,
     /// Shared top-level nodes of the single-page root `children`.
-    root_children: Vec<Arc<PenNode>>,
+    root_children: Arc<Vec<Arc<SharedNode>>>,
     /// Shared top-level nodes per page — `page_children[i]` parallels
     /// `skeleton.pages[i]`.
-    page_children: Vec<Vec<Arc<PenNode>>>,
+    page_children: Arc<Vec<Arc<Vec<Arc<SharedNode>>>>>,
 }
 
 impl SharedDoc {
     /// Capture `doc` into a shared snapshot, reusing `anchor`'s `Arc`s
-    /// for any top-level subtree that is unchanged. `anchor` is the
+    /// for any subtree that is unchanged. `anchor` is the
     /// adjacent history state (see [`crate::state::EditorState::snapshot_for_history_with_anchor`]);
     /// `None` produces all-fresh `Arc`s.
     pub fn capture(doc: &PenDocument, anchor: Option<&SharedDoc>) -> SharedDoc {
-        let root_children =
-            share_children(&doc.children, anchor.map(|a| a.root_children.as_slice()));
+        let root_children = share_children(&doc.children, anchor.map(|a| &a.root_children));
         let mut page_children = Vec::new();
         if let Some(pages) = doc.pages.as_ref() {
             for (i, page) in pages.iter().enumerate() {
-                let prev = anchor
-                    .and_then(|a| a.page_children.get(i))
-                    .map(|v| v.as_slice());
+                let prev = anchor.and_then(|a| a.page_children.get(i));
                 page_children.push(share_children(&page.children, prev));
             }
         }
+        let page_children = edges::reuse(page_children, anchor.map(|a| &a.page_children));
+        let metadata = strip_children(doc);
+        let signature = sensitivity::bytes(&metadata);
+        let reuse = anchor.filter(|old| {
+            old.skeleton.as_ref() == &metadata
+                && old.metadata_sensitivity.as_ref() == signature.as_ref()
+        });
+        let skeleton = reuse
+            .map(|old| old.skeleton.clone())
+            .unwrap_or_else(|| Arc::new(metadata));
+        let metadata_sensitivity = reuse
+            .map(|old| old.metadata_sensitivity.clone())
+            .unwrap_or_else(|| Arc::from(signature));
         SharedDoc {
-            skeleton: strip_children(doc),
+            skeleton,
+            metadata_sensitivity,
             root_children,
             page_children,
         }
     }
 
-    /// Rebuild an owned [`PenDocument`] — deep-clones every shared node
+    /// Rebuild an owned [`PenDocument`] — materializes every shared node
     /// back into place. The materialized document is byte-identical to
     /// the one that was captured.
     pub fn materialize(&self) -> PenDocument {
-        let mut doc = self.skeleton.clone();
-        doc.children = self
-            .root_children
-            .iter()
-            .map(|a| a.as_ref().clone())
-            .collect();
+        let mut doc = self.skeleton.as_ref().clone();
+        doc.children = self.root_children.iter().map(|a| a.materialize()).collect();
         if let Some(pages) = doc.pages.as_mut() {
             for (page, shared) in pages.iter_mut().zip(self.page_children.iter()) {
-                page.children = shared.iter().map(|a| a.as_ref().clone()).collect();
+                page.children = shared.iter().map(|a| a.materialize()).collect();
             }
         }
         doc
@@ -117,8 +138,8 @@ impl SharedDoc {
     /// of the old `snapshot_active_children`: an out-of-range page
     /// index or an empty `pages` list resolves to nothing rather than
     /// falling back to the root `children`.
-    pub fn snapshot_find_node(&self, active_page_index: usize, id: &NodeId) -> Option<&PenNode> {
-        let children: &[Arc<PenNode>] = match self.skeleton.pages.as_ref() {
+    pub fn snapshot_find_node(&self, active_page_index: usize, id: &NodeId) -> Option<&SharedNode> {
+        let children: &[Arc<SharedNode>] = match self.skeleton.pages.as_ref() {
             Some(pages) => {
                 if pages.get(active_page_index).is_some() {
                     self.page_children
@@ -142,45 +163,92 @@ impl SharedDoc {
     /// `replacement`. Entries without contamination keep their shared
     /// `Arc` untouched (their `ptr_eq` sharing is preserved).
     pub(crate) fn repair_swap(&mut self, id: &NodeId, replacement: &PenNode) {
-        for entry in &mut self.root_children {
-            repair_entry(entry, id, replacement);
-        }
-        for page in &mut self.page_children {
-            for entry in page {
-                repair_entry(entry, id, replacement);
+        edges::repair(&mut self.root_children, id, replacement);
+        if self
+            .page_children
+            .iter()
+            .any(|p| edges::needs_repair(p, id))
+        {
+            for page in Arc::make_mut(&mut self.page_children) {
+                edges::repair(page, id, replacement);
             }
         }
     }
 
     /// Shared top-level nodes of the single-page root. Test / assertion
     /// hook for `ptr_eq` sharing checks.
-    pub fn root_children(&self) -> &[Arc<PenNode>] {
+    pub fn root_children(&self) -> &[Arc<SharedNode>] {
         &self.root_children
+    }
+    /// Immutable edge owner for weak-safe snapshot cache identities.
+    pub fn root_children_arc(&self) -> &Arc<Vec<Arc<SharedNode>>> {
+        &self.root_children
+    }
+    /// Immutable page-edge table; each entry independently owns its node edges.
+    pub fn page_children_arcs(&self) -> &Arc<Vec<Arc<Vec<Arc<SharedNode>>>>> {
+        &self.page_children
+    }
+
+    /// Borrow snapshot metadata without materializing its shared node trees.
+    pub fn document_metadata(&self) -> &PenDocument {
+        &self.skeleton
+    }
+    /// Immutable metadata identity for deduplicated resident accounting.
+    pub fn metadata_arc(&self) -> &Arc<PenDocument> {
+        &self.skeleton
+    }
+
+    /// Allocation identities and complete retained vector storage, for a
+    /// resident ledger to deduplicate edge arrays shared across checkpoints.
+    pub fn edge_storage(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
+        std::iter::once(edges::storage(&self.root_children))
+            .chain(std::iter::once(edges::storage(&self.page_children)))
+            .chain(self.page_children.iter().map(edges::storage))
+    }
+
+    pub fn metadata_storage_bytes(&self) -> usize {
+        std::mem::size_of::<PenDocument>()
+            + 4 * std::mem::size_of::<usize>()
+            + self.metadata_sensitivity.len()
+            + self
+                .skeleton
+                .pages
+                .as_ref()
+                .map_or(0, |p| p.capacity() * std::mem::size_of::<PenPage>())
     }
 
     /// Shared top-level nodes of page `i`, if any.
-    pub fn page_children(&self, i: usize) -> Option<&[Arc<PenNode>]> {
+    pub fn page_children(&self, i: usize) -> Option<&[Arc<SharedNode>]> {
         self.page_children.get(i).map(|v| v.as_slice())
     }
 }
 
 impl jian_ops_schema::image_table::SaveImageOrder for SharedDoc {
     fn visit_save_image_sources(&self, visit: &mut dyn FnMut(&jian_ops_schema::node::ImageSrc)) {
-        jian_ops_schema::image_table::visit_legacy_node_roots(
-            self.root_children.iter().map(Arc::as_ref),
-            visit,
-        );
+        fn visit_roots(
+            nodes: &[Arc<SharedNode>],
+            visit: &mut dyn FnMut(&jian_ops_schema::node::ImageSrc),
+        ) {
+            let mut stack: Vec<_> = nodes.iter().map(Arc::as_ref).collect();
+            while let Some(node) = stack.pop() {
+                jian_ops_schema::image_table::visit_legacy_node_roots(
+                    std::iter::once(node.metadata()),
+                    visit,
+                );
+                if let Some(children) = node.children() {
+                    stack.extend(children.iter().map(Arc::as_ref));
+                }
+            }
+        }
+        visit_roots(&self.root_children, visit);
         for page in self.page_children.iter().rev() {
-            jian_ops_schema::image_table::visit_legacy_node_roots(
-                page.iter().map(Arc::as_ref),
-                visit,
-            );
+            visit_roots(page, visit)
         }
     }
 }
 
 /// Serialize the shared snapshot directly as the canonical `PenDocument`
-/// wire shape. This lets background saves keep unchanged top-level subtrees
+/// wire shape. This lets background saves keep unchanged subtrees
 /// behind `Arc` instead of materializing a second owned document first.
 impl Serialize for SharedDoc {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
@@ -204,6 +272,7 @@ impl Serialize for SharedDoc {
         serialize_option(&mut map, "logicModules", &doc.logic_modules)?;
         serialize_option(&mut map, "designMd", &doc.design_md)?;
         serialize_option(&mut map, "conversion", &doc.conversion)?;
+        serialize_option(&mut map, "motion", &doc.motion)?;
         map.end()
     }
 }
@@ -219,7 +288,7 @@ where
     Ok(())
 }
 
-struct SharedNodes<'a>(&'a [Arc<PenNode>]);
+struct SharedNodes<'a>(&'a [Arc<SharedNode>]);
 
 impl Serialize for SharedNodes<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
@@ -242,7 +311,7 @@ impl Serialize for SharedPages<'_> {
                 .0
                 .page_children
                 .get(index)
-                .map(Vec::as_slice)
+                .map(|v| v.as_slice())
                 .unwrap_or_default();
             seq.serialize_element(&SharedPage { page, children })?;
         }
@@ -252,7 +321,7 @@ impl Serialize for SharedPages<'_> {
 
 struct SharedPage<'a> {
     page: &'a PenPage,
-    children: &'a [Arc<PenNode>],
+    children: &'a [Arc<SharedNode>],
 }
 
 impl Serialize for SharedPage<'_> {
@@ -268,44 +337,13 @@ impl Serialize for SharedPage<'_> {
     }
 }
 
-/// Component prototypes stored in a snapshot, shared by `Arc`.
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct SharedComponents {
-    components: Vec<Arc<Component>>,
-    document_backing: DocumentComponentBacking,
-}
-
-impl SharedComponents {
-    /// Capture the library, reusing `anchor`'s `Arc`s for unchanged
-    /// prototypes (id + deep-equality gated).
-    pub fn capture(lib: &ComponentLibrary, anchor: Option<&SharedComponents>) -> Self {
-        SharedComponents {
-            components: share_components(&lib.components, anchor.map(|a| a.components.as_slice())),
-            document_backing: lib.document_backing(),
-        }
-    }
-
-    /// Rebuild an owned [`ComponentLibrary`].
-    pub fn materialize(&self) -> ComponentLibrary {
-        let mut library = ComponentLibrary::default();
-        library.components = self.components.iter().map(|a| a.as_ref().clone()).collect();
-        library.restore_document_backing(Arc::clone(&self.document_backing));
-        library
-    }
-
-    /// Shared prototypes. Test / assertion hook for `ptr_eq` checks.
-    pub fn components(&self) -> &[Arc<Component>] {
-        &self.components
-    }
-}
-
 // --- Free helpers ----------------------------------------------------
 
 /// A `PenDocument` with every node-children vector emptied — the
 /// snapshot skeleton. Written as an explicit struct literal (no
 /// `..Default`) so a new `PenDocument` field fails to compile here
 /// until it is classified, keeping the skeleton schema-complete.
-fn strip_children(doc: &PenDocument) -> PenDocument {
+pub(crate) fn strip_children(doc: &PenDocument) -> PenDocument {
     PenDocument {
         version: doc.version.clone(),
         name: doc.name.clone(),
@@ -346,108 +384,18 @@ fn strip_page_children(page: &PenPage) -> PenPage {
     }
 }
 
-/// Build the shared top-level vector for `current`, reusing `prev`'s
-/// `Arc`s for equal entries. Index fast path (same slot + same id +
-/// deep-equal) with a lazily-allocated id-keyed fallback map. The
-/// equality check gates every reuse, so a shared `Arc` is guaranteed
-/// content-identical to a fresh clone.
-fn share_children(current: &[PenNode], prev: Option<&[Arc<PenNode>]>) -> Vec<Arc<PenNode>> {
-    let Some(prev) = prev else {
-        return current.iter().map(|n| Arc::new(n.clone())).collect();
-    };
-    let mut id_map: Option<HashMap<&str, &Arc<PenNode>>> = None;
-    current
-        .iter()
-        .enumerate()
-        .map(|(i, node)| {
-            // Index fast path: same slot, same id, deep-equal.
-            if let Some(prev_arc) = prev.get(i) {
-                if prev_arc.id_str() == node.id_str() && prev_arc.as_ref() == node {
-                    return Arc::clone(prev_arc);
-                }
-            }
-            // Id-keyed fallback (allocates a small map — the
-            // allocation-free claim applies to the index walk only).
-            let map = id_map.get_or_insert_with(|| prev.iter().map(|a| (a.id_str(), a)).collect());
-            if let Some(&prev_arc) = map.get(node.id_str()) {
-                if prev_arc.as_ref() == node {
-                    return Arc::clone(prev_arc);
-                }
-            }
-            Arc::new(node.clone())
-        })
-        .collect()
+/// Locate a recursive shared view without materializing container descendants.
+fn find_in_shared<'a>(children: &'a [Arc<SharedNode>], id: &NodeId) -> Option<&'a SharedNode> {
+    children.iter().find_map(|node| node.find_node(id))
 }
 
-/// [`share_children`] for component prototypes, keyed by `Component::id`.
-fn share_components(current: &[Component], prev: Option<&[Arc<Component>]>) -> Vec<Arc<Component>> {
-    let Some(prev) = prev else {
-        return current.iter().map(|c| Arc::new(c.clone())).collect();
-    };
-    let mut id_map: Option<HashMap<&NodeId, &Arc<Component>>> = None;
-    current
-        .iter()
-        .enumerate()
-        .map(|(i, comp)| {
-            if let Some(prev_arc) = prev.get(i) {
-                if prev_arc.id == comp.id && prev_arc.as_ref() == comp {
-                    return Arc::clone(prev_arc);
-                }
-            }
-            let map = id_map.get_or_insert_with(|| prev.iter().map(|a| (&a.id, a)).collect());
-            if let Some(&prev_arc) = map.get(&comp.id) {
-                if prev_arc.as_ref() == comp {
-                    return Arc::clone(prev_arc);
-                }
-            }
-            Arc::new(comp.clone())
-        })
-        .collect()
-}
+#[cfg(test)]
+#[path = "history_snapshot/recursive_tests.rs"]
+mod recursive_tests;
 
-/// Find a node by id among top-level shared `Arc`s (recursing into the
-/// owned subtree of each entry).
-fn find_in_shared<'a>(children: &'a [Arc<PenNode>], id: &NodeId) -> Option<&'a PenNode> {
-    for arc in children {
-        let node = arc.as_ref();
-        if node.id_str() == id.as_str() {
-            return Some(node);
-        }
-        if let Some(sub) = node.children() {
-            if let Some(found) = crate::walkers::find_node(sub, id) {
-                return Some(found);
-            }
-        }
-    }
-    None
-}
+#[cfg(test)]
+#[path = "history_snapshot/edge_tests.rs"]
+mod edge_tests;
 
-/// COW-repair one top-level entry. `Arc::make_mut` runs only when the
-/// entry actually holds a non-`Ref` node at `id`.
-fn repair_entry(entry: &mut Arc<PenNode>, id: &NodeId, replacement: &PenNode) {
-    let needs = {
-        let node = entry.as_ref();
-        let found = if node.id_str() == id.as_str() {
-            Some(node)
-        } else {
-            node.children()
-                .and_then(|c| crate::walkers::find_node(c, id))
-        };
-        matches!(found, Some(n) if !matches!(n, PenNode::Ref(_)))
-    };
-    if !needs {
-        return;
-    }
-    let node = Arc::make_mut(entry);
-    let target = if node.id_str() == id.as_str() {
-        Some(node)
-    } else {
-        node.children_mut()
-            .and_then(|c| crate::walkers::find_node_mut(c, id))
-    };
-    if let Some(t) = target {
-        if !matches!(t, PenNode::Ref(_)) {
-            *t = replacement.clone();
-        }
-    }
-}
+#[cfg(test)]
+mod exact_tests;

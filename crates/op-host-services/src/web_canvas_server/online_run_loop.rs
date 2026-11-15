@@ -1,7 +1,7 @@
 //! The public multi-account accept loop (`--serve-web --online`).
 //!
 //! Structurally the same daemon as [`run_web_canvas`](super::run_web_canvas):
-//! bind, thread per connection, bounded concurrency. The difference is where
+//! bind, reusable connection workers, bounded concurrency. The difference is where
 //! the document comes from. The single-user loop builds one
 //! `Mutex<WebCanvasState>` up front and hands every connection the same one;
 //! this loop builds none, and each connection resolves its own from the
@@ -14,10 +14,11 @@
 //!    to load before the browser can present a credential, and neither
 //!    branch touches a document.
 //! 3. Verify the credential.
-//! 4. Take a tenant lease.
-//! 5. Dispatch.
+//! 4. Queue by verified owner, after a non-materializing share ACL check.
+//! 5. Fair workers acquire a fresh tenant lease and recheck sharing.
+//! 6. Dispatch; SSE moves only its socket/admission/lease to the async runtime.
 //!
-//! Nothing between steps 1 and 4 reads or writes any account's state, so an
+//! Nothing before verification reads or writes any account's state, so an
 //! unauthenticated caller can reach exactly the bytes the CDN would serve.
 //!
 //! ## What this loop does not run
@@ -38,6 +39,12 @@ use super::online_policy::ServeMode;
 use super::tenant::{now_unix, TenantLimits, TenantRegistry};
 use super::tenant_auth::{IdentityVerifier, PresentedCredentials, StaticVerifier};
 use super::*;
+#[path = "online_ingress.rs"]
+mod ingress;
+#[path = "online_request.rs"]
+mod request;
+#[path = "online_scheduler.rs"]
+pub(super) mod scheduler;
 
 /// How long a controlled shutdown waits for in-flight requests before it
 /// writes. Long enough for a large document push to finish installing, short
@@ -210,6 +217,27 @@ pub fn run_online_web_canvas(options: ServeWebOptions) -> Result<()> {
     // loop already observes, so the existing exit path (which flushes) runs.
     install_shutdown_signals(&shutdown, local_addr)?;
     spawn_sweeper(&registry, &shutdown)?;
+    let sse_streams = Arc::new(async_sse::Streams::new());
+    let work_limits = scheduler::Limits::from_env(limits.max_conns, limits.max_conns_per_tenant);
+    let queue = Arc::new(scheduler::Queue::new(work_limits).map_err(|error| {
+        WebCanvasError::Config(format!("could not start online request workers: {error}"))
+    })?);
+    eprintln!("openpencil --serve-web --online: {} ingress readers, {} request workers, {} active per account; {} / {} pending bytes global/account",
+        work_limits.readers, work_limits.workers, work_limits.active_per_owner, work_limits.bytes, work_limits.bytes_per_owner);
+    let context = Arc::new(ingress::Context {
+        registry: Arc::clone(&registry),
+        verifier: Arc::clone(&verifier),
+        write_barrier: Arc::clone(&write_barrier),
+        shutdown: Arc::clone(&shutdown),
+        streams: Arc::clone(&sse_streams),
+        queue: Arc::downgrade(&queue),
+        bound,
+    });
+    let mut workers = connection_pool::ConnectionPool::with_capacity(
+        work_limits.readers,
+        limits.max_conns,
+        "op-serve-web-online-ingress",
+    );
 
     for stream in listener.incoming() {
         if shutdown.load(Ordering::Acquire) {
@@ -232,37 +260,24 @@ pub fn run_online_web_canvas(options: ServeWebOptions) -> Result<()> {
             continue;
         }
         conn_count.fetch_add(1, Ordering::AcqRel);
-        let registry = Arc::clone(&registry);
-        let verifier = Arc::clone(&verifier);
-        let conns = Arc::clone(&conn_count);
-        let write_barrier = Arc::clone(&write_barrier);
-        let shutdown_flag = Arc::clone(&shutdown);
-        let spawned = thread::Builder::new()
-            .name("op-serve-web-online-conn".into())
-            .spawn(move || {
-                let _conn_guard = ConnGuard(conns);
-                let _ = s.set_read_timeout(Some(IO_TIMEOUT));
-                let _ = s.set_write_timeout(Some(IO_TIMEOUT));
-                match serve_one_online(
-                    &mut s,
-                    registry.as_ref(),
-                    verifier.as_ref(),
-                    write_barrier.as_ref(),
-                ) {
-                    Ok(true) => {
-                        shutdown_flag.store(true, Ordering::Release);
-                        let _ = std::net::TcpStream::connect(("127.0.0.1", bound));
-                    }
-                    Ok(false) => {}
-                    Err(e) => eprintln!("openpencil --serve-web --online: {e}"),
-                }
-            });
-        if spawned.is_err() {
-            conn_count.fetch_sub(1, Ordering::AcqRel);
+        let connection = ConnGuard(Arc::clone(&conn_count));
+        let context = Arc::clone(&context);
+        let dispatched = workers.submit(
+            conn_count.load(Ordering::Acquire),
+            Box::new(move || context.receive(s, connection)),
+        );
+        if let Err(error) = dispatched {
+            eprintln!("openpencil --serve-web --online: {error}");
         }
     }
     // The sweeper observes the same flag and retires on its next wake.
     shutdown.store(true, Ordering::Release);
+    // Wake even idle or write-blocked SSE tasks before draining tenant leases
+    // and connection slots. Queued handoffs also observe this closed state.
+    sse_streams.close();
+    // Bounded workers explicitly refuse pending authenticated calls. They
+    // never enter document execution after the final writer barrier closes.
+    queue.close();
     // Let in-flight requests finish before writing. A push that is mid-install
     // when the flush runs would otherwise be written in its pre-push state and
     // the client's work lost — it acked 200 and then vanished. Bounded, because
@@ -508,159 +523,19 @@ fn resolve_verifier() -> Arc<dyn IdentityVerifier> {
 ///
 /// Returns `Ok(true)` on an accepted operator shutdown, exactly as
 /// [`serve_one`](super::serve_one) does.
+#[cfg(test)]
 pub(super) fn serve_one_online<S: Read + Write>(
     stream: &mut S,
     registry: &TenantRegistry,
     verifier: &dyn IdentityVerifier,
     write_barrier: &super::tenant::WriteBarrier,
 ) -> Result<bool> {
-    let req = crate::mcp_serve::read_http_request(stream)?;
-    let allow_origins = registry.allow_origins();
-    let cors_origin = online_policy::online_cors_origin(allow_origins, req.origin.as_deref());
-    if let Some(done) = serve_anonymous_prefix(stream, &req, cors_origin.as_deref())? {
-        return Ok(done);
-    }
-    // The tenant key comes from here and nowhere else. Note that the request
-    // body has not been looked at yet, and never contributes.
-    let identity = match verifier.resolve(&PresentedCredentials::from_request(&req)) {
-        Ok(identity) => identity,
-        Err(error) => {
-            crate::mcp_serve::write_mcp_http_response(
-                stream,
-                error.http_status(),
-                &serde_json::json!({
-                    "ok": false,
-                    "error": error.code(),
-                    "message": error.to_string(),
-                })
-                .to_string(),
-            )?;
-            return Ok(false);
+    match request::prepare(stream, registry, verifier)? {
+        request::Prepared::Complete(done) => Ok(done),
+        request::Prepared::Ready(ready) => {
+            request::dispatch(stream, ready, registry, write_barrier)
         }
-    };
-    // CSRF boundary. A session cookie rides along on any cross-site request
-    // the browser makes, so on a public origin the cookie alone does not
-    // establish that this deployment's own page initiated the write. A bearer
-    // token is exempt: it is only ever attached by code that already holds it.
-    if identity.via == super::tenant_auth::IdentityVia::SessionCookie
-        && !matches!(req.method.as_str(), "GET" | "HEAD" | "OPTIONS")
-        && !online_policy::cookie_write_origin_allowed(allow_origins, req.origin.as_deref())
-    {
-        crate::mcp_serve::write_mcp_http_response_with_origin(
-            stream,
-            "403 Forbidden",
-            &serde_json::json!({
-                "ok": false,
-                "error": "cross-origin-write-forbidden",
-                "message": "a cookie-authenticated write must come from this deployment's origin",
-            })
-            .to_string(),
-            cors_origin.as_deref(),
-        )?;
-        return Ok(false);
     }
-    // Which tenant is this request addressed to? The query names an OWNER;
-    // whether this caller may reach it is still decided by the owner's access
-    // list, never by the parameter. Absent, it is the caller's own tenant.
-    let requested_owner = req
-        .query
-        .as_deref()
-        .and_then(op_editor_core::share_routes::tenant_from_query)
-        .map(str::to_string);
-    let lease = match requested_owner.as_deref() {
-        Some(owner) => registry.lease_for_shared(owner, &identity),
-        None => registry.lease_for(&identity),
-    };
-    let lease = match lease {
-        Ok(lease) => lease,
-        Err(error) => {
-            crate::mcp_serve::write_mcp_http_response(
-                stream,
-                error.http_status(),
-                &serde_json::json!({
-                    "ok": false,
-                    "error": error.code(),
-                    "message": error.to_string(),
-                })
-                .to_string(),
-            )?;
-            return Ok(false);
-        }
-    };
-    // Sharing is administered on the CALLER's own tenant, so it is answered
-    // here rather than in the document tier — a visitor holding a `?tenant=`
-    // lease on someone else's document must not be able to re-share it.
-    if super::share_routes::is_share_route(&req.path) {
-        // Same gate the connection tier applies, because this route is
-        // dispatched before it ever runs: a grant is a write.
-        if let Some(refusal) = super::tool_scopes::check_rest_scope(
-            identity.via,
-            identity.scopes,
-            &req.method,
-            &req.path,
-        ) {
-            crate::mcp_serve::write_mcp_http_response_with_origin(
-                stream,
-                refusal.http_status(),
-                &serde_json::json!({
-                    "ok": false,
-                    "error": refusal.code(),
-                    "message": refusal.to_string(),
-                })
-                .to_string(),
-                cors_origin.as_deref(),
-            )?;
-            return Ok(false);
-        }
-        let own = match registry.lease_for(&identity) {
-            Ok(own) => own,
-            Err(error) => {
-                crate::mcp_serve::write_mcp_http_response_with_origin(
-                    stream,
-                    error.http_status(),
-                    &serde_json::json!({
-                        "ok": false,
-                        "error": error.code(),
-                        "message": error.to_string(),
-                    })
-                    .to_string(),
-                    cors_origin.as_deref(),
-                )?;
-                return Ok(false);
-            }
-        };
-        let reply = super::share_routes::handle(
-            &req.method,
-            &req.path,
-            &req.body,
-            &identity,
-            &own,
-            registry,
-        );
-        crate::mcp_serve::write_mcp_http_response_with_origin(
-            stream,
-            reply.status,
-            &reply.body,
-            cors_origin.as_deref(),
-        )?;
-        return Ok(false);
-    }
-    // The lease outlives the dispatch (including a minutes-long SSE stream),
-    // so the tenant these borrows point at cannot be evicted underneath them.
-    dispatch(
-        stream,
-        &req,
-        &ConnCtx {
-            state: lease.state(),
-            hub: lease.hub(),
-            mode: ServeMode::Online,
-            // The public tool profile, narrowed further by whatever scopes
-            // this particular credential carries.
-            mcp_profile: crate::mcp_serve::tool_profile::McpAccessProfile::online(identity.scopes),
-            rest_identity: Some(identity.clone()),
-            write_barrier: Some(write_barrier),
-        },
-    )
 }
 
 /// The part of the route table that is served before anyone is identified.

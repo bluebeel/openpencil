@@ -113,6 +113,7 @@ impl AcpConnection {
     }
 
     fn abort_io_tasks(&mut self) {
+        self.engine.fail(AcpError::Closed);
         for task in self.tasks.drain(..) {
             task.abort();
         }
@@ -211,12 +212,5 @@ fn reap_in_background(mut child: Child) {
     if matches!(child.try_wait(), Ok(Some(_)) | Err(_)) {
         return;
     }
-    let _ = std::thread::Builder::new()
-        .name("op-acp-child-reaper".into())
-        .spawn(move || loop {
-            match child.try_wait() {
-                Ok(Some(_)) | Err(_) => break,
-                Ok(None) => std::thread::sleep(Duration::from_millis(10)),
-            }
-        });
+    super::reaper::enqueue(child);
 }

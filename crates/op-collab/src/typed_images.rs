@@ -76,7 +76,7 @@ fn node_sources_have_external_ref(node: &PenNode) -> bool {
         PenNode::TextInput(node) => style_has_external_ref(
             node.fill.as_deref(),
             node.stroke.as_ref(),
-            node.states.as_ref(),
+            node.states.as_deref(),
         ),
         PenNode::Image(node) => source_is_external_ref(&node.src),
         PenNode::IconFont(node) => {
@@ -85,47 +85,47 @@ fn node_sources_have_external_ref(node: &PenNode) -> bool {
         PenNode::TextArea(node) => style_has_external_ref(
             node.fill.as_deref(),
             node.stroke.as_ref(),
-            node.states.as_ref(),
+            node.states.as_deref(),
         ),
         PenNode::Select(node) => style_has_external_ref(
             node.fill.as_deref(),
             node.stroke.as_ref(),
-            node.states.as_ref(),
+            node.states.as_deref(),
         ),
         PenNode::Switch(node) => style_has_external_ref(
             node.fill.as_deref(),
             node.stroke.as_ref(),
-            node.states.as_ref(),
+            node.states.as_deref(),
         ),
         PenNode::Checkbox(node) => style_has_external_ref(
             node.fill.as_deref(),
             node.stroke.as_ref(),
-            node.states.as_ref(),
+            node.states.as_deref(),
         ),
         PenNode::Slider(node) => style_has_external_ref(
             node.fill.as_deref(),
             node.stroke.as_ref(),
-            node.states.as_ref(),
+            node.states.as_deref(),
         ),
         PenNode::RadioGroup(node) => style_has_external_ref(
             node.fill.as_deref(),
             node.stroke.as_ref(),
-            node.states.as_ref(),
+            node.states.as_deref(),
         ),
         PenNode::NumberInput(node) => style_has_external_ref(
             node.fill.as_deref(),
             node.stroke.as_ref(),
-            node.states.as_ref(),
+            node.states.as_deref(),
         ),
         PenNode::Progress(node) => style_has_external_ref(
             node.fill.as_deref(),
             node.stroke.as_ref(),
-            node.states.as_ref(),
+            node.states.as_deref(),
         ),
         PenNode::Tabs(node) => style_has_external_ref(
             node.fill.as_deref(),
             node.stroke.as_ref(),
-            node.states.as_ref(),
+            node.states.as_deref(),
         ),
         PenNode::Ref(_) => false,
     }

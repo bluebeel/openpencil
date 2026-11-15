@@ -96,6 +96,9 @@ fn run(state: &Mutex<WebCanvasState>, hub: &SseHub, shutdown: &AtomicBool, wakes
 fn tick(state: &Mutex<WebCanvasState>, hub: &SseHub) -> bool {
     let mut guard = state.lock().unwrap_or_else(|p| p.into_inner());
     let guard = &mut *guard;
+    if guard.recovery.required() {
+        return false;
+    }
 
     let revision_before = guard.editor.document_revision();
     let presence_cursor = guard.collab.presence_override();

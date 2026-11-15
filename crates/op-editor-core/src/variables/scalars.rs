@@ -125,7 +125,7 @@ impl EditorState {
         if !matches!(def.kind, VariableKind::Color) {
             return None;
         }
-        match self.resolve_variable(name)? {
+        match resolve_value(&def.value, &self.ui.variables.active_theme)? {
             VariableScalar::Str(hex) if crate::color_picker::parse_hex_rgb(hex).is_some() => {
                 Some(hex.clone())
             }
@@ -143,8 +143,13 @@ impl EditorState {
         if crate::color_picker::parse_hex_rgb(hex).is_none() {
             return false;
         }
-        let active = self.ui.variables.active_theme.clone();
-        let Some(def) = self.variables_mut().get_mut(name) else {
+        let active = &self.ui.variables.active_theme;
+        let Some(def) = self
+            .doc
+            .variables
+            .as_mut()
+            .and_then(|vars| vars.get_mut(name))
+        else {
             return false;
         };
         if !matches!(def.kind, VariableKind::Color) {
@@ -153,7 +158,7 @@ impl EditorState {
         write_scalar(
             &mut def.value,
             VariableScalar::Str(hex.trim().to_string()),
-            &active,
+            active,
         );
         true
     }
@@ -264,14 +269,19 @@ impl EditorState {
         expect: VariableKind,
         scalar: VariableScalar,
     ) -> bool {
-        let active = self.ui.variables.active_theme.clone();
-        let Some(def) = self.variables_mut().get_mut(name) else {
+        let active = &self.ui.variables.active_theme;
+        let Some(def) = self
+            .doc
+            .variables
+            .as_mut()
+            .and_then(|vars| vars.get_mut(name))
+        else {
             return false;
         };
         if def.kind != expect {
             return false;
         }
-        write_scalar(&mut def.value, scalar, &active);
+        write_scalar(&mut def.value, scalar, active);
         true
     }
 
@@ -283,25 +293,25 @@ impl EditorState {
         axis: &str,
         theme_value: &str,
     ) -> bool {
-        let Some(theme_values) = self
-            .doc
-            .themes
-            .as_ref()
-            .and_then(|themes| themes.get(axis))
-            .cloned()
+        let Some(theme_values) = self.doc.themes.as_ref().and_then(|themes| themes.get(axis))
         else {
             return self.set_variable_scalar(name, expect, scalar);
         };
         if !theme_values.iter().any(|value| value == theme_value) {
             return false;
         }
-        let Some(def) = self.variables_mut().get_mut(name) else {
+        let Some(def) = self
+            .doc
+            .variables
+            .as_mut()
+            .and_then(|vars| vars.get_mut(name))
+        else {
             return false;
         };
         if def.kind != expect {
             return false;
         }
-        write_scalar_for_theme(&mut def.value, scalar, axis, theme_value, &theme_values);
+        write_scalar_for_theme(&mut def.value, scalar, axis, theme_value, theme_values);
         true
     }
 }

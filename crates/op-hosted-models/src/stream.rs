@@ -34,31 +34,61 @@ pub(super) async fn pump(
     let mut event = String::new();
     while let Some(chunk) = chunks.next().await {
         let chunk = chunk.map_err(|_| HostedRuntimeError::Network)?;
-        if pending.len().saturating_add(chunk.len()) > MAX_EVENT_BYTES {
+        let mut rest = chunk.as_ref();
+        while let Some(newline) = rest.iter().position(|byte| *byte == b'\n') {
+            if pending.len().saturating_add(newline) > MAX_EVENT_BYTES {
+                return Err(HostedRuntimeError::GatewayRejected);
+            }
+            let complete = if pending.is_empty() {
+                process_line(&rest[..newline], &mut event, tx, &mut state).await?
+            } else {
+                pending.extend_from_slice(&rest[..newline]);
+                let done = process_line(&pending, &mut event, tx, &mut state).await?;
+                pending.clear();
+                done
+            };
+            if complete {
+                return Ok(true);
+            }
+            rest = &rest[newline + 1..];
+        }
+        if pending.len().saturating_add(rest.len()) > MAX_EVENT_BYTES {
             return Err(HostedRuntimeError::GatewayRejected);
         }
-        pending.extend_from_slice(&chunk);
-        while let Some(newline) = pending.iter().position(|byte| *byte == b'\n') {
-            let line: Vec<_> = pending.drain(..=newline).collect();
-            let line = std::str::from_utf8(&line)
-                .map_err(|_| HostedRuntimeError::GatewayRejected)?
-                .trim_end_matches(['\r', '\n']);
-            if line.is_empty() {
-                if emit(&mut event, tx, &mut state).await? {
-                    return Ok(true);
-                }
-            } else if let Some(data) = line.strip_prefix("data:") {
-                if event.len().saturating_add(data.len()) > MAX_EVENT_BYTES {
-                    return Err(HostedRuntimeError::GatewayRejected);
-                }
-                if !event.is_empty() {
-                    event.push('\n');
-                }
-                event.push_str(data.trim_start());
-            }
-        }
+        pending.extend_from_slice(rest);
     }
     // A truncated event or missing terminal is a failed stream, never fake success.
+    Ok(false)
+}
+
+async fn process_line(
+    line: &[u8],
+    event: &mut String,
+    tx: &mpsc::Sender<ChatDelta>,
+    state: &mut ProtocolState,
+) -> Result<bool, HostedRuntimeError> {
+    let line = std::str::from_utf8(line)
+        .map_err(|_| HostedRuntimeError::GatewayRejected)?
+        .trim_end_matches('\r');
+    if line.is_empty() {
+        return emit(event, tx, state).await;
+    }
+    if let Some(data) = line.strip_prefix("data:") {
+        let data = data.trim_start();
+        let separator = usize::from(!event.is_empty());
+        if event
+            .len()
+            .saturating_add(separator)
+            .saturating_add(data.len())
+            > MAX_EVENT_BYTES
+        {
+            return Err(HostedRuntimeError::GatewayRejected);
+        }
+        if separator != 0 {
+            event.push('\n');
+        }
+        event.push_str(data);
+    }
     Ok(false)
 }
 

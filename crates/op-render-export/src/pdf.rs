@@ -4,7 +4,7 @@
 //! global-export → exportDocumentPdf flow, except the TS app
 //! hand-rolls a PDF stream (Catalog + Pages + Image XObjects with
 //! DCTDecode JPEG blobs); skia's backend emits real vector PDF ops,
-//! which keeps glyphs + shapes selectable + zoom-clean.
+//! which retains zoom-clean vector shapes and font/outline paths.
 //!
 //! The export consumes a layout-resolved [`LayoutScene`] — every node
 //! kind paints through the shared [`crate::paint_nodes`], the same
@@ -18,39 +18,58 @@ use std::path::Path as StdPath;
 
 use crate::ExportError;
 
+mod selection;
+mod stream;
+pub use selection::{render_selected_node_pdf_bytes_scaled, render_selection_batch_pdf_bytes};
+
 const PDF_MARGIN: f32 = 16.0;
+
+/// Deflate level1 is lossless; it trades somewhat larger PDF streams for
+/// lower CPU without changing decoded images, vectors or font subset data.
+fn metadata() -> skia_safe::pdf::Metadata<'static> {
+    skia_safe::pdf::Metadata {
+        compression_level: skia_safe::pdf::CompressionLevel::LowButFast,
+        ..Default::default()
+    }
+}
 
 fn render_pdf_item(
     bounds: Rect,
+    scale: f32,
     paint: impl FnOnce(&skia_safe::Canvas),
 ) -> Result<Vec<u8>, ExportError> {
-    let mut buf = Vec::new();
+    let width = (bounds.size.x + PDF_MARGIN * 2.0) * scale;
+    let height = (bounds.size.y + PDF_MARGIN * 2.0) * scale;
+    if !scale.is_finite()
+        || scale <= 0.0
+        || !width.is_finite()
+        || !height.is_finite()
+        || width <= 0.0
+        || height <= 0.0
     {
-        let mut pdf = skia_safe::pdf::new_document(&mut buf, None);
-        let page_size = skia_safe::Size::new(
-            bounds.size.x + PDF_MARGIN * 2.0,
-            bounds.size.y + PDF_MARGIN * 2.0,
-        );
-        let mut page = pdf.begin_page(page_size, None);
-        let canvas = page.canvas();
-        canvas.translate((PDF_MARGIN - bounds.origin.x, PDF_MARGIN - bounds.origin.y));
-        paint(canvas);
-        pdf = page.end_page();
-        pdf.close();
+        return Err(ExportError::NonFiniteOutputSize);
     }
-    if buf.is_empty() {
-        Err(ExportError::PdfEncoderEmpty)
-    } else {
-        Ok(buf)
-    }
+    stream::bytes(|pages| {
+        pages.page(width, height, |canvas| {
+            canvas.scale((scale, scale));
+            canvas.translate((PDF_MARGIN - bounds.origin.x, PDF_MARGIN - bounds.origin.y));
+            op_host_native::NativeBackend::with_pdf_document(|| paint(canvas));
+        })
+    })
 }
 
 /// Render one resolved page as a single tightly cropped PDF page.
 pub fn render_page_pdf_bytes(page: &ScenePage) -> Result<Vec<u8>, ExportError> {
+    render_page_pdf_bytes_scaled(page, 1.0)
+}
+
+pub fn render_page_pdf_bytes_scaled(page: &ScenePage, scale: f32) -> Result<Vec<u8>, ExportError> {
     let bounds = crate::page_bounds(page).ok_or_else(|| ExportError::PageEmpty {
         page_id: page.id.clone(),
     })?;
-    render_pdf_item(bounds, |canvas| crate::paint_nodes(canvas, &page.children))
+    render_pdf_item(bounds, scale, |canvas| {
+        crate::paint_nodes(canvas, &page.children)
+    })
 }
 
 /// Render one node from its resolved containing page as a single PDF page.
@@ -58,15 +77,33 @@ pub fn render_node_on_page_pdf_bytes(
     page: &ScenePage,
     node_id: &str,
 ) -> Result<Vec<u8>, ExportError> {
-    let node = page
-        .find(node_id)
+    render_node_on_page_pdf_bytes_scaled(page, node_id, 1.0)
+}
+
+pub fn render_node_on_page_pdf_bytes_scaled(
+    page: &ScenePage,
+    node_id: &str,
+    scale: f32,
+) -> Result<Vec<u8>, ExportError> {
+    let batch = crate::SceneSelectionBatch::new(page, [node_id]);
+    let selected = batch
+        .get(node_id)
         .ok_or_else(|| ExportError::NodeNotFoundOnPage {
-            node_id: node_id.to_string(),
+            node_id: node_id.to_owned(),
             page_id: page.id.clone(),
         })?;
+    render_selected_node_pdf_bytes_scaled(&selected, scale)
+}
+
+/// Serialize one borrowed isolated subtree; containing-page context is absent.
+/// Page/ID and selected-node entrypoints retain ancestor context.
+pub fn render_scene_node_pdf_bytes_scaled(
+    node: &SceneNode,
+    scale: f32,
+) -> Result<Vec<u8>, ExportError> {
     if node.hidden {
         return Err(ExportError::NodeHidden {
-            node_id: node_id.to_string(),
+            node_id: node.id.clone(),
         });
     }
     let mut acc = crate::BoundsAcc::new();
@@ -74,9 +111,9 @@ pub fn render_node_on_page_pdf_bytes(
     let bounds = acc
         .into_rect()
         .ok_or_else(|| ExportError::NodePaintsNothing {
-            node_id: node_id.to_string(),
+            node_id: node.id.clone(),
         })?;
-    render_pdf_item(bounds, |canvas| crate::paint_node(canvas, node))
+    render_pdf_item(bounds, scale, |canvas| crate::paint_node(canvas, node))
 }
 
 /// In-memory PDF variant: render each requested node as one PDF page
@@ -89,48 +126,62 @@ pub fn render_node_on_page_pdf_bytes(
 pub fn render_nodes_pdf_bytes(
     scene: &LayoutScene,
     node_ids: &[&str],
-    _scale: f32,
+    scale: f32,
 ) -> Result<Vec<u8>, ExportError> {
+    if !scale.is_finite() || scale <= 0.0 {
+        return Err(ExportError::NonFiniteOutputSize);
+    }
     let page = scene.active_page().ok_or(ExportError::NoActivePage)?;
     if node_ids.is_empty() {
         return Err(ExportError::NoNodeIdsRequested);
     }
-    // Collect (node, bounds) pairs for requested ids — skip unknowns and
-    // nodes that paint nothing (mirrors export_node_raster's approach).
+    let batch = crate::SceneSelectionBatch::new(page, node_ids.iter().copied());
+    render_selection_batch_pdf_bytes(&batch, node_ids, scale)
+}
+
+/// Combined PDF from ordered isolated subtrees with no containing-page context.
+/// Use `render_selection_batch_pdf_bytes` for context-aware borrowed batches.
+/// Missing-ID policy belongs to the caller; hidden/unpainted nodes are skipped.
+pub fn render_resolved_nodes_pdf_bytes(
+    nodes: &[&SceneNode],
+    scale: f32,
+) -> Result<Vec<u8>, ExportError> {
+    if !scale.is_finite() || scale <= 0.0 {
+        return Err(ExportError::NonFiniteOutputSize);
+    }
     let mut pairs = Vec::new();
-    for &id in node_ids {
-        let Some(node) = page.find(id) else { continue };
+    for &node in nodes {
         let mut acc = crate::BoundsAcc::new();
         crate::collect_bounds(node, glam::Affine2::IDENTITY, &mut acc);
-        let Some(bounds) = acc.into_rect() else {
-            continue;
-        };
-        pairs.push((node, bounds));
+        if let Some(bounds) = acc.into_rect() {
+            pairs.push((node, bounds));
+        }
     }
     if pairs.is_empty() {
         return Err(ExportError::NoRequestedNodesPaint);
     }
-    // Find a common page size: the largest single-node bounds + margin on each
-    // side, so every page in the PDF is the same dimensions.
-    let (page_w, page_h) = {
-        let mut max_w = 0.0_f32;
-        let mut max_h = 0.0_f32;
-        for (_, b) in &pairs {
-            max_w = max_w.max(b.size.x);
-            max_h = max_h.max(b.size.y);
-        }
-        (max_w + PDF_MARGIN * 2.0, max_h + PDF_MARGIN * 2.0)
-    };
+    // Each selected node keeps its own page extent instead of inheriting the
+    // largest sibling's dimensions. No raster surface is allocated for scale.
+    if pairs.iter().any(|(_, b)| {
+        !((b.size.x + PDF_MARGIN * 2.0) * scale).is_finite()
+            || !((b.size.y + PDF_MARGIN * 2.0) * scale).is_finite()
+    }) {
+        return Err(ExportError::NonFiniteOutputSize);
+    }
     let mut buf: Vec<u8> = Vec::new();
     {
-        let mut pdf = skia_safe::pdf::new_document(&mut buf, None);
+        let metadata = metadata();
+        let mut pdf = skia_safe::pdf::new_document(&mut buf, Some(&metadata));
         for (node, bounds) in &pairs {
+            let page_w = (bounds.size.x + PDF_MARGIN * 2.0) * scale;
+            let page_h = (bounds.size.y + PDF_MARGIN * 2.0) * scale;
             let mut on_page = pdf.begin_page(skia_safe::Size::new(page_w, page_h), None);
             let canvas = on_page.canvas();
+            canvas.scale((scale, scale));
             // Position the node's content with PDF_MARGIN inset from the page
             // edges, the same translation strategy as the multi-page exporter.
             canvas.translate((PDF_MARGIN - bounds.origin.x, PDF_MARGIN - bounds.origin.y));
-            crate::paint_node(canvas, node);
+            op_host_native::NativeBackend::with_pdf_document(|| crate::paint_node(canvas, node));
             pdf = on_page.end_page();
         }
         pdf.close();
@@ -145,39 +196,46 @@ pub fn render_nodes_pdf_bytes(
 /// that frame at its own `(origin.x, origin.y)`; empty pages are
 /// skipped. Returns Err when no page has paintable content.
 pub fn render_pdf_bytes(scene: &LayoutScene) -> Result<Vec<u8>, ExportError> {
+    let mut output = Vec::new();
+    write_scene_pdf(scene, &mut output)?;
+    Ok(output)
+}
+
+fn write_scene_pdf(
+    scene: &LayoutScene,
+    output: &mut dyn std::io::Write,
+) -> Result<(), ExportError> {
     let bounds_per_page: Vec<_> = scene.pages.iter().map(crate::page_bounds).collect();
-    let any_some = bounds_per_page.iter().any(Option::is_some);
-    if !any_some {
+    if !bounds_per_page.iter().any(Option::is_some) {
         return Err(ExportError::NothingToExport);
     }
-    let (page_w, page_h) = {
-        let mut max_w = 0.0_f32;
-        let mut max_h = 0.0_f32;
-        for b in bounds_per_page.iter().flatten() {
-            max_w = max_w.max(b.size.x);
-            max_h = max_h.max(b.size.y);
-        }
-        (max_w + PDF_MARGIN * 2.0, max_h + PDF_MARGIN * 2.0)
-    };
-    let mut buf: Vec<u8> = Vec::new();
-    {
-        let mut pdf = skia_safe::pdf::new_document(&mut buf, None);
-        for (page, bounds_opt) in scene.pages.iter().zip(bounds_per_page.iter()) {
-            let Some(bounds) = bounds_opt else { continue };
-            let mut on_page = pdf.begin_page(skia_safe::Size::new(page_w, page_h), None);
-            let canvas = on_page.canvas();
-            canvas.translate((PDF_MARGIN - bounds.origin.x, PDF_MARGIN - bounds.origin.y));
-            crate::paint_nodes(canvas, &page.children);
-            pdf = on_page.end_page();
-        }
-        pdf.close();
+    let mut max_w = 0.0_f32;
+    let mut max_h = 0.0_f32;
+    for bounds in bounds_per_page.iter().flatten() {
+        max_w = max_w.max(bounds.size.x);
+        max_h = max_h.max(bounds.size.y);
     }
-    Ok(buf)
+    let width = max_w + PDF_MARGIN * 2.0;
+    let height = max_h + PDF_MARGIN * 2.0;
+    stream::write(output, |pages| {
+        for (page, bounds) in scene.pages.iter().zip(&bounds_per_page) {
+            let Some(bounds) = bounds else {
+                continue;
+            };
+            pages.page(width, height, |canvas| {
+                canvas.translate((PDF_MARGIN - bounds.origin.x, PDF_MARGIN - bounds.origin.y));
+                op_host_native::NativeBackend::with_pdf_document(|| {
+                    crate::paint_nodes(canvas, &page.children)
+                });
+            })?;
+        }
+        Ok(())
+    })
 }
 
 /// Write [`render_pdf_bytes`] to `target`.
 pub fn export_pdf(scene: &LayoutScene, target: &StdPath) -> Result<(), ExportError> {
-    std::fs::write(target, render_pdf_bytes(scene)?).map_err(|e| ExportError::Write(e.to_string()))
+    crate::encoding::write_atomic(target, |writer| write_scene_pdf(scene, writer))
 }
 
 /// Emit one PDF page per deck board — the deck flavour of [`export_pdf`].
@@ -205,8 +263,8 @@ pub fn export_deck_pdf(
     state: &op_editor_core::EditorState,
     target: &StdPath,
 ) -> Result<(), ExportError> {
-    std::fs::write(target, render_deck_pdf_bytes(state)?)
-        .map_err(|e| ExportError::Write(e.to_string()))
+    let boards = op_editor_core::preview_slideshow::active_page_boards(state);
+    export_deck_pdf_boards(state, target, &boards)
 }
 
 /// Render one PDF page per visible deck board in authored order.
@@ -235,8 +293,7 @@ pub fn export_deck_pdf_boards(
     target: &StdPath,
     boards: &[String],
 ) -> Result<(), ExportError> {
-    std::fs::write(target, render_deck_pdf_boards_bytes(state, boards)?)
-        .map_err(|e| ExportError::Write(e.to_string()))
+    crate::encoding::write_atomic(target, |writer| write_deck_pdf(state, boards, writer))
 }
 
 /// Render a filtered deck PDF in authored board order.
@@ -244,6 +301,16 @@ pub fn render_deck_pdf_boards_bytes(
     state: &op_editor_core::EditorState,
     boards: &[String],
 ) -> Result<Vec<u8>, ExportError> {
+    let mut output = Vec::new();
+    write_deck_pdf(state, boards, &mut output)?;
+    Ok(output)
+}
+
+fn write_deck_pdf(
+    state: &op_editor_core::EditorState,
+    boards: &[String],
+    output: &mut dyn std::io::Write,
+) -> Result<(), ExportError> {
     let scene = op_pen_loader::editor_state_to_active_page_export_layout_scene(state);
     // Without a resolvable active page no board can be looked up at all —
     // that is "nothing to export", not a separate failure mode.
@@ -257,10 +324,16 @@ pub fn render_deck_pdf_boards_bytes(
     // accidentally turn into a page shuffle.
     let wanted: std::collections::HashSet<&str> = boards.iter().map(String::as_str).collect();
     let deck = op_editor_core::preview_slideshow::active_page_boards(state);
+    let resolved = crate::node_lookup::resolve_page_nodes(
+        page,
+        deck.iter()
+            .filter(|id| wanted.contains(id.as_str()))
+            .map(String::as_str),
+    );
     let slides: Vec<&SceneNode> = deck
         .iter()
         .filter(|id| wanted.contains(id.as_str()))
-        .filter_map(|id| page.find(id))
+        .filter_map(|id| resolved.get(id.as_str()).copied())
         // Hidden boards are skipped for the same reason the slideshow
         // never presents them. A degenerate board is dropped too: skia
         // cannot open a zero-extent page.
@@ -269,21 +342,18 @@ pub fn render_deck_pdf_boards_bytes(
     if slides.is_empty() {
         return Err(ExportError::NothingToExport);
     }
-    let mut buf: Vec<u8> = Vec::new();
-    {
-        let mut pdf = skia_safe::pdf::new_document(&mut buf, None);
+    stream::write(output, |pages| {
         for node in slides {
             let bounds = node.bounds;
-            let mut on_page =
-                pdf.begin_page(skia_safe::Size::new(bounds.size.x, bounds.size.y), None);
-            let canvas = on_page.canvas();
-            canvas.translate((-bounds.origin.x, -bounds.origin.y));
-            crate::paint_node(canvas, node);
-            pdf = on_page.end_page();
+            pages.page(bounds.size.x, bounds.size.y, |canvas| {
+                canvas.translate((-bounds.origin.x, -bounds.origin.y));
+                op_host_native::NativeBackend::with_pdf_document(|| {
+                    crate::paint_node(canvas, node)
+                });
+            })?;
         }
-        pdf.close();
-    }
-    Ok(buf)
+        Ok(())
+    })
 }
 
 #[cfg(test)]

@@ -5,7 +5,8 @@
 //! (no dependency on the layout/empty-space helpers that remain in
 //! `read_tools.rs`).
 
-use std::collections::BTreeMap;
+use super::tools::read_walk;
+use std::{collections::BTreeMap, fmt::Write};
 
 use jian_ops_schema::node::PenNode;
 use op_editor_core::pen_node_ext::PenNodeExt;
@@ -47,9 +48,32 @@ impl McpTool for GetCanvasBounds {
 }
 
 pub fn get_canvas_bounds_snapshot(state: &EditorState) -> GetCanvasBounds {
-    let scene = op_pen_loader::editor_state_to_active_page_layout_scene(state);
+    canvas_bounds(state, false)
+}
+/// Trusted-host revision-keyed reuse; the original factory remains fresh.
+pub fn get_canvas_bounds_snapshot_cached(state: &EditorState) -> GetCanvasBounds {
+    canvas_bounds(state, true)
+}
+fn canvas_bounds(state: &EditorState, cached: bool) -> GetCanvasBounds {
+    let page = match &state.doc.pages {
+        Some(pages) if pages.is_empty() => return GetCanvasBounds { bounds: None },
+        Some(pages) => state.ui.active_page_index.min(pages.len() - 1),
+        None => 0,
+    };
+    let roots = if cached {
+        op_pen_loader::editor_state_to_page_item_geometry_cached(state, page, None)
+    } else {
+        std::sync::Arc::new(op_pen_loader::editor_state_to_page_item_geometry(
+            state, page, None,
+        ))
+    };
     GetCanvasBounds {
-        bounds: scene.content_bounds().map(|bounds| {
+        bounds: jian_scene::layout_scene::LayoutScene::content_bounds_from_rects(
+            roots
+                .iter()
+                .map(op_pen_loader::ComputedGeometry::visual_bounds),
+        )
+        .map(|bounds| {
             (
                 bounds.origin.x as i32,
                 bounds.origin.y as i32,
@@ -91,20 +115,62 @@ impl McpTool for FindNodeByName {
 
 pub fn find_node_by_name_snapshot(state: &EditorState) -> FindNodeByName {
     fn walk(nodes: &[PenNode], out: &mut Vec<(String, String, String)>) {
-        for n in nodes {
+        for entry in read_walk::nodes(nodes) {
+            let node = entry.node;
             out.push((
-                n.base().name.clone().unwrap_or_default(),
-                n.id_str().to_string(),
-                kind_label(n).to_string(),
+                node.base().name.clone().unwrap_or_default(),
+                node.id_str().to_string(),
+                kind_label(node).to_string(),
             ));
-            if let Some(children) = n.children() {
-                walk(children, out);
-            }
         }
     }
     let mut index = Vec::new();
     walk(active_children(state), &mut index);
     FindNodeByName { index }
+}
+
+/// Request-specific exact-name lookup on the active page; first DFS match wins.
+pub fn find_node_by_name_snapshot_for_call(
+    state: &EditorState,
+    args: &BTreeMap<String, String>,
+) -> FindNodeByName {
+    let index = args
+        .get("name")
+        .and_then(|name| {
+            first_match(active_children(state), "", 0, &|node| {
+                node.base().name.as_deref().unwrap_or_default() == name
+            })
+        })
+        .map(|(node, _, _)| {
+            vec![(
+                node.base().name.clone().unwrap_or_default(),
+                node.id_str().into(),
+                kind_label(node).into(),
+            )]
+        })
+        .unwrap_or_default();
+    FindNodeByName { index }
+}
+
+fn first_match<'a>(
+    nodes: &'a [PenNode],
+    parent: &'a str,
+    depth: u32,
+    matches: &impl Fn(&PenNode) -> bool,
+) -> Option<(&'a PenNode, &'a str, u32)> {
+    read_walk::nodes(nodes)
+        .find(|entry| matches(entry.node))
+        .map(|entry| {
+            (
+                entry.node,
+                if entry.depth == 0 {
+                    parent
+                } else {
+                    entry.parent
+                },
+                depth + entry.depth as u32,
+            )
+        })
 }
 
 // --- get_node_parent -------------------------------------------------
@@ -139,15 +205,54 @@ impl McpTool for GetNodeParent {
 
 pub fn get_node_parent_snapshot(state: &EditorState) -> GetNodeParent {
     fn walk(nodes: &[PenNode], parent: &str, depth: u32, out: &mut Vec<(String, String, u32)>) {
-        for n in nodes {
-            out.push((n.id_str().to_string(), parent.to_string(), depth));
-            if let Some(children) = n.children() {
-                walk(children, n.id_str(), depth + 1, out);
-            }
+        for entry in read_walk::nodes(nodes) {
+            out.push((
+                entry.node.id_str().to_string(),
+                if entry.depth == 0 {
+                    parent
+                } else {
+                    entry.parent
+                }
+                .to_string(),
+                depth + entry.depth as u32,
+            ));
         }
     }
     let mut index = Vec::new();
     walk(active_children(state), "", 0, &mut index);
+    GetNodeParent { index }
+}
+
+/// Parent queries intentionally use the active page and the first ID match,
+/// unlike get_node's global last-match contract.
+pub fn get_node_parent_snapshot_for_call(
+    state: &EditorState,
+    args: &BTreeMap<String, String>,
+) -> GetNodeParent {
+    let Some(id) = args.get("node_id") else {
+        return GetNodeParent { index: Vec::new() };
+    };
+    if let Some(lookup) = state
+        .trusted_node_lookup(active_children(state))
+        .filter(|lookup| lookup.is_indexed())
+    {
+        let index = lookup
+            .find(id, op_editor_core::NodeReadOrder::First)
+            .map(|found| {
+                vec![(
+                    found.node.id_str().into(),
+                    found.parent.map_or("", PenNodeExt::id_str).into(),
+                    found.depth as u32,
+                )]
+            })
+            .unwrap_or_default();
+        return GetNodeParent { index };
+    }
+    let index = args
+        .get("node_id")
+        .and_then(|id| first_match(active_children(state), "", 0, &|node| node.id_str() == id))
+        .map(|(node, parent, depth)| vec![(node.id_str().into(), parent.into(), depth)])
+        .unwrap_or_default();
     GetNodeParent { index }
 }
 
@@ -165,25 +270,30 @@ impl McpTool for CountNodes {
     }
     fn call(&self, _args: &BTreeMap<String, String>) -> ToolOutcome {
         let total: u32 = self.per_page.iter().sum();
-        let encoded: Vec<String> = self
-            .per_page
-            .iter()
-            .enumerate()
-            .map(|(i, c)| format!("{i}|{c}"))
-            .collect();
+        let mut encoded = String::new();
+        for (index, count) in self.per_page.iter().enumerate() {
+            if index > 0 {
+                encoded.push(';');
+            }
+            let _ = write!(encoded, "{index}|{count}");
+        }
         let mut out = BTreeMap::new();
         out.insert("total".into(), total.to_string());
-        out.insert("per_page".into(), encoded.join(";"));
+        out.insert("per_page".into(), encoded);
         ToolOutcome::Ok(out)
     }
 }
 
 pub fn count_nodes_snapshot(state: &EditorState) -> CountNodes {
+    if let Some(counts) = state.trusted_document_node_counts() {
+        let per_page = match counts.pages() {
+            Some(pages) => pages.iter().map(|page| page.total() as u32).collect(),
+            None => vec![counts.root().total() as u32],
+        };
+        return CountNodes { per_page };
+    }
     fn walk(nodes: &[PenNode]) -> u32 {
-        nodes
-            .iter()
-            .map(|n| 1u32 + n.children().map(|c| walk(c)).unwrap_or(0))
-            .sum()
+        read_walk::nodes(nodes).count() as u32
     }
     let per_page = match state.doc.pages.as_ref() {
         Some(pages) => pages.iter().map(|p| walk(&p.children)).collect(),
@@ -205,25 +315,32 @@ impl McpTool for ListNodeKinds {
         "list_node_kinds"
     }
     fn call(&self, _args: &BTreeMap<String, String>) -> ToolOutcome {
-        let encoded: Vec<String> = self
-            .histogram
-            .iter()
-            .map(|(k, c)| format!("{k}|{c}"))
-            .collect();
+        let mut encoded = String::new();
+        for (index, (kind, count)) in self.histogram.iter().enumerate() {
+            if index > 0 {
+                encoded.push(';');
+            }
+            let _ = write!(encoded, "{kind}|{count}");
+        }
         let mut out = BTreeMap::new();
         out.insert("distinct".into(), self.histogram.len().to_string());
-        out.insert("kinds".into(), encoded.join(";"));
+        out.insert("kinds".into(), encoded);
         ToolOutcome::Ok(out)
     }
 }
 
 pub fn list_node_kinds_snapshot(state: &EditorState) -> ListNodeKinds {
+    if let Some(counts) = state.trusted_document_node_counts() {
+        let histogram = counts
+            .active_page(state.ui.active_page_index)
+            .histogram()
+            .map(|(kind, count)| (kind.to_owned(), count as u32))
+            .collect();
+        return ListNodeKinds { histogram };
+    }
     fn walk(nodes: &[PenNode], counts: &mut BTreeMap<&'static str, u32>) {
-        for n in nodes {
-            *counts.entry(kind_label(n)).or_insert(0) += 1;
-            if let Some(children) = n.children() {
-                walk(children, counts);
-            }
+        for entry in read_walk::nodes(nodes) {
+            *counts.entry(kind_label(entry.node)).or_insert(0) += 1;
         }
     }
     let mut counts: BTreeMap<&'static str, u32> = BTreeMap::new();
@@ -241,6 +358,11 @@ pub fn list_node_kinds_snapshot(state: &EditorState) -> ListNodeKinds {
 pub struct GetHistoryDepth {
     pub past: usize,
     pub future: usize,
+    pub actor_past: usize,
+    pub actor_future: usize,
+    pub undo_blocked: bool,
+    pub redo_blocked: bool,
+    pub retention: op_editor_core::HistoryRetentionStatus,
 }
 
 impl McpTool for GetHistoryDepth {
@@ -251,12 +373,36 @@ impl McpTool for GetHistoryDepth {
         let mut out = BTreeMap::new();
         out.insert("past".into(), self.past.to_string());
         out.insert("future".into(), self.future.to_string());
+        out.insert("actor_past".into(), self.actor_past.to_string());
+        out.insert("actor_future".into(), self.actor_future.to_string());
+        out.insert("undo_blocked".into(), self.undo_blocked.to_string());
+        out.insert("redo_blocked".into(), self.redo_blocked.to_string());
+        out.insert(
+            "retained_bytes".into(),
+            self.retention.retained_bytes.to_string(),
+        );
+        out.insert(
+            "evicted_entries".into(),
+            self.retention.evicted_entries.to_string(),
+        );
+        out.insert(
+            "sizing_failures".into(),
+            self.retention.sizing_failures.to_string(),
+        );
+        out.insert("max_entries".into(), self.retention.max_entries.to_string());
+        out.insert("max_bytes".into(), self.retention.max_bytes.to_string());
         ToolOutcome::Ok(out)
     }
 }
 
 pub fn get_history_depth_snapshot(state: &EditorState) -> GetHistoryDepth {
+    let (actor_past, actor_future) = state.history.actor_depths();
     GetHistoryDepth {
+        actor_past,
+        actor_future,
+        undo_blocked: actor_past > 0 && !state.history.can_undo(),
+        redo_blocked: actor_future > 0 && !state.history.can_redo(),
+        retention: state.history.retention_status(),
         past: state.history.past.len(),
         future: state.history.future.len(),
     }
@@ -364,5 +510,38 @@ mod tests {
             Some((900, 100, 20, 30)),
             "fixed-size bounds and active-page selection stay unchanged"
         );
+    }
+
+    #[test]
+    fn compact_canvas_bounds_match_paint_visible_overflow_clips_hidden_and_workspace() {
+        let state = EditorState::from_document(jian_ops_schema::load_str(r#"{
+          "version":"1.0.0","pages":[{"id":"p","name":"P","children":[
+           {"id":"open","type":"frame","x":10.5,"y":20.25,"width":5,"height":5,"clipContent":false,
+            "children":[{"id":"escaped","type":"rectangle","x":40,"y":50,"width":10,"height":20}]},
+           {"id":"closed","type":"frame","width":5,"height":5,"clipContent":true,
+            "children":[{"id":"clipped","type":"rectangle","x":1000,"y":1000,"width":10,"height":20}]},
+           {"id":"hidden","type":"rectangle","width":20000,"height":20000,"enabled":false}
+          ]},{"id":"other","name":"Other","children":[]}] }"#).unwrap().value);
+        for active in [0, 1, usize::MAX] {
+            for preserve in [false, true] {
+                for workspace in [false, true] {
+                    let mut state = state.clone();
+                    state.ui.active_page_index = active;
+                    state.editor_ui.preserve_authored_geometry = preserve;
+                    state.editor_ui.workspace.visible = workspace;
+                    let expected = op_pen_loader::editor_state_to_active_page_layout_scene(&state)
+                        .content_bounds()
+                        .map(|b| {
+                            (
+                                b.origin.x as i32,
+                                b.origin.y as i32,
+                                b.size.x as i32,
+                                b.size.y as i32,
+                            )
+                        });
+                    assert_eq!(get_canvas_bounds_snapshot(&state).bounds, expected);
+                }
+            }
+        }
     }
 }

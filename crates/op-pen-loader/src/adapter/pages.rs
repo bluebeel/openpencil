@@ -97,17 +97,16 @@ pub(super) fn mark_root_frame_clips(roots: &[PenNode], children: &mut [NodePaylo
 /// origin` stays exported for `op-host-native`'s Canvas Preview tap
 /// translation, which still needs the authored origin as a standalone
 /// value (not baked into a rect).
-pub(super) fn compute_layout_with_measure(
+pub(crate) fn compute_layout_with_measure(
     root: &PenNode,
     out: &mut BTreeMap<String, [f32; 4]>,
     measure: Rc<dyn MeasureBackend>,
 ) {
     let (root_w, root_h) = root_available_size(root);
-    let mut tree = NodeTree::new();
-    tree.insert_subtree(root.clone(), None);
+    let tree = jian_core::document::BorrowedNodeTree::from_root(root);
     // Preview must use its injected runtime backend for paint geometry too.
     let mut engine = LayoutEngine::with_backend(measure);
-    let Ok(taffy_roots) = engine.build(&tree) else {
+    let Ok(taffy_roots) = engine.build_borrowed(&tree) else {
         return;
     };
     let Some(root_id) = taffy_roots.first() else {
@@ -125,7 +124,7 @@ pub(super) fn compute_layout_with_measure(
     for (id_str, node_key) in tree.by_id.iter() {
         if let Some(rect) = engine.node_rect(*node_key) {
             out.insert(
-                id_str.clone(),
+                (*id_str).to_owned(),
                 [
                     rect.origin.x,
                     rect.origin.y,
@@ -141,4 +140,33 @@ pub(super) fn compute_layout_with_measure(
 /// The canvas's selected backend, also used by runtimes that share its geometry.
 pub fn layout_measure_backend() -> Rc<dyn MeasureBackend> {
     LAYOUT_MEASURE_BACKEND.with(Rc::clone)
+}
+
+/// Layout the complete source root, then materialize only a prepared query spine.
+/// Sibling layout/fit-content repair remains exact; omitted paint data is unused.
+pub(crate) fn bounded_root_payload(root: &PenNode, spine: &PenNode, preserve: bool) -> NodePayload {
+    let rects = root_layout_rectangles(root, preserve);
+    bounded_root_payload_from_rects(spine, &rects)
+}
+
+pub(crate) fn root_layout_rectangles(root: &PenNode, preserve: bool) -> BTreeMap<String, [f32; 4]> {
+    if preserve {
+        crate::authored_geometry::rects_for_roots(std::slice::from_ref(root))
+    } else {
+        let mut rects = BTreeMap::new();
+        compute_layout_with_measure(root, &mut rects, layout_measure_backend());
+        rects
+    }
+}
+
+pub(crate) fn bounded_root_payload_from_rects(
+    spine: &PenNode,
+    rects: &BTreeMap<String, [f32; 4]>,
+) -> NodePayload {
+    let mut payload = node_to_payload(spine, rects);
+    mark_root_frame_clips(
+        std::slice::from_ref(spine),
+        std::slice::from_mut(&mut payload),
+    );
+    payload
 }

@@ -56,13 +56,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use jian_ops_schema::node::PenNode;
-use op_editor_core::command_node::remap_subtree_ids_mapping;
 use op_editor_core::{EditorState, NodeId, PenNodeExt};
 use serde_json::{json, Value};
 
-use super::batch_design::{find_top_level_char, normalize_node_shape, split_operations};
-use super::batch_direct_ops::{split_top_level_args, update_command_from_value};
+use super::batch_design::{find_top_level_char, normalize_node_shape, split_operation_slices};
+use super::batch_direct_ops::{split_top_level_args, update_command_from_owned_value};
 use super::batch_page::optional_page_id;
+pub(crate) use super::batch_program_context::ProgramCtx;
 use super::batch_program_error::ProgramError;
 use super::{EditorCommand, ToolOutcome};
 
@@ -80,6 +80,9 @@ use super::batch_program_resolve::{
     count_forest, find_node_by_path, line_preview, lookup_id, parent_node_id, resolve_page_index,
     resolve_parent_ref, resolve_path_expr, resolve_ref, strip_outer_quotes, with_page_id,
 };
+
+#[path = "batch_program_metadata.rs"]
+mod metadata;
 
 /// Every fallible step of the executor fails with [`ProgramError`].
 pub(crate) type Result<T> = std::result::Result<T, ProgramError>;
@@ -103,9 +106,12 @@ pub(crate) fn run_batch_design_program(
         .or_else(|| args.get("post_process"))
         .map(|raw| matches!(raw.trim(), "true" | "1"))
         .unwrap_or(false);
-    let lines = split_operations(operations);
+    let lines = split_operation_slices(operations);
+    if let Some(outcome) = metadata::prepare(snapshot, &lines, page_id.clone(), post_process) {
+        return outcome;
+    }
     let mut ctx = ProgramCtx {
-        sim: snapshot.clone(),
+        sim: op_editor_core::CommandSimulation::new(snapshot.clone_for_command_simulation()),
         page_id: page_id.clone(),
         bindings: BTreeMap::new(),
         alias: BTreeMap::new(),
@@ -260,107 +266,6 @@ fn is_replaceable_starter_root(node: &PenNode) -> bool {
             .is_none_or(|name| name.is_empty() || name == STARTER_FRAME_NAME)
 }
 
-pub(crate) struct ProgramCtx {
-    pub(crate) sim: EditorState,
-    pub(crate) page_id: Option<String>,
-    /// binding name → final (host-assigned) node id.
-    pub(crate) bindings: BTreeMap<String, String>,
-    /// authored id → final id for remapped inserts, first-wins (TS
-    /// `findNodeInTree` finds the first match in tree order).
-    pub(crate) alias: BTreeMap<String, String>,
-    pub(crate) results: Vec<Value>,
-    pub(crate) commands: Vec<EditorCommand>,
-    pub(crate) post_process: bool,
-    /// Monotonic counter for `_auto_*` bindless-line bindings.
-    pub(crate) auto_seq: usize,
-    /// Index of the operation currently being executed.
-    pub(crate) current_line: usize,
-    /// Append G() lines whose result binding receives explicit positive
-    /// numeric width and height later in this same program.
-    pub(crate) explicitly_sized_append_lines: BTreeSet<usize>,
-    /// Root placeholders that existed before this program started. Consumed
-    /// at most once so newly inserted empty screen shells remain siblings.
-    pub(crate) replaceable_empty_root_ids: Vec<String>,
-    /// Highest id this program has handed out, so an id freed by a `D()`
-    /// earlier in the SAME batch is never reissued. The document's own seed
-    /// is `max(existing) + 1`, which walks backwards after a delete: a
-    /// measured batch bound both the deleted badge and the image that
-    /// replaced it to `n16`, leaving one binding pointing at a node the
-    /// caller believes is gone.
-    pub(crate) id_high_water: u64,
-    /// Non-fatal notes for the line being executed; drained into the
-    /// envelope's `warnings[]` after each line.
-    pub(crate) warnings: Vec<String>,
-    /// The orchestrator's best-effort policy: node bodies may additionally
-    /// be salvaged by dropping one field the schema rejects.
-    pub(crate) best_effort: bool,
-}
-
-impl ProgramCtx {
-    /// Emit `cmd` AND apply it to the sim. The sim apply is the line's
-    /// final validation gate — the host will run the same code.
-    pub(crate) fn emit(&mut self, cmd: EditorCommand, failure: &str) -> Result<()> {
-        if !self.sim.apply(cmd.clone()) {
-            return Err(ProgramError::ApplyRejected(failure.to_string()));
-        }
-        self.commands.push(cmd);
-        Ok(())
-    }
-
-    pub(crate) fn warn(&mut self, warning: String) {
-        self.warnings.push(warning);
-    }
-
-    /// Parse options for a node body under this program's policy.
-    pub(crate) fn node_parse_options(&self, document_root: bool) -> NodeParseOptions {
-        NodeParseOptions {
-            post_process: self.post_process,
-            document_root,
-            handle_refs: false,
-            salvage_fields: self.best_effort,
-        }
-    }
-
-    pub(crate) fn bind(&mut self, binding: &str, node_id: &str) {
-        self.bindings
-            .insert(binding.to_string(), node_id.to_string());
-        // A re-bound name (a redraft, or scratch reuse) updates its existing
-        // results entry in place — consumers look bindings up by FIRST match,
-        // which must never point at a superseded draft's deleted id.
-        if let Some(entry) = self
-            .results
-            .iter_mut()
-            .find(|r| r.get("binding").and_then(Value::as_str) == Some(binding))
-        {
-            entry["nodeId"] = json!(node_id);
-        } else {
-            self.results
-                .push(json!({ "binding": binding, "nodeId": node_id }));
-        }
-    }
-
-    /// Assign fresh sim-allocator ids to `nodes` (in place); returns
-    /// the (authored → final) map. Authored ids are recorded into the
-    /// alias table so slash paths keep resolving TS-style.
-    pub(crate) fn remap(&mut self, nodes: &mut [PenNode]) -> Result<Vec<(String, String)>> {
-        let mut seed = self
-            .sim
-            .next_node_id_seed()
-            .ok_or(ProgramError::IdSpaceExhausted)?
-            .max(self.id_high_water);
-        let mut taken = self.sim.collect_node_ids();
-        let map = remap_subtree_ids_mapping(nodes, &mut seed, &mut taken)
-            .ok_or(ProgramError::IdSpaceExhausted)?;
-        self.id_high_water = seed;
-        for (old, new) in &map {
-            if !old.starts_with("__op_tmp_") {
-                self.alias.entry(old.clone()).or_insert_with(|| new.clone());
-            }
-        }
-        Ok(map)
-    }
-}
-
 /// TS `executeLine` — one DSL operation.
 fn execute_line(line: &str, ctx: &mut ProgramCtx) -> Result<()> {
     // Strip a trailing statement/list separator before the grammar sees the
@@ -378,9 +283,9 @@ fn execute_line(line: &str, ctx: &mut ProgramCtx) -> Result<()> {
     // carry literal newlines inside the arg list):
     //   binding=OP(args)  for I/C/K/R/M/G
     //   OP(args)          for I/C/K/R/G (auto-binding) and U/D/M (call)
-    let assign = regex(r"(?s)^(\w+)\s*=\s*([ICKRMG])\((.+)\)$");
-    let bindless = regex(r"(?s)^([ICKRG])\((.+)\)$");
-    let call = regex(r"(?s)^([UDM])\((.+)\)$");
+    let assign = regex!(r"(?s)^(\w+)\s*=\s*([ICKRMG])\((.+)\)$");
+    let bindless = regex!(r"(?s)^([ICKRG])\((.+)\)$");
+    let call = regex!(r"(?s)^([UDM])\((.+)\)$");
 
     if let Some(c) = assign.captures(line) {
         let binding = c.get(1).map_or("", |m| m.as_str()).to_string();
@@ -415,58 +320,67 @@ fn execute_line(line: &str, ctx: &mut ProgramCtx) -> Result<()> {
 /// Return append-G line indexes that are robustly sized by later U() calls in
 /// the same program. Parsing uses the DSL's top-level delimiter rules, so an
 /// '=' inside a quoted image prompt is never mistaken for a result binding.
-fn explicitly_sized_append_lines(lines: &[String]) -> BTreeSet<usize> {
+fn explicitly_sized_append_lines(lines: &[impl AsRef<str>]) -> BTreeSet<usize> {
+    #[derive(Default)]
+    struct Dimensions {
+        width: Option<bool>,
+        height: Option<bool>,
+    }
     let mut sized = BTreeSet::new();
-    for (index, line) in lines.iter().enumerate() {
-        let Some((Some(binding), 'G', args)) = parsed_operation(line) else {
+    let mut future: BTreeMap<String, Dimensions> = BTreeMap::new();
+    // The first patch seen backwards is the last patch in the forward sizing
+    // window. A rebind closes the window for earlier G() operations.
+    for (index, line) in lines.iter().enumerate().rev() {
+        let Some((binding, op, args)) = parsed_operation(line.as_ref()) else {
             continue;
         };
-        let parts = split_top_level_args(args);
-        let is_append = parts.len() == 4
-            && matches!(
-                serde_json::from_str::<String>(parts[3].trim()),
-                Ok(placement) if placement == "append"
-            );
-        if !is_append {
+        if let Some(binding) = binding {
+            if op == 'G'
+                && future
+                    .get(binding)
+                    .is_some_and(|dims| dims.width == Some(true) && dims.height == Some(true))
+            {
+                let parts = split_top_level_args(args);
+                if parts.len() == 4
+                    && matches!(
+                        serde_json::from_str::<String>(parts[3].trim()),
+                        Ok(placement) if placement == "append"
+                    )
+                {
+                    sized.insert(index);
+                }
+            }
+            future.remove(binding);
+        }
+        if op != 'U' {
             continue;
         }
-
-        let mut width_is_positive_number = false;
-        let mut height_is_positive_number = false;
-        for later in &lines[index + 1..] {
-            let Some((later_binding, op, later_args)) = parsed_operation(later) else {
-                continue;
-            };
-            // Rebinding closes this append's sizing window. A U() beyond it
-            // would target the newer node, not this image.
-            if later_binding == Some(binding) {
-                break;
-            }
-            if op != 'U' {
-                continue;
-            }
-            let Some(comma) = find_top_level_char(later_args, ',') else {
-                continue;
-            };
-            let target = strip_outer_quotes(later_args[..comma].trim());
-            if target != binding {
-                continue;
-            }
-            let Ok(value) = parse_json_arg(&later_args[comma + 1..]) else {
-                continue;
-            };
-            let Some(patch) = value.as_object() else {
-                continue;
-            };
-            if let Some(width) = patch.get("width") {
-                width_is_positive_number = positive_json_number(width);
-            }
-            if let Some(height) = patch.get("height") {
-                height_is_positive_number = positive_json_number(height);
-            }
+        let Some(comma) = find_top_level_char(args, ',') else {
+            continue;
+        };
+        let target = strip_outer_quotes(args[..comma].trim());
+        // A bound U() is invalid to execute, but it is still a rebinding
+        // boundary in this analysis, exactly as in the forward scanner.
+        if binding == Some(target.as_str()) {
+            continue;
         }
-        if width_is_positive_number && height_is_positive_number {
-            sized.insert(index);
+        let Ok(value) = parse_json_arg(&args[comma + 1..]) else {
+            continue;
+        };
+        let Some(patch) = value.as_object() else {
+            continue;
+        };
+        let width = patch.get("width").map(positive_json_number);
+        let height = patch.get("height").map(positive_json_number);
+        if width.is_none() && height.is_none() {
+            continue;
+        }
+        let dims = future.entry(target).or_default();
+        if dims.width.is_none() {
+            dims.width = width;
+        }
+        if dims.height.is_none() {
+            dims.height = height;
         }
     }
     sized
@@ -548,6 +462,7 @@ fn execute_insert(binding: &str, args: &str, ctx: &mut ProgramCtx) -> Result<()>
     )?;
     ctx.warnings.extend(parsed.notes);
     let (mut node, handle_refs) = (parsed.node, parsed.handle_refs);
+    super::batch_program_node_parse::mark_new_authored_layout(&mut node);
     delete_superseded_draft(binding, parent.as_deref(), &node, ctx);
 
     // TS auto-replace: a root-level frame insert replaces the first EMPTY
@@ -655,7 +570,7 @@ fn execute_update(args: &str, ctx: &mut ProgramCtx) -> Result<()> {
     // `batch_direct_ops` is shared with the non-program write paths and is
     // outside this conversion's scope; adapt its `String` at the boundary
     // rather than rippling the change into it.
-    let cmd = update_command_from_value(node_id, &value)?;
+    let cmd = update_command_from_owned_value(node_id, value)?;
     let cmd = with_page_id(cmd, ctx.page_id.clone());
     ctx.emit(cmd, &format!("Update failed for: {path}"))
 }

@@ -1,4 +1,4 @@
-//! Daemon lifecycle: bind the listener, spawn per-connection threads, honor
+//! Daemon lifecycle: bind the listener, reuse bounded connection workers, honor
 //! the managed-mode stdin lease, and the Origin / CORS gates the
 //! connection loop consults. Split out of `web_canvas_server.rs` to keep the
 //! spine under the 800-line cap. Managed mode is tokenless per request: its
@@ -44,7 +44,15 @@ pub fn run_web_canvas(options: ServeWebOptions) -> Result<()> {
     } = options;
     let current_path = path.clone();
     let credential_persistence = crate::web_credential_policy::from_env();
-    let mut editor = startup_editor_for_web_canvas_with_policy(path, credential_persistence)?;
+    let primary_files = primary_files::PrimaryFiles::unbound();
+    let prepared = primary_files
+        .prepare(path.as_deref(), true)
+        .map_err(|error| WebCanvasError::Config(error.to_string()))?;
+    let mut editor = connection_binding::startup(&prepared, path, credential_persistence)?;
+    prepared
+        .install()
+        .map_err(|error| WebCanvasError::Config(error.to_string()))?;
+    drop(prepared);
     enforce_credential_persistence_policy(
         &mut editor,
         credential_persistence,
@@ -73,15 +81,17 @@ pub fn run_web_canvas(options: ServeWebOptions) -> Result<()> {
              instructions (tools/check-wasm-bundle.sh, or set OPENPENCIL_WEB_BUNDLE_DIR)"
         ),
     }
-    // Shared across connection threads: the document authority (one writer at a
-    // time via the Mutex) + the SSE broadcast hub. Thread-per-connection so a
-    // long-lived SSE stream (or a slow client) never blocks other clients.
-    let state = Arc::new(Mutex::new(WebCanvasState::new_with_path_and_policy(
+    // Shared document authority (one writer at a time via the Mutex) and SSE
+    // hub. Bounded request workers hand long-lived SSE sockets to the shared
+    // async runtime instead of pinning a worker for each subscriber.
+    let state = Arc::new(Mutex::new(WebCanvasState::new_with_primary_files(
         editor,
         bound,
         current_path,
         credential_persistence,
+        primary_files,
     )));
+
     let hub = Arc::new(SseHub::default());
     let conn_count = Arc::new(AtomicUsize::new(0));
     // Raised by a connection thread that accepted a token-authenticated
@@ -135,17 +145,24 @@ pub fn run_web_canvas(options: ServeWebOptions) -> Result<()> {
     // `serve_one` uses the token only for a body-authenticated shutdown and
     // uses the allowlist as the browser request boundary. Ordinary native
     // requests carry neither X-OpenPencil-Token nor Authorization.
-    {
+    let authority = {
         let mut guard = state.lock().unwrap_or_else(|p| p.into_inner());
         guard.mode = mode;
         if managed_token.is_some() || !allow_origins.is_empty() {
             guard.managed_token = managed_token;
             guard.allow_origins = allow_origins;
         }
-    }
+        Arc::new(ConnAuthority::new(&guard))
+    };
     // The collaboration pump. It observes `shutdown` itself, so it retires
     // within one tick of the daemon being asked to stop.
     collab_driver::spawn(&state, &hub, &shutdown);
+    let sse_streams = Arc::new(async_sse::Streams::new());
+    let mut workers = connection_pool::ConnectionPool::with_capacity(
+        MAX_CONNECTION_WORKERS,
+        MAX_CONNS,
+        "op-serve-web-conn",
+    );
     for stream in listener.incoming() {
         if shutdown.load(Ordering::Acquire) {
             break;
@@ -168,16 +185,40 @@ pub fn run_web_canvas(options: ServeWebOptions) -> Result<()> {
         }
         conn_count.fetch_add(1, Ordering::AcqRel);
         let state = Arc::clone(&state);
+        let authority = Arc::clone(&authority);
         let hub = Arc::clone(&hub);
         let conns = Arc::clone(&conn_count);
         let shutdown_flag = Arc::clone(&shutdown);
-        let spawned = thread::Builder::new()
-            .name("op-serve-web-conn".into())
-            .spawn(move || {
-                let _conn_guard = ConnGuard(conns);
+        let connection = ConnGuard(conns);
+        let sse_streams = Arc::clone(&sse_streams);
+        let dispatched = workers.submit(
+            conn_count.load(Ordering::Acquire),
+            Box::new(move || {
                 let _ = s.set_read_timeout(Some(IO_TIMEOUT));
                 let _ = s.set_write_timeout(Some(IO_TIMEOUT));
-                match serve_one_in_mode(&mut s, &state, &hub, mode) {
+                // A queued socket has not entered document execution yet.
+                // Shutdown refuses it explicitly instead of applying it after
+                // the final writer barrier or dropping an ambiguous response.
+                if shutdown_flag.load(Ordering::Acquire) {
+                    let _ = crate::mcp_serve::write_mcp_http_response(
+                        &mut s,
+                        "503 Service Unavailable",
+                        r#"{"ok":false,"error":"server shutting down"}"#,
+                    );
+                    return;
+                }
+                let result = async_completion::with_primary(
+                    Arc::clone(&state),
+                    Arc::clone(&authority),
+                    Arc::clone(&hub),
+                    mode,
+                    || {
+                        async_sse::serve_socket(s, connection, &sse_streams, |socket| {
+                            serve_one_with_authority(socket, &state, &hub, mode, &authority)
+                        })
+                    },
+                );
+                match result {
                     Ok(true) => {
                         shutdown_flag.store(true, Ordering::Release);
                         // Wake the (possibly blocked) accept loop. Loopback
@@ -188,11 +229,13 @@ pub fn run_web_canvas(options: ServeWebOptions) -> Result<()> {
                     Ok(false) => {}
                     Err(e) => eprintln!("openpencil-desktop --serve-web: {e}"),
                 }
-            });
-        if spawned.is_err() {
-            conn_count.fetch_sub(1, Ordering::AcqRel);
+            }),
+        );
+        if let Err(error) = dispatched {
+            eprintln!("openpencil-desktop --serve-web: {error}");
         }
     }
+    sse_streams.close();
     eprintln!("openpencil-desktop --serve-web: shutdown requested; exiting");
     Ok(())
 }

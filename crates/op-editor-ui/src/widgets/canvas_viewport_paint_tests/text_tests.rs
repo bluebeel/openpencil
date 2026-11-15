@@ -513,9 +513,11 @@ fn svg_path_node_with_inner_shadow_paints_inset_shadow() {
         a: 0.5,
     };
     node.effects = vec![Effect::DropShadow(DropShadow {
+        blur_kernel: Default::default(),
         offset_x: 0.0,
         offset_y: 0.0,
         blur: 4.0,
+        spread: 0.0,
         color: shadow_color,
         inner: true,
     })];

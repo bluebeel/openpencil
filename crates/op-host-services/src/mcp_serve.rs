@@ -58,8 +58,7 @@ use op_mcp::{
     set_variable_string_snapshot, set_variables_snapshot, set_viewport_snapshot,
     snapshot_layout_snapshot, spawn_agents_snapshot, toggle_node_selection_snapshot,
     tool_search_snapshot, undo_snapshot, ungroup_selected_snapshot, update_node_snapshot,
-    upsert_component_snapshot, upsert_screen_snapshot, upsert_variables_snapshot, McpTool,
-    ToolRegistry,
+    upsert_component_snapshot, upsert_screen_snapshot, upsert_variables_snapshot, ToolRegistry,
 };
 #[cfg(feature = "mcp-debug-tools")]
 use op_mcp::{
@@ -69,10 +68,14 @@ use op_mcp::{
 pub(crate) mod auto_finalize;
 pub mod error;
 pub mod file_path;
+mod http_body_budget;
 mod sniff;
 
 pub use error::McpServeError;
 use sniff::{sniff_id_raw, sniff_method};
+pub(crate) fn is_protocol_control(line: &str) -> bool {
+    sniff::is_control_message(line)
+}
 
 /// Unwrap an MCP `tools/call` reply to the inner tool-result JSON text,
 /// so tests assert on the flat result fields directly. Strips an HTTP
@@ -99,9 +102,9 @@ pub fn load_editor_state(path: &Path) -> Result<EditorState, McpServeError> {
         .map_err(|error| McpServeError::Document(format!("load {}: {error}", path.display())))
 }
 
-/// Serialize through the same streaming, atomic path as desktop Save.
+/// Compact agent traffic through the same streaming, atomic commit as desktop Save.
 fn save_editor_state(state: &EditorState, path: &Path) -> Result<(), McpServeError> {
-    crate::doc_io::save_to_path(state, path)
+    crate::doc_io::save_to_path_compact(state, path)
         .map_err(|error| McpServeError::Document(format!("save {}: {error}", path.display())))
 }
 
@@ -159,17 +162,6 @@ pub(crate) fn normalize_icon_paths_after_apply(
     report
 }
 
-/// Run the two cheap, idempotent repair passes shared by every bare-MCP
-/// document write after the command itself has applied and before it saves.
-pub(crate) fn run_write_repairs_after_apply(state: &mut EditorState) -> bool {
-    normalize_mobile_screens_after_apply(state);
-    normalize_icon_paths_after_apply(state);
-    let mobile_nav_reflowed = op_orchestrator::repair_mobile_trailing_nav_reflow(state);
-    let image_slots_materialized =
-        op_orchestrator::cleanup_image_slots::materialize_empty_image_fill_slots(state);
-    mobile_nav_reflowed || image_slots_materialized
-}
-
 /// Process one JSON-RPC message line against the editor state.
 #[cfg(test)]
 fn process_message(
@@ -186,66 +178,14 @@ fn process_message(
     )
 }
 
-fn process_message_with_auto_finalize(
-    state: &mut EditorState,
-    path: &Path,
-    line: &str,
-    mut auto_finalize: Option<&mut auto_finalize::AutoFinalize>,
-    profile: tool_profile::McpAccessProfile,
-) -> Result<Option<String>, McpServeError> {
-    if let Some(response) = file_path::process_message_for_file_path_arg(Some(path), line, profile)?
-    {
-        return Ok(Some(response));
-    }
-    let explicit_finalize =
-        op_mcp::parse_tool_call(line.trim()).is_some_and(|call| call.tool == "finalize_design");
-    let annotation_only =
-        op_mcp::parse_tool_call(line.trim()).is_some_and(|call| call.tool == "annotate_image");
-    let mut applier_failed: Option<String> = None;
-    let mut apply_rejected = false;
-    // File-backed mode has no live canvas for any tool call to animate —
-    // the tool name is accepted (shared signature with the live-MCP path)
-    // and deliberately ignored here.
-    let response = process_message_with_applier_profiled(state, line, profile, |_, state, cmd| {
-        // `EditorState::apply` runs the pre-validate-then-mutate
-        // discipline; `false` means the command rejected and the
-        // document was NOT changed.
-        if !state.apply(cmd.clone()) {
-            apply_rejected = true;
-            return false;
-        }
-        if !annotation_only {
-            run_write_repairs_after_apply(state);
-        }
-        if let Err(e) = save_editor_state(state, path) {
-            applier_failed = Some(format!("save failed: {e}"));
-            return false;
-        }
-        if annotation_only {
-            if let Some(auto_finalize) = auto_finalize.as_deref_mut() {
-                auto_finalize.note_scoped_annotation(state.document_revision());
-            }
-        } else {
-            if let Some(auto_finalize) = auto_finalize.as_deref_mut() {
-                auto_finalize.note_write(Instant::now());
-            }
-        }
-        true
-    })?;
-    if let Some(ref msg) = applier_failed {
-        eprintln!("openpencil-desktop mcp: {msg}");
-    }
-    if explicit_finalize
-        && !apply_rejected
-        && applier_failed.is_none()
-        && response.as_deref().is_some_and(mcp_response_succeeded)
-    {
-        if let Some(auto_finalize) = auto_finalize {
-            auto_finalize.note_finalize(state.document_revision());
-        }
-    }
-    Ok(response)
-}
+mod command_apply;
+mod stdio_dispatch;
+pub(crate) mod write_repairs;
+pub(crate) use command_apply::{
+    apply_command_with_command_capture, apply_command_with_undo, apply_command_with_undo_report,
+    begin_command_capture, begin_command_capture_moving_clipboard,
+};
+use stdio_dispatch::process_message_with_auto_finalize;
 
 fn mcp_response_succeeded(response: &str) -> bool {
     serde_json::from_str::<serde_json::Value>(response)
@@ -275,70 +215,12 @@ where
     )
 }
 
-/// [`process_message_with_applier`] under an explicit capability profile.
-///
-/// The profile decides which tools the catalog advertises and which calls are
-/// refused before they run. A refusal is a normal `tools/call` error envelope
-/// carrying the originating request id — never a panic, and never a transport
-/// error, because an MCP client has to be able to keep the session.
-pub fn process_message_with_applier_profiled<F>(
-    state: &mut EditorState,
-    line: &str,
-    profile: tool_profile::McpAccessProfile,
-    mut apply: F,
-) -> Result<Option<String>, McpServeError>
-where
-    F: FnMut(&str, &mut EditorState, &EditorCommand) -> bool,
-{
-    let trimmed = line.trim();
-    if trimmed.is_empty() {
-        return Ok(None);
-    }
-    // MCP handshake / discovery methods short-circuit the tool dispatcher.
-    match sniff_method(trimmed).as_deref() {
-        Some("initialize") => {
-            return Ok(sniff_id_raw(trimmed).map(|id| initialize_response(&id)));
-        }
-        Some("tools/list") => {
-            return Ok(sniff_id_raw(trimmed)
-                .map(|id| tools_list_response(&id, state, debug_tools_enabled(), profile)));
-        }
-        Some("notifications/initialized") | Some("initialized") => {
-            return Ok(None); // notification — no response required
-        }
-        Some("ping") => {
-            return Ok(sniff_id_raw(trimmed)
-                .map(|id| ping_response(&id, headless_token_from_env().as_deref())));
-        }
-        _ => {}
-    }
-    // Fall through: tools/call or legacy direct dispatch. The
-    // registry snapshots `state` at build time, so it no longer
-    // borrows it once the applier closure mutates it.
-    let call = op_mcp::parse_tool_call(trimmed);
-    // Enforcement, ahead of the registry build and therefore ahead of the
-    // tool's own argument parsing: a denied tool never sees the path it was
-    // asked to open.
-    if let Some(call) = call.as_ref() {
-        if let Some(refusal) = profile.refuse_call(&call.tool, &call.arguments) {
-            // The ordinary tools/call error envelope (`isError:true`) with
-            // the originating id, so a client sees a refusal it can read
-            // rather than a transport failure that would drop the session.
-            return Ok(Some(op_mcp::tool_response_to_json(
-                &op_mcp::ToolResponse::Err {
-                    id: call.id.clone(),
-                    code: op_mcp::ToolErrorCode::ToolFailed,
-                    message: refusal.message(&call.tool),
-                },
-            )));
-        }
-    }
-    let requested_tool = call.map(|call| call.tool);
-    let registry = rebuild_registry(state, requested_tool.as_deref(), profile);
-    process_tool_message_with_registry(&registry, line, |tool_name, cmd| {
-        apply(tool_name, state, cmd)
-    })
-}
+mod profiled_dispatch;
+pub(crate) use atomic_tools::AuthorityAction;
+pub use profiled_dispatch::process_message_with_applier_profiled;
+pub(crate) use profiled_dispatch::{
+    process_message_with_bound_authority_actions, process_message_with_bound_authority_profiled,
+};
 
 /// Dispatch one already-classified tool call through a caller-provided
 /// registry. Live hosts use this seam for tools whose complete snapshot is
@@ -437,11 +319,19 @@ pub struct HttpRequest {
 
 /// Parse a capped HTTP header and then read exactly its declared body length.
 /// Query strings are stripped from the path before routing.
+/// Network hosts use `read_admitted_http_request` to retain a dispatch lease.
 pub fn read_http_request<S: std::io::Read>(stream: &mut S) -> Result<HttpRequest, McpServeError> {
+    read_http_request_with_budget(stream, None).map(|(request, _)| request)
+}
+
+pub(crate) use http_body_budget::{read_admitted_http_request, BodyLease as HttpBodyLease};
+
+fn read_http_request_with_budget<'a, S: std::io::Read>(
+    stream: &mut S,
+    budget: Option<&'a http_body_budget::BodyBudget>,
+) -> Result<(HttpRequest, http_body_budget::BodyLease<'a>), McpServeError> {
     const MAX_HEADER: usize = 64 * 1024;
-    // Whole-document sync can carry embedded images, so retain the 64 MiB
-    // ceiling while reading incrementally to avoid allocating from a claimed
-    // Content-Length alone.
+    // Whole-document sync can carry embedded images, so retain the 64 MiB cap.
     const MAX_BODY: usize = 64 * 1024 * 1024;
     let mut head: Vec<u8> = Vec::new();
     let mut byte = [0u8; 1];
@@ -618,9 +508,16 @@ pub fn read_http_request<S: std::io::Read>(stream: &mut S) -> Result<HttpRequest
             MAX_BODY / (1024 * 1024)
         )));
     }
-    // Grow the body from bytes actually received, not the declared length;
-    // socket timeouts bound a stalled peer.
-    let mut body = Vec::with_capacity(content_length.min(64 * 1024));
+    // Admission bounds the allocation before any body bytes are consumed.
+    // Allocate once for admitted bodies to avoid realloc overlap and copies;
+    // the raw compatibility parser still grows incrementally from received data.
+    let mut lease = http_body_budget::BodyLease::new(budget, content_length)?;
+    let capacity = if budget.is_some() {
+        content_length
+    } else {
+        content_length.min(64 * 1024)
+    };
+    let mut body = Vec::with_capacity(capacity);
     let mut remaining = content_length;
     let mut chunk = [0u8; 64 * 1024];
     while remaining > 0 {
@@ -633,6 +530,14 @@ pub fn read_http_request<S: std::io::Read>(stream: &mut S) -> Result<HttpRequest
                 "connection closed before body completed".into(),
             ));
         }
+        if body.len() + n > body.capacity() {
+            let target = body
+                .capacity()
+                .saturating_mul(2)
+                .max(body.len() + n)
+                .min(content_length);
+            body.reserve_exact(target - body.len());
+        }
         body.extend_from_slice(&chunk[..n]);
         remaining -= n;
     }
@@ -642,20 +547,39 @@ pub fn read_http_request<S: std::io::Read>(stream: &mut S) -> Result<HttpRequest
             message: "design.md evidence body must be valid UTF-8".into(),
         })?
     } else {
-        String::from_utf8_lossy(&body).into_owned()
+        match String::from_utf8(body) {
+            Ok(body) => body,
+            Err(error) => {
+                let bytes = error.into_bytes();
+                // Replacement characters may need three bytes per input byte,
+                // overlapping the original bytes until conversion completes.
+                lease.grow(bytes.len().saturating_mul(3))?;
+                let mut body = String::with_capacity(bytes.len().saturating_mul(3));
+                for chunk in bytes.utf8_chunks() {
+                    body.push_str(chunk.valid());
+                    if !chunk.invalid().is_empty() {
+                        body.push('\u{fffd}');
+                    }
+                }
+                body
+            }
+        }
     };
-    Ok(HttpRequest {
-        method,
-        path,
-        body,
-        host,
-        origin,
-        token,
-        content_type,
-        authorization,
-        cookie,
-        query,
-    })
+    Ok((
+        HttpRequest {
+            method,
+            path,
+            body,
+            host,
+            origin,
+            token,
+            content_type,
+            authorization,
+            cookie,
+            query,
+        },
+        lease,
+    ))
 }
 
 /// Compatibility wrapper for older tests/callers that only care about
@@ -684,36 +608,12 @@ pub fn write_mcp_http_response<S: std::io::Write>(
 /// `--allow-origin` allowlist; every other caller (the `--mcp-http`
 /// server, the legacy `--serve-web` accept-loop overflow reply) keeps the
 /// permissive `*` via `write_mcp_http_response` above, unchanged.
-pub(crate) fn write_mcp_http_response_with_origin<S: std::io::Write>(
-    stream: &mut S,
-    status: &str,
-    body: &str,
-    cors_origin: Option<&str>,
-) -> Result<(), McpServeError> {
-    let cors_line = cors_origin
-        .map(|origin| format!("Access-Control-Allow-Origin: {origin}\r\n"))
-        .unwrap_or_default();
-    let http = format!(
-        "HTTP/1.1 {status}\r\n\
-         {cors_line}\
-         Access-Control-Allow-Methods: GET, POST, DELETE, OPTIONS\r\n\
-         Access-Control-Allow-Headers: Content-Type, mcp-session-id, X-OpenPencil-Token, Authorization\r\n\
-         Access-Control-Expose-Headers: mcp-session-id\r\n\
-         mcp-session-id: openpencil\r\n\
-         Cache-Control: no-store\r\n\
-         Content-Type: application/json\r\n\
-         Content-Length: {}\r\nConnection: close\r\n\r\n{}",
-        body.len(),
-        body
-    );
-    stream
-        .write_all(http.as_bytes())
-        .map_err(|e| McpServeError::Io(format!("http write: {e}")))?;
-    stream
-        .flush()
-        .map_err(|e| McpServeError::Io(format!("http flush: {e}")))
-}
+mod http_response;
+pub(crate) use http_response::write_mcp_http_response_with_origin;
 
+mod atomic_tools;
+mod boolean_selected;
+mod canvas_query;
 mod registry;
 use registry::rebuild_registry;
 
@@ -723,11 +623,25 @@ pub use wire::*;
 mod doc_sync;
 pub use doc_sync::*;
 
+pub(crate) mod agent_context;
+pub(crate) mod cohort_candidate;
+pub(crate) mod cohort_coverage;
+pub(crate) mod cohort_generation;
+mod export_result;
+pub(crate) mod export_stream;
+pub(crate) mod file_ownership;
+pub(crate) mod http_export;
 mod lean_profile;
 mod lean_tools;
+pub(crate) mod raster_response;
+mod raster_snapshot;
+mod resident_charge;
+mod resident_documents;
+pub(crate) mod resident_groups;
 pub(crate) mod schemas;
 pub mod tool_catalog;
 mod tools_list;
+pub(crate) use tools_list::fenced_protocol_response;
 use tools_list::tools_list_response;
 pub mod tool_profile;
 #[cfg(not(feature = "mcp-debug-tools"))]
@@ -776,6 +690,12 @@ mod finalize_tool_advisory_tests;
 #[cfg(test)]
 mod finalize_tool_tests;
 #[cfg(test)]
+mod prepared_dispatch_tests;
+#[cfg(test)]
 mod tests;
 #[cfg(test)]
+mod undo_dispatch_tests;
+#[cfg(test)]
 mod wire_tests;
+
+mod owned_dispatch;

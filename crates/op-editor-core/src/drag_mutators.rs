@@ -205,15 +205,22 @@ impl EditorState {
         let Some(parent_node) = find_node_mut(children, parent) else {
             return false;
         };
+        // A failed search must not materialize absent container children.
+        if parent_node.children().is_none() {
+            return false;
+        }
         let Some(siblings) = parent_node.children_mut() else {
             return false;
         };
         let Some(cur) = siblings.iter().position(|n| n.id_str() == child.as_str()) else {
             return false;
         };
-        let node = siblings.remove(cur);
-        let idx = index.min(siblings.len());
-        siblings.insert(idx, node);
+        let idx = index.min(siblings.len() - 1);
+        if cur < idx {
+            siblings[cur..=idx].rotate_left(1);
+        } else if cur > idx {
+            siblings[idx..=cur].rotate_right(1);
+        }
         cur != idx
     }
 

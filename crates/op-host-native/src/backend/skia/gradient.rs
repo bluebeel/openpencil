@@ -8,8 +8,12 @@
 //! `pub(super)` so the parent's tests module (`skia/tests.rs`) can
 //! exercise them without re-exporting.
 
-use super::{to_sk_rect, NativeBackend};
+use super::{raster_point, to_sk_rect, NativeBackend};
 use op_editor_ui::{Color, Rect};
+
+#[path = "gradient_cache.rs"]
+mod cache;
+pub(super) use cache::{linear as linear_shader, radial as radial_shader};
 
 impl NativeBackend {
     /// Fill a (round-)rectangle with a linear gradient. `stops`
@@ -32,27 +36,17 @@ impl NativeBackend {
         if stops.is_empty() {
             return;
         }
-        let (start, end) = linear_gradient_endpoints(rect, angle_deg);
-        let (colors, offsets) = gradient_color_arrays(stops, opacity);
-        let grad_colors = skia_safe::gradient::Colors::new(
-            &colors[..],
-            Some(offsets.as_slice()),
-            skia_safe::TileMode::Clamp,
-            None,
-        );
-        let gradient = skia_safe::gradient::Gradient::new(grad_colors, premul_interpolation());
-        let Some(shader) =
-            skia_safe::gradient::shaders::linear_gradient((start, end), &gradient, None)
-        else {
+        let (start, end) = linear_gradient_endpoints(self.active_paint_rect(rect), angle_deg);
+        let Some(shader) = linear_shader(start, end, stops, opacity) else {
             // Skia refused to build the shader (degenerate input);
             // degrade to first-stop solid so the node still paints.
             self.fill_round_rect(canvas, rect, radius, fold_opacity(stops[0].1, opacity));
             return;
         };
         let mut paint = skia_safe::Paint::default();
-        paint.set_anti_alias(true);
+        jian_skia::raster_sampling::configure_geometry(&mut paint);
         paint.set_shader(shader);
-        canvas.draw_round_rect(to_sk_rect(rect), radius, radius, &paint);
+        raster_point::draw_round_rect(canvas, to_sk_rect(rect), radius, radius, &paint);
     }
 
     /// Fill a (round-)rectangle with a radial gradient. `cx_frac` /
@@ -77,42 +71,33 @@ impl NativeBackend {
         if stops.is_empty() {
             return;
         }
+        let paint_rect = self.active_paint_rect(rect);
         let center = skia_safe::Point::new(
-            rect.origin.x + rect.size.x * cx_frac.clamp(0.0, 1.0),
-            rect.origin.y + rect.size.y * cy_frac.clamp(0.0, 1.0),
+            paint_rect.origin.x + paint_rect.size.x * cx_frac.clamp(0.0, 1.0),
+            paint_rect.origin.y + paint_rect.size.y * cy_frac.clamp(0.0, 1.0),
         );
         // Match `pen-renderer/src/node-renderer.ts:187` — outer
         // radius is `radius_frac × max(w, h)`. Earlier this used
         // `min(w, h) / 2`, which made existing `.op` radial
         // gradients render at roughly 1/4 the size on native vs.
         // web/export.
-        let outer = (rect.size.x.max(rect.size.y)) * radius_frac.clamp(0.0, 1.0);
+        let outer = (paint_rect.size.x.max(paint_rect.size.y)) * radius_frac.clamp(0.0, 1.0);
         let outer = outer.max(0.01); // Sub-pixel radii confuse skia's shader.
-        let (colors, offsets) = gradient_color_arrays(stops, opacity);
-        let grad_colors = skia_safe::gradient::Colors::new(
-            &colors[..],
-            Some(offsets.as_slice()),
-            skia_safe::TileMode::Clamp,
-            None,
-        );
-        let gradient = skia_safe::gradient::Gradient::new(grad_colors, premul_interpolation());
-        let Some(shader) =
-            skia_safe::gradient::shaders::radial_gradient((center, outer), &gradient, None)
-        else {
+        let Some(shader) = radial_shader(center, outer, stops, opacity) else {
             self.fill_round_rect(canvas, rect, radius, fold_opacity(stops[0].1, opacity));
             return;
         };
         let mut paint = skia_safe::Paint::default();
-        paint.set_anti_alias(true);
+        jian_skia::raster_sampling::configure_geometry(&mut paint);
         paint.set_shader(shader);
-        canvas.draw_round_rect(to_sk_rect(rect), radius, radius, &paint);
+        raster_point::draw_round_rect(canvas, to_sk_rect(rect), radius, radius, &paint);
     }
 
     /// Fill a (round-)rectangle with a Gouraud-interpolated mesh
     /// gradient. `colors` is a row-major `rows`×`cols` lattice
     /// (length == `rows * cols`); vertex `(r, c)` anchors the colour at
     /// rect position `(c/(cols-1), r/(rows-1))`. The grid is triangulated
-    /// into `VertexMode::Triangles` with a u16 index buffer and drawn via
+    /// into `VertexMode::Triangles` (indexed when representable) and drawn via
     /// `Canvas::draw_vertices` under a round-rect clip so the fill
     /// respects the corner radius. `opacity` folds into the layer alpha.
     #[allow(clippy::too_many_arguments)]
@@ -126,59 +111,47 @@ impl NativeBackend {
         colors: &[Color],
         opacity: f32,
     ) {
-        let rows = rows.max(2);
-        let cols = cols.max(2);
-        let vcount = (rows * cols) as usize;
-        if colors.len() != vcount {
-            // Malformed grid — degrade to first-vertex solid so the
-            // node still paints instead of vanishing.
+        if self.has_paint_space() {
+            super::raster_point::mesh_field(
+                canvas,
+                rect,
+                self.active_paint_rect(rect),
+                radius,
+                rows,
+                cols,
+                colors,
+                opacity,
+                false,
+            );
+            return;
+        }
+        if super::raster_point::mesh(canvas, rect, radius, rows, cols, colors, opacity) {
+            return;
+        }
+        let count = rows.max(2).checked_mul(cols.max(2)).map(|n| n as usize);
+        if count != Some(colors.len()) {
+            // Preserve the legacy malformed-grid solid fallback.
             if let Some(c) = colors.first() {
                 self.fill_round_rect(canvas, rect, radius, fold_opacity(*c, opacity));
             }
             return;
         }
-
-        let denom_c = (cols - 1) as f32;
-        let denom_r = (rows - 1) as f32;
-        let mut positions: Vec<skia_safe::Point> = Vec::with_capacity(vcount);
-        let mut sk_colors: Vec<skia_safe::Color> = Vec::with_capacity(vcount);
-        for r in 0..rows {
-            for c in 0..cols {
-                let x = rect.origin.x + (c as f32 / denom_c) * rect.size.x;
-                let y = rect.origin.y + (r as f32 / denom_r) * rect.size.y;
-                positions.push(skia_safe::Point::new(x, y));
-                let col = colors[(r * cols + c) as usize];
+        let Some(vertices) = jian_skia::mesh_geometry::lattice_vertices(
+            [rect.origin.x, rect.origin.y, rect.size.x, rect.size.y],
+            rows,
+            cols,
+            colors.len(),
+            |i| {
+                let col = colors[i];
                 let to_u8 = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
-                let a = (col.a * opacity).clamp(0.0, 1.0);
-                sk_colors.push(skia_safe::Color::from_argb(
-                    to_u8(a),
-                    to_u8(col.r),
-                    to_u8(col.g),
-                    to_u8(col.b),
-                ));
-            }
-        }
-
-        // Two triangles per grid cell (CCW). Index of vertex (r, c) is
-        // `r * cols + c`.
-        let mut indices: Vec<u16> = Vec::with_capacity(((rows - 1) * (cols - 1) * 6) as usize);
-        for r in 0..(rows - 1) {
-            for c in 0..(cols - 1) {
-                let tl = (r * cols + c) as u16;
-                let tr = (r * cols + c + 1) as u16;
-                let bl = ((r + 1) * cols + c) as u16;
-                let br = ((r + 1) * cols + c + 1) as u16;
-                indices.extend_from_slice(&[tl, tr, bl, tr, br, bl]);
-            }
-        }
-
-        let vertices = skia_safe::Vertices::new_copy(
-            skia_safe::vertices::VertexMode::Triangles,
-            &positions,
-            &positions,
-            &sk_colors,
-            Some(&indices),
-        );
+                // The draw paint applies layer opacity exactly once, matching
+                // the float-mesh path and Jian's mesh draw.
+                skia_safe::Color::from_argb(to_u8(col.a), to_u8(col.r), to_u8(col.g), to_u8(col.b))
+            },
+        ) else {
+            jian_skia::raster_sampling::mark_unsupported("unrepresentable mesh grid");
+            return;
+        };
 
         let restore = canvas.save();
         if radius > 0.5 {
@@ -191,9 +164,17 @@ impl NativeBackend {
                     skia_safe::Point::new(radius, radius),
                 ],
             );
-            canvas.clip_rrect(rrect, None, Some(true));
+            canvas.clip_rrect(
+                rrect,
+                None,
+                Some(jian_skia::raster_sampling::geometry_antialias()),
+            );
         } else {
-            canvas.clip_rect(to_sk_rect(rect), None, Some(true));
+            canvas.clip_rect(
+                to_sk_rect(rect),
+                None,
+                Some(jian_skia::raster_sampling::geometry_antialias()),
+            );
         }
         // `draw_vertices` with no shader combines each interpolated vertex
         // colour with the paint's colour via `mode`. A default Paint is
@@ -202,7 +183,7 @@ impl NativeBackend {
         // through unchanged (white × vertex == vertex). `opacity` rides in
         // the paint's alpha.
         let mut paint = skia_safe::Paint::default();
-        paint.set_anti_alias(true);
+        jian_skia::raster_sampling::configure_geometry(&mut paint);
         paint.set_color4f(
             skia_safe::Color4f::new(1.0, 1.0, 1.0, opacity.clamp(0.0, 1.0)),
             None,
@@ -233,7 +214,7 @@ impl NativeBackend {
     ) {
         use skia_safe::runtime_effect::RuntimeShaderBuilder;
 
-        let local_matrix = runtime_shader_local_matrix(rect, uniforms);
+        let local_matrix = runtime_shader_local_matrix(self.active_paint_rect(rect), uniforms);
         let shader = self.shader_cache.get_or_compile(sksl).and_then(|effect| {
             // `RuntimeEffect` is an RCHandle — this is a refcount bump,
             // not a recompile.
@@ -247,7 +228,7 @@ impl NativeBackend {
         });
 
         let mut paint = skia_safe::Paint::default();
-        paint.set_anti_alias(true);
+        jian_skia::raster_sampling::configure_geometry(&mut paint);
         paint.set_alpha_f(opacity.clamp(0.0, 1.0));
         match shader {
             Some(s) => {
@@ -265,12 +246,11 @@ impl NativeBackend {
                     ),
                     None,
                 );
-                // alpha already folded into Color4f; reset the layer alpha
-                // so it isn't applied twice.
-                paint.set_alpha_f(1.0);
+                // Paint alpha is the Color4f alpha itself, not an independent
+                // layer factor. Keep the authored fallback alpha set above.
             }
         }
-        canvas.draw_round_rect(to_sk_rect(rect), radius, radius, &paint);
+        raster_point::draw_round_rect(canvas, to_sk_rect(rect), radius, radius, &paint);
     }
 
     /// Distinct SkSL programs compiled so far — exposed for the
@@ -284,23 +264,10 @@ impl NativeBackend {
 /// dimensions. Preset shaders receive an exact `float2 size` uniform;
 /// arbitrary shaders without a valid size still get node-local coordinates.
 fn runtime_shader_local_matrix(rect: Rect, uniforms: &[(&str, &[f32])]) -> skia_safe::Matrix {
-    let mut matrix = skia_safe::Matrix::new_identity();
-    let document_size = uniforms
-        .iter()
-        .find(|(name, values)| *name == "size" && values.len() == 2)
-        .map(|(_, values)| (values[0], values[1]));
-
-    if let Some((width, height)) = document_size {
-        if width.is_finite() && height.is_finite() && width > 0.0 && height > 0.0 {
-            matrix.set_scale_translate(
-                (rect.size.x / width, rect.size.y / height),
-                (rect.origin.x, rect.origin.y),
-            );
-            return matrix;
-        }
-    }
-    matrix.set_translate((rect.origin.x, rect.origin.y));
-    matrix
+    jian_skia::shader_geometry::local_matrix(
+        [rect.origin.x, rect.origin.y, rect.size.x, rect.size.y],
+        uniforms.iter().map(|(name, values)| (*name, *values)),
+    )
 }
 
 /// Multiply a colour's alpha by a per-fill opacity factor. Used as

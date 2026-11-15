@@ -21,19 +21,19 @@ fn size(x: f32, y: f32) -> FigValue {
 fn guid_path(guids: Vec<FigValue>) -> FigValue {
     obj(vec![(
         "guidPath",
-        obj(vec![("guids", FigValue::Array(guids))]),
+        obj(vec![("guids", FigValue::Array(guids.into()))]),
     )])
 }
 
 fn ov_with(guids: Vec<FigValue>, extra: Vec<(&str, FigValue)>) -> FigValue {
     let mut pairs = vec![(
         "guidPath".into(),
-        obj(vec![("guids", FigValue::Array(guids))]),
+        obj(vec![("guids", FigValue::Array(guids.into()))]),
     )];
     for (k, v) in extra {
         pairs.push((k.into(), v));
     }
-    FigValue::Object(pairs)
+    FigValue::Object(pairs.into())
 }
 
 fn sized_leaf(name: &str, lid: u32, w: f32, h: f32) -> TreeNode {
@@ -157,10 +157,10 @@ fn pooled_seeding_assigns_by_cross_instance_evidence() {
                 "symbolData",
                 obj(vec![
                     ("symbolID", guid(0, 0)),
-                    ("symbolOverrides", FigValue::Array(ov)),
+                    ("symbolOverrides", FigValue::Array(ov.into())),
                 ]),
             ),
-            ("derivedSymbolData", FigValue::Array(dv)),
+            ("derivedSymbolData", FigValue::Array(dv.into())),
         ]),
         children: vec![],
     };
@@ -255,10 +255,10 @@ fn geometry_seeding_pins_from_rich_sibling_instance() {
                 "symbolData",
                 obj(vec![
                     ("symbolID", guid(0, 0)),
-                    ("symbolOverrides", FigValue::Array(ov)),
+                    ("symbolOverrides", FigValue::Array(ov.into())),
                 ]),
             ),
-            ("derivedSymbolData", FigValue::Array(dv)),
+            ("derivedSymbolData", FigValue::Array(dv.into())),
         ]),
         children: vec![],
     };
@@ -306,7 +306,7 @@ fn geometry_seeding_pins_from_rich_sibling_instance() {
         vec![guid(9, 50)],
         vec![(
             "fillPaints",
-            FigValue::Array(vec![obj(vec![("type", FigValue::Str("SOLID".into()))])]),
+            FigValue::Array(vec![obj(vec![("type", FigValue::Str("SOLID".into()))])].into()),
         )],
     )];
     // 4 bare entries != 3 subtree nodes so Strategy 1's index
@@ -354,10 +354,13 @@ fn geometry_seeding_uses_fill_override_as_tie_breaker() {
         if filled {
             n.figma.set(
                 "fillPaints",
-                FigValue::Array(vec![obj(vec![
-                    ("type", FigValue::Str("SOLID".into())),
-                    ("opacity", FigValue::Float(0.12)),
-                ])]),
+                FigValue::Array(
+                    vec![obj(vec![
+                        ("type", FigValue::Str("SOLID".into())),
+                        ("opacity", FigValue::Float(0.12)),
+                    ])]
+                    .into(),
+                ),
             );
         }
         n
@@ -384,34 +387,43 @@ fn geometry_seeding_uses_fill_override_as_tie_breaker() {
                     ("symbolID", guid(0, 0)),
                     (
                         "symbolOverrides",
-                        FigValue::Array(vec![ov_with(
-                            vec![guid(9, 50)],
-                            vec![(
-                                "fillPaints",
-                                FigValue::Array(vec![obj(vec![
-                                    ("type", FigValue::Str("SOLID".into())),
-                                    ("opacity", FigValue::Float(0.12)),
-                                ])]),
-                            )],
-                        )]),
+                        FigValue::Array(
+                            vec![ov_with(
+                                vec![guid(9, 50)],
+                                vec![(
+                                    "fillPaints",
+                                    FigValue::Array(
+                                        vec![obj(vec![
+                                            ("type", FigValue::Str("SOLID".into())),
+                                            ("opacity", FigValue::Float(0.12)),
+                                        ])]
+                                        .into(),
+                                    ),
+                                )],
+                            )]
+                            .into(),
+                        ),
                     ),
                 ]),
             ),
             (
                 "derivedSymbolData",
-                FigValue::Array(vec![ov_with(
-                    vec![guid(9, 50)],
-                    vec![
-                        ("size", size(77.0, 19.0)),
-                        (
-                            "transform",
-                            obj(vec![
-                                ("m02", FigValue::Float(243.0)),
-                                ("m12", FigValue::Float(0.0)),
-                            ]),
-                        ),
-                    ],
-                )]),
+                FigValue::Array(
+                    vec![ov_with(
+                        vec![guid(9, 50)],
+                        vec![
+                            ("size", size(77.0, 19.0)),
+                            (
+                                "transform",
+                                obj(vec![
+                                    ("m02", FigValue::Float(243.0)),
+                                    ("m12", FigValue::Float(0.0)),
+                                ]),
+                            ),
+                        ],
+                    )]
+                    .into(),
+                ),
             ),
         ]),
         children: vec![],
@@ -487,12 +499,12 @@ fn swapped_instance_does_not_seed_base_component_cache() {
                 "symbolData",
                 obj(vec![
                     ("symbolID", guid(0, 0)),
-                    ("symbolOverrides", FigValue::Array(vec![])),
+                    ("symbolOverrides", FigValue::Array(vec![].into())),
                 ]),
             ),
             (
                 "derivedSymbolData",
-                FigValue::Array(vec![geom(50, 8.0, 8.0, 11.0), geom(51, 20.0, 20.0, 0.0)]),
+                FigValue::Array(vec![geom(50, 8.0, 8.0, 11.0), geom(51, 20.0, 20.0, 0.0)].into()),
             ),
         ]),
         children: vec![],
@@ -536,13 +548,19 @@ fn pooled_seeding_does_not_overwrite_existing_pin() {
                         ("symbolID", guid(0, 0)),
                         (
                             "symbolOverrides",
-                            FigValue::Array(vec![ov_with(
-                                vec![guid(9, 51)],
-                                vec![(
-                                    "textData",
-                                    obj(vec![("characters", FigValue::Str("Customers".into()))]),
-                                )],
-                            )]),
+                            FigValue::Array(
+                                vec![ov_with(
+                                    vec![guid(9, 51)],
+                                    vec![(
+                                        "textData",
+                                        obj(vec![(
+                                            "characters",
+                                            FigValue::Str("Customers".into()),
+                                        )]),
+                                    )],
+                                )]
+                                .into(),
+                            ),
                         ),
                     ]),
                 ),

@@ -126,6 +126,8 @@ pub(super) fn map_image(
     finish(
         context,
         PenNode::Image(ImageNode {
+            nearest_sampling: None,
+            geometry: None,
             base: image_base,
             src: ImageSrc::from(source),
             object_fit,
@@ -201,6 +203,8 @@ pub(super) fn map_svg(
     finish(
         context,
         PenNode::Image(ImageNode {
+            nearest_sampling: None,
+            geometry: None,
             base: image_base,
             src: ImageSrc::from(src),
             object_fit: None,

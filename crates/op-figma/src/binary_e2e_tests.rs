@@ -4,9 +4,65 @@
 //! [`parse_fig_binary`] pipeline.
 
 use crate::{parse_fig_binary, prepare_fig_binary, FigLayoutMode, FigParseError};
+use crate::{prepare_fig_binary_with_observer, FigImportPhase};
 use jian_ops_schema::node::PenNode;
 use jian_ops_schema::sizing::SizingBehavior;
 use std::io::Write;
+
+#[test]
+fn unused_consumption_map_markers_preserve_converted_document_and_warnings() {
+    use crate::figma_types::FigmaDecodedFile;
+    use crate::kiwi::{decode_binary_schema, decode_message, FigValue};
+    let schema = decode_binary_schema(&build_schema()).unwrap();
+    let mut root = decode_message(&schema, &build_data()).unwrap();
+    let mut full = root.get_array_mut("nodeChanges").unwrap().clone();
+    let full_map = FigValue::Object(
+        vec![(
+            "entries".into(),
+            FigValue::Array(
+                vec![FigValue::Object(
+                    vec![("unused".into(), FigValue::Str("binding bookkeeping".into()))].into(),
+                )]
+                .into(),
+            ),
+        )]
+        .into(),
+    );
+    for node in &mut full {
+        node.set("parameterConsumptionMap", full_map.clone());
+        node.set("variableConsumptionMap", full_map.clone());
+    }
+    let mut projected = full.clone();
+    for node in &mut projected {
+        node.set(
+            "parameterConsumptionMap",
+            FigValue::Object(Vec::new().into()),
+        );
+        node.set(
+            "variableConsumptionMap",
+            FigValue::Object(Vec::new().into()),
+        );
+    }
+    let convert = |node_changes| {
+        crate::node_mapper::figma_to_pen_document(
+            FigmaDecodedFile {
+                node_changes,
+                blobs: vec![],
+                image_files: Default::default(),
+            },
+            "Map markers",
+            0,
+            FigLayoutMode::Preserve,
+        )
+    };
+    let full = convert(full.to_vec());
+    let projected = convert(projected.to_vec());
+    assert_eq!(
+        serde_json::to_value(projected.document).unwrap(),
+        serde_json::to_value(full.document).unwrap()
+    );
+    assert_eq!(projected.warnings, full.warnings);
+}
 
 /// Minimal Kiwi wire writer (mirrors the in-crate decoder).
 #[derive(Default)]
@@ -254,6 +310,44 @@ fn parses_a_full_binary_fig_into_a_document() {
 }
 
 #[test]
+fn observer_reports_phases_without_changing_preparation_or_page_conversion() {
+    let fig = build_fig(&build_schema(), &build_data());
+    let ordinary = prepare_fig_binary(&fig, "Test", FigLayoutMode::Preserve).unwrap();
+    let mut phases = Vec::new();
+    let observed =
+        prepare_fig_binary_with_observer(&fig, "Test", FigLayoutMode::Preserve, &mut |phase| {
+            phases.push(phase)
+        })
+        .unwrap();
+    assert_eq!(observed.pages(), ordinary.pages());
+    let observed = observed
+        .into_page_with_observer(0, &mut |phase| phases.push(phase))
+        .unwrap();
+    let ordinary = ordinary.into_page(0).unwrap();
+    assert_eq!(
+        serde_json::to_value(observed.document).unwrap(),
+        serde_json::to_value(ordinary.document).unwrap()
+    );
+    assert_eq!(observed.warnings, ordinary.warnings);
+    assert_eq!(
+        phases,
+        [
+            FigImportPhase::Container,
+            FigImportPhase::Schema,
+            FigImportPhase::Decode,
+            FigImportPhase::Extract,
+            FigImportPhase::ResolveStyles,
+            FigImportPhase::BuildTree,
+            FigImportPhase::Prepared,
+            FigImportPhase::ConvertPage,
+            FigImportPhase::ReleaseSource,
+            FigImportPhase::ResolveImages,
+            FigImportPhase::Complete,
+        ]
+    );
+}
+
+#[test]
 fn prepared_binary_exposes_pages_before_converting_one() {
     let fig = build_fig(&build_schema(), &build_data());
     let prepared = prepare_fig_binary(&fig, "Prepared", FigLayoutMode::Preserve)
@@ -347,4 +441,120 @@ fn document_serializes_to_canonical_json() {
     let json = serde_json::to_string(&import.document).expect("serializes");
     assert!(json.contains("\"Page 1\""));
     assert!(json.contains("\"Box\""));
+}
+
+#[test]
+fn owned_source_preserves_bare_zip_pages_phases_and_canonical_output() {
+    use crate::{prepare_fig_binary_owned, prepare_fig_binary_owned_with_observer};
+    let bare = build_fig(&build_schema(), &build_data());
+    for source in [bare.clone(), wrap_in_zip(&bare)] {
+        let (mut borrowed_phases, mut owned_phases) = (Vec::new(), Vec::new());
+        let borrowed =
+            prepare_fig_binary_with_observer(&source, "Owned", FigLayoutMode::Preserve, &mut |p| {
+                borrowed_phases.push(p)
+            })
+            .unwrap();
+        let owned = prepare_fig_binary_owned_with_observer(
+            source,
+            "Owned",
+            FigLayoutMode::Preserve,
+            &mut |p| owned_phases.push(p),
+        )
+        .unwrap();
+        assert_eq!(borrowed.pages(), owned.pages());
+        assert_eq!(
+            owned_phases,
+            [
+                FigImportPhase::Container,
+                FigImportPhase::Schema,
+                FigImportPhase::Decode,
+                FigImportPhase::Extract,
+                FigImportPhase::Prepared
+            ]
+        );
+        assert!(borrowed_phases.contains(&FigImportPhase::BuildTree));
+        let (borrowed, owned) = (borrowed.into_page(0).unwrap(), owned.into_page(0).unwrap());
+        assert_eq!(
+            serde_json::to_vec(&borrowed.document).unwrap(),
+            serde_json::to_vec(&owned.document).unwrap()
+        );
+        assert_eq!(borrowed.warnings, owned.warnings);
+    }
+    assert!(matches!(
+        prepare_fig_binary_owned(b"unknown".to_vec(), "Bad", FigLayoutMode::Preserve),
+        Err(FigParseError::UnknownFormat)
+    ));
+}
+
+#[test]
+fn indexed_owned_all_pages_retains_eager_conversion_and_strict_errors() {
+    let bare = build_fig(&build_schema(), &build_data());
+    for mode in [FigLayoutMode::Preserve, FigLayoutMode::OpenPencil] {
+        let eager =
+            crate::figma_types::parse_fig_file_owned_with_observer(bare.clone(), &mut |_| {})
+                .unwrap();
+        let expected = crate::node_mapper::figma_all_pages_to_pen_document(eager, "All", mode);
+        let actual = crate::prepare_fig_binary_owned(bare.clone(), "All", mode)
+            .unwrap()
+            .into_all_pages()
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(actual.document).unwrap(),
+            serde_json::to_value(expected.document).unwrap()
+        );
+        assert_eq!(actual.warnings, expected.warnings);
+        assert!(matches!(
+            crate::prepare_fig_binary_owned(bare.clone(), "All", mode)
+                .unwrap()
+                .into_page(99),
+            Err(FigParseError::PageOutOfBounds {
+                index: 99,
+                page_count: 1
+            })
+        ));
+    }
+}
+
+#[test]
+fn indexed_owned_falls_back_for_duplicate_identities_and_alternate_root_arrays() {
+    let mut duplicate = build_data();
+    duplicate[1] = 4;
+    duplicate.pop();
+    let mut writer = W { out: duplicate };
+    encode_node(
+        &mut writer,
+        &NodeSpec {
+            local_id: 3,
+            parent: Some((0, 2, "a")),
+            type_value: 4,
+            name: "Latest box",
+            size: Some((75.0, 25.0)),
+            transform: None,
+        },
+    );
+    writer.var_uint(0);
+    let mut renamed_schema = build_schema();
+    let start = renamed_schema
+        .windows(11)
+        .position(|w| w == b"nodeChanges")
+        .unwrap();
+    renamed_schema.splice(start..start + 11, b"futureNodes".iter().copied());
+    for source in [
+        build_fig(&build_schema(), &writer.out),
+        build_fig(&renamed_schema, &build_data()),
+    ] {
+        let expected = prepare_fig_binary(&source, "Fallback", FigLayoutMode::Preserve).unwrap();
+        let actual =
+            crate::prepare_fig_binary_owned(source, "Fallback", FigLayoutMode::Preserve).unwrap();
+        assert_eq!(actual.pages(), expected.pages());
+        let (expected, actual) = (
+            expected.into_all_pages().unwrap(),
+            actual.into_all_pages().unwrap(),
+        );
+        assert_eq!(
+            serde_json::to_value(actual.document).unwrap(),
+            serde_json::to_value(expected.document).unwrap()
+        );
+        assert_eq!(actual.warnings, expected.warnings);
+    }
 }

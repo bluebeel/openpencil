@@ -50,6 +50,8 @@ use op_editor_core::web_sync::{self, WebSyncClient};
 
 use crate::live_sync;
 use crate::repaint_ctx::RepaintContext;
+#[path = "live_sync_catalog.rs"]
+mod catalog;
 
 /// Pull cadence (version probe). TS gets SSE pushes; one tick of latency.
 const POLL_INTERVAL_MS: i32 = 400;
@@ -100,6 +102,7 @@ impl Write for CappedJsonWriter {
 /// Serialize directly into a capped buffer. A giant Figma document therefore
 /// never creates a giant temporary `String` merely to discover that live sync
 /// cannot send it.
+#[cfg(test)]
 fn serialize_sync_document(doc: &op_editor_core::PenDocument) -> SyncDocumentJson {
     let mut writer = CappedJsonWriter::new();
     if serde_json::to_writer(&mut writer, doc).is_err() {
@@ -234,7 +237,11 @@ fn poll_version<C: RepaintContext + 'static>(
     let base_owned = base.to_string();
     let fetch_busy = fetch_busy.clone();
     let last_selection_key = last_selection_key.clone();
+    let issued_epoch = crate::identity_epoch::epoch();
     let on_version: Rc<dyn Fn(u16, String)> = Rc::new(move |status: u16, body: String| {
+        if issued_epoch != crate::identity_epoch::epoch() {
+            return;
+        }
         // A refused credential is the signal that this tab no longer speaks
         // for the account whose document it is showing. Treating it as "no
         // version" — which is what an untyped body read does — is what let the
@@ -250,6 +257,15 @@ fn poll_version<C: RepaintContext + 'static>(
         let Some(version) = WebSyncClient::parse_version_probe(&body) else {
             return; // daemon down / non-JSON error body — retry next tick
         };
+        if let Some(cursor) = WebSyncClient::parse_change_cursor(&body) {
+            let pair = current_pair(&*inner.borrow());
+            let mut controller = sync.borrow_mut();
+            if controller.client.change_authority_differs(&cursor) {
+                controller.client.require_change_resync();
+            } else if controller.gate.pull_allowed(pair) {
+                controller.client.adopt_change_cursor(version, &cursor);
+            }
+        }
         let wants_version = sync
             .try_borrow()
             .map(|s| s.client.wants_version(version))
@@ -257,19 +273,15 @@ fn poll_version<C: RepaintContext + 'static>(
         if !wants_version {
             return;
         }
-        // Fetch the full document; the latch is released when the response
-        // lands (or never taken if the request can't start).
-        fetch_busy.set(true);
-        let inner = inner.clone();
-        let sync = sync.clone();
-        let fetch_busy_done = fetch_busy.clone();
-        let last_selection_key = last_selection_key.clone();
-        let on_doc: Rc<dyn Fn(String)> = Rc::new(move |doc_body: String| {
-            apply_document_response(&inner, &doc_body, &sync, &last_selection_key);
-            fetch_busy_done.set(false);
-        });
-        if !live_sync::get(&format!("{base_owned}/api/mcp/document"), on_doc) {
-            fetch_busy.set(false);
+        if !live_sync_feed::try_fetch(&inner, &base_owned, &sync, &fetch_busy, &last_selection_key)
+        {
+            live_sync_feed::fetch_snapshot(
+                &inner,
+                &base_owned,
+                &sync,
+                &fetch_busy,
+                &last_selection_key,
+            );
         }
     });
     let _ = live_sync::get_with_status(&format!("{base}/api/mcp/version"), on_version);
@@ -370,13 +382,14 @@ fn apply_document_response<C: RepaintContext + 'static>(
         .ok()
         .and_then(|mut s| {
             s.client
-                .sync_with_editor_meta(
+                .sync_with_component_catalog(
                     body,
                     |doc,
                      _version,
                      active_page_index,
                      preserve_authored_geometry,
-                     wire_scenario| {
+                     wire_scenario,
+                     component_catalog| {
                         let host = inner_ref.host_mut();
                         host.replace_document_from_sync(doc, undoable);
                         // A daemon new enough to send `scenario` is the
@@ -403,6 +416,7 @@ fn apply_document_response<C: RepaintContext + 'static>(
                                 pinned_style_guide,
                                 share_recipe,
                                 imported_from,
+                                component_catalog,
                             },
                         );
                         inner_ref.repaint().is_ok()
@@ -422,7 +436,7 @@ fn apply_document_response<C: RepaintContext + 'static>(
         let state = inner_ref.host().editor_state();
         let active_page_index = state.ui.active_page_index;
         let preserve_authored_geometry = state.editor_ui.preserve_authored_geometry;
-        let serialized = serialize_sync_document(&state.doc);
+        let serialized = catalog::serialize_sync_state(state);
         if let Ok(mut s) = sync.try_borrow_mut() {
             // Always baseline the two scalar fields. Oversized documents skip
             // their byte hash, but must not look metadata-dirty forever.
@@ -502,7 +516,7 @@ fn push_document_if_changed<C: RepaintContext + 'static>(
         if sync.borrow().oversize_identity == Some(oversize_identity) {
             return;
         }
-        let json = match serialize_sync_document(&b.host().editor_state().doc) {
+        let json = match catalog::serialize_sync_state(b.host().editor_state()) {
             SyncDocumentJson::Ready(json) => json,
             SyncDocumentJson::Oversize => {
                 sync.borrow_mut().oversize_identity = Some(oversize_identity);
@@ -749,6 +763,9 @@ thread_local! {
     /// cycle or threading sync state through every DOM file-action callback.
     pub(super) static ACTIVE_SYNC: RefCell<Option<Weak<RefCell<SyncController>>>> = const { RefCell::new(None) };
 }
+
+#[path = "live_sync_feed.rs"]
+mod live_sync_feed;
 
 #[path = "live_sync_controller.rs"]
 mod live_sync_controller;

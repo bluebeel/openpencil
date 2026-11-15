@@ -87,8 +87,12 @@ fn normalize_icon_paths_in_nodes_with_report<F>(
             }
             None => {}
         }
-        if let Some(children) = node.children_mut() {
-            normalize_icon_paths_in_nodes_with_report(children, lookup, report);
+        // `children_mut` is also the insertion API and materializes None.
+        // A traversal must preserve an absent Ref override and untouched leaves.
+        if node.children().is_some_and(|children| !children.is_empty()) {
+            if let Some(children) = node.children_mut() {
+                normalize_icon_paths_in_nodes_with_report(children, lookup, report);
+            }
         }
     }
 }
@@ -283,8 +287,8 @@ fn scale_stroke(stroke: Option<&mut PenStroke>, scale: f64) {
     }
 }
 
-fn scaled_thickness(value: f32, scale: f64) -> f32 {
-    ((f64::from(value) * scale).max(1.0) * 10.0).round() as f32 / 10.0
+fn scaled_thickness(value: f64, scale: f64) -> f64 {
+    ((value * scale).max(1.0) * 10.0).round() / 10.0
 }
 
 #[derive(Debug, Clone, Copy)]

@@ -136,6 +136,12 @@ impl EditorState {
         if !node_id.is_real() {
             return false;
         }
+        if is_borrowed_property(property) {
+            let Some(node) = find_node_mut(self.active_children_mut(), node_id) else {
+                return false;
+            };
+            return write_borrowed_property(node, property, value);
+        }
 
         // Read-validate before taking the mutable borrow.
         match property {
@@ -227,6 +233,7 @@ impl EditorState {
         }
 
         // Mutable phase.
+        let preserve_authored_geometry = self.editor_ui.preserve_authored_geometry;
         let Some(node) = find_node_mut(self.active_children_mut(), node_id) else {
             return false;
         };
@@ -346,9 +353,69 @@ impl EditorState {
             _ => false,
         };
         if changed && property_invalidates_preserved_geometry(property) {
-            self.editor_ui.preserve_authored_geometry = false;
+            // Position/clip edits already work from authored rectangles. A
+            // container layout edit opts in only that container, never every
+            // imported frame on every page.
+            if !matches!(property, "x" | "y" | "clipContent")
+                && !mark_container_computed(node)
+                && preserve_authored_geometry
+            {
+                self.editor_ui.preserve_authored_geometry = false;
+            }
         }
         changed
+    }
+}
+
+/// Node-local style properties whose writers do not invalidate global or
+/// container layout policy. Layout/growth/size changes retain the ordinary path.
+pub(crate) fn is_borrowed_property(property: &str) -> bool {
+    matches!(
+        property,
+        "letterSpacing"
+            | "lineHeight"
+            | "textAlign"
+            | "textAlignVertical"
+            | "fontFamily"
+            | "opacity"
+            | "x"
+            | "y"
+    )
+}
+
+pub(crate) fn write_borrowed_property(
+    node: &mut PenNode,
+    property: &str,
+    value: &LayoutPropValue,
+) -> bool {
+    match (property, value) {
+        ("letterSpacing", LayoutPropValue::Number(value)) if value.is_finite() => {
+            set_text_letter_spacing(node, *value)
+        }
+        ("lineHeight", LayoutPropValue::Number(value)) if value.is_finite() => {
+            set_text_line_height(node, *value)
+        }
+        ("x", LayoutPropValue::Number(value)) if value.is_finite() => {
+            node.base_mut().x = Some(*value);
+            true
+        }
+        ("y", LayoutPropValue::Number(value)) if value.is_finite() => {
+            node.base_mut().y = Some(*value);
+            true
+        }
+        ("opacity", LayoutPropValue::Number(value)) if value.is_finite() => {
+            node.base_mut().opacity = Some(NumberOrExpression::Number(*value));
+            true
+        }
+        ("textAlign", LayoutPropValue::Keyword(value)) => {
+            parse_text_align(value).is_some_and(|align| set_text_align(node, align))
+        }
+        ("textAlignVertical", LayoutPropValue::Keyword(value)) => parse_text_align_vertical(value)
+            .is_some_and(|align| set_text_align_vertical(node, align)),
+        ("fontFamily", LayoutPropValue::Keyword(value)) if !value.trim().is_empty() => {
+            set_text_font_family(node, value.trim().to_string())
+        }
+        _ => false,
     }
 }
 
@@ -630,4 +697,15 @@ fn set_node_height(node: &mut PenNode, sb: SizingBehavior) -> bool {
         }
         _ => false,
     }
+}
+
+fn mark_container_computed(node: &mut PenNode) -> bool {
+    let container = match node {
+        PenNode::Frame(n) => &mut n.container,
+        PenNode::Group(n) => &mut n.container,
+        PenNode::Rectangle(n) => &mut n.container,
+        _ => return false,
+    };
+    container.preserve_geometry = Some(false);
+    true
 }

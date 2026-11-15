@@ -5,6 +5,9 @@
 //! Pulled out of `widget_host.rs` so the spine file stays under the
 //! 800-line ceiling.
 
+#[path = "frame_shadow.rs"]
+mod shadow;
+
 use crate::backend::NativeBackend;
 use op_editor_ui::{
     Color, ImageAdjustments, ImageBlendMode, ImageDrawMode, Point2D, Rect, RenderBackend,
@@ -16,6 +19,13 @@ pub struct NativeFrameBackend<'a> {
     // `frame_offscreen.rs` can reach the canvas + backend they wrap.
     pub(super) inner: &'a mut NativeBackend,
     pub(super) canvas: &'a skia_safe::Canvas,
+    pub(super) shadow_basis: skia_safe::Matrix,
+}
+
+impl Drop for NativeFrameBackend<'_> {
+    fn drop(&mut self) {
+        super::text_mask_capture::command(self.canvas, op_editor_ui::TextMaskAction::Discard);
+    }
 }
 
 impl<'a> RenderBackend for NativeFrameBackend<'a> {
@@ -31,11 +41,20 @@ impl<'a> RenderBackend for NativeFrameBackend<'a> {
     }
 
     fn draw_text(&mut self, layout: &TextLayout, origin: Point2D) {
-        self.inner.draw_text(self.canvas, layout, origin);
+        super::text_mask_capture::draw_text(self, layout, origin);
+    }
+
+    fn draw_text_decoration(&mut self, request: &op_editor_ui::TextDecorationRequest<'_>) -> bool {
+        super::text_mask_capture::decoration(self, request)
     }
 
     fn clip_rect(&mut self, rect: Rect) {
         self.inner.clip_rect(self.canvas, rect);
+    }
+
+    fn push_opaque_shadow_exclusion(&mut self, rect: Rect, max_radius: f32) -> bool {
+        self.inner
+            .push_opaque_shadow_exclusion(self.canvas, rect, max_radius)
     }
 
     fn clip_round_rect(&mut self, rect: Rect, radius: f32) {
@@ -73,12 +92,48 @@ impl<'a> RenderBackend for NativeFrameBackend<'a> {
             .push_composite_layer(self.canvas, bounds, opacity, mode);
     }
 
+    fn supports_stroke_paint_fields(&self) -> bool {
+        true
+    }
+    fn push_paint_space(&mut self, rect: Rect) {
+        self.inner.push_paint_space(rect);
+    }
+    fn text_mask_capture(
+        &mut self,
+        action: op_editor_ui::TextMaskAction,
+    ) -> op_editor_ui::TextMaskResult {
+        super::text_mask_capture::command(self.canvas, action)
+    }
+    fn paint_field_bounds(&mut self) -> Option<Rect> {
+        self.canvas
+            .local_clip_bounds()
+            .map(|r| Rect::xywh(r.left, r.top, r.width(), r.height()))
+    }
+    fn pop_paint_space(&mut self) {
+        self.inner.pop_paint_space();
+    }
+    fn stroke_geometry(
+        &mut self,
+        geometry: op_editor_ui::StrokeGeometry<'_>,
+        options: &op_editor_ui::StrokeMaskOptions<'_>,
+        color: Color,
+    ) -> bool {
+        self.inner
+            .stroke_geometry(self.canvas, geometry, options, color);
+        true
+    }
+
     fn supports_pixel_masks(&self) -> bool {
         true
     }
 
     fn push_mask_source_layer(&mut self, luminance: bool) {
         self.inner.push_mask_source_layer(self.canvas, luminance);
+    }
+
+    fn push_mask_source_layer_with_color_space(&mut self, luminance: bool, linear_rgb: bool) {
+        self.inner
+            .push_mask_source_layer_with_color_space(self.canvas, luminance, linear_rgb);
     }
 
     fn push_blend_layer(&mut self, mode: ImageBlendMode) {
@@ -106,7 +161,7 @@ impl<'a> RenderBackend for NativeFrameBackend<'a> {
     }
 
     fn stroke_line(&mut self, from: Point2D, to: Point2D, color: Color, width: f32) {
-        self.inner.stroke_line(self.canvas, from, to, color, width);
+        super::text_mask_capture::stroke_line(self, from, to, color, width);
     }
 
     fn fill_round_rect(&mut self, rect: Rect, radius: f32, color: Color) {
@@ -118,11 +173,7 @@ impl<'a> RenderBackend for NativeFrameBackend<'a> {
             .fill_round_rect_per_corner(self.canvas, rect, radii, color);
     }
 
-    fn fill_drop_shadow(&mut self, rect: Rect, radius: f32, blur: f32, color: Color) {
-        self.inner
-            .fill_drop_shadow(self.canvas, rect, radius, blur, color);
-    }
-
+    shadow::frame_shadow_methods!();
     fn stroke_round_rect(&mut self, rect: Rect, radius: f32, color: Color, width: f32) {
         self.inner
             .stroke_round_rect(self.canvas, rect, radius, color, width);
@@ -477,6 +528,17 @@ impl<'a> RenderBackend for NativeFrameBackend<'a> {
             );
     }
 
+    fn draw_image_with_paint_options(
+        &mut self,
+        rect: Rect,
+        image_id: u64,
+        encoded: &[u8],
+        options: &op_editor_ui::ImagePaintOptions<'_>,
+    ) {
+        self.inner
+            .draw_image_with_paint_options(self.canvas, rect, image_id, encoded, options);
+    }
+
     fn fill_round_rect_linear_gradient(
         &mut self,
         rect: Rect,
@@ -694,6 +756,30 @@ impl<'a> RenderBackend for NativeFrameBackend<'a> {
 
     fn measure_text_family(&mut self, text: &str, font_size: f32, family: &str) -> f32 {
         self.inner.measure_text_family(text, font_size, family)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn measure_text_family_kerned(
+        &mut self,
+        text: &str,
+        font_size: f32,
+        family: &str,
+        weight: u16,
+        italic: bool,
+        kerning: Option<bool>,
+        letter_spacing: f32,
+        font_features: &std::collections::BTreeMap<String, u32>,
+    ) -> f32 {
+        self.inner.measure_text_family_kerned(
+            text,
+            font_size,
+            family,
+            weight,
+            italic,
+            kerning,
+            letter_spacing,
+            font_features,
+        )
     }
 
     fn measure_text_family_styled(

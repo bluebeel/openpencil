@@ -1,27 +1,22 @@
+use crate::color::parse_css_color;
+use crate::css::cascade::ComputedStyle;
 use crate::import_warning::ImportWarning;
+use crate::length::{parse_length, LengthCtx};
+use crate::mapper::MapCtx;
 use jian_ops_schema::node::container::CornerRadius;
 use jian_ops_schema::node::ImageSrc;
 use jian_ops_schema::style::{
     BlendMode, BlurBody, GradientStop, ImageFillBody, LinearGradientBody, PenEffect, PenFill,
     PenStroke, RadialGradientBody, ShadowBody, SolidFillBody, StrokeAlign, StrokeThickness,
 };
-
-use crate::color::parse_css_color;
-use crate::css::cascade::ComputedStyle;
-use crate::length::{parse_length, LengthCtx};
-
-use crate::mapper::MapCtx;
-
 #[path = "mapper_visual_syntax.rs"]
 mod syntax;
 use syntax::{
     exact_function_body, parse_gradient_angle, parse_radial_position, split_top_level,
     split_whitespace_top_level, strip_interpolation_method,
 };
-
 #[path = "mapper_background.rs"]
 mod background;
-
 #[path = "mapper_text_paint.rs"]
 mod text_paint;
 pub(crate) use text_paint::{background_clips_text, text_paint_has_partial_alpha};
@@ -60,12 +55,17 @@ pub(super) fn map_fill(
                 }
                 let geometry = background::image_layer(style, index, node, definite, context);
                 position_dropped |= geometry.position_dropped;
-                fills.push(PenFill::Image(ImageFillBody {
+                fills.push(PenFill::Image(Box::new(ImageFillBody {
+                    enabled: None,
+                    geometry: None,
                     url: ImageSrc::from(url),
+                    thumbnail_url: None,
+                    nearest_sampling: None,
                     mode: geometry.mode,
                     original_size: None,
                     transform: geometry.transform,
                     tile_scale: None,
+                    rotation: None,
                     explain: None,
                     opacity: None,
                     blend_mode: blend,
@@ -76,7 +76,7 @@ pub(super) fn map_fill(
                     tint: None,
                     highlights: None,
                     shadows: None,
-                }));
+                })));
             } else {
                 if image.to_ascii_lowercase().contains("conic-gradient(") {
                     context.warn_once(ImportWarning::ConicGradientIgnored);
@@ -114,7 +114,7 @@ pub(super) fn map_stroke(style: &ComputedStyle, context: &mut MapCtx<'_>) -> Opt
             .or_else(|| style.get("border-style"))
             .unwrap_or("none")
     });
-    let widths = super::box_model::border_widths(style, context).map(|width| width as f32);
+    let widths = super::box_model::border_widths(style, context).map(|width| width as f64);
     if widths.iter().all(|width| *width <= 0.0) {
         return None;
     }
@@ -155,10 +155,10 @@ pub(super) fn map_stroke(style: &ComputedStyle, context: &mut MapCtx<'_>) -> Opt
         context.warn_once(ImportWarning::BorderStylesApproximated);
     }
     let dash_pattern = match style_name.to_ascii_lowercase().as_str() {
-        "dotted" => Some(vec![1.0, widths.iter().copied().fold(1.0, f32::max) * 2.0]),
+        "dotted" => Some(vec![1.0, widths.iter().copied().fold(1.0, f64::max) * 2.0]),
         "dashed" => Some(vec![
-            widths.iter().copied().fold(1.0, f32::max) * 3.0,
-            widths.iter().copied().fold(1.0, f32::max) * 2.0,
+            widths.iter().copied().fold(1.0, f64::max) * 3.0,
+            widths.iter().copied().fold(1.0, f64::max) * 2.0,
         ]),
         "double" | "groove" | "ridge" | "inset" | "outset" => {
             context.warn_once(ImportWarning::BorderStyleComplex);
@@ -170,7 +170,7 @@ pub(super) fn map_stroke(style: &ComputedStyle, context: &mut MapCtx<'_>) -> Opt
             None
         }
     };
-    Some(PenStroke {
+    Some(PenStroke::from(jian_ops_schema::style::PenStrokeBody {
         thickness,
         // CSS borders occupy the inside edge of the border box. Jian strokes
         // are centered by default, so make the inward alignment explicit.
@@ -180,7 +180,7 @@ pub(super) fn map_stroke(style: &ComputedStyle, context: &mut MapCtx<'_>) -> Opt
         dash_pattern,
         dash_offset: None,
         fill: Some(vec![solid_fill(color, None)]),
-    })
+    }))
 }
 
 pub(super) fn map_corner_radius(
@@ -374,6 +374,8 @@ fn map_gradient(value: &str, style: &ComputedStyle, context: &mut MapCtx<'_>) ->
     }
     if radial {
         Some(PenFill::RadialGradient(RadialGradientBody {
+            enabled: None,
+            geometry: None,
             cx: center.0,
             cy: center.1,
             radius,
@@ -390,6 +392,8 @@ fn map_gradient(value: &str, style: &ComputedStyle, context: &mut MapCtx<'_>) ->
         }))
     } else {
         Some(PenFill::LinearGradient(LinearGradientBody {
+            enabled: None,
+            geometry: None,
             // Copied through unchanged ON PURPOSE: the editor canvas
             // (`linear_gradient_endpoints`, `angle - 90`), SVG export and
             // HTML export all read `.op` angles like CSS (0 = bottom→top,
@@ -414,7 +418,7 @@ fn map_gradient(value: &str, style: &ComputedStyle, context: &mut MapCtx<'_>) ->
 #[derive(Clone)]
 struct ParsedStop {
     color: String,
-    offset: f32,
+    offset: f64,
     explicit: bool,
 }
 
@@ -448,7 +452,7 @@ fn parse_color_stops(value: &str, style: &ComputedStyle) -> Option<Vec<ParsedSto
     )
 }
 
-fn parse_stop_position(value: &str) -> Option<f32> {
+fn parse_stop_position(value: &str) -> Option<f64> {
     let value = value.trim();
     if value == "0" {
         return Some(0.0);
@@ -456,7 +460,7 @@ fn parse_stop_position(value: &str) -> Option<f32> {
     value
         .strip_suffix('%')?
         .trim()
-        .parse::<f32>()
+        .parse::<f64>()
         .ok()
         .map(|percent| percent / 100.0)
 }
@@ -481,9 +485,9 @@ fn distribute_stops(stops: &mut [ParsedStop]) {
             .unwrap_or(last);
         let start = stops[anchor].offset;
         let end = stops[next].offset.max(start);
-        let span = (next - anchor) as f32;
+        let span = (next - anchor) as f64;
         for (offset, stop) in stops[anchor + 1..next].iter_mut().enumerate() {
-            stop.offset = start + (end - start) * (offset as f32 + 1.0) / span;
+            stop.offset = start + (end - start) * (offset as f64 + 1.0) / span;
         }
         stops[next].offset = end;
         anchor = next;
@@ -511,7 +515,7 @@ fn map_shadow(
         } else if let Some(parsed) = resolve_color(token, style) {
             color = parsed;
         } else if let Some(length) = length_px(token, style, context) {
-            lengths.push(length as f32);
+            lengths.push(length as f64);
         } else {
             return None;
         }
@@ -521,6 +525,7 @@ fn map_shadow(
         return None;
     }
     Some(ShadowBody {
+        blur_kernel: None,
         inner: inner.then_some(true),
         visible: None,
         offset_x: lengths[0],
@@ -545,7 +550,7 @@ fn map_filter(
         if let Some(body) = exact_function_body(function, "blur") {
             if let Some(radius) = length_px(body, style, context) {
                 let blur = BlurBody {
-                    radius: radius.max(0.0) as f32,
+                    radius: radius.max(0.0) as f64,
                     visible: None,
                 };
                 effects.push(if backdrop {
@@ -619,6 +624,7 @@ fn length_context(style: &ComputedStyle, context: &MapCtx<'_>) -> LengthCtx {
 
 fn solid_fill(color: String, blend_mode: Option<BlendMode>) -> PenFill {
     PenFill::Solid(SolidFillBody {
+        enabled: None,
         color,
         explain: None,
         opacity: None,
@@ -733,7 +739,7 @@ fn layers_match(value: &str, choices: &[&str]) -> bool {
 fn parse_radial_prelude(
     value: &str,
     context: &mut MapCtx<'_>,
-) -> (Option<f32>, Option<f32>, Option<f32>) {
+) -> (Option<f64>, Option<f64>, Option<f64>) {
     let (value, interpolation) = strip_interpolation_method(value);
     if interpolation {
         context.warn_once(ImportWarning::GradientInterpolationIgnored);
@@ -759,7 +765,7 @@ fn parse_radial_prelude(
             _ => {
                 if let Some(percent) = token
                     .strip_suffix('%')
-                    .and_then(|number| number.parse::<f32>().ok())
+                    .and_then(|number| number.parse::<f64>().ok())
                 {
                     radius = Some((percent / 100.0).max(0.0));
                 } else {

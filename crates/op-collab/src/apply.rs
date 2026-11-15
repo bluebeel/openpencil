@@ -38,6 +38,26 @@ pub fn apply_txn_tracked(
     txn: &CollabTxn,
     context: &ApplyContext,
 ) -> Result<AppliedTxn, CollabApplyError> {
+    let (budget, stats) = prepare_apply(document, txn, context)?;
+    apply_prepared(document.clone(), txn, context, budget, stats)
+}
+
+/// Private planning owns its disposable candidate. Retain exactly the same
+/// validation order/budget without cloning that complete candidate again.
+pub(crate) fn apply_txn_owned(
+    document: PenDocument,
+    txn: &CollabTxn,
+    context: &ApplyContext,
+) -> Result<PenDocument, CollabApplyError> {
+    let (budget, stats) = prepare_apply(&document, txn, context)?;
+    apply_prepared(document, txn, context, budget, stats).map(|applied| applied.document)
+}
+
+fn prepare_apply(
+    document: &PenDocument,
+    txn: &CollabTxn,
+    context: &ApplyContext,
+) -> Result<(ValidationBudget, DocumentStats), CollabApplyError> {
     validate_context(context)?;
     let mut budget = ValidationBudget::new(&context.limits);
     let initial_stats =
@@ -47,8 +67,16 @@ pub fn apply_txn_tracked(
     validate_finite(document).map_err(|_| CollabApplyError::NonFiniteNumber)?;
     budget.charge(txn_stats.payload_node_count)?;
     validate_finite(txn).map_err(|_| CollabApplyError::NonFiniteNumber)?;
+    Ok((budget, initial_stats))
+}
 
-    let mut working = document.clone();
+fn apply_prepared(
+    mut working: PenDocument,
+    txn: &CollabTxn,
+    context: &ApplyContext,
+    mut budget: ValidationBudget,
+    initial_stats: DocumentStats,
+) -> Result<AppliedTxn, CollabApplyError> {
     let mut working_stats = initial_stats;
     let mut id_counters = IdCounterTracker::from_policy(&context.insert_policy);
     for (operation, collab_op) in txn.ops.iter().enumerate() {
@@ -431,17 +459,17 @@ fn validate_operation_references(
     operation: &CollabOp,
     limits: &ApplyLimits,
 ) -> Result<(), CollabApplyError> {
-    let (page, ids): (&PageRef, Vec<&str>) = match operation {
+    let (page, ids): (&PageRef, [Option<&str>; 3]) = match operation {
         CollabOp::InsertExact {
             page, parent_id, ..
-        } => (page, parent_id.iter().map(String::as_str).collect()),
+        } => (page, [parent_id.as_deref(), None, None]),
         CollabOp::ReplaceExact {
             page,
             node_id,
             node,
             ..
-        } => (page, vec![node_id, node_id_of(node)]),
-        CollabOp::DeleteExact { page, node_id, .. } => (page, vec![node_id]),
+        } => (page, [Some(node_id.as_str()), Some(node_id_of(node)), None]),
+        CollabOp::DeleteExact { page, node_id, .. } => (page, [Some(node_id.as_str()), None, None]),
         CollabOp::MoveExact {
             page,
             node_id,
@@ -450,13 +478,16 @@ fn validate_operation_references(
             ..
         } => (
             page,
-            std::iter::once(node_id.as_str())
-                .chain(expected_parent.iter().map(String::as_str))
-                .chain(new_parent.iter().map(String::as_str))
-                .collect(),
+            [
+                Some(node_id.as_str()),
+                expected_parent.as_deref(),
+                new_parent.as_deref(),
+            ],
         ),
     };
-    if matches!(page, PageRef::PageId(id) if id.is_empty()) || ids.iter().any(|id| id.is_empty()) {
+    if matches!(page, PageRef::PageId(id) if id.is_empty())
+        || ids.iter().flatten().any(|id| id.is_empty())
+    {
         return Err(CollabApplyError::EmptyId);
     }
     let page_id = match page {
@@ -465,7 +496,7 @@ fn validate_operation_references(
     };
     if let Some(actual) = page_id
         .into_iter()
-        .chain(ids)
+        .chain(ids.into_iter().flatten())
         .map(str::len)
         .find(|actual| *actual > limits.max_identifier_bytes)
     {

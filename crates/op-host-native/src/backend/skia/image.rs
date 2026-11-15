@@ -38,6 +38,55 @@ pub(super) fn cover_rect(outer: Rect, img_w: f32, img_h: f32) -> Rect {
 }
 
 impl NativeBackend {
+    pub fn draw_image_with_paint_options(
+        &mut self,
+        canvas: &skia_safe::Canvas,
+        rect: Rect,
+        id: u64,
+        encoded: &[u8],
+        options: &op_editor_ui::ImagePaintOptions<'_>,
+    ) {
+        if options.geometry.is_some() {
+            super::image_explicit_field::draw(self, canvas, rect, id, encoded, options);
+            return;
+        }
+        if options.nearest_sampling && super::image_nearest16::draw(self, canvas, rect, id, options)
+        {
+            return;
+        }
+        let paint_rect = self.active_paint_rect(rect);
+        let rotation_uv = if options.mode == ImageDrawMode::Fill
+            && options.transform.is_none()
+            && options
+                .rotation_degrees
+                .is_some_and(|degrees| degrees != 0.0)
+        {
+            self.raster_image(id).and_then(|image| {
+                super::image_rotation::supported(
+                    paint_rect,
+                    [image.width() as f32, image.height() as f32],
+                    options,
+                )
+            })
+        } else {
+            None
+        };
+        self.draw_image_with_options_transform_blend_and_tile_scale(
+            canvas,
+            rect,
+            id,
+            encoded,
+            options.mode,
+            options.adjustments,
+            options.opacity,
+            options.corner_radius,
+            options.transform.or(rotation_uv),
+            options.blend_mode,
+            options.original_size,
+            options.tile_scale,
+        );
+    }
+
     /// Decode and draw a bounded blur-up JPEG. Unlike full images, these
     /// <=32px thumbnails are explicitly allowed to decode during paint and
     /// live in a dedicated small LRU so they cannot displace sharp rasters.
@@ -58,7 +107,11 @@ impl NativeBackend {
             skia_safe::MipmapMode::None,
         );
         let save = canvas.save();
-        canvas.clip_rect(to_sk_rect(rect), None, Some(true));
+        canvas.clip_rect(
+            to_sk_rect(rect),
+            None,
+            Some(jian_skia::raster_sampling::geometry_antialias()),
+        );
         canvas.draw_image_rect_with_sampling_options(
             &image,
             None,
@@ -283,6 +336,47 @@ impl NativeBackend {
         let Some(image) = self.raster_image(id) else {
             return;
         };
+        if self.has_paint_space() {
+            super::image_paint_field::draw(
+                self,
+                canvas,
+                rect,
+                &image,
+                mode,
+                adjustments,
+                opacity,
+                transform,
+                blend_mode,
+                original_size,
+                tile_scale,
+            );
+            return;
+        }
+
+        if super::image_supersample::draw(
+            canvas,
+            to_sk_rect(rect),
+            opacity,
+            to_skia_blend_mode(blend_mode),
+            |inner| {
+                self.draw_image_with_options_transform_blend_and_tile_scale(
+                    inner,
+                    rect,
+                    id,
+                    _encoded,
+                    mode,
+                    adjustments,
+                    1.0,
+                    corner_radius,
+                    transform,
+                    ImageBlendMode::Normal,
+                    original_size,
+                    tile_scale,
+                )
+            },
+        ) {
+            return;
+        }
         super::image_diagnostics::record_sharp_raster_hit();
         // Rounded image nodes clip the BITMAP, not just the
         // placeholder fill/stroke (TS `clipRRect` parity,
@@ -295,17 +389,24 @@ impl NativeBackend {
                 corner_radius,
                 corner_radius,
             );
-            canvas.clip_rrect(rrect, skia_safe::ClipOp::Intersect, true);
+            super::sampled_clip::clip_rrect(canvas, &rrect);
         }
         let mut paint = skia_safe::Paint::default();
-        paint.set_anti_alias(true);
-        paint.set_blend_mode(to_skia_blend_mode(blend_mode));
+        jian_skia::raster_sampling::configure_geometry(&mut paint);
+        jian_skia::raster_sampling::set_blend_mode(&mut paint, to_skia_blend_mode(blend_mode));
         // Node-level opacity dims the raster (rasters carry no fill
         // colour to bake the opacity into at scene-build).
         paint.set_alpha_f(opacity.clamp(0.0, 1.0));
         if let Some(matrix) = image_adjustment_matrix(adjustments) {
             paint.set_color_filter(skia_safe::color_filters::matrix_row_major(&matrix, None));
         }
+        // Minification must integrate source detail. Bilinear-only filtering
+        // still aliases large photos into small avatars; unfiltered rectangle
+        // draws also alias ordinary Fit/Fill/Stretch image placements.
+        let sampling = skia_safe::SamplingOptions::new(
+            skia_safe::FilterMode::Linear,
+            skia_safe::MipmapMode::Linear,
+        );
 
         // Figma commonly serializes UI-cropped paints as STRETCH plus an
         // affine transform (the Tesla 191×236 card does this). Apply the
@@ -316,15 +417,36 @@ impl NativeBackend {
         } else {
             transform
         };
-        if let Some(local) = transform.and_then(|affine| {
+        let local = transform.and_then(|affine| {
             figma_image_local_matrix(rect, image.width() as f32, image.height() as f32, affine)
-        }) {
+        });
+        let image = if mode == ImageDrawMode::Tile {
+            image
+        } else {
+            let mapping = local.unwrap_or_else(|| {
+                let dst = match mode {
+                    ImageDrawMode::Fit => {
+                        contain_rect(rect, image.width() as f32, image.height() as f32)
+                    }
+                    ImageDrawMode::Fill | ImageDrawMode::Crop => {
+                        cover_rect(rect, image.width() as f32, image.height() as f32)
+                    }
+                    _ => rect,
+                };
+                [
+                    dst.size.x / image.width() as f32,
+                    0.0,
+                    dst.origin.x,
+                    0.0,
+                    dst.size.y / image.height() as f32,
+                    dst.origin.y,
+                ]
+            });
+            super::image_precision::minification_source(&image, canvas, mapping)
+        };
+        if let Some(local) = local {
             let local_matrix = skia_safe::Matrix::new_all(
                 local[0], local[1], local[2], local[3], local[4], local[5], 0.0, 0.0, 1.0,
-            );
-            let sampling = skia_safe::SamplingOptions::new(
-                skia_safe::FilterMode::Linear,
-                skia_safe::MipmapMode::None,
             );
             if let Some(shader) = image.to_shader(
                 (skia_safe::TileMode::Decal, skia_safe::TileMode::Decal),
@@ -333,7 +455,11 @@ impl NativeBackend {
             ) {
                 paint.set_shader(shader);
                 let save = canvas.save();
-                canvas.clip_rect(to_sk_rect(rect), None, Some(true));
+                canvas.clip_rect(
+                    to_sk_rect(rect),
+                    None,
+                    Some(jian_skia::raster_sampling::geometry_antialias()),
+                );
                 canvas.draw_rect(to_sk_rect(rect), &paint);
                 canvas.restore_to_count(save);
                 if clip_round {
@@ -346,10 +472,22 @@ impl NativeBackend {
         match mode {
             ImageDrawMode::Fit => {
                 let dst = contain_rect(rect, image.width() as f32, image.height() as f32);
-                canvas.draw_image_rect(&image, None, to_sk_rect(dst), &paint);
+                canvas.draw_image_rect_with_sampling_options(
+                    &image,
+                    None,
+                    to_sk_rect(dst),
+                    sampling,
+                    &paint,
+                );
             }
             ImageDrawMode::Stretch => {
-                canvas.draw_image_rect(&image, None, to_sk_rect(rect), &paint);
+                canvas.draw_image_rect_with_sampling_options(
+                    &image,
+                    None,
+                    to_sk_rect(rect),
+                    sampling,
+                    &paint,
+                );
             }
             ImageDrawMode::Tile => {
                 draw_tiled_image(canvas, rect, &image, &paint, original_size, tile_scale);
@@ -357,8 +495,18 @@ impl NativeBackend {
             ImageDrawMode::Fill | ImageDrawMode::Crop => {
                 let dst = cover_rect(rect, image.width() as f32, image.height() as f32);
                 let save = canvas.save();
-                canvas.clip_rect(to_sk_rect(rect), None, Some(true));
-                canvas.draw_image_rect(&image, None, to_sk_rect(dst), &paint);
+                canvas.clip_rect(
+                    to_sk_rect(rect),
+                    None,
+                    Some(jian_skia::raster_sampling::geometry_antialias()),
+                );
+                canvas.draw_image_rect_with_sampling_options(
+                    &image,
+                    None,
+                    to_sk_rect(dst),
+                    sampling,
+                    &paint,
+                );
                 canvas.restore_to_count(save);
             }
         }
@@ -410,52 +558,7 @@ pub(super) fn figma_image_local_matrix(
 }
 
 pub(super) fn image_adjustment_matrix(adjustments: ImageAdjustments) -> Option<[f32; 20]> {
-    let exp = adjustments.exposure / 100.0;
-    let con = adjustments.contrast / 100.0;
-    let sat = adjustments.saturation / 100.0;
-    let temp = adjustments.temperature / 100.0;
-    let tint = adjustments.tint / 100.0;
-    let hi = adjustments.highlights / 100.0;
-    let sh = adjustments.shadows / 100.0;
-    if adjustments.is_neutral() {
-        return None;
-    }
-
-    let e = 1.0 + exp * 1.5;
-    let c = 1.0 + con;
-    let c_off = 0.5 * (1.0 - c);
-    let s = 1.0 + sat;
-    let (lr, lg, lb) = (0.2126, 0.7152, 0.0722);
-    let sr = (1.0 - s) * lr;
-    let sg = (1.0 - s) * lg;
-    let sb = (1.0 - s) * lb;
-    let f = c * e;
-    let off_r = c_off + temp * 0.15 + (hi + sh * 0.5) * 0.1;
-    let off_g = c_off + tint * 0.15 + (hi + sh * 0.5) * 0.1;
-    let off_b = c_off - temp * 0.15 + (hi + sh * 0.5) * 0.1;
-
-    Some([
-        f * (sr + s),
-        f * sg,
-        f * sb,
-        0.0,
-        off_r,
-        f * sr,
-        f * (sg + s),
-        f * sb,
-        0.0,
-        off_g,
-        f * sr,
-        f * sg,
-        f * (sb + s),
-        0.0,
-        off_b,
-        0.0,
-        0.0,
-        0.0,
-        1.0,
-        0.0,
-    ])
+    op_editor_core::image_field_geometry::image_adjustment_matrix(adjustments)
 }
 
 fn draw_tiled_image(
@@ -476,7 +579,11 @@ fn draw_tiled_image(
     }
 
     let save = canvas.save();
-    canvas.clip_rect(to_sk_rect(rect), None, Some(true));
+    canvas.clip_rect(
+        to_sk_rect(rect),
+        None,
+        Some(jian_skia::raster_sampling::geometry_antialias()),
+    );
 
     let centered_x = rect.origin.x + (rect.size.x - tile_w) / 2.0;
     let centered_y = rect.origin.y + (rect.size.y - tile_h) / 2.0;
@@ -512,7 +619,6 @@ fn draw_tiled_image(
 
     canvas.restore_to_count(save);
 }
-
 fn normalized_tile_scale(scale: f32) -> f32 {
     if scale.is_finite() && scale > 0.0 {
         scale
@@ -520,13 +626,11 @@ fn normalized_tile_scale(scale: f32) -> f32 {
         1.0
     }
 }
-
 fn valid_original_size(size: Option<[f32; 2]>) -> Option<[f32; 2]> {
     size.filter(|[width, height]| {
         width.is_finite() && height.is_finite() && *width > 0.0 && *height > 0.0
     })
 }
-
 /// Keep pathological but positive wire values from producing billions of
 /// individual draws. Dense sub-pixel repetition is visually indistinguishable
 /// beyond this bound, while the shared multiplier preserves bitmap aspect.
@@ -538,11 +642,9 @@ fn effective_tile_scale(rect: Rect, image_w: f32, image_h: f32, scale: f32) -> f
     let min_for_y = rect.size.y.abs() / (image_h * MAX_REPEATS_PER_AXIS);
     authored.max(min_for_progress).max(min_for_x).max(min_for_y)
 }
-
 #[cfg(test)]
 mod crop_transform_tests {
     use super::*;
-
     fn render_with_scale(
         mode: ImageDrawMode,
         transform: Option<[f32; 6]>,
@@ -550,7 +652,6 @@ mod crop_transform_tests {
     ) -> Vec<u8> {
         render_with_options(mode, transform, None, tile_scale)
     }
-
     fn render_with_options(
         mode: ImageDrawMode,
         transform: Option<[f32; 6]>,
@@ -563,7 +664,6 @@ mod crop_transform_tests {
         source
             .canvas()
             .draw_rect(skia_safe::Rect::from_xywh(2.0, 0.0, 2.0, 2.0), &blue);
-
         let mut backend = NativeBackend::with_dpi(1.0);
         backend.install_raster_image(1, source.image_snapshot(), u32::MAX);
         let mut target = skia_safe::surfaces::raster_n32_premul((20, 20)).unwrap();
@@ -589,11 +689,9 @@ mod crop_transform_tests {
             .as_bytes()
             .to_vec()
     }
-
     fn render(mode: ImageDrawMode, transform: Option<[f32; 6]>) -> Vec<u8> {
         render_with_scale(mode, transform, 1.0)
     }
-
     #[test]
     fn crop_uses_figma_transform_identically_to_fill() {
         let transform = Some([0.5, 0.0, 0.0, 0.0, 1.0, 0.0]);
@@ -609,7 +707,6 @@ mod crop_transform_tests {
             "the parity assertion must prove the transform affects pixels"
         );
     }
-
     #[test]
     fn tile_scale_is_distinct_from_affine_decal_sampling() {
         let transform = Some([0.5, 0.0, 0.0, 0.0, 1.0, 0.0]);
@@ -625,7 +722,6 @@ mod crop_transform_tests {
             "the authored tile scale must affect output pixels"
         );
     }
-
     #[test]
     fn tile_scale_preserves_figma_value_and_bounds_pathological_repetition() {
         let rect = Rect::xywh(0.0, 0.0, 220.0, 220.0);
@@ -643,7 +739,6 @@ mod crop_transform_tests {
             effective_tile_scale(rect, 220.0, 220.0, 0.38618907),
             0.38618907
         );
-
         let bounded = effective_tile_scale(
             Rect::xywh(1.0e20, 1.0e20, 1_000_000.0, 1_000_000.0),
             1.0,
@@ -652,7 +747,6 @@ mod crop_transform_tests {
         );
         assert!(bounded >= 1_000_000.0 / 128.0);
     }
-
     #[test]
     fn original_size_keeps_tile_period_after_oversized_raster_is_downsampled() {
         // Model a 4096px source decoded to a 256px raster (16x reduction).
@@ -667,7 +761,6 @@ mod crop_transform_tests {
             decoded_period,
             "invalid authored dimensions must fall back to the decoded raster"
         );
-
         let source = valid_original_size(Some([4096.0, 4096.0])).unwrap();
         assert_eq!([source[0] * 0.25, source[1] * 0.25], [1024.0, 1024.0]);
     }

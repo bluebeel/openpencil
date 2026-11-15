@@ -39,14 +39,14 @@ pub(super) fn strip_light_plates_on_dark(sink: &mut dyn DocSink, root_id: &str) 
     let Ok(root_value) = serde_json::to_value(root) else {
         return 0;
     };
-    let document = {
-        let mut document = sink.state().doc.clone();
-        document.children = sink.state().active_children().to_vec();
-        document.pages = None;
-        document
-    };
-    let variables = document.variables.clone().unwrap_or_default();
-    let theme = op_design_lint::node_util::default_theme(document.themes.as_ref());
+    let empty_variables = op_design_lint::node_util::Variables::new();
+    let variables = sink
+        .state()
+        .doc
+        .variables
+        .as_ref()
+        .unwrap_or(&empty_variables);
+    let theme = op_design_lint::node_util::default_theme(sink.state().doc.themes.as_ref());
     let context = Context {
         variables: &variables,
         theme: &theme,

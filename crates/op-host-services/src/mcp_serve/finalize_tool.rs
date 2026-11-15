@@ -56,85 +56,129 @@ impl McpTool for FinalizeDesignTool {
     }
 
     fn call(&self, args: &BTreeMap<String, String>) -> ToolOutcome {
-        let root_ids: Vec<String> = match parse_root_ids(args, &self.state) {
-            Ok(ids) => ids,
-            Err(message) => return ToolOutcome::Err(ToolErrorCode::InvalidArgument, message),
-        };
-        let recorded = match op_orchestrator::record_loop_finalize_counted(&self.state) {
-            Ok(recorded) => recorded,
-            Err(error) => {
-                return ToolOutcome::Err(
-                    ToolErrorCode::Internal,
-                    format!("finalize_design could not prove command replay parity: {error}"),
-                )
-            }
-        };
-        let op_orchestrator::RecordedLoopFinalize {
-            state,
-            summary,
-            commands,
-        } = recorded;
-        // Post-cleanup echo-only structural advisories (DS P2-a item ③):
-        // every parent node of the FINAL document runs the same
-        // sibling-structure-drift detector the pre-insertion self-check
-        // uses, and hits are reported — never repaired, never counted in
-        // the repair tally, never written back as commands. The
-        // model-in-the-loop fixes them via batch_design / update_node and
-        // calls finalize_design again (see the schema description).
-        let advisories = op_orchestrator::orchestration_self_check::collect_section_structure_drift(
-            state.active_children(),
-        );
-        // DS P2-b item C: board-trailing-void findings ride the SAME
-        // echo-only advisory channel — reported, never repaired, never
-        // counted in the repair tally. A fixed Card/Deck board whose void is
-        // still >= 25% after the cleanup passes (incl. the centre repair)
-        // holds too little content for any repair to rescue; the advisory
-        // tells the caller to add density.
-        let void_advisories =
-            op_orchestrator::board_trailing_void::collect_board_trailing_void(&state);
-        // DS P2-d item ②: card format drift rides the same channel too. A
-        // Card board whose authored aspect passed the 3:4 / 1:1 regular band
-        // (e.g. the text-wrap reflow growing 1440 → 2116) is an
-        // informational finding — whether long-form output is acceptable is
-        // a product decision, so the advisory names the ratio and both
-        // directions and repairs nothing.
-        let format_drift = op_orchestrator::board_trailing_void::collect_board_format_drift(&state);
-        // Shader-budget findings: GPU cost of shader fills (blocking if the
-        // shader is invalid and degrades to a flat colour; informational if
-        // just expensive). Each root form is classified once to determine the
-        // budget tier, then all issues are partitioned by severity.
-        let mut shader_blocking = Vec::new();
-        let mut shader_informational = Vec::new();
-        for root in state.active_children() {
-            let form = classify_root_form_node(root);
-            let issues = detect_shader_budget(root, form);
-            for issue in issues {
-                if issue.severity == op_design_lint::IssueSeverity::Warning {
-                    shader_blocking.push(issue);
-                } else {
-                    shader_informational.push(issue);
-                }
+        finalize(&self.state, args)
+    }
+}
+
+/// Prepared while the file authority is still borrowed; retains only the
+/// response and actual repair commands, rather than another whole editor.
+pub(crate) struct PreparedFinalize {
+    arguments: BTreeMap<String, String>,
+    outcome: ToolOutcome,
+}
+
+pub(crate) fn finalize_design_for_call(
+    state: &EditorState,
+    arguments: &BTreeMap<String, String>,
+) -> PreparedFinalize {
+    PreparedFinalize {
+        arguments: arguments.clone(),
+        outcome: finalize(state, arguments),
+    }
+}
+impl McpTool for PreparedFinalize {
+    fn name(&self) -> &str {
+        "finalize_design"
+    }
+    fn call(&self, args: &BTreeMap<String, String>) -> ToolOutcome {
+        if args != &self.arguments {
+            return different_arguments();
+        }
+        self.outcome.clone()
+    }
+    fn call_once(self: Box<Self>, args: &BTreeMap<String, String>) -> ToolOutcome {
+        if args != &self.arguments {
+            return different_arguments();
+        }
+        self.outcome
+    }
+}
+fn different_arguments() -> ToolOutcome {
+    ToolOutcome::Err(
+        ToolErrorCode::InvalidArgument,
+        "finalize_design request-scoped snapshot cannot run different arguments".into(),
+    )
+}
+
+fn finalize(input: &EditorState, args: &BTreeMap<String, String>) -> ToolOutcome {
+    let root_ids: Vec<String> = match parse_root_ids(args, input) {
+        Ok(ids) => ids,
+        Err(message) => return ToolOutcome::Err(ToolErrorCode::InvalidArgument, message),
+    };
+    let recorded = match op_orchestrator::record_loop_finalize_counted(input) {
+        Ok(recorded) => recorded,
+        Err(error) => {
+            return ToolOutcome::Err(
+                ToolErrorCode::Internal,
+                format!("finalize_design could not prove command replay parity: {error}"),
+            )
+        }
+    };
+    let op_orchestrator::RecordedLoopFinalize {
+        state,
+        summary,
+        commands,
+    } = recorded;
+    // Post-cleanup echo-only structural advisories (DS P2-a item ③):
+    // every parent node of the FINAL document runs the same
+    // sibling-structure-drift detector the pre-insertion self-check
+    // uses, and hits are reported — never repaired, never counted in
+    // the repair tally, never written back as commands. The
+    // model-in-the-loop fixes them via batch_design / update_node and
+    // calls finalize_design again (see the schema description).
+    let advisories = op_orchestrator::orchestration_self_check::collect_section_structure_drift(
+        state.active_children(),
+    );
+    // DS P2-b item C: board-trailing-void findings ride the SAME
+    // echo-only advisory channel — reported, never repaired, never
+    // counted in the repair tally. A fixed Card/Deck board whose void is
+    // still >= 25% after the cleanup passes (incl. the centre repair)
+    // holds too little content for any repair to rescue; the advisory
+    // tells the caller to add density.
+    let void_advisories = op_orchestrator::board_trailing_void::collect_board_trailing_void(&state);
+    // DS P2-d item ②: card format drift rides the same channel too. A
+    // Card board whose authored aspect passed the 3:4 / 1:1 regular band
+    // (e.g. the text-wrap reflow growing 1440 → 2116) is an
+    // informational finding — whether long-form output is acceptable is
+    // a product decision, so the advisory names the ratio and both
+    // directions and repairs nothing.
+    let format_drift = op_orchestrator::board_trailing_void::collect_board_format_drift(&state);
+    // Shader-budget findings: GPU cost of shader fills (blocking if the
+    // shader is invalid and degrades to a flat colour; informational if
+    // just expensive). Each root form is classified once to determine the
+    // budget tier, then all issues are partitioned by severity.
+    let mut shader_blocking = Vec::new();
+    let mut shader_informational = Vec::new();
+    for root in state.active_children() {
+        let form = classify_root_form_node(root);
+        let issues = detect_shader_budget(root, form);
+        for issue in issues {
+            if issue.severity == op_design_lint::IssueSeverity::Warning {
+                shader_blocking.push(issue);
+            } else {
+                shader_informational.push(issue);
             }
         }
-        let json = finalize_result_json(
-            &summary,
-            root_ids.len(),
-            &advisories,
-            &void_advisories,
-            &format_drift,
-            RenderFindings {
-                shader_blocking: &shader_blocking,
-                shader_informational: &shader_informational,
-                clipped_content:
-                    &op_orchestrator::geometry_validation::fixed_board_content_diagnostics(&state),
-                changed_board_sizes: &fixed_board_size_changes(&self.state, &state),
-            },
-        );
-        if commands.is_empty() {
-            ToolOutcome::OkJson(json)
-        } else {
-            ToolOutcome::OkJsonWithCommand(json, EditorCommand::Batch { commands })
-        }
+    }
+    let json = finalize_result_json(
+        &summary,
+        root_ids.len(),
+        &advisories,
+        &void_advisories,
+        &format_drift,
+        RenderFindings {
+            shader_blocking: &shader_blocking,
+            shader_informational: &shader_informational,
+            clipped_content: &op_orchestrator::geometry_validation::fixed_board_content_diagnostics(
+                &state,
+            ),
+            changed_board_sizes: &fixed_board_size_changes(input, &state),
+        },
+    );
+    if commands.is_empty() {
+        ToolOutcome::OkJson(json)
+    } else {
+        ToolOutcome::OkJsonWithCommand(json, EditorCommand::Batch { commands })
     }
 }
 

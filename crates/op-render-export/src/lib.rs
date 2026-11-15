@@ -29,19 +29,43 @@ use op_editor_ui::Rect;
 use skia_safe::{Canvas, EncodedImageFormat};
 use std::path::Path as StdPath;
 
+mod batch_files;
+mod correlated_raster;
 mod editor;
+mod encoding;
+mod node_lookup;
+pub use node_lookup::resolve_page_nodes;
 mod error;
 pub mod pdf;
 mod scene_painter;
+mod scene_sampling;
+mod selection;
+pub use selection::*;
+mod shared_raster;
+mod shared_work;
 mod svg;
 
+pub use batch_files::{export_scene_files, RasterFileTarget};
+pub use correlated_raster::{RasterSampling, MAX_CORRELATED_WORKING_BYTES};
 pub use editor::{
     default_export_file_name, export_editor_state, export_editor_state_to_path, EditorExportScope,
     ExportArtifact,
 };
 pub use error::ExportError;
-pub use scene_painter::{paint_node, paint_nodes};
-pub use svg::{export_node_svg, export_svg, render_node_svg_bytes, render_svg_bytes};
+pub use scene_painter::{paint_node, paint_nodes, with_batch_preparation};
+pub use scene_sampling::*;
+pub use shared_raster::{
+    shared_raster_worker, RasterAdmission, RasterWorkerStats, SharedRasterTarget,
+    SharedRasterWorker,
+};
+pub use shared_work::{
+    shared_work_gate, SharedWorkGate, SharedWorkLease, SharedWorkStats, WorkCancellation,
+    DEFAULT_MAX_QUEUED_WORK,
+};
+pub use svg::{
+    export_node_svg, export_svg, render_node_on_page_svg_bytes, render_node_svg_bytes,
+    render_page_svg_bytes, render_svg_bytes, NodeSvgBatch,
+};
 
 const MARGIN: f32 = 0.0;
 
@@ -107,9 +131,8 @@ impl RasterFormat {
     }
 
     fn ensure_supported(self) -> Result<(), ExportError> {
-        // The pinned iOS and Android Skia archives omit WebP. Desktop keeps
-        // the historical best-effort Skia encode path without enabling a new
-        // feature that would change its pinned binary key.
+        // Mobile retains its explicit capability gate. Desktop uses a separate
+        // codec so WebP support does not depend on a Skia archive variant.
         if matches!(self, RasterFormat::Webp) && cfg!(any(target_os = "ios", target_os = "android"))
         {
             return Err(ExportError::UnsupportedFormat { format: "WEBP" });
@@ -128,7 +151,7 @@ pub fn export_raster(
     scale: f32,
 ) -> Result<(), ExportError> {
     format.ensure_supported()?;
-    let scale = clamp_scale(scale);
+    let scale = raster_scale(scale);
     let page = scene.active_page().ok_or(ExportError::NoActivePage)?;
     let bounds = page_bounds(page).ok_or(ExportError::NothingToExport)?;
     render_raster(bounds, target, format, scale, MARGIN, |canvas| {
@@ -165,23 +188,69 @@ pub fn export_node_raster_with_margin(
     margin: f32,
 ) -> Result<(), ExportError> {
     format.ensure_supported()?;
-    let scale = clamp_scale(scale);
+    let scale = raster_scale(scale);
     let page = scene.active_page().ok_or(ExportError::NoActivePage)?;
-    let node = page
-        .find(node_id)
+    let batch = SceneSelectionBatch::new(page, [node_id]);
+    let selected = batch
+        .get(node_id)
         .ok_or_else(|| ExportError::NodeNotFoundOnActivePage {
-            node_id: node_id.to_string(),
+            node_id: node_id.to_owned(),
         })?;
+    export_selected_node_raster(&selected, target, format, scale, margin)
+}
+
+/// Export an isolated already-resolved subtree without containing-page context.
+/// Use `SceneSelectionBatch` / `export_selected_node_raster` when inherited
+/// transforms, clips, masks or composite layers must be retained.
+pub fn export_scene_node_raster(
+    node: &SceneNode,
+    target: &StdPath,
+    format: RasterFormat,
+    scale: f32,
+) -> Result<(), ExportError> {
+    export_scene_node_raster_with_margin(node, target, format, scale, MARGIN)
+}
+
+fn export_scene_node_raster_with_margin(
+    node: &SceneNode,
+    target: &StdPath,
+    format: RasterFormat,
+    scale: f32,
+    margin: f32,
+) -> Result<(), ExportError> {
+    format.ensure_supported()?;
+    let scale = raster_scale(scale);
     let mut acc = BoundsAcc::new();
     collect_bounds(node, glam::Affine2::IDENTITY, &mut acc);
     let bounds = acc
         .into_rect()
         .ok_or_else(|| ExportError::NodePaintsNothing {
-            node_id: node_id.to_string(),
+            node_id: node.id.clone(),
         })?;
     render_raster(bounds, target, format, scale, margin.max(0.0), |canvas| {
         paint_node(canvas, node);
     })
+}
+
+/// Export a node into an explicit document-space viewport, retaining transparent
+/// frame padding. The viewport selects the surface; pixels are never resized.
+pub fn export_node_raster_with_viewport(
+    scene: &LayoutScene,
+    node_id: &str,
+    target: &StdPath,
+    format: RasterFormat,
+    scale: f32,
+    viewport: Rect,
+) -> Result<(), ExportError> {
+    format.ensure_supported()?;
+    let page = scene.active_page().ok_or(ExportError::NoActivePage)?;
+    let batch = SceneSelectionBatch::new(page, [node_id]);
+    let selected = batch
+        .get(node_id)
+        .ok_or_else(|| ExportError::NodeNotFoundOnActivePage {
+            node_id: node_id.to_owned(),
+        })?;
+    selection::export_selected_node_in_viewport(&selected, target, viewport, format, scale, 0.0)
 }
 
 /// In-memory variant of [`export_node_raster`] — renders a single node
@@ -211,7 +280,7 @@ pub fn render_page_raster_bytes(
     let bounds = page_bounds(page).ok_or_else(|| ExportError::PageEmpty {
         page_id: page.id.clone(),
     })?;
-    render_raster_bytes(bounds, format, clamp_scale(scale), MARGIN, |canvas| {
+    render_raster_bytes(bounds, format, raster_scale(scale), MARGIN, |canvas| {
         paint_nodes(canvas, &page.children);
     })
 }
@@ -224,15 +293,27 @@ pub fn render_node_on_page_raster_bytes(
     scale: f32,
 ) -> Result<Vec<u8>, ExportError> {
     format.ensure_supported()?;
-    let node = page
-        .find(node_id)
+    let batch = SceneSelectionBatch::new(page, [node_id]);
+    let selected = batch
+        .get(node_id)
         .ok_or_else(|| ExportError::NodeNotFoundOnPage {
-            node_id: node_id.to_string(),
+            node_id: node_id.to_owned(),
             page_id: page.id.clone(),
         })?;
+    render_selected_node_raster_bytes(&selected, format, scale)
+}
+
+/// Render a borrowed isolated subtree without containing-page context. Page/ID
+/// entrypoints and `render_selected_node_raster_bytes` retain ancestor context.
+pub fn render_scene_node_raster_bytes(
+    node: &SceneNode,
+    format: RasterFormat,
+    scale: f32,
+) -> Result<Vec<u8>, ExportError> {
+    format.ensure_supported()?;
     if node.hidden {
         return Err(ExportError::NodeHidden {
-            node_id: node_id.to_string(),
+            node_id: node.id.clone(),
         });
     }
     let mut acc = BoundsAcc::new();
@@ -240,18 +321,21 @@ pub fn render_node_on_page_raster_bytes(
     let bounds = acc
         .into_rect()
         .ok_or_else(|| ExportError::NodePaintsNothing {
-            node_id: node_id.to_string(),
+            node_id: node.id.clone(),
         })?;
-    render_raster_bytes(bounds, format, clamp_scale(scale), MARGIN, |canvas| {
+    render_raster_bytes(bounds, format, raster_scale(scale), MARGIN, |canvas| {
         paint_node(canvas, node);
     })
 }
 
-/// Clamp a caller-supplied export scale to the @0.5x..@8x range,
-/// defaulting a non-finite value to @2x (TS export-dialog parity).
-fn clamp_scale(scale: f32) -> f32 {
-    if scale.is_finite() {
-        scale.clamp(0.5, 8.0)
+/// Honor positive caller scales, including fractional thumbnail sizes.
+/// Output-side and pixel-count checks bound allocation independently. Keep
+/// the legacy fallbacks only for nonpositive/nonfinite persisted UI values.
+fn raster_scale(scale: f32) -> f32 {
+    if scale.is_finite() && scale > 0.0 {
+        scale
+    } else if scale.is_finite() {
+        0.5
     } else {
         2.0
     }
@@ -269,9 +353,8 @@ fn render_raster(
     margin: f32,
     paint: impl FnOnce(&Canvas),
 ) -> Result<(), ExportError> {
-    let data = render_raster_bytes(bounds, format, scale, margin, paint)?;
-    std::fs::write(target, data).map_err(|e| ExportError::Write(e.to_string()))?;
-    Ok(())
+    let surface = render_raster_surface(bounds, format, scale, margin, paint)?;
+    encoding::write_surface(surface, target, format)
 }
 
 /// In-memory variant of [`render_raster`] — encodes and returns the
@@ -285,6 +368,32 @@ pub fn render_raster_bytes(
     margin: f32,
     paint: impl FnOnce(&Canvas),
 ) -> Result<Vec<u8>, ExportError> {
+    let data = render_raster_data(bounds, format, scale, margin, paint)?;
+    Ok(data.as_bytes().to_vec())
+}
+
+// Pixel surfaces and snapshots drop before a caller copies encoded bytes.
+// File exports borrow the encoded backing directly and need no output copy.
+fn render_raster_data(
+    bounds: Rect,
+    format: RasterFormat,
+    scale: f32,
+    margin: f32,
+    paint: impl FnOnce(&Canvas),
+) -> Result<encoding::RasterData, ExportError> {
+    encoding::surface(
+        render_raster_surface(bounds, format, scale, margin, paint)?,
+        format,
+    )
+}
+
+fn render_raster_surface(
+    bounds: Rect,
+    format: RasterFormat,
+    scale: f32,
+    margin: f32,
+    paint: impl FnOnce(&Canvas),
+) -> Result<skia_safe::Surface, ExportError> {
     format.ensure_supported()?;
     let width_f = ((bounds.size.x + margin * 2.0) * scale).round();
     let height_f = ((bounds.size.y + margin * 2.0) * scale).round();
@@ -304,6 +413,7 @@ pub fn render_raster_bytes(
             height_px,
         });
     }
+    encoding::validate_dimensions(format, width_px, height_px)?;
     let info = skia_safe::ImageInfo::new(
         (width_px as i32, height_px as i32),
         skia_safe::ColorType::N32,
@@ -321,13 +431,7 @@ pub fn render_raster_bytes(
     canvas.scale((scale, scale));
     canvas.translate((margin - bounds.origin.x, margin - bounds.origin.y));
     paint(canvas);
-    let image = surface.image_snapshot();
-    let data = image
-        .encode(None, format.skia(), format.quality())
-        .ok_or(ExportError::Encode {
-            format: format.user_label(),
-        })?;
-    Ok(data.as_bytes().to_vec())
+    Ok(surface)
 }
 
 /// Bounding rect over every paintable node on `page`. The scene is
@@ -392,12 +496,10 @@ pub(crate) fn collect_bounds(n: &SceneNode, parent_xform: glam::Affine2, acc: &m
     } else {
         parent_xform
     };
-    if let Some(local_corners) = own_paint_corners(n) {
-        for p in local_corners {
-            let w = local_xform.transform_point2(p);
-            acc.add(w.x, w.y, w.x, w.y);
-        }
-    }
+    op_editor_ui::scene_bounds::for_each_own_paint_corner(n, RASTER_PAINT_RULES, |p| {
+        let w = local_xform.transform_point2(p);
+        acc.add(w.x, w.y, w.x, w.y);
+    });
     // A `clip_content` container clips its children to its own rect
     // (the painter pushes the same clip scope the live canvas does —
     // see `canvas_viewport_paint::push_clip_content`), so child
@@ -421,10 +523,6 @@ pub(crate) fn collect_bounds(n: &SceneNode, parent_xform: glam::Affine2, acc: &m
     for child in &n.children {
         collect_bounds(child, local_xform, acc);
     }
-}
-
-fn own_paint_corners(n: &SceneNode) -> Option<Vec<glam::Vec2>> {
-    op_editor_ui::scene_bounds::own_paint_corners(n, RASTER_PAINT_RULES)
 }
 
 #[cfg(test)]
@@ -458,4 +556,10 @@ pub mod test_support {
 }
 
 #[cfg(test)]
+mod encoding_tests;
+#[cfg(test)]
+mod shadow_tests;
+#[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod viewport_tests;

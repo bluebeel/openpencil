@@ -8,7 +8,7 @@
 //! `batch_design_wire.rs` (the `nodes_json` descriptor parser), and
 //! `batch_design_fill_normalize.rs` (fill coercion).
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, fmt::Write};
 
 use jian_ops_schema::node::PenNode;
 use jian_ops_schema::promote::{promote_frame, widget_kind_for, PromoteNote};
@@ -25,7 +25,9 @@ use super::batch_design_wire::parse_batch_items;
 
 // Re-exported so the pre-split `crate::batch_design::<item>` paths that
 // the rest of the crate uses keep resolving after the carve-off.
-pub(crate) use super::batch_design_dsl::{find_top_level_char, split_operations};
+pub(crate) use super::batch_design_dsl::{
+    find_top_level_char, split_operation_slices, split_operations,
+};
 pub(crate) use super::batch_design_normalize::{ensure_node_ids, normalize_node_shape};
 
 // First-party `batch_design` tool — insert N leaf nodes on the
@@ -86,41 +88,35 @@ pub(crate) type BatchInputError = (ToolErrorCode, String);
 pub(crate) fn select_batch_input(
     args: &BTreeMap<String, String>,
 ) -> Result<BatchInputKind, BatchInputError> {
-    let active: Vec<BatchInputKind> = [
+    let mut active = None;
+    let mut present = None;
+    let mut present_count = 0;
+    for (key, kind) in [
         ("script", BatchInputKind::Script),
         ("operations", BatchInputKind::Operations),
         ("nodes_json", BatchInputKind::NodesJson),
-    ]
-    .into_iter()
-    .filter_map(|(key, kind)| carries_input(args, key).then_some(kind))
-    .collect();
-    match active.as_slice() {
-        [kind] => Ok(*kind),
-        [] => {
-            // Preserve a lone slot's own parser error (`nodes_json:{}` is
-            // malformed, `script:""` is empty) while treating placeholders
-            // as absent whenever another slot carries the real input.
-            let present: Vec<BatchInputKind> = [
-                ("script", BatchInputKind::Script),
-                ("operations", BatchInputKind::Operations),
-                ("nodes_json", BatchInputKind::NodesJson),
-            ]
-            .into_iter()
-            .filter_map(|(key, kind)| args.contains_key(key).then_some(kind))
-            .collect();
-            match present.as_slice() {
-                [kind] => Ok(*kind),
-                _ => Err((
-                    ToolErrorCode::MissingArgument,
-                    "one non-empty input is required: script, operations, or nodes_json".into(),
-                )),
+    ] {
+        if let Some(value) = args.get(key) {
+            present = Some(kind);
+            present_count += 1;
+            if !matches!(value.trim(), "" | "[]" | "{}" | "null") {
+                if active.replace(kind).is_some() {
+                    return Err((
+                        ToolErrorCode::InvalidArgument,
+                        "provide only one of script, operations, or nodes_json".into(),
+                    ));
+                }
             }
         }
-        _ => Err((
-            ToolErrorCode::InvalidArgument,
-            "provide only one of script, operations, or nodes_json".into(),
-        )),
     }
+    active
+        .or_else(|| (present_count == 1).then_some(present).flatten())
+        .ok_or_else(|| {
+            (
+                ToolErrorCode::MissingArgument,
+                "one non-empty input is required: script, operations, or nodes_json".into(),
+            )
+        })
 }
 
 /// Expand a `script` arg into the `operations` DSL program the rest of
@@ -162,8 +158,11 @@ pub(crate) fn expand_script_arg(
                 )))
             }
         };
-        let mut forwarded = args.clone();
-        forwarded.remove("script");
+        let mut forwarded: BTreeMap<_, _> = args
+            .iter()
+            .filter(|(key, _)| key.as_str() != "script")
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect();
         forwarded.insert("operations".to_string(), program);
         Some(Ok(forwarded))
     }
@@ -238,13 +237,7 @@ pub(crate) fn dispatch_batch_design(
                 )
             }
             Ok(ParsedOperations::Direct(command)) => {
-                let mut out = BTreeMap::new();
-                out.insert("wrote".into(), "true".into());
-                out.insert("count".into(), "1".into());
-                if let Some(phase) = phase {
-                    out.insert("phase".into(), phase.into());
-                }
-                ToolOutcome::OkWithCommand(out, command_with_outer_page_id(command, page_id))
+                direct_operation_outcome(command, page_id, phase)
             }
             Err(e) => ToolOutcome::Err(ToolErrorCode::InvalidArgument, e.to_string()),
         };
@@ -273,6 +266,20 @@ pub(crate) fn dispatch_batch_design(
     }
 }
 
+pub(crate) fn direct_operation_outcome(
+    command: EditorCommand,
+    page_id: Option<String>,
+    phase: Option<&'static str>,
+) -> ToolOutcome {
+    let mut out = BTreeMap::new();
+    out.insert("wrote".into(), "true".into());
+    out.insert("count".into(), "1".into());
+    if let Some(phase) = phase {
+        out.insert("phase".into(), phase.into());
+    }
+    ToolOutcome::OkWithCommand(out, command_with_outer_page_id(command, page_id))
+}
+
 pub(crate) enum ParsedOperations {
     Insert {
         parent_id: NodeId,
@@ -289,7 +296,7 @@ pub(crate) enum ParsedOperations {
 }
 
 pub(crate) fn parse_operations(input: &str) -> Result<ParsedOperations, OperationsError> {
-    let lines = split_operations(input);
+    let lines = split_operation_slices(input);
     if lines.len() == 1 {
         if let Some(command) = parse_single_direct_operation(&lines[0])? {
             return Ok(ParsedOperations::Direct(command));
@@ -305,6 +312,9 @@ pub(crate) fn parse_operations(input: &str) -> Result<ParsedOperations, Operatio
     // promotion drops the marked frame's children (widget nodes are leaves).
     let mut promoted = Vec::new();
     promote_in_slice(&mut nodes, &mut promoted);
+    for node in &mut nodes {
+        super::batch_program_node_parse::mark_new_authored_layout(node);
+    }
     let count = count_forest(&nodes);
     Ok(ParsedOperations::Insert {
         parent_id,
@@ -325,17 +335,18 @@ pub(crate) fn parse_operations(input: &str) -> Result<ParsedOperations, Operatio
 pub(crate) fn promote_in_slice(nodes: &mut [PenNode], notes: &mut Vec<PromoteNote>) {
     for node in nodes.iter_mut() {
         if let Some(kind) = widget_kind_for(node) {
-            let PenNode::Frame(frame) = node.clone() else {
+            let PenNode::Frame(frame) = node else {
                 // `widget_kind_for` only returns Some for a Frame.
                 continue;
             };
+            let promoted = promote_frame(frame, kind);
             let from_role = frame
                 .base
                 .role
-                .clone()
+                .take()
                 .unwrap_or_else(|| "semantics.role=input".into());
-            let id = frame.base.id.clone();
-            *node = promote_frame(&frame, kind);
+            let id = std::mem::take(&mut frame.base.id);
+            *node = promoted;
             notes.push(PromoteNote {
                 node_id: id,
                 from_role,
@@ -380,13 +391,7 @@ pub(crate) fn with_hoisted_state(
 /// Count every node in a forest (subtree-inclusive). Used to keep the flat
 /// `count` accurate after promotion drops a marked frame's children.
 fn count_forest(nodes: &[PenNode]) -> usize {
-    fn count_subtree(node: &PenNode) -> usize {
-        1 + node
-            .children()
-            .map(|c| c.iter().map(count_subtree).sum::<usize>())
-            .unwrap_or(0)
-    }
-    nodes.iter().map(count_subtree).sum()
+    super::tools::read_walk::nodes(nodes).count()
 }
 
 /// Stamp Phase E3 promotion info into a flat string-map result. No-op when
@@ -399,11 +404,17 @@ pub(crate) fn surface_promotions(out: &mut BTreeMap<String, String>, promoted: &
         return;
     }
     out.insert("promoted".into(), promoted.len().to_string());
-    let detail = promoted
-        .iter()
-        .map(|n| format!("{}({} -> {})", n.node_id, n.from_role, n.to))
-        .collect::<Vec<_>>()
-        .join(", ");
+    let mut detail = String::new();
+    for (index, note) in promoted.iter().enumerate() {
+        if index != 0 {
+            detail.push_str(", ");
+        }
+        let _ = write!(
+            detail,
+            "{}({} -> {})",
+            note.node_id, note.from_role, note.to
+        );
+    }
     out.insert("promotedNodes".into(), detail);
 }
 

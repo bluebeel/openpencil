@@ -13,6 +13,7 @@ use crate::{Color, Point2D, Rect, RenderBackend, TextLayout};
 #[derive(Default)]
 struct EffectCaptureBackend {
     ops: Vec<&'static str>,
+    shadows: Vec<(Rect, f32, f32)>,
 }
 
 impl RenderBackend for EffectCaptureBackend {
@@ -32,8 +33,9 @@ impl RenderBackend for EffectCaptureBackend {
     fn push_backdrop_blur_layer(&mut self, _: f32) {
         self.ops.push("backdrop");
     }
-    fn fill_drop_shadow(&mut self, _: Rect, _: f32, _: f32, _: Color) {
+    fn fill_drop_shadow(&mut self, rect: Rect, radius: f32, blur: f32, _: Color) {
         self.ops.push("shadow");
+        self.shadows.push((rect, radius, blur));
     }
     fn translate(&mut self, _: Point2D) {}
     fn stroke_line(&mut self, _: Point2D, _: Point2D, _: Color, _: f32) {}
@@ -102,9 +104,11 @@ fn fast_interaction_skips_every_effect_layer_at_any_zoom() {
     // fully visible sizes. Quality returns on gesture end.
     let node = effect_node(vec![
         Effect::DropShadow(DropShadow {
+            blur_kernel: Default::default(),
             offset_x: 4.0,
             offset_y: 4.0,
             blur: 12.0,
+            spread: 0.0,
             color: Color::BLACK,
             inner: false,
         }),
@@ -166,9 +170,11 @@ fn subpixel_shadow_skips_the_shadow_draw() {
     // Blur AND offset both under a third of a device pixel: the
     // shadow cannot move or soften the silhouette visibly.
     let node = effect_node(vec![Effect::DropShadow(DropShadow {
+        blur_kernel: Default::default(),
         offset_x: 2.0,
         offset_y: 2.0,
         blur: 4.0,
+        spread: 0.0,
         color: Color::BLACK,
         inner: false,
     })]);
@@ -181,11 +187,78 @@ fn visible_offset_keeps_the_shadow_even_with_tiny_blur() {
     // A hard-edged shadow displaced 40 doc px is still a visible
     // 2 px fringe at 5% zoom — only fully sub-pixel shadows skip.
     let node = effect_node(vec![Effect::DropShadow(DropShadow {
+        blur_kernel: Default::default(),
         offset_x: 40.0,
         offset_y: 0.0,
         blur: 0.0,
+        spread: 0.0,
         color: Color::BLACK,
         inner: false,
     })]);
     assert!(ops_at_zoom(&node, 0.05).contains(&"shadow"));
+}
+
+#[test]
+fn signed_shadow_spread_scales_with_viewport_zoom_before_backend_paint() {
+    let mut node = effect_node(vec![Effect::DropShadow(DropShadow {
+        blur_kernel: Default::default(),
+        offset_x: 3.0,
+        offset_y: 4.0,
+        blur: 10.0,
+        spread: -5.0,
+        color: Color::BLACK,
+        inner: false,
+    })]);
+    node.bounds = Rect::xywh(10.0, 20.0, 100.0, 80.0);
+    node.corner_radius = 24.0;
+    let mut backend = EffectCaptureBackend::default();
+    paint_node(
+        &mut PaintCx {
+            backend: &mut backend,
+        },
+        &node,
+        Point2D::new(7.0, 11.0),
+        2.0,
+        Rect::xywh(-1000.0, -1000.0, 4000.0, 4000.0),
+    );
+    assert_eq!(
+        backend.shadows,
+        vec![(Rect::xywh(43.0, 69.0, 180.0, 140.0), 38.0, 20.0)]
+    );
+}
+
+#[test]
+fn positive_spread_keeps_a_visible_crisp_shadow_and_full_contraction_skips_it() {
+    let mut node = effect_node(vec![Effect::DropShadow(DropShadow {
+        blur_kernel: Default::default(),
+        offset_x: 0.0,
+        offset_y: 0.0,
+        blur: 0.0,
+        spread: 5.0,
+        color: Color::BLACK,
+        inner: false,
+    })]);
+    assert!(ops_at_zoom(&node, 1.0).contains(&"shadow"));
+    let Effect::DropShadow(shadow) = &mut node.effects[0] else {
+        panic!("shadow");
+    };
+    shadow.spread = -30.0;
+    shadow.offset_x = 10.0;
+    assert!(!ops_at_zoom(&node, 1.0).contains(&"shadow"));
+}
+
+#[test]
+fn negative_spread_keeps_a_crisp_shadow_visible_through_an_unfilled_node() {
+    let mut node = effect_node(vec![Effect::DropShadow(DropShadow {
+        blur_kernel: Default::default(),
+        offset_x: 0.0,
+        offset_y: 0.0,
+        blur: 0.0,
+        spread: -5.0,
+        color: Color::BLACK,
+        inner: false,
+    })]);
+    node.fill = None;
+    assert!(ops_at_zoom(&node, 1.0).contains(&"shadow"));
+    assert!(!ops_at_zoom(&node, 0.01).contains(&"shadow"));
 }

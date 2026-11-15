@@ -18,7 +18,7 @@ use op_editor_core::PenNodeExt;
 use crate::payload::NodePayload;
 
 pub(crate) fn roots(roots: &[PenNode]) -> Option<Vec<PenNode>> {
-    if !roots.iter().any(has_expanding_surface) {
+    if !needs_snapshot(roots) {
         return None;
     }
     let page = crate::adapter::pen_roots_to_page_payload("export", "Export", roots, 0, false);
@@ -27,6 +27,10 @@ pub(crate) fn roots(roots: &[PenNode]) -> Option<Vec<PenNode>> {
         expand(node, measured);
     }
     (projected != roots).then_some(projected)
+}
+
+pub(crate) fn needs_snapshot(roots: &[PenNode]) -> bool {
+    roots.iter().any(has_expanding_surface)
 }
 
 fn props(node: &PenNode) -> Option<&ContainerProps> {

@@ -5,11 +5,11 @@
 //! repeated paste works). Cut is atomic — a failed delete leg
 //! restores the prior clipboard so a no-op cut looks like a no-op.
 
-use crate::id_allocator::{IdAllocError, IdAllocator, SequentialIdAllocator};
+use crate::id_allocator::{IdAllocError, IdAllocator};
 use crate::node_id::NodeId;
 use crate::pen_node_ext::PenNodeExt;
 use crate::state::EditorState;
-use crate::walkers::{self, find_node};
+use crate::walkers;
 use jian_ops_schema::node::PenNode;
 
 impl EditorState {
@@ -19,10 +19,18 @@ impl EditorState {
         if self.selection.set.is_empty() {
             return false;
         }
-        let mut buf: Vec<PenNode> = Vec::with_capacity(self.selection.set.len());
+        let selected =
+            crate::mutators::selection_nodes::resolve(self.active_children(), &self.selection.set);
+        let count = self
+            .selection
+            .set
+            .iter()
+            .filter(|id| selected.contains_key(id.as_str()))
+            .count();
+        let mut buf = Vec::with_capacity(count);
         for id in &self.selection.set {
-            if let Some(node) = find_node(self.active_children(), id) {
-                buf.push(node.clone());
+            if let Some(node) = selected.get(id.as_str()) {
+                buf.push((*node).clone());
             }
         }
         if buf.is_empty() {
@@ -35,12 +43,23 @@ impl EditorState {
     /// `Cmd+X`: copy the selection then delete it. Atomic — a
     /// failed delete restores the prior clipboard.
     pub fn cut_selected(&mut self) -> bool {
+        if self.selection.set.is_empty() {
+            return false;
+        }
+        let deletion = crate::mutators::selection_nodes::prepare_delete(self);
+        if deletion.as_ref().is_some_and(|plan| plan.is_empty()) {
+            return false;
+        }
         let saved = std::mem::take(&mut self.clipboard);
         if !self.copy_selected() {
             self.clipboard = saved;
             return false;
         }
-        if self.delete_selected() {
+        let deleted = match deletion {
+            Some(plan) => crate::mutators::selection_nodes::delete_prepared(self, plan),
+            None => self.delete_selected(),
+        };
+        if deleted {
             return true;
         }
         self.clipboard = saved;
@@ -57,7 +76,7 @@ impl EditorState {
     /// Returns the new ids, or empty on no-op (empty clipboard / id
     /// overflow).
     pub fn paste_clipboard(&mut self, next_id: &mut u64, offset_doc_px: f64) -> Vec<NodeId> {
-        let Ok(mut allocator) = SequentialIdAllocator::for_document(&self.doc, *next_id) else {
+        let Ok(mut allocator) = self.sequential_id_allocator(*next_id) else {
             return Vec::new();
         };
         let result = self
@@ -70,13 +89,23 @@ impl EditorState {
     }
 
     /// Allocator-aware form of [`Self::paste_clipboard`].
-    pub fn paste_clipboard_with_allocator(
+    pub(crate) fn paste_clipboard_with_allocator_unobserved(
         &mut self,
         allocator: &mut dyn IdAllocator,
         offset_doc_px: f64,
     ) -> Result<Vec<NodeId>, IdAllocError> {
         if self.clipboard.is_empty() {
             return Ok(Vec::new());
+        }
+        if let Some(prepared) =
+            crate::mutators::clone_splice::paste(self, allocator, offset_doc_px)?
+        {
+            let ids = prepared.commit_with_locations(self);
+            if !ids.is_empty() {
+                self.selection.anchor = ids[0].clone();
+                self.selection.set = ids.clone();
+            }
+            return Ok(ids);
         }
         let mut taken = self.collect_node_ids();
         let originals = self.clipboard.clone();

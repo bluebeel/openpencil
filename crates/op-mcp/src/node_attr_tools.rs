@@ -290,17 +290,20 @@ impl McpTool for SetNodeStrokeSideWidth {
                 "side is required (top / right / bottom / left)".into(),
             );
         };
-        let side = match raw_side.trim().to_ascii_lowercase().as_str() {
-            "top" => op_editor_core::StrokeSide::Top,
-            "right" => op_editor_core::StrokeSide::Right,
-            "bottom" => op_editor_core::StrokeSide::Bottom,
-            "left" => op_editor_core::StrokeSide::Left,
-            _ => {
-                return ToolOutcome::Err(
-                    ToolErrorCode::InvalidArgument,
-                    format!("side must be one of top / right / bottom / left, got {raw_side:?}"),
-                );
-            }
+        let side = raw_side.trim();
+        let side = if side.eq_ignore_ascii_case("top") {
+            op_editor_core::StrokeSide::Top
+        } else if side.eq_ignore_ascii_case("right") {
+            op_editor_core::StrokeSide::Right
+        } else if side.eq_ignore_ascii_case("bottom") {
+            op_editor_core::StrokeSide::Bottom
+        } else if side.eq_ignore_ascii_case("left") {
+            op_editor_core::StrokeSide::Left
+        } else {
+            return ToolOutcome::Err(
+                ToolErrorCode::InvalidArgument,
+                format!("side must be one of top / right / bottom / left, got {raw_side:?}"),
+            );
         };
         let Some(raw_w) = args.get("width") else {
             return ToolOutcome::Err(

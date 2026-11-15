@@ -1,10 +1,12 @@
+mod prepared_upsert;
+pub(crate) use prepared_upsert::{Destination as UpsertDestination, PreparedUpsert};
 use std::collections::{BTreeMap, HashSet};
 
 use jian_ops_schema::conversion::{ConversionEntry, ConversionKind, ConversionSpec};
 use jian_ops_schema::node::PenNode;
 use jian_ops_schema::PenDocument;
 
-use crate::id_allocator::{IdAllocError, IdAllocator, SequentialIdAllocator};
+use crate::id_allocator::{IdAllocError, IdAllocator};
 use crate::node_id::NodeId;
 use crate::pen_node_ext::PenNodeExt;
 use crate::state::EditorState;
@@ -56,7 +58,7 @@ pub fn upsert_component(
     source_path: Option<String>,
     source_hash: Option<String>,
 ) -> bool {
-    let Ok(mut allocator) = SequentialIdAllocator::for_document(&state.doc, 1) else {
+    let Ok(mut allocator) = state.sequential_id_allocator(1) else {
         return false;
     };
     upsert_component_with_allocator(
@@ -72,7 +74,7 @@ pub fn upsert_component(
 }
 
 /// Allocator-aware form of [`upsert_component`].
-pub fn upsert_component_with_allocator(
+fn upsert_component_with_allocator_unobserved(
     state: &mut EditorState,
     key: String,
     name: String,
@@ -137,7 +139,7 @@ pub fn upsert_screen(
     source_path: Option<String>,
     source_hash: Option<String>,
 ) -> bool {
-    let Ok(mut allocator) = SequentialIdAllocator::for_document(&state.doc, 1) else {
+    let Ok(mut allocator) = state.sequential_id_allocator(1) else {
         return false;
     };
     upsert_screen_with_allocator(state, key, root, source_path, source_hash, &mut allocator)
@@ -145,7 +147,7 @@ pub fn upsert_screen(
 }
 
 /// Allocator-aware form of [`upsert_screen`].
-pub fn upsert_screen_with_allocator(
+fn upsert_screen_with_allocator_unobserved(
     state: &mut EditorState,
     key: String,
     root: PenNode,
@@ -364,4 +366,56 @@ fn set_reusable(node: &mut PenNode, reusable: bool) {
     if let PenNode::Frame(frame) = node {
         frame.reusable = reusable.then_some(true);
     }
+}
+
+/// Allocator-aware conversion preserves the shared runtime ID floor.
+pub fn upsert_component_with_allocator(
+    state: &mut EditorState,
+    key: String,
+    name: String,
+    root: PenNode,
+    source_path: Option<String>,
+    source_hash: Option<String>,
+    allocator: &mut dyn IdAllocator,
+) -> Result<bool, IdAllocError> {
+    state.observe_runtime_allocations(
+        allocator,
+        |state, observed| {
+            upsert_component_with_allocator_unobserved(
+                state,
+                key,
+                name,
+                root,
+                source_path,
+                source_hash,
+                observed,
+            )
+        },
+        |changed| *changed,
+    )
+}
+
+/// Allocator-aware conversion preserves the shared runtime ID floor.
+pub fn upsert_screen_with_allocator(
+    state: &mut EditorState,
+    key: String,
+    root: PenNode,
+    source_path: Option<String>,
+    source_hash: Option<String>,
+    allocator: &mut dyn IdAllocator,
+) -> Result<bool, IdAllocError> {
+    state.observe_runtime_allocations(
+        allocator,
+        |state, observed| {
+            upsert_screen_with_allocator_unobserved(
+                state,
+                key,
+                root,
+                source_path,
+                source_hash,
+                observed,
+            )
+        },
+        |changed| *changed,
+    )
 }

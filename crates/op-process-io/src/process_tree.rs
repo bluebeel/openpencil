@@ -9,6 +9,34 @@ const WAIT_POLL_INTERVAL: Duration = Duration::from_millis(10);
 #[cfg(windows)]
 const TASKKILL_TIMEOUT: Duration = Duration::from_secs(2);
 
+/// Check whether one positive Unix PID exists without spawning a command or
+/// delivering a signal. Permission denial still means the process is present.
+/// This is a contemporaneous liveness check, not an identity/ownership receipt.
+#[cfg(unix)]
+pub fn process_exists(pid: u32) -> bool {
+    if pid == 0 {
+        return false;
+    }
+    let Ok(pid) = libc::pid_t::try_from(pid) else {
+        return false;
+    };
+    // SAFETY: conversion checked the positive pid_t range; signal0 only queries.
+    existence_result(unsafe { libc::kill(pid, 0) }).unwrap_or(false)
+}
+
+#[cfg(unix)]
+fn existence_result(result: libc::c_int) -> io::Result<bool> {
+    if result == 0 {
+        return Ok(true);
+    }
+    let error = io::Error::last_os_error();
+    match error.raw_os_error() {
+        Some(libc::ESRCH) => Ok(false),
+        Some(libc::EPERM) => Ok(true),
+        _ => Err(error),
+    }
+}
+
 /// A process-tree target captured while its leader is still alive.
 ///
 /// On Unix, OpenPencil's CLI launcher places every child in a process group
@@ -54,8 +82,7 @@ impl ProcessTree {
             // getpgid (for example, an already-exited child) deliberately
             // falls back to the exact pid rather than guessing a group id.
             let child_group = unsafe { libc::getpgid(pid) };
-            let our_group = unsafe { libc::getpgrp() };
-            let target = if child_group == pid && child_group != our_group {
+            let target = if child_group == pid && child_group != unsafe { libc::getpgrp() } {
                 UnixTarget::Group(child_group)
             } else {
                 UnixTarget::Process(pid)
@@ -152,15 +179,7 @@ impl ProcessTree {
                 UnixTarget::Process(pid) => libc::kill(pid, 0),
             }
         };
-        if result == 0 {
-            return Ok(true);
-        }
-        let error = io::Error::last_os_error();
-        match error.raw_os_error() {
-            Some(libc::ESRCH) => Ok(false),
-            Some(libc::EPERM) => Ok(true),
-            _ => Err(error),
-        }
+        existence_result(result)
     }
 
     #[cfg(not(unix))]

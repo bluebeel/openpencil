@@ -47,6 +47,9 @@ pub(super) fn paint_fill_layers_with(
     world_rect: Rect,
     mut paint_layer: impl FnMut(&mut PaintCx<'_>, &SceneFillLayer),
 ) -> bool {
+    if node.fill_disabled {
+        return true;
+    }
     if node.fill_layers.is_empty() {
         return false;
     }
@@ -92,6 +95,9 @@ pub(super) fn paint_clipped_fill_layers_with(
     clip: impl FnOnce(&mut dyn crate::RenderBackend),
     paint_layer: impl FnMut(&mut PaintCx<'_>, &SceneFillLayer),
 ) -> bool {
+    if node.fill_disabled {
+        return true;
+    }
     if node.fill_layers.is_empty() {
         return false;
     }
@@ -146,12 +152,29 @@ pub(super) fn paint_image_fill_layer(
     world_rect: Rect,
     zoom: f32,
 ) -> bool {
+    paint_image_fill_layer_with_corners(cx, node, layer, world_rect, zoom, true)
+}
+
+fn paint_image_fill_layer_with_corners(
+    cx: &mut PaintCx<'_>,
+    node: &SceneNode,
+    layer: &SceneFillLayer,
+    world_rect: Rect,
+    zoom: f32,
+    inherit_corners: bool,
+) -> bool {
     let SceneFillLayer::Image {
+        geometry,
+        paint,
         src,
         src_id,
+        thumbnail_src,
+        thumbnail_src_id,
+        nearest_sampling,
         fit,
         transform,
         original_size,
+        rotation_degrees,
         tile_scale,
         adjustments,
         opacity,
@@ -161,12 +184,26 @@ pub(super) fn paint_image_fill_layer(
         return false;
     };
     let mut image = SceneNode::leaf(node.id.as_str(), node.kind.clone());
-    image.corner_radius = node.corner_radius;
-    image.corner_radii = node.corner_radii;
+    image.corner_radius = if inherit_corners {
+        node.corner_radius
+    } else {
+        0.0
+    };
+    image.corner_radii = if inherit_corners {
+        node.corner_radii
+    } else {
+        None
+    };
     image.image_src = Some(Arc::clone(src));
     image.image_src_id = *src_id;
+    image.image_thumbnail_src = thumbnail_src.clone();
+    image.image_thumbnail_src_id = *thumbnail_src_id;
+    image.image_nearest_sampling = *nearest_sampling;
     image.image_fit = *fit;
     image.image_transform = *transform;
+    image.image_rotation_degrees = *rotation_degrees;
+    image.image_geometry = geometry.clone();
+    image.image_paint = paint.clone();
     image.image_original_size = *original_size;
     image.image_tile_scale = *tile_scale;
     image.image_adjustments = *adjustments;
@@ -200,7 +237,10 @@ pub(super) fn paint_clipped_shape_rich_fill_layer(
             true
         }
         SceneFillLayer::Image { .. } => {
-            paint_image_fill_layer(cx, node, layer, world_rect, zoom);
+            // The caller already owns the exact shape silhouette. Applying
+            // rectangular corner radii again can remove valid polygon/path
+            // coverage or multiply antialiasing at an ellipse boundary.
+            paint_image_fill_layer_with_corners(cx, node, layer, world_rect, zoom, false);
             true
         }
     }
@@ -453,10 +493,14 @@ mod tests {
             SceneFillLayer::Image {
                 src: Arc::from("placeholder://missing-background"),
                 src_id: 42,
+                thumbnail_src: None,
+                thumbnail_src_id: 0,
+                nearest_sampling: false,
                 fit: Default::default(),
                 transform: None,
                 original_size: None,
                 tile_scale: 1.0,
+                rotation_degrees: None,
                 adjustments: Default::default(),
                 opacity: 1.0,
                 blend_mode: ImageBlendMode::Normal,

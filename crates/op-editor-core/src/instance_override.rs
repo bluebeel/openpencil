@@ -38,20 +38,19 @@
 //! the swapped tree; `finish_instance_write` repairs any snapshot
 //! captured during the scope by routing each captured display state back
 //! onto the original Ref.
-
 use crate::history::EditorSnapshot;
-use crate::node_id::NodeId;
-use crate::pen_node_ext::PenNodeExt;
-use crate::state::EditorState;
-use crate::walkers::{find_node, find_node_mut};
-use jian_ops_schema::node::PenNode;
-use jian_ops_schema::PenDocument;
-use serde_json::{Map, Value};
-
 pub use crate::instance_child_override::{
     resolve_instance_display_node_for_anchor, split_instance_child_anchor,
 };
-
+use crate::node_id::NodeId;
+use crate::pen_node_ext::PenNodeExt;
+use crate::state::EditorState;
+#[cfg(test)]
+use crate::walkers::find_node;
+use crate::walkers::find_node_mut;
+use jian_ops_schema::node::PenNode;
+use jian_ops_schema::PenDocument;
+use serde_json::{Map, Value};
 /// Properties stored directly on the `RefNode` (instance-level), not
 /// as overrides — mirrors TS `INSTANCE_DIRECT_PROPS`.
 ///
@@ -76,11 +75,9 @@ pub const INSTANCE_DIRECT_PROPS: &[&str] = &[
     "blendMode",
     "maskType",
 ];
-
 /// Keys that identify the node / route its overrides — never diffed,
 /// never routed.
 const STRUCTURAL_KEYS: &[&str] = &["id", "type", "ref", "descendants", "children", "reusable"];
-
 /// Resolve the merged DISPLAY node for a selected instance — the TS
 /// property-panel merge: component base → `descendants[ref.target]`
 /// top-level overrides → the RefNode's own defined props. The result
@@ -93,66 +90,8 @@ pub fn resolve_instance_display_node(doc: &PenDocument, ref_node: &PenNode) -> O
         return None;
     };
     let component = crate::ref_resolve::find_component_node(doc, &reference.target)?;
-    let component_value = serde_json::to_value(&component).ok()?;
-    let ref_value = serde_json::to_value(ref_node).ok()?;
-    let (Value::Object(component_map), Value::Object(ref_map)) = (component_value, ref_value)
-    else {
-        return None;
-    };
-    let mut merged = component_map.clone();
-    // Top-level overrides live under the component's own id (TS
-    // `descendants?.[node.ref]`).
-    if let Some(top) = ref_map
-        .get("descendants")
-        .and_then(Value::as_object)
-        .and_then(|d| d.get(reference.target.as_str()))
-        .and_then(Value::as_object)
-    {
-        for (key, value) in top {
-            if !matches!(key.as_str(), "id" | "type" | "children") {
-                merged.insert(key.clone(), value.clone());
-            }
-        }
-    }
-    // The RefNode's own defined props win (id included — the display
-    // node must answer to the instance's id).
-    for (key, value) in &ref_map {
-        if matches!(key.as_str(), "type" | "ref" | "descendants" | "children") {
-            continue;
-        }
-        if !value.is_null() {
-            merged.insert(key.clone(), value.clone());
-        }
-    }
-    if let Some(t) = component_map.get("type") {
-        merged.insert("type".into(), t.clone());
-    }
-    if merged.get("name").is_none_or(Value::is_null) {
-        if let Some(name) = component_map.get("name") {
-            merged.insert("name".into(), name.clone());
-        }
-    }
-    // The display node is an instance view, not a component definition.
-    merged.remove("reusable");
-    // Children: the component subtree with `descendants` child
-    // overrides applied at their ORIGINAL ids (display only). Mirror
-    // `expand_ref`'s slot fallback when an empty master gets inline
-    // instance children.
-    let overrides = ref_map.get("descendants").and_then(Value::as_object);
-    let children_source = match component_map.get("children") {
-        Some(Value::Array(children)) if !children.is_empty() => Some(children),
-        _ => ref_map.get("children").and_then(Value::as_array),
-    };
-    if let Some(children) = children_source {
-        let with_overrides: Vec<Value> = children
-            .iter()
-            .map(|child| crate::ref_resolve::apply_overrides(child, overrides))
-            .collect();
-        merged.insert("children".into(), Value::Array(with_overrides));
-    }
-    serde_json::from_value(Value::Object(merged)).ok()
+    crate::ref_resolve::merge_instance(ref_node, component, true, false)
 }
-
 /// State carried across a swap–run–diff–restore instance write. See
 /// the module docs for the protocol.
 #[derive(Debug)]
@@ -165,7 +104,6 @@ pub struct InstanceWriteScope {
     display_before: Map<String, Value>,
     history_push_count_before: u64,
 }
-
 impl EditorState {
     /// Begin an instance-write scope for the selection anchor when it
     /// is a resolvable `Ref` root or virtual instance child. `None`
@@ -180,7 +118,6 @@ impl EditorState {
         }
         self.begin_instance_write(&anchor)
     }
-
     /// Swap the effective display node for `anchor` into its authored
     /// Ref's tree slot so anchor-keyed panel mutators write into it. A
     /// virtual child keeps its virtual id; a Ref root keeps the Ref id.
@@ -189,37 +126,7 @@ impl EditorState {
     /// [`EditorState::finish_instance_write`].
     pub fn begin_instance_write(&mut self, anchor: &NodeId) -> Option<InstanceWriteScope> {
         let (ref_id, target_id, mut display, route_direct_props) =
-            if let Some((ref_id, child_id)) = split_instance_child_anchor(anchor, &self.doc) {
-                let ref_node = find_node(self.active_children(), &ref_id)?;
-                let base = ref_node.base();
-                if !matches!(ref_node, PenNode::Ref(_))
-                    || !base.visible.unwrap_or(true)
-                    || base.locked.unwrap_or(false)
-                {
-                    return None;
-                }
-                (
-                    ref_id,
-                    child_id.as_str().to_string(),
-                    resolve_instance_display_node_for_anchor(&self.doc, anchor)?,
-                    false,
-                )
-            } else {
-                let node = find_node(self.active_children(), anchor)?;
-                let PenNode::Ref(reference) = node else {
-                    return None;
-                };
-                let base = node.base();
-                if !base.visible.unwrap_or(true) || base.locked.unwrap_or(false) {
-                    return None;
-                }
-                (
-                    anchor.clone(),
-                    reference.target.clone(),
-                    resolve_instance_display_node(&self.doc, node)?,
-                    true,
-                )
-            };
+            crate::instance_child_override::prepare_instance_write(self, anchor)?;
         let display_id = NodeId::new_opt(display.id_str())?;
         // Strip the subtree: panel writes only ever target the anchor
         // node's own props, and the component's original child ids
@@ -290,7 +197,10 @@ impl EditorState {
             .history_push_count
             .saturating_sub(scope.history_push_count_before);
         let repair_count = pushes_in_scope.min(self.history.past.len() as u64) as usize;
-        for snap in self.history.past.iter_mut().rev().take(repair_count) {
+        for entry in self.history.past.iter_mut().rev().take(repair_count) {
+            let Some(snap) = entry.full_snapshot_mut() else {
+                continue;
+            };
             repair_scope_snapshot(
                 snap,
                 &scope.ref_id,
@@ -337,7 +247,7 @@ fn route_display_state(
     target_id: &str,
     route_direct_props: bool,
     before: &Map<String, Value>,
-    display_after: &PenNode,
+    display_after: &impl serde::Serialize,
 ) -> (PenNode, bool) {
     let after = match serde_json::to_value(display_after) {
         Ok(Value::Object(map)) => map,
@@ -432,7 +342,7 @@ fn repair_scope_snapshot(
             .doc
             .snapshot_find_node(snapshot.active_page_index, snapshot_node_id)
             .expect("snapshot node checked above");
-        if matches!(display_at_snapshot, PenNode::Ref(_)) {
+        if matches!(display_at_snapshot.metadata(), PenNode::Ref(_)) {
             return;
         }
         route_display_state(
@@ -759,10 +669,17 @@ mod tests {
             s.commit_history();
             s.set_selected_color(true, "#00ff00")
         });
-        let snap = s.history.past.back().expect("history entry pushed");
+        let snap = s
+            .history
+            .past
+            .back()
+            .expect("history entry pushed")
+            .full_snapshot()
+            .unwrap();
         let in_snap = snap
             .doc
             .snapshot_find_node(0, &NodeId::new("inst1"))
+            .map(crate::SharedNode::metadata)
             .expect("authored Ref id restored in snapshot");
         assert!(matches!(in_snap, PenNode::Ref(_)));
         assert!(

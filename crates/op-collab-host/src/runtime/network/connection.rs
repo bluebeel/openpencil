@@ -20,6 +20,8 @@ use super::shutdown::{retirement_ready, TerminalDrain};
 use super::{EventSendError, EventSink};
 
 const COMMAND_POLL_INTERVAL: Duration = Duration::from_millis(50);
+// Bound command bursts so socket progress, expiry and shutdown are serviced.
+const MAX_COMMANDS_PER_TURN: usize = 64;
 
 pub(super) struct DriverIdentity {
     pub(super) connection: ConnectionKey,
@@ -61,6 +63,7 @@ pub(super) fn drive_owner_peer(
         Err(error) => return Some(runtime_failure(&error)),
     };
     let mut stop_requested = false;
+    let mut pending_command = None;
     let mut terminal = None;
     loop {
         if terminal.is_none() {
@@ -77,13 +80,24 @@ pub(super) fn drive_owner_peer(
                 Err(TryRecvError::Empty) => {}
             }
         }
-        while terminal.is_none() && !stop_requested {
-            match commands.try_recv() {
+        for _ in 0..MAX_COMMANDS_PER_TURN {
+            if terminal.is_some() || stop_requested {
+                break;
+            }
+            match next_command(&mut pending_command, &commands) {
                 Ok(PeerNetworkCommand::Send {
                     frame,
                     coalesce_key,
                 }) => {
                     let lossy_presence = frame.is_lossy_presence();
+                    if !lossy_presence && driver.queued_items() >= driver.outbound_queue_capacity()
+                    {
+                        pending_command = Some(PeerNetworkCommand::Send {
+                            frame,
+                            coalesce_key,
+                        });
+                        break;
+                    }
                     let (encoded, bridge_reservation) = (*frame).into_parts();
                     let result = queue_command_frame(
                         &mut driver,
@@ -213,6 +227,7 @@ pub(super) fn drive_guest(
         Err(error) => return Some(runtime_failure(&error)),
     };
     let mut stop_requested = false;
+    let mut pending_command = None;
     let mut terminal = None;
     let mut terminal_failure = None;
     loop {
@@ -260,13 +275,24 @@ pub(super) fn drive_guest(
                 }
             }
         }
-        while terminal.is_none() && !stop_requested {
-            match commands.try_recv() {
+        for _ in 0..MAX_COMMANDS_PER_TURN {
+            if terminal.is_some() || stop_requested {
+                break;
+            }
+            match next_command(&mut pending_command, &commands) {
                 Ok(GuestNetworkCommand::Send {
                     frame,
                     coalesce_key,
                 }) => {
                     let lossy_presence = frame.is_lossy_presence();
+                    if !lossy_presence && driver.queued_items() >= driver.outbound_queue_capacity()
+                    {
+                        pending_command = Some(GuestNetworkCommand::Send {
+                            frame,
+                            coalesce_key,
+                        });
+                        break;
+                    }
                     let (encoded, bridge_reservation) = (*frame).into_parts();
                     let result = queue_command_frame(
                         &mut driver,
@@ -349,6 +375,13 @@ pub(super) fn drive_guest(
             }
             Err(error) => return terminal_failure.or_else(|| Some(runtime_failure(&error))),
         }
+    }
+}
+
+fn next_command<C>(pending: &mut Option<C>, commands: &Receiver<C>) -> Result<C, TryRecvError> {
+    match pending.take() {
+        Some(command) => Ok(command),
+        None => commands.try_recv(),
     }
 }
 

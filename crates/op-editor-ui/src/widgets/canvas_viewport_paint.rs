@@ -51,17 +51,24 @@ use video_badge::paint_video_badge;
 
 #[path = "canvas_viewport_paint/entry.rs"]
 mod entry;
+#[path = "canvas_viewport_paint/selection.rs"]
+mod selection;
+pub use selection::{
+    paint_export_selection, SceneSelection, SceneSelectionBatch, SceneSelectionCursor,
+};
 #[path = "canvas_viewport_paint/hits.rs"]
 mod hits;
 #[path = "canvas_viewport_paint/path_points.rs"]
 mod path_points;
 #[path = "canvas_viewport_paint/reveal.rs"]
 mod reveal;
+#[path = "canvas_viewport_paint/shadow_geometry.rs"]
+mod shadow_geometry;
 #[path = "canvas_viewport_paint/shapes.rs"]
 mod shapes;
 
 pub use entry::{
-    paint_node, paint_scene_page, paint_scene_page_with_options,
+    paint_node, paint_nodes, paint_scene_page, paint_scene_page_with_options,
     paint_scene_page_without_video_badge,
 };
 #[allow(unused_imports)]
@@ -84,14 +91,10 @@ pub(crate) use reveal::{reveal_pop_scale, REVEAL_WIREFRAME_MS};
 #[cfg(test)]
 pub(crate) use shapes::arc_polygon;
 pub(crate) use shapes::paint_svg_path_node;
-use shapes::{paint_drop_shadows, paint_ellipse, push_clip_content};
+mod rounded_shadow;
+use rounded_shadow::{has_inset_shadow, paint_fill_and_insets};
 
-/// Effects whose zoom-scaled footprint stays under this many device
-/// pixels are invisible — but their save-layers still break the GPU
-/// render pass (measured: a zoomed-out page with ~4.6k blur effects
-/// spent ~85% of every panned frame in per-draw render-pass submits
-/// on the macOS GL-on-Metal driver). Sub-pixel effects skip instead.
-const MIN_VISIBLE_EFFECT_DEVICE_PX: f32 = 0.3;
+use shapes::{paint_drop_shadows, paint_ellipse, push_clip_content};
 
 use super::canvas_overlay_transform::OverlayTransform;
 
@@ -200,13 +203,11 @@ fn paint_node_inner<'a>(
         return PaintNodeHits::default();
     }
     let dpi_scale = cx.backend.dpi_scale();
-    // Sub-pixel LOD: a leaf under ~3/4 of a device pixel contributes
-    // nothing visible, but its fill/stroke/clip ops still reach the
-    // GPU — a zoomed-out 38k-node page carries ~8k such leaves per
-    // frame. Always skipped (not only mid-gesture): it makes the
-    // gesture-end full-quality repaint and every zoomed-out resting
-    // frame proportionally cheaper at no visible cost.
-    if node.children.is_empty()
+    // During an interactive gesture the explicit fast mode may omit tiny
+    // leaves. Full-quality paints retain them: sub-pixel fills, strokes and
+    // effects can still contribute antialiased coverage.
+    if options.fast_interaction
+        && node.children.is_empty()
         && world_rect.size.x.abs().max(world_rect.size.y.abs()) * dpi_scale < 0.75
     {
         return PaintNodeHits::default();
@@ -266,11 +267,8 @@ fn paint_node_inner<'a>(
             Effect::BackgroundBlur { radius } if *radius > 0.0 => Some(*radius * 0.5 * zoom),
             _ => None,
         })
-        // Sub-pixel backdrop blur is invisible; skip its save-layer.
-        // Gestures skip all backdrop layers (interactive degrade).
-        .filter(|sigma| {
-            !options.fast_interaction && sigma * dpi_scale >= MIN_VISIBLE_EFFECT_DEVICE_PX
-        });
+        // Gestures explicitly defer backdrop layers until the full repaint.
+        .filter(|_| !options.fast_interaction);
     let background_blur_pushed = if let Some(sigma) =
         background_blur_sigma.filter(|_| world_rect.size.x > 0.0 && world_rect.size.y > 0.0)
     {
@@ -336,11 +334,8 @@ fn paint_node_inner<'a>(
             Effect::Blur(b) if b.radius > 0.0 => Some(b.radius * 0.5 * zoom),
             _ => None,
         })
-        // Sub-pixel layer blur is invisible; skip its save-layer.
-        // Gestures skip all blur layers (interactive degrade).
-        .filter(|sigma| {
-            !options.fast_interaction && sigma * dpi_scale >= MIN_VISIBLE_EFFECT_DEVICE_PX
-        });
+        // Gestures explicitly defer blur layers until the full repaint.
+        .filter(|_| !options.fast_interaction);
     if let Some(sigma) = blur_sigma {
         cx.backend.push_blur_layer(sigma);
     }
@@ -358,18 +353,21 @@ fn paint_node_inner<'a>(
             NodeKind::Frame | NodeKind::Rect | NodeKind::Ellipse
         )
     {
-        paint_drop_shadows(cx, node, world_rect, zoom, dpi_scale);
+        paint_drop_shadows(cx, node, world_rect, zoom);
     }
 
     match &node.kind {
         NodeKind::Frame => {
             let has_children = !node.children.is_empty();
+            let inset = !options.fast_interaction && has_inset_shadow(node);
             // Image-fill Frames paint the bitmap behind their
             // children; gradient + solid fall back to the shared
             // fill/stroke painter. Without this branch a Frame whose
             // primary fill is `PenFill::Image { url }` only shows the
             // grey placeholder + its children, never the image.
-            if has_children {
+            if inset {
+                paint_fill_and_insets(cx, node, world_rect, zoom, !options.mask_source);
+            } else if has_children {
                 if paint_fill_layers(cx, node, world_rect, zoom) {
                     // Container stroke is deferred until after its children.
                 } else if let Some(src) = node.image_src.as_deref() {
@@ -438,17 +436,19 @@ fn paint_node_inner<'a>(
             if clipped {
                 cx.backend.restore();
             }
-            if has_children {
+            if has_children || inset {
                 paint_node_stroke(cx, node, world_rect, zoom);
             }
         }
-        NodeKind::Other(tag) if tag == "icon_font" => crate::widgets::icons::paint_icon_font_node(
-            cx.backend,
-            node.font_family.as_str(),
-            node.text.as_deref().unwrap_or(""),
-            world_rect,
-            node.fill,
-        ),
+        NodeKind::Other(tag) if tag == "icon_font" && !node.fill_disabled => {
+            crate::widgets::icons::paint_icon_font_node(
+                cx.backend,
+                node.font_family.as_str(),
+                node.text.as_deref().unwrap_or(""),
+                world_rect,
+                node.fill,
+            )
+        }
         NodeKind::Group | NodeKind::Other(_) => {
             // `clipContent` is container-level in the canonical schema
             // (Frame / Group / Rectangle all carry it) — honour it on
@@ -468,13 +468,16 @@ fn paint_node_inner<'a>(
         }
         NodeKind::Rect => {
             let has_children = !node.children.is_empty();
+            let inset = !options.fast_interaction && has_inset_shadow(node);
             // Composite widgets that degrade to `rect` (switch /
             // checkbox / slider / progress / radio_group / number_input
             // / text_area) paint their recognizable static visual on the
             // design surface instead of the bare rect.
             let widget_painted = paint_widget_visual(cx, node, world_rect, zoom);
             if !widget_painted {
-                if has_children {
+                if inset {
+                    paint_fill_and_insets(cx, node, world_rect, zoom, !options.mask_source);
+                } else if has_children {
                     if paint_fill_layers(cx, node, world_rect, zoom) {
                         // Container stroke is deferred until after its children.
                     } else if let Some(src) = node.image_src.as_deref() {
@@ -525,7 +528,7 @@ fn paint_node_inner<'a>(
             if clipped {
                 cx.backend.restore();
             }
-            if has_children && !widget_painted {
+            if (has_children || inset) && !widget_painted {
                 paint_node_stroke(cx, node, world_rect, zoom);
             }
         }
@@ -537,10 +540,19 @@ fn paint_node_inner<'a>(
                 // ellipse silhouette via skia's `clip_oval`-style
                 // approximation (no native clip_oval on the trait, so
                 // fall back to the rect-clip path the painter has).
-                paint_image_node(cx, node, world_rect, zoom, src, !options.mask_source);
-                if let Some(stroke) = node.stroke {
-                    cx.backend
-                        .stroke_oval(world_rect, stroke.color, stroke.width * zoom);
+                paint_image_node_without_stroke(
+                    cx,
+                    node,
+                    world_rect,
+                    zoom,
+                    src,
+                    !options.mask_source,
+                );
+                if !super::canvas_viewport_stroke_paint::paint(cx, node, world_rect, zoom) {
+                    if let Some(stroke) = node.stroke {
+                        cx.backend
+                            .stroke_oval(world_rect, stroke.color, stroke.width * zoom);
+                    }
                 }
             } else {
                 paint_ellipse(cx, node, world_rect, zoom);
@@ -568,14 +580,23 @@ fn paint_node_inner<'a>(
                 // by the stroke. A perfect clip-to-polygon path lands when
                 // `RenderBackend` grows a polygon-clip primitive.
                 if let Some(src) = node.image_src.as_deref() {
-                    paint_image_node(cx, node, world_rect, zoom, src, !options.mask_source);
+                    paint_image_node_without_stroke(
+                        cx,
+                        node,
+                        world_rect,
+                        zoom,
+                        src,
+                        !options.mask_source,
+                    );
                 } else if let Some(fill) = node.fill {
                     cx.backend.fill_polygon(&pts, fill);
                 }
             }
-            if let Some(stroke) = node.stroke {
-                cx.backend
-                    .stroke_polygon(&pts, stroke.color, stroke.width * zoom);
+            if !super::canvas_viewport_stroke_paint::paint(cx, node, world_rect, zoom) {
+                if let Some(stroke) = node.stroke {
+                    cx.backend
+                        .stroke_polygon(&pts, stroke.color, stroke.width * zoom);
+                }
             }
         }
         NodeKind::Line => {
@@ -586,14 +607,19 @@ fn paint_node_inner<'a>(
                 world_rect.origin.x + world_rect.size.x,
                 world_rect.origin.y + world_rect.size.y,
             );
-            let (color, width) = match node.stroke {
-                Some(s) => (s.color, s.width * zoom),
-                None => (
+            let stroke = match node.stroke {
+                Some(s) => Some((s.color, s.width * zoom)),
+                None if !node.stroke_disabled && !node.fill_disabled => Some((
                     node.fill.unwrap_or(crate::Color::BLACK),
                     (1.5_f32).max(zoom),
-                ),
+                )),
+                None => None,
             };
-            cx.backend.stroke_line(from, to, color, width);
+            if !super::canvas_viewport_stroke_paint::paint(cx, node, world_rect, zoom) {
+                if let Some((color, width)) = stroke {
+                    cx.backend.stroke_line(from, to, color, width);
+                }
+            }
         }
         NodeKind::Path => {
             if let Some(d) = node.svg_path.as_deref() {
@@ -654,20 +680,22 @@ fn paint_node_inner<'a>(
             // outline.
             let stroke = match node.stroke {
                 Some(s) => Some((s.color, s.width * zoom)),
-                None if !filled => Some((
+                None if !filled && !node.stroke_disabled && !node.fill_disabled => Some((
                     node.fill.unwrap_or(crate::Color::BLACK),
                     (1.5_f32).max(zoom),
                 )),
                 None => None,
             };
-            if let Some((color, width)) = stroke {
-                for pair in points.windows(2) {
-                    cx.backend.stroke_line(
-                        doc_to_world_point(pair[0], viewport_origin, zoom),
-                        doc_to_world_point(pair[1], viewport_origin, zoom),
-                        color,
-                        width,
-                    );
+            if !super::canvas_viewport_stroke_paint::paint(cx, node, world_rect, zoom) {
+                if let Some((color, width)) = stroke {
+                    for pair in points.windows(2) {
+                        cx.backend.stroke_line(
+                            doc_to_world_point(pair[0], viewport_origin, zoom),
+                            doc_to_world_point(pair[1], viewport_origin, zoom),
+                            color,
+                            width,
+                        );
+                    }
                 }
             }
         }

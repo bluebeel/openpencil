@@ -4,13 +4,14 @@
 //! so desktop and web export the same vector markup. This module keeps
 //! the desktop API focused on writing the generated SVG to disk.
 
-use op_editor_ui::layout_scene::LayoutScene;
+use op_editor_ui::layout_scene::{LayoutScene, ScenePage};
 use std::path::Path as StdPath;
 
 use crate::ExportError;
 
 /// Serialize the active page to UTF-8 SVG bytes.
 pub fn render_svg_bytes(scene: &LayoutScene) -> Result<Vec<u8>, ExportError> {
+    op_host_native::svg_image_source::install();
     op_editor_ui::svg_export::serialize_active_page_svg(scene)
         .map(String::into_bytes)
         .map_err(|e| ExportError::SvgSerialize(e.to_string()))
@@ -18,9 +19,67 @@ pub fn render_svg_bytes(scene: &LayoutScene) -> Result<Vec<u8>, ExportError> {
 
 /// Serialize one node and its subtree to UTF-8 SVG bytes.
 pub fn render_node_svg_bytes(scene: &LayoutScene, node_id: &str) -> Result<Vec<u8>, ExportError> {
+    op_host_native::svg_image_source::install();
     op_editor_ui::svg_export::serialize_node_svg(scene, node_id)
         .map(String::into_bytes)
         .map_err(|e| ExportError::SvgSerialize(e.to_string()))
+}
+
+/// Serialize one borrowed page, sharing the already resolved scene.
+pub fn render_page_svg_bytes(page: &ScenePage, scale: f32) -> Result<Vec<u8>, ExportError> {
+    op_host_native::svg_image_source::install();
+    op_editor_ui::svg_export::serialize_page_svg(page, scale)
+        .map(String::into_bytes)
+        .map_err(|e| ExportError::SvgSerialize(e.to_string()))
+}
+
+/// Serialize a node on an explicitly resolved page, including ancestor clips.
+pub fn render_node_on_page_svg_bytes(
+    page: &ScenePage,
+    node_id: &str,
+    scale: f32,
+) -> Result<Vec<u8>, ExportError> {
+    op_host_native::svg_image_source::install();
+    op_editor_ui::svg_export::serialize_node_on_page_svg(page, node_id, scale)
+        .map(String::into_bytes)
+        .map_err(|e| ExportError::SvgSerialize(e.to_string()))
+}
+
+/// Borrowed, request-scoped SVG lookup shared across a multi-node export.
+/// Payloads are serialized one at a time; this owns no scene or SVG buffers.
+pub struct NodeSvgBatch<'a> {
+    prepared: op_editor_ui::svg_export::SvgNodeBatch<'a>,
+}
+impl<'a> NodeSvgBatch<'a> {
+    pub fn new(page: &'a ScenePage, node_ids: &[String]) -> Self {
+        op_host_native::svg_image_source::install();
+        Self {
+            prepared: op_editor_ui::svg_export::SvgNodeBatch::new(page, node_ids),
+        }
+    }
+    pub fn render(&self, node_id: &str, scale: f32) -> Result<Vec<u8>, ExportError> {
+        self.prepared
+            .serialize(node_id, scale)
+            .map(String::into_bytes)
+            .map_err(|e| ExportError::SvgSerialize(e.to_string()))
+    }
+    /// Deliver one complete target before serializing the next; context
+    /// allocation and immutable duplicate bounds are reused by this batch.
+    pub fn render_each(
+        &self,
+        ids: &[String],
+        scale: f32,
+        mut consume: impl FnMut(&str, Result<Vec<u8>, ExportError>) -> bool,
+    ) {
+        self.prepared.serialize_each(ids, scale, |id, result| {
+            consume(
+                id,
+                result
+                    .map(String::into_bytes)
+                    .map_err(|error| ExportError::SvgSerialize(error.to_string())),
+            )
+        });
+    }
 }
 
 /// Serialize the scene's active page to an SVG file at `target`.
@@ -30,7 +89,7 @@ pub fn render_node_svg_bytes(scene: &LayoutScene, node_id: &str) -> Result<Vec<u
 /// carries its sentence verbatim (`to_string` so the adapter keeps working
 /// if that crate later types its own error).
 pub fn export_svg(scene: &LayoutScene, target: &StdPath) -> Result<(), ExportError> {
-    std::fs::write(target, render_svg_bytes(scene)?).map_err(|e| ExportError::Write(e.to_string()))
+    crate::encoding::write_bytes(target, &render_svg_bytes(scene)?)
 }
 
 /// Serialize one node and its subtree to an SVG file at `target`. Same
@@ -40,8 +99,7 @@ pub fn export_node_svg(
     node_id: &str,
     target: &StdPath,
 ) -> Result<(), ExportError> {
-    std::fs::write(target, render_node_svg_bytes(scene, node_id)?)
-        .map_err(|e| ExportError::Write(e.to_string()))
+    crate::encoding::write_bytes(target, &render_node_svg_bytes(scene, node_id)?)
 }
 
 #[cfg(test)]

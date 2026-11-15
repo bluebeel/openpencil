@@ -46,12 +46,12 @@ impl EditorState {
     /// Returns the [`PromoteResult`] (count + per-node notes) so the
     /// host can report how many nodes migrated.
     pub fn promote_legacy_widgets(&mut self) -> PromoteResult {
-        let snap = self.snapshot_for_history();
+        let snap = self.snapshot_for_undo();
         // `promote_document` walks `doc.children` + every `page.children`
         // + nested container children, replacing marked frames in place.
         let notes = promote_document(&mut self.doc);
         if !notes.is_empty() {
-            self.history_push_past(snap);
+            self.push_undo(snap);
         }
         PromoteResult { notes }
     }

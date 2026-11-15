@@ -11,6 +11,12 @@ use crate::node_id::NodeId;
 use crate::pen_node_ext::PenNodeExt;
 use jian_ops_schema::node::PenNode;
 use std::collections::HashSet;
+#[path = "walker_preorder.rs"]
+mod preorder;
+#[path = "walker_mutation_routes.rs"]
+mod routes;
+#[path = "walker_stack.rs"]
+pub(crate) mod stack;
 
 /// Direction for `reorder_selected` — picks which sibling the
 /// selected node swaps with in its parent's children vec.
@@ -27,14 +33,21 @@ pub enum ReorderDirection {
 /// Find a node by id anywhere in a children forest. Returns a shared
 /// reference, or `None` when the id resolves to no node.
 pub fn find_node<'a>(children: &'a [PenNode], id: &NodeId) -> Option<&'a PenNode> {
-    for child in children {
-        if child.id_str() == id.as_str() {
-            return Some(child);
+    if children.is_empty() {
+        return None;
+    }
+    let mut pending = stack::Stack::<_, 16>::new();
+    pending.push(children.iter());
+    while let Some(siblings) = pending.last_mut() {
+        let Some(node) = siblings.next() else {
+            pending.pop();
+            continue;
+        };
+        if node.id_str() == id.as_str() {
+            return Some(node);
         }
-        if let Some(grand) = child.children() {
-            if let Some(hit) = find_node(grand, id) {
-                return Some(hit);
-            }
+        if let Some(children) = node.children().filter(|children| !children.is_empty()) {
+            pending.push(children.iter());
         }
     }
     None
@@ -42,14 +55,25 @@ pub fn find_node<'a>(children: &'a [PenNode], id: &NodeId) -> Option<&'a PenNode
 
 /// Mutable form of [`find_node`].
 pub fn find_node_mut<'a>(children: &'a mut [PenNode], id: &NodeId) -> Option<&'a mut PenNode> {
-    for child in children.iter_mut() {
-        if child.id_str() == id.as_str() {
-            return Some(child);
+    if children.is_empty() {
+        return None;
+    }
+    let mut pending = stack::Stack::<_, 16>::new();
+    pending.push(children.iter_mut());
+    while let Some(siblings) = pending.last_mut() {
+        let Some(node) = siblings.next() else {
+            pending.pop();
+            continue;
+        };
+        if node.id_str() == id.as_str() {
+            return Some(node);
         }
-        if let Some(grand) = child.children_mut() {
-            if let Some(hit) = find_node_mut(grand, id) {
-                return Some(hit);
-            }
+        // Search must never author a previously absent Ref child override.
+        if let Some(children) = node
+            .children_mut_if_present()
+            .filter(|children| !children.is_empty())
+        {
+            pending.push(children.iter_mut());
         }
     }
     None
@@ -63,47 +87,25 @@ pub fn contains_node(children: &[PenNode], id: &NodeId) -> bool {
 /// True when `target` equals `node` or appears anywhere in its
 /// subtree. Used to reject reparenting cycles.
 pub fn descendant_contains(node: &PenNode, target: &NodeId) -> bool {
-    if node.id_str() == target.as_str() {
-        return true;
-    }
-    if let Some(children) = node.children() {
-        return children.iter().any(|c| descendant_contains(c, target));
-    }
-    false
+    node.id_str() == target.as_str()
+        || node
+            .children()
+            .is_some_and(|children| find_node(children, target).is_some())
 }
 
 /// Remove the first node matching `target` from `children` or any
 /// descendant's children. True when something was removed.
 pub fn remove_from_children(children: &mut Vec<PenNode>, target: &NodeId) -> bool {
-    if let Some(idx) = children.iter().position(|n| n.id_str() == target.as_str()) {
-        children.remove(idx);
-        return true;
-    }
-    for child in children.iter_mut() {
-        if let Some(grand) = child.children_mut() {
-            if remove_from_children(grand, target) {
-                return true;
-            }
-        }
-    }
-    false
+    extract_node(children, target).is_some()
 }
 
 /// Drain the node matching `target` out of the forest and return it.
 /// Mirrors shell-core's `extract_node` — backs the reorder/reparent
 /// extract phase.
 pub fn extract_node(children: &mut Vec<PenNode>, target: &NodeId) -> Option<PenNode> {
-    if let Some(idx) = children.iter().position(|n| n.id_str() == target.as_str()) {
-        return Some(children.remove(idx));
-    }
-    for child in children.iter_mut() {
-        if let Some(grand) = child.children_mut() {
-            if let Some(extracted) = extract_node(grand, target) {
-                return Some(extracted);
-            }
-        }
-    }
-    None
+    let path = routes::find(children, target, |_, _| true)?;
+    let (at, parents) = path.split_last()?;
+    Some(routes::vec_mut(children, parents)?.remove(*at))
 }
 
 /// Insert `node` immediately before `anchor`. `Ok(())` on success;
@@ -115,20 +117,17 @@ pub fn insert_before_in_children(
     anchor: &NodeId,
     node: PenNode,
 ) -> Result<(), PenNode> {
-    if let Some(idx) = children.iter().position(|n| n.id_str() == anchor.as_str()) {
-        children.insert(idx, node);
-        return Ok(());
-    }
-    let mut carry = node;
-    for child in children.iter_mut() {
-        if let Some(grand) = child.children_mut() {
-            match insert_before_in_children(grand, anchor, carry) {
-                Ok(()) => return Ok(()),
-                Err(returned) => carry = returned,
-            }
-        }
-    }
-    Err(carry)
+    let Some(path) = routes::find(children, anchor, |_, _| true) else {
+        return Err(node);
+    };
+    let Some((at, parents)) = path.split_last() else {
+        return Err(node);
+    };
+    let Some(siblings) = routes::vec_mut(children, parents) else {
+        return Err(node);
+    };
+    siblings.insert(*at, node);
+    Ok(())
 }
 
 /// Insert `node` immediately after `anchor`. `Ok(())` / `Err(node)`.
@@ -139,20 +138,17 @@ pub fn insert_after_in_children(
     anchor: &NodeId,
     node: PenNode,
 ) -> Result<(), PenNode> {
-    if let Some(idx) = children.iter().position(|n| n.id_str() == anchor.as_str()) {
-        children.insert(idx + 1, node);
-        return Ok(());
-    }
-    let mut carry = node;
-    for child in children.iter_mut() {
-        if let Some(grand) = child.children_mut() {
-            match insert_after_in_children(grand, anchor, carry) {
-                Ok(()) => return Ok(()),
-                Err(returned) => carry = returned,
-            }
-        }
-    }
-    Err(carry)
+    let Some(path) = routes::find(children, anchor, |_, _| true) else {
+        return Err(node);
+    };
+    let Some((at, parents)) = path.split_last() else {
+        return Err(node);
+    };
+    let Some(siblings) = routes::vec_mut(children, parents) else {
+        return Err(node);
+    };
+    siblings.insert(*at + 1, node);
+    Ok(())
 }
 
 /// Append `node` as the LAST child of `parent`. `Ok(())` / `Err(node)`.
@@ -165,25 +161,18 @@ pub fn append_into(
     parent: &NodeId,
     node: PenNode,
 ) -> Result<(), PenNode> {
-    if let Some(idx) = children.iter().position(|n| n.id_str() == parent.as_str()) {
-        match children[idx].children_mut() {
-            Some(grand) => {
-                grand.push(node);
-                return Ok(());
-            }
-            None => return Err(node),
-        }
-    }
-    let mut carry = node;
-    for child in children.iter_mut() {
-        if let Some(grand) = child.children_mut() {
-            match append_into(grand, parent, carry) {
-                Ok(()) => return Ok(()),
-                Err(returned) => carry = returned,
-            }
-        }
-    }
-    Err(carry)
+    let Some(path) = routes::find(children, parent, |siblings, at| siblings[at].is_container())
+    else {
+        return Err(node);
+    };
+    let Some(target) = routes::node_mut(children, &path) else {
+        return Err(node);
+    };
+    let Some(grand) = target.children_mut() else {
+        return Err(node);
+    };
+    grand.push(node);
+    Ok(())
 }
 
 /// Insert `node` as the FIRST child of `parent`. `Ok(())` / `Err(node)`.
@@ -197,25 +186,18 @@ pub fn prepend_into(
     parent: &NodeId,
     node: PenNode,
 ) -> Result<(), PenNode> {
-    if let Some(idx) = children.iter().position(|n| n.id_str() == parent.as_str()) {
-        match children[idx].children_mut() {
-            Some(grand) => {
-                grand.insert(0, node);
-                return Ok(());
-            }
-            None => return Err(node),
-        }
-    }
-    let mut carry = node;
-    for child in children.iter_mut() {
-        if let Some(grand) = child.children_mut() {
-            match prepend_into(grand, parent, carry) {
-                Ok(()) => return Ok(()),
-                Err(returned) => carry = returned,
-            }
-        }
-    }
-    Err(carry)
+    let Some(path) = routes::find(children, parent, |siblings, at| siblings[at].is_container())
+    else {
+        return Err(node);
+    };
+    let Some(target) = routes::node_mut(children, &path) else {
+        return Err(node);
+    };
+    let Some(grand) = target.children_mut() else {
+        return Err(node);
+    };
+    grand.insert(0, node);
+    Ok(())
 }
 
 /// Swap the node matching `target` with its next / prev sibling.
@@ -224,37 +206,31 @@ pub fn reorder_in_children(
     target: &NodeId,
     direction: ReorderDirection,
 ) -> bool {
-    if let Some(idx) = children.iter().position(|n| n.id_str() == target.as_str()) {
-        match direction {
-            ReorderDirection::Up if idx > 0 => {
-                children.swap(idx, idx - 1);
-                return true;
-            }
-            ReorderDirection::Down if idx + 1 < children.len() => {
-                children.swap(idx, idx + 1);
-                return true;
-            }
-            _ => return false,
-        }
-    }
-    for child in children.iter_mut() {
-        if let Some(grand) = child.children_mut() {
-            if reorder_in_children(grand, target, direction) {
-                return true;
-            }
-        }
-    }
-    false
+    let Some(path) = routes::find(children, target, |siblings, at| match direction {
+        ReorderDirection::Up => at > 0,
+        ReorderDirection::Down => at + 1 < siblings.len(),
+    }) else {
+        return false;
+    };
+    let Some((at, parents)) = path.split_last() else {
+        return false;
+    };
+    let Some(siblings) = routes::slice_mut(children, parents) else {
+        return false;
+    };
+    let neighbor = match direction {
+        ReorderDirection::Up => *at - 1,
+        ReorderDirection::Down => *at + 1,
+    };
+    siblings.swap(*at, neighbor);
+    true
 }
 
 /// Insert every descendant id of the forest into `out`.
 pub fn collect_ids(children: &[PenNode], out: &mut HashSet<NodeId>) {
-    for child in children {
-        if let Some(id) = NodeId::new_opt(child.id_str()) {
+    for node in preorder::Nodes::new(children) {
+        if let Some(id) = NodeId::new_opt(node.id_str()) {
             out.insert(id);
-        }
-        if let Some(grand) = child.children() {
-            collect_ids(grand, out);
         }
     }
 }
@@ -264,21 +240,21 @@ pub fn collect_ids(children: &[PenNode], out: &mut HashSet<NodeId>) {
 /// arbitrary canonical-schema id).
 pub fn parse_n_id(id: &str) -> Option<u64> {
     let digits = id.strip_prefix('n')?;
-    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+    if digits.is_empty() {
         return None;
     }
-    digits.parse::<u64>().ok()
+    digits.bytes().try_fold(0u64, |value, byte| {
+        let digit = byte.checked_sub(b'0').filter(|digit| *digit < 10)?;
+        value.checked_mul(10)?.checked_add(u64::from(digit))
+    })
 }
 
 /// Largest `n{N}` suffix in the subtree (0 when none exists).
 pub fn max_id_walk(node: &PenNode) -> u64 {
-    let mut max = parse_n_id(node.id_str()).unwrap_or(0);
-    if let Some(children) = node.children() {
-        for child in children {
-            max = max.max(max_id_walk(child));
-        }
-    }
-    max
+    preorder::Nodes::new(std::slice::from_ref(node))
+        .filter_map(|node| parse_n_id(node.id_str()))
+        .max()
+        .unwrap_or(0)
 }
 
 /// Allocate the next free editor-minted id. Formats `n{*next_id}`,
@@ -293,13 +269,7 @@ pub fn alloc_n_id(next_id: &mut u64, taken: &mut HashSet<NodeId>) -> Option<Node
 
 /// Node count in `node`'s subtree, including `node` itself.
 pub fn subtree_size(node: &PenNode) -> u64 {
-    let mut n = 1u64;
-    if let Some(children) = node.children() {
-        for child in children {
-            n = n.saturating_add(subtree_size(child));
-        }
-    }
-    n
+    preorder::Nodes::new(std::slice::from_ref(node)).fold(0u64, |count, _| count.saturating_add(1))
 }
 
 /// Deep-clone `node`, minting a fresh `n{N}` id for it and every
@@ -338,18 +308,53 @@ pub fn deep_clone_with_allocator(
     allocator: &mut dyn IdAllocator,
     taken: &mut HashSet<NodeId>,
 ) -> Result<PenNode, IdAllocError> {
-    let mut clone = node.clone();
-    let new_id = allocator.allocate(taken)?;
-    clone.base_mut().id = new_id.into();
-    if let Some(children) = clone.children_mut() {
-        let fresh: Result<Vec<PenNode>, IdAllocError> = children
-            .iter()
-            .map(|child| deep_clone_with_allocator(child, allocator, taken))
-            .collect();
-        *children = fresh?;
+    struct Frame<'a> {
+        node: PenNode,
+        remaining: std::slice::Iter<'a, PenNode>,
+        children: Vec<PenNode>,
     }
-    Ok(clone)
+    // A small number of open ancestors lives inline; deep canonical trees
+    // spill to explicit cursors rather than recursive Rust call frames.
+    let mut parents = stack::Stack::<Frame<'_>, 4>::new();
+    let mut source = node;
+    loop {
+        let mut cloned = crate::pen_node_ext::clone_without_children(source);
+        cloned.base_mut().id = allocator.allocate(taken)?.into();
+        if let Some(children) = source.children().filter(|children| !children.is_empty()) {
+            let mut remaining = children.iter();
+            if let Some(first) = remaining.next() {
+                parents.push(Frame {
+                    node: cloned,
+                    remaining,
+                    children: Vec::with_capacity(children.len()),
+                });
+                source = first;
+                continue;
+            }
+        }
+        // Attach a completed child, then finish as many exhausted parents as
+        // needed before visiting the next sibling. Allocation remains preorder.
+        loop {
+            let Some(parent) = parents.last_mut() else {
+                return Ok(cloned);
+            };
+            parent.children.push(cloned);
+            if let Some(next) = parent.remaining.next() {
+                source = next;
+                break;
+            }
+            let parent = parents.pop().expect("open clone parent");
+            cloned = parent.node;
+            *cloned
+                .children_mut()
+                .expect("source has canonical children") = parent.children;
+        }
+    }
 }
+
+#[cfg(test)]
+#[path = "walkers_clone_tests.rs"]
+mod clone_tests;
 
 /// Translate the subtree rooted at `node` by `(dx, dy)` document px.
 ///
@@ -378,17 +383,20 @@ pub fn find_parent_and_index(
     children: &[PenNode],
     target: &NodeId,
 ) -> Option<(Option<NodeId>, usize)> {
-    if let Some(idx) = children.iter().position(|n| n.id_str() == target.as_str()) {
-        return Some((None, idx));
-    }
-    for child in children {
-        if let Some(grand) = child.children() {
-            if let Some((parent, idx)) = find_parent_and_index(grand, target) {
-                return Some((parent.or_else(|| NodeId::new_opt(child.id_str())), idx));
-            }
+    let path = routes::find(children, target, |_, _| true)?;
+    let (at, parents) = path.split_last()?;
+    let mut siblings = children;
+    let mut parent = None;
+    for index in parents {
+        let node = siblings.get(*index)?;
+        // Preserve the old recursive fallback through an invalid empty parent
+        // ID to its nearest nonempty ancestor, not a different duplicate node.
+        if !node.id_str().is_empty() {
+            parent = Some(node.id_str());
         }
+        siblings = node.children()?;
     }
-    None
+    Some((parent.and_then(NodeId::new_opt), *at))
 }
 
 /// Insert `node` into the container `parent` (`None` = top level) at
@@ -443,17 +451,26 @@ pub fn is_flow_child_of_flex(children: &[PenNode], target: &NodeId) -> bool {
 /// True when any ancestor of `target` within the forest is also in
 /// `set` — used by `translate_selected` to dedupe a double-shift.
 pub fn is_ancestor_in_set(children: &[PenNode], target: &NodeId, set: &[NodeId]) -> bool {
-    for child in children {
-        if child.id_str() != target.as_str()
-            && descendant_contains(child, target)
-            && set.iter().any(|s| s.as_str() == child.id_str())
-        {
+    if children.is_empty() || set.is_empty() {
+        return false;
+    }
+    let selected: HashSet<&str> = set.iter().map(NodeId::as_str).collect();
+    let mut pending = stack::Stack::<_, 16>::new();
+    pending.push((children.iter(), false));
+    while let Some((siblings, ancestor_selected)) = pending.last_mut() {
+        let Some(node) = siblings.next() else {
+            pending.pop();
+            continue;
+        };
+        if node.id_str() == target.as_str() && *ancestor_selected {
             return true;
         }
-        if let Some(grand) = child.children() {
-            if is_ancestor_in_set(grand, target, set) {
-                return true;
-            }
+        // An ancestor with the target's identical ID was explicitly excluded
+        // by the legacy predicate, including malformed duplicate-ID trees.
+        let inherited = *ancestor_selected
+            || (node.id_str() != target.as_str() && selected.contains(node.id_str()));
+        if let Some(children) = node.children().filter(|children| !children.is_empty()) {
+            pending.push((children.iter(), inherited));
         }
     }
     false
@@ -504,27 +521,31 @@ pub fn translate_editable_subtree(
     parent_is_flex: bool,
     ancestor_in_set: bool,
 ) -> bool {
+    if children.is_empty() || editable.is_empty() || ancestor_in_set {
+        return false;
+    }
     let mut moved = false;
-    for child in children.iter_mut() {
-        let in_set = editable.contains(child.id_str());
-        if in_set && !parent_is_flex && !ancestor_in_set {
-            translate_subtree(child, dx, dy);
-            moved = true;
+    let mut pending = stack::Stack::<_, 16>::new();
+    pending.push((children.iter_mut(), parent_is_flex));
+    while let Some((siblings, parent_is_flex)) = pending.last_mut() {
+        let Some(node) = siblings.next() else {
+            pending.pop();
+            continue;
+        };
+        let in_set = editable.contains(node.id_str());
+        if in_set {
+            if !*parent_is_flex {
+                translate_subtree(node, dx, dy);
+                moved = true;
+            }
+            // All proper descendants are excluded by ancestor-in-set even
+            // when this selected node itself is a flex child and cannot move.
+            continue;
         }
-        let child_is_flex = child.is_auto_layout_container();
-        let child_ancestor_in_set = ancestor_in_set || in_set;
-        if child.children().is_some() {
-            if let Some(grand) = child.children_mut() {
-                if translate_editable_subtree(
-                    grand,
-                    editable,
-                    dx,
-                    dy,
-                    child_is_flex,
-                    child_ancestor_in_set,
-                ) {
-                    moved = true;
-                }
+        if node.children().is_some_and(|children| !children.is_empty()) {
+            let node_is_flex = node.is_auto_layout_container();
+            if let Some(children) = node.children_mut() {
+                pending.push((children.iter_mut(), node_is_flex));
             }
         }
     }
@@ -534,15 +555,32 @@ pub fn translate_editable_subtree(
 /// First duplicate id found in the forest, or `None` when all ids
 /// are unique.
 pub fn find_duplicate(children: &[PenNode], seen: &mut HashSet<String>) -> Option<NodeId> {
-    for child in children {
-        if !seen.insert(child.id_str().to_string()) {
-            return NodeId::new_opt(child.id_str());
-        }
-        if let Some(grand) = child.children() {
-            if let Some(dup) = find_duplicate(grand, seen) {
-                return Some(dup);
+    let mut pending = stack::Stack::<_, 16>::new();
+    if !children.is_empty() {
+        pending.push(children.iter());
+    }
+    while let Some(siblings) = pending.last_mut() {
+        let Some(node) = siblings.next() else {
+            pending.pop();
+            continue;
+        };
+        if !seen.insert(node.id_str().to_string()) {
+            if let Some(id) = NodeId::new_opt(node.id_str()) {
+                return Some(id);
             }
+            // The old recursive call returned None immediately on a duplicate
+            // empty/sentinel ID: skip the rest of exactly this sibling scope,
+            // then let its parent's next sibling continue.
+            pending.pop();
+            continue;
+        }
+        if let Some(children) = node.children().filter(|children| !children.is_empty()) {
+            pending.push(children.iter());
         }
     }
     None
 }
+
+#[cfg(test)]
+#[path = "walkers_presence_tests.rs"]
+mod presence_tests;

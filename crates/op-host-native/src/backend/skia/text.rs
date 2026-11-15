@@ -4,17 +4,70 @@
 //! support landed; the typeface caches stay fields on the spine
 //! struct, this sibling only houses the `impl` block.
 
+#[path = "text_decoration.rs"]
+mod decoration;
+
 use op_editor_core::text_script::needs_complex_shaping;
 use op_editor_ui::{Point2D, TextBaselineRequest, TextLayout};
 
 use super::shaped_text::ShapedRun;
 use super::NativeBackend;
 
+// Font parsing uses the render thread on Windows; these raster proofs run on
+// the same macOS/Linux targets as the variable-font outline regressions.
+#[cfg(all(test, not(target_os = "windows")))]
+#[path = "nominal_advance_tests.rs"]
+mod nominal_advance_tests;
+#[cfg(all(test, not(target_os = "windows")))]
+#[path = "text_raster_tests.rs"]
+mod text_raster_tests;
+
 pub(super) fn draw_text_runs(layout: &TextLayout) -> &[jian_core::render::TextRun] {
     layout.runs()
 }
 
+pub(super) fn quantize_advance(value: f32, font_size: f32) -> f32 {
+    jian_skia::advance_grid::quantize_advance(value, font_size)
+}
+
+pub(super) fn uses_advance_grid(
+    text: &str,
+    kerning: Option<bool>,
+    features: Option<&std::collections::BTreeMap<String, u32>>,
+) -> bool {
+    (kerning.is_some() || features.is_some_and(|features| !features.is_empty()))
+        && jian_skia::advance_grid::supports_text(text)
+}
+
+fn nominal_advances(
+    font: &skia_safe::Font,
+    glyphs: &[skia_safe::GlyphId],
+    synthetic_bold: bool,
+) -> Vec<f32> {
+    if !synthetic_bold {
+        return jian_skia::advance_grid::nominal_advances(font, glyphs);
+    }
+    // Synthetic stroke compensation keeps its established fallback metrics.
+    let mut widths = vec![0.0; glyphs.len()];
+    font.get_widths(glyphs, &mut widths);
+    widths
+}
+
 impl NativeBackend {
+    pub fn draw_text_decoration(
+        &mut self,
+        canvas: &skia_safe::Canvas,
+        request: &op_editor_ui::TextDecorationRequest<'_>,
+    ) -> bool {
+        decoration::draw(self, canvas, request)
+    }
+
+    /// Reuse immutable outlines only for this export's repeated cameras.
+    /// Nested calls share the same bounded cache; return/unwind releases it.
+    pub fn with_export_text_reuse<R>(action: impl FnOnce() -> R) -> R {
+        super::vector_text::with_export_scope(action)
+    }
+
     /// Resolve a typeface that covers `c`. Cached per codepoint —
     /// `FontMgr::match_family_style_character` is fast on first call
     /// but we still avoid the look-up on every chrome paint.
@@ -105,13 +158,120 @@ impl NativeBackend {
                     font_size,
                     weight,
                     italic,
+                    kerning: None,
+                    letter_spacing: 0.0,
+                    font_features: None,
                     line_height: 0.0,
                     color: skia_safe::Color::BLACK,
+                    source_color: None,
                 },
             );
         }
         self.font_resolver
             .measure_text(text, font_size, Some(family), weight, italic)
+    }
+
+    /// Explicit kerning follows the same Paragraph path as paint.
+    #[allow(clippy::too_many_arguments)]
+    pub fn measure_text_family_kerned(
+        &mut self,
+        text: &str,
+        font_size: f32,
+        family: &str,
+        weight: u16,
+        italic: bool,
+        kerning: Option<bool>,
+        letter_spacing: f32,
+        font_features: &std::collections::BTreeMap<String, u32>,
+    ) -> f32 {
+        if kerning == Some(true) || font_features.values().any(|value| *value != 0) {
+            self.shaped_text.measure(
+                &self.font_resolver,
+                &ShapedRun {
+                    text,
+                    family,
+                    font_size,
+                    weight,
+                    italic,
+                    kerning,
+                    letter_spacing,
+                    font_features: Some(font_features),
+                    line_height: 0.0,
+                    color: skia_safe::Color::BLACK,
+                    source_color: None,
+                },
+            )
+        } else if uses_advance_grid(text, kerning, Some(font_features)) {
+            self.measure_nominal_grid(text, font_size, family, weight, italic, letter_spacing)
+        } else {
+            self.measure_text_family_styled(text, font_size, family, weight, italic)
+                + text.chars().count().saturating_sub(1) as f32 * letter_spacing
+        }
+    }
+
+    fn measure_nominal_grid(
+        &mut self,
+        text: &str,
+        font_size: f32,
+        family: &str,
+        weight: u16,
+        italic: bool,
+        letter_spacing: f32,
+    ) -> f32 {
+        jian_skia::with_font_lock(|| {
+            let segments = self
+                .font_resolver
+                .segment_text(text, Some(family), weight, italic);
+            if segments.is_empty() {
+                return self.font_resolver.measure_text(
+                    text,
+                    font_size,
+                    Some(family),
+                    weight,
+                    italic,
+                ) + text.chars().count().saturating_sub(1) as f32 * letter_spacing;
+            }
+            let last_segment = segments.len() - 1;
+            segments
+                .into_iter()
+                .enumerate()
+                .map(|(index, segment)| {
+                    let mut font = skia_safe::Font::new(&segment.typeface, font_size);
+                    font.set_hinting(skia_safe::FontHinting::None);
+                    font.set_subpixel(true);
+                    let glyphs = font.str_to_glyphs_vec(&segment.text);
+                    let widths = nominal_advances(&font, &glyphs, segment.synthetic_bold);
+                    let factor = if segment.synthetic_bold {
+                        jian_skia::SYNTHETIC_BOLD_WIDTH_FACTOR
+                    } else {
+                        1.0
+                    };
+                    let trailing = index != last_segment;
+                    jian_skia::advance_grid::measure_nominal_advances(
+                        &widths,
+                        font_size,
+                        letter_spacing,
+                        factor,
+                        trailing,
+                    )
+                    .unwrap_or_else(|| {
+                        // Preserve the established fallback for nonfinite or
+                        // out-of-range metrics; modern finite inputs share paint's
+                        // checked integer-prefix and final tracking conversion.
+                        let steps = if trailing {
+                            widths.len()
+                        } else {
+                            widths.len().saturating_sub(1)
+                        };
+                        widths
+                            .iter()
+                            .map(|width| quantize_advance(*width * factor, font_size))
+                            .sum::<f32>()
+                            + steps as f32 * letter_spacing
+                    })
+                })
+                .sum()
+        })
     }
 
     /// Family-aware width at the default weight/upright — the measurement
@@ -193,7 +353,15 @@ impl NativeBackend {
             let italic = layout.italic();
             for run in draw_text_runs(layout) {
                 let jc = run.color;
-                if needs_complex_shaping(run.content.as_str()) {
+                let source_color = if jian_skia::raster_sampling::is_point_sampling() {
+                    layout.source_color().map(super::jian_color_to_color4f)
+                } else {
+                    None
+                };
+                if needs_complex_shaping(run.content.as_str())
+                    || layout.kerning() == Some(true)
+                    || layout.font_features().values().any(|value| *value != 0)
+                {
                     // Arabic and friends need bidi reordering plus contextual
                     // joining, neither of which `draw_str` performs. Hand the
                     // whole run to the cached Paragraph shaper; segmentation
@@ -208,8 +376,12 @@ impl NativeBackend {
                             font_size: run.font_size,
                             weight: run.font_weight,
                             italic,
+                            kerning: layout.kerning(),
+                            letter_spacing: layout.letter_spacing(),
+                            font_features: Some(layout.font_features()),
                             line_height: run.line_height,
                             color: skia_safe::Color::from_argb(jc.a(), jc.r(), jc.g(), jc.b()),
+                            source_color,
                         },
                         origin.x + run.origin.x,
                         origin.y + run.origin.y,
@@ -234,13 +406,22 @@ impl NativeBackend {
                     ),
                     None,
                 );
-                paint.set_anti_alias(true);
+                if let Some(color) = source_color {
+                    paint.set_color4f(color, None);
+                }
+                jian_skia::raster_sampling::configure_geometry(&mut paint);
                 // Synthetic bold for typefaces the system serves at one
                 // weight only (notably the bundled Roboto-Regular for
                 // ASCII at weight ≥600). Stroke width scales with size
                 // so 28pt headline gets the same visual weight relative
                 // to its glyph as 13pt body text.
                 let want_bold = run.font_weight >= 600;
+                let modern = layout.kerning().is_some() || !layout.font_features().is_empty();
+                let advance_grid = uses_advance_grid(
+                    run.content.as_str(),
+                    layout.kerning(),
+                    Some(layout.font_features()),
+                );
                 let mut x = origin.x + run.origin.x;
                 let y = origin.y + run.origin.y;
                 for segment in segments {
@@ -248,6 +429,14 @@ impl NativeBackend {
                     if segment.synthetic_italic {
                         font.set_skew_x(jian_skia::SYNTHETIC_ITALIC_SKEW);
                     }
+                    // Keep advances identical to FontResolver's measurement;
+                    // raster flags must not move following fallback segments.
+                    let (mut advance, _) = font.measure_str(&segment.text, None);
+                    // Document text follows scalable outlines at authored
+                    // fractional positions. Platform grid fitting changes
+                    // stem weight and rounds adjacent labels differently.
+                    font.set_hinting(skia_safe::FontHinting::None);
+                    font.set_subpixel(true);
                     if want_bold && segment.synthetic_bold {
                         paint.set_style(skia_safe::PaintStyle::StrokeAndFill);
                         paint.set_stroke_width(run.font_size * 0.06);
@@ -255,10 +444,75 @@ impl NativeBackend {
                         paint.set_style(skia_safe::PaintStyle::Fill);
                         paint.set_stroke_width(0.0);
                     }
-                    canvas.draw_str(&segment.text, (x, y), &font, &paint);
-                    let (mut advance, _) = font.measure_str(&segment.text, None);
-                    if segment.synthetic_bold {
-                        advance *= jian_skia::SYNTHETIC_BOLD_WIDTH_FACTOR;
+                    if advance_grid {
+                        let glyphs = font.str_to_glyphs_vec(&segment.text);
+                        let widths = nominal_advances(&font, &glyphs, segment.synthetic_bold);
+                        let factor = if segment.synthetic_bold {
+                            jian_skia::SYNTHETIC_BOLD_WIDTH_FACTOR
+                        } else {
+                            1.0
+                        };
+                        let precise = jian_skia::advance_grid::position_nominal_advances(
+                            &widths,
+                            run.font_size,
+                            layout.letter_spacing(),
+                            factor,
+                        );
+                        let (positions, cursor) = if let Some(run) = precise {
+                            (run.positions, run.advance)
+                        } else {
+                            // Preserve the established platform fallback for
+                            // nonfinite or out-of-range font metrics.
+                            let mut cursor = 0.0;
+                            let positions = widths
+                                .into_iter()
+                                .map(|width| {
+                                    let point = skia_safe::Point::new(cursor, 0.0);
+                                    cursor += quantize_advance(width * factor, run.font_size)
+                                        + layout.letter_spacing();
+                                    point
+                                })
+                                .collect::<Vec<_>>();
+                            (positions, cursor)
+                        };
+                        if !super::vector_text::draw(
+                            canvas,
+                            &font,
+                            &glyphs,
+                            &positions,
+                            (x, y).into(),
+                            &paint,
+                            modern,
+                            Some(&self.shaped_text.metadata),
+                        ) {
+                            canvas.draw_glyphs_at(
+                                &glyphs,
+                                positions.as_slice(),
+                                (x, y),
+                                &font,
+                                &paint,
+                            );
+                        }
+                        advance = cursor;
+                    } else {
+                        let glyphs = font.str_to_glyphs_vec(&segment.text);
+                        let mut positions = vec![skia_safe::Point::default(); glyphs.len()];
+                        font.get_pos(&glyphs, &mut positions, None);
+                        if !super::vector_text::draw(
+                            canvas,
+                            &font,
+                            &glyphs,
+                            &positions,
+                            (x, y).into(),
+                            &paint,
+                            modern,
+                            Some(&self.shaped_text.metadata),
+                        ) {
+                            canvas.draw_str(&segment.text, (x, y), &font, &paint);
+                        }
+                        if segment.synthetic_bold {
+                            advance *= jian_skia::SYNTHETIC_BOLD_WIDTH_FACTOR;
+                        }
                     }
                     x += advance;
                 }

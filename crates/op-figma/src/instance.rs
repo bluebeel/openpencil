@@ -17,8 +17,10 @@ use std::collections::{HashMap, HashSet};
 
 mod apply;
 mod assignment;
+pub(crate) use assignment::seed_assignments_for_symbols;
 #[cfg(test)]
 mod assignment_tests;
+pub(crate) use cache::fig_value_bytes as value_retained_bound;
 mod cache;
 mod fingerprint;
 #[cfg(test)]
@@ -26,6 +28,8 @@ mod fingerprint_tests;
 mod foreign_session;
 #[cfg(test)]
 mod foreign_tests;
+#[cfg(test)]
+mod geometry_tests;
 mod style;
 mod swap_filter;
 #[cfg(test)]
@@ -40,8 +44,8 @@ pub use assignment::seed_assignments_from_instances;
 use assignment::{
     guessed_mapping_is_implausible, instance_scale, rescale_only, reserve_direct_identities,
 };
-pub(crate) use cache::{apply_instance_overrides_memoized, InstanceExpansionCache};
-pub(crate) use style::merge_symbol_props;
+pub(crate) use cache::{apply_instance_overrides_shared, InstanceExpansionCache};
+pub(crate) use style::{instance_visibility, merge_symbol_props};
 pub(crate) use swap_filter::filter_swap_stale_derived;
 
 /// Keys that must never be copied off an override entry onto a node.

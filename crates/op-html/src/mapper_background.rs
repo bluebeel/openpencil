@@ -124,12 +124,12 @@ fn sized_layer(
         };
     };
     let transform = ImageTransform {
-        m00: (node.0 / image.0) as f32,
+        m00: (node.0 / image.0) as f64,
         m01: 0.0,
-        m02: (-origin.0 / image.0) as f32,
+        m02: (-origin.0 / image.0) as f64,
         m10: 0.0,
-        m11: (node.1 / image.1) as f32,
-        m12: (-origin.1 / image.1) as f32,
+        m11: (node.1 / image.1) as f64,
+        m12: (-origin.1 / image.1) as f64,
     };
     if !transform_is_finite(&transform) {
         return LayerGeometry {
@@ -287,12 +287,12 @@ fn transform_is_finite(transform: &ImageTransform) -> bool {
     ]
     .iter()
     .all(|value| value.is_finite())
-        && transform.m00.abs() > f32::EPSILON
-        && transform.m11.abs() > f32::EPSILON
+        && transform.m00.abs() > f64::EPSILON
+        && transform.m11.abs() > f64::EPSILON
 }
 
 fn is_identity(transform: &ImageTransform) -> bool {
-    const EPSILON: f32 = 1e-6;
+    const EPSILON: f64 = 1e-6;
     (transform.m00 - 1.0).abs() <= EPSILON
         && (transform.m11 - 1.0).abs() <= EPSILON
         && transform.m02.abs() <= EPSILON

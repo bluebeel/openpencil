@@ -1,31 +1,56 @@
+use crate::common::FigLayoutMode;
 use crate::kiwi::FigValue;
 use crate::text_cache::compact_transient_text_caches;
+use crate::text_cache::evidence::{nearly_equal, TextEvidence};
 use crate::tree::guid_to_string;
-use std::collections::HashMap;
+use std::{collections::HashMap, rc::Rc};
+
+#[cfg(test)]
+#[path = "style_references_tests.rs"]
+mod tests;
+
+#[path = "preserved_fonts.rs"]
+mod preserved_fonts;
 
 /// Copy style-node values inline onto the nodes that reference them,
 /// so downstream converters never chase a style ref. Mutates the
 /// node-change list in place.
+#[cfg(test)]
 pub fn resolve_style_references(node_changes: &mut [FigValue]) {
+    resolve_style_references_with_mode(node_changes, FigLayoutMode::OpenPencil);
+}
+
+pub(crate) fn resolve_style_references_with_mode(
+    node_changes: &mut [FigValue],
+    layout_mode: FigLayoutMode,
+) {
     crate::component_props::resolve_component_property_swaps(node_changes);
-    let mut style_map: HashMap<String, FigValue> = HashMap::new();
+    let mut style_map: HashMap<String, Rc<FigValue>> = HashMap::new();
     for nc in node_changes.iter() {
         if nc.get("styleType").is_some() {
-            if let Some(key) = nc.get("guid").and_then(guid_to_string) {
-                style_map.insert(key, nc.clone());
+            let guid = nc.get("guid").and_then(guid_to_string);
+            let asset_key = nc.get_str("key").filter(|key| !key.is_empty());
+            if guid.is_none() && asset_key.is_none() {
+                continue;
+            }
+            let frozen = Rc::new(style_inputs(nc));
+            if let Some(key) = guid {
+                style_map.insert(key, Rc::clone(&frozen));
             }
             // Library styles are referenced by `assetRef.key` — index
             // the embedded style node under its publish key too. The
             // "key:" namespace keeps hex publish keys from ever
             // colliding with "session:local" guid strings.
-            if let Some(asset_key) = nc.get_str("key") {
-                if !asset_key.is_empty() {
-                    style_map.insert(format!("key:{asset_key}"), nc.clone());
-                }
+            if let Some(asset_key) = asset_key {
+                style_map.insert(format!("key:{asset_key}"), frozen);
             }
         }
     }
     if style_map.is_empty() {
+        crate::color_variables::resolve_color_variables(node_changes);
+        if layout_mode == FigLayoutMode::Preserve {
+            preserved_fonts::restore_saved_instance_fonts(node_changes);
+        }
         compact_transient_text_caches(node_changes);
         return;
     }
@@ -41,21 +66,59 @@ pub fn resolve_style_references(node_changes: &mut [FigValue]) {
             }
         }
     }
+    crate::color_variables::resolve_color_variables(node_changes);
+    if layout_mode == FigLayoutMode::Preserve {
+        preserved_fonts::restore_saved_instance_fonts(node_changes);
+    }
     compact_transient_text_caches(node_changes);
+}
+
+const TEXT_STYLE_FIELDS: &[&str] = &[
+    "fontName",
+    "fontSize",
+    "lineHeight",
+    "letterSpacing",
+    "textAlignHorizontal",
+    "textAlignVertical",
+    "textDecoration",
+    "textDecorationSkipInk",
+    "textCase",
+    "fontVariantCommonLigatures",
+    "toggledOnOTFeatures",
+    "toggledOffOTFeatures",
+];
+
+/// A frozen lookup view needs only the fields consumed below. The original
+/// node keeps every field, including future/unknown data. Complete selected
+/// values (and duplicate/null entries) are cloned without normalizing numbers.
+fn style_inputs(node: &FigValue) -> FigValue {
+    match node.resolved() {
+        FigValue::Object(fields) => FigValue::Object(
+            fields
+                .iter()
+                .filter(|(key, _)| {
+                    matches!(key.as_ref(), "fillPaints" | "effects")
+                        || TEXT_STYLE_FIELDS.contains(&key.as_ref())
+                })
+                .cloned()
+                .collect(),
+        ),
+        _ => node.clone(),
+    }
 }
 
 fn lookup_style<'a>(
     nc: &FigValue,
     field: &str,
-    style_map: &'a HashMap<String, FigValue>,
+    style_map: &'a HashMap<String, Rc<FigValue>>,
 ) -> Option<&'a FigValue> {
     let sid = nc.get(field)?;
     // Local style: guid reference. Library style: assetRef publish key.
     if let Some(key) = sid.get("guid").and_then(guid_to_string) {
-        return style_map.get(&key);
+        return style_map.get(&key).map(Rc::as_ref);
     }
     let asset_key = sid.get("assetRef").and_then(|a| a.get_str("key"))?;
-    style_map.get(&format!("key:{asset_key}"))
+    style_map.get(&format!("key:{asset_key}")).map(Rc::as_ref)
 }
 
 pub(super) fn non_empty_array(v: &FigValue, key: &str) -> bool {
@@ -68,17 +131,8 @@ enum TextStylePriority {
     ExplicitFields,
 }
 
-fn nearly_equal(a: f64, b: f64) -> bool {
-    (a - b).abs() <= 0.001
-}
-
 fn uniform_derived_metric(node: &FigValue, entries: &str, field: &str) -> Option<f64> {
-    let values = node.get("derivedTextData")?.get_array(entries)?;
-    let first = values.first()?.get_f64(field)?;
-    values
-        .iter()
-        .all(|value| value.get_f64(field).is_some_and(|v| nearly_equal(v, first)))
-        .then_some(first)
+    TextEvidence::from_cache(node.get("derivedTextData")?).metric(entries, field)
 }
 
 fn effective_line_height_px(text: &FigValue) -> Option<f64> {
@@ -90,6 +144,49 @@ fn effective_line_height_px(text: &FigValue) -> Option<f64> {
         "RAW" => Some(text.get_f64("fontSize")? * value),
         _ => None,
     }
+}
+
+fn derived_uses_style_font(node: &FigValue, style: &FigValue) -> bool {
+    let (Some(font), Some(cache)) = (style.get("fontName"), node.get("derivedTextData")) else {
+        return false;
+    };
+    TextEvidence::from_cache(cache).uses_font(font)
+}
+
+fn effective_tracking_px(text: &FigValue, font_size: f64) -> Option<f64> {
+    let tracking = text.get("letterSpacing")?;
+    let value = tracking.get_f64("value")?;
+    match tracking.get_str("units")? {
+        "PIXELS" => Some(value),
+        "PERCENT" => Some(font_size * value / 100.0),
+        _ => None,
+    }
+}
+
+/// Confirm the linked tracking against horizontal, single-character glyph
+/// steps. The value copied below still comes from the authored style. Reject
+/// mixed/ambiguous caches rather than treating a local override as stale.
+fn derived_confirms_style_tracking(node: &FigValue, style: &FigValue) -> bool {
+    if !derived_uses_style_font(node, style) {
+        return false;
+    }
+    let Some(size) = uniform_derived_metric(node, "glyphs", "fontSize") else {
+        return false;
+    };
+    let (Some(current), Some(referenced)) = (
+        effective_tracking_px(node, size),
+        effective_tracking_px(style, size),
+    ) else {
+        return false;
+    };
+    if nearly_equal(current, referenced) {
+        return false;
+    }
+    TextEvidence::from_cache(
+        node.get("derivedTextData")
+            .expect("derived metric requires cache"),
+    )
+    .confirms_tracking(current, referenced)
 }
 
 /// Direct text nodes can carry stale top-level metrics even though
@@ -118,9 +215,65 @@ fn derived_confirms_text_style(node: &FigValue, style: &FigValue, field: &str) -
     )
 }
 
+/// Cached baseline lineHeight can be the font's natural metrics rather than
+/// the authored line box. Auto-height geometry supplies independent proof
+/// when the saved glyph size already confirms a stale direct typography pair.
+fn derived_confirms_auto_line_height(node: &FigValue, style: &FigValue) -> bool {
+    if node.get_str("textAutoResize") != Some("HEIGHT") {
+        return false;
+    }
+    let (Some(current), Some(referenced), Some(height), Some(cache)) = (
+        effective_line_height_px(node),
+        effective_line_height_px(style),
+        node.get("size").and_then(|size| size.get_f64("y")),
+        node.get("derivedTextData"),
+    ) else {
+        return false;
+    };
+    let Some(lines) = TextEvidence::from_cache(cache).saved_line_count() else {
+        return false;
+    };
+    referenced > 0.0
+        && !nearly_equal(current, referenced)
+        && nearly_equal(height, referenced * lines as f64)
+}
+
+/// Restore a stale legacy ligature flag only when the linked style and
+/// saved font/size/tracking/geometry agree and an actual joined cluster proves
+/// common ligatures were effective. Explicit node/instance overrides win.
+fn derived_confirms_common_ligatures(node: &FigValue, style: &FigValue) -> bool {
+    if node.get_bool("fontVariantCommonLigatures") != Some(false)
+        || style.get_bool("fontVariantCommonLigatures") != Some(true)
+        || !derived_uses_style_font(node, style)
+        || node.get_array("toggledOffOTFeatures").is_some_and(|tags| {
+            tags.iter().any(|tag| {
+                tag.as_str()
+                    .is_some_and(|tag| tag.eq_ignore_ascii_case("liga"))
+            })
+        })
+    {
+        return false;
+    }
+    let (Some(cache), Some(text), Some(size)) = (
+        node.get("derivedTextData"),
+        node.get("textData").and_then(|t| t.get_str("characters")),
+        style.get_f64("fontSize"),
+    ) else {
+        return false;
+    };
+    let evidence = TextEvidence::from_cache(cache);
+    let Some((width, height)) = evidence.layout_size else {
+        return false;
+    };
+    let geometry = node.get("size");
+    matches!((evidence.metric("glyphs","fontSize"),effective_tracking_px(node,size),effective_tracking_px(style,size),geometry.and_then(|s|s.get_f64("x")),geometry.and_then(|s|s.get_f64("y"))),
+        (Some(saved),Some(current),Some(linked),Some(w),Some(h)) if size > 0.0 && nearly_equal(saved,size) && nearly_equal(current,linked) && nearly_equal(width,w) && nearly_equal(height,h))
+        && evidence.confirms_common_ligatures(text)
+}
+
 fn resolve_on_node(
     nc: &mut FigValue,
-    style_map: &HashMap<String, FigValue>,
+    style_map: &HashMap<String, Rc<FigValue>>,
     text_priority: TextStylePriority,
 ) {
     // FILL.
@@ -142,24 +295,29 @@ fn resolve_on_node(
     // Direct nodes occasionally carry stale cached text metrics. Use
     // the linked style only when derived glyph/baseline data confirms
     // it; instance overrides always keep explicit authored fields.
-    if let Some(ts) = lookup_style(nc, "styleIdForText", style_map).cloned() {
-        let replace_font_size = text_priority == TextStylePriority::DerivedMetrics
-            && derived_confirms_text_style(nc, &ts, "fontSize");
-        let replace_line_height = text_priority == TextStylePriority::DerivedMetrics
-            && derived_confirms_text_style(nc, &ts, "lineHeight");
-        for key in [
-            "fontName",
-            "fontSize",
-            "lineHeight",
-            "letterSpacing",
-            "textAlignHorizontal",
-            "textAlignVertical",
-            "textDecoration",
-            "textCase",
-        ] {
+    if let Some(ts) = lookup_style(nc, "styleIdForText", style_map) {
+        let use_derived = text_priority == TextStylePriority::DerivedMetrics
+            && nc.get_bool("isOverrideOverTextStyle") != Some(true);
+        let replace_font_size = use_derived && derived_confirms_text_style(nc, ts, "fontSize");
+        let replace_font_name = use_derived && derived_uses_style_font(nc, ts);
+        let replace_line_height = use_derived
+            && (derived_confirms_text_style(nc, ts, "lineHeight")
+                || (replace_font_size
+                    && replace_font_name
+                    && derived_confirms_auto_line_height(nc, ts)));
+        let replace_tracking = use_derived && derived_confirms_style_tracking(nc, ts);
+        // Restore stale feature flags only with the same independent saved
+        // family + tracking proof. Explicit node/instance overrides still win.
+        let replace_features = replace_font_name && replace_tracking;
+        let replace_common_ligatures = use_derived && derived_confirms_common_ligatures(nc, ts);
+        for &key in TEXT_STYLE_FIELDS {
             let replace_metric = match key {
+                "fontName" => replace_font_name,
                 "fontSize" => replace_font_size,
                 "lineHeight" => replace_line_height,
+                "letterSpacing" => replace_tracking,
+                "toggledOnOTFeatures" | "toggledOffOTFeatures" => replace_features,
+                "fontVariantCommonLigatures" => replace_common_ligatures,
                 _ => false,
             };
             if replace_metric || nc.get(key).is_none() {
@@ -174,7 +332,7 @@ fn resolve_on_node(
         // independent `styleIdForFill` (for example selected-menu blue).
         if text_priority == TextStylePriority::DerivedMetrics
             && !non_empty_array(nc, "fillPaints")
-            && non_empty_array(&ts, "fillPaints")
+            && non_empty_array(ts, "fillPaints")
         {
             if let Some(v) = ts.get("fillPaints").cloned() {
                 nc.set("fillPaints", v);

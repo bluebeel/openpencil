@@ -10,44 +10,15 @@ pub(super) struct AncestorClip {
     xform: glam::Affine2,
 }
 
-pub(super) fn find_node_with_ancestor_context<'a>(
-    nodes: &'a [SceneNode],
-    node_id: &str,
-) -> Option<(&'a SceneNode, glam::Affine2, Vec<AncestorClip>)> {
-    find_node_inner(nodes, node_id, glam::Affine2::IDENTITY, &mut Vec::new())
-}
-
-fn find_node_inner<'a>(
-    nodes: &'a [SceneNode],
-    node_id: &str,
-    ancestor_xform: glam::Affine2,
-    clips: &mut Vec<AncestorClip>,
-) -> Option<(&'a SceneNode, glam::Affine2, Vec<AncestorClip>)> {
-    for node in nodes {
-        if node.id == node_id {
-            return Some((node, ancestor_xform, clips.clone()));
-        }
-        let child_xform = ancestor_xform * node_transform(node);
-        let clips_children = node.clip_content
-            && !node.children.is_empty()
-            && node.bounds.size.x != 0.0
-            && node.bounds.size.y != 0.0;
-        if clips_children {
-            clips.push(AncestorClip {
-                id: format!("ancestor-clip-{}", svg_id(&node.id)),
-                bounds: normalize_rect(node.bounds),
-                corner_radius: node.corner_radius.max(0.0),
-                xform: child_xform,
-            });
-        }
-        if let Some(found) = find_node_inner(&node.children, node_id, child_xform, clips) {
-            return Some(found);
-        }
-        if clips_children {
-            clips.pop();
+impl AncestorClip {
+    pub(super) fn for_node(node: &SceneNode, xform: glam::Affine2) -> Self {
+        Self {
+            id: format!("ancestor-clip-{}", svg_id(&node.id)),
+            bounds: normalize_rect(node.bounds),
+            corner_radius: node.corner_radius.max(0.0),
+            xform,
         }
     }
-    None
 }
 
 pub(super) fn node_transform(n: &SceneNode) -> glam::Affine2 {
@@ -97,12 +68,6 @@ pub(super) fn emit_ancestor_clip_groups_start(out: &mut String, clips: &[Ancesto
     }
 }
 
-pub(super) fn close_ancestor_clip_groups(out: &mut String, clips: &[AncestorClip]) {
-    for _ in clips {
-        out.push_str("</g>");
-    }
-}
-
 pub(super) fn apply_ancestor_clip_bounds(mut bounds: Rect, clips: &[AncestorClip]) -> Option<Rect> {
     for clip in clips {
         bounds = intersect(bounds, transformed_bounds(clip.bounds, clip.xform))?;
@@ -130,7 +95,7 @@ pub(super) fn svg_id(id: &str) -> String {
     out
 }
 
-fn matrix_value(xform: glam::Affine2) -> String {
+pub(super) fn matrix_value(xform: glam::Affine2) -> String {
     let m = xform.matrix2;
     let t = xform.translation;
     format!(
@@ -139,7 +104,7 @@ fn matrix_value(xform: glam::Affine2) -> String {
     )
 }
 
-fn transformed_bounds(rect: Rect, xform: glam::Affine2) -> Rect {
+pub(super) fn transformed_bounds(rect: Rect, xform: glam::Affine2) -> Rect {
     let points = [
         glam::Vec2::new(rect.origin.x, rect.origin.y),
         glam::Vec2::new(rect.origin.x + rect.size.x, rect.origin.y),
@@ -154,7 +119,7 @@ fn transformed_bounds(rect: Rect, xform: glam::Affine2) -> Rect {
     Rect::xywh(min_x, min_y, max_x - min_x, max_y - min_y)
 }
 
-fn intersect(a: Rect, b: Rect) -> Option<Rect> {
+pub(super) fn intersect(a: Rect, b: Rect) -> Option<Rect> {
     let x0 = a.origin.x.max(b.origin.x);
     let y0 = a.origin.y.max(b.origin.y);
     let x1 = (a.origin.x + a.size.x).min(b.origin.x + b.size.x);

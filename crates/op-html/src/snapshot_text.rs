@@ -147,13 +147,15 @@ impl SnapshotCtx<'_> {
         };
         let sizing = text_box(rect, lines, nowrap);
         Some(PenNode::Text(TextNode {
+            font_features: None,
+            font_kerning: None,
             base: self.base(id, Some("Text".into()), rect, Some(parent_rect)),
             limits: sizing.limits,
             width: sizing.width,
             height: sizing.height,
             content: styled_content(object, text, self.text_fill_override.as_deref()),
             font_family: styles.get("font-family").cloned(),
-            font_size: Some(font_size),
+            font_size: Some(font_size.into()),
             font_weight,
             font_style,
             letter_spacing,
@@ -163,6 +165,7 @@ impl SnapshotCtx<'_> {
             text_growth: Some(sizing.growth),
             underline: None,
             strikethrough: None,
+            text_decoration_skip_ink: None,
             fill,
             effects: None,
             state: None,
@@ -207,11 +210,10 @@ fn styled_content(
         let style = |key: &str| styles.and_then(|map| map.get(key)).and_then(Value::as_str);
         let decoration = style("text-decoration-line").unwrap_or("");
         segments.push(StyledTextSegment {
+            fill_paints: None,
             text: text.to_string(),
             font_family: style("font-family").map(str::to_string),
-            font_size: style("font-size")
-                .and_then(parse_px)
-                .map(|value| value as f32),
+            font_size: style("font-size").and_then(parse_px),
             font_weight: style("font-weight").and_then(|value| value.parse::<u32>().ok()),
             font_style: match style("font-style") {
                 Some("italic" | "oblique") => Some(SegmentFontStyle::Italic),
@@ -228,6 +230,7 @@ fn styled_content(
             },
             underline: decoration.contains("underline").then_some(true),
             strikethrough: decoration.contains("line-through").then_some(true),
+            text_decoration_skip_ink: None,
             href: segment
                 .get("href")
                 .and_then(Value::as_str)

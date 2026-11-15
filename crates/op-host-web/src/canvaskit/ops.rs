@@ -554,3 +554,75 @@ pub(super) fn fill_inner_shadow_svg_path_with_fill_rule(
         color.a,
     );
 }
+
+/// The output support in the current local CTM, without adding a clip.
+pub(super) fn paint_field_bounds(ck: &OpCk) -> Option<Rect> {
+    let v = ck.paint_field_bounds();
+    (v.len() == 4 && v.iter().copied().all(f32::is_finite))
+        .then(|| Rect::xywh(v[0], v[1], v[2], v[3]))
+}
+
+pub(super) fn draw_text(ck: &OpCk, layout: &op_editor_ui::TextLayout, origin: Point2D) {
+    let italic = layout.italic();
+    for run in layout.runs() {
+        let x = origin.x + run.origin.x;
+        let y = origin.y + run.origin.y;
+        // `TextRun.color` is `jian_core::scene::Color` (0-255 u8 channels),
+        // unlike the f32-channel `Color` the fill ops take.
+        let c = run.color;
+        let (cr, cg, cb, ca) = (
+            f32::from(c.r()) / 255.0,
+            f32::from(c.g()) / 255.0,
+            f32::from(c.b()) / 255.0,
+            f32::from(c.a()) / 255.0,
+        );
+        // Same predicate the native host uses, so the two never disagree
+        // about which runs need bidi + contextual joining.
+        if op_editor_core::text_script::needs_complex_shaping(run.content.as_str()) {
+            ck.draw_shaped_text(
+                run.content.as_str(),
+                run.font_family.as_str(),
+                x,
+                y,
+                run.font_size,
+                run.font_weight as i32,
+                italic,
+                cr,
+                cg,
+                cb,
+                ca,
+            );
+            continue;
+        }
+        ck.draw_text(
+            run.content.as_str(),
+            run.font_family.as_str(),
+            x,
+            y,
+            run.font_size,
+            run.font_weight as i32,
+            italic,
+            cr,
+            cg,
+            cb,
+            ca,
+        );
+    }
+}
+
+pub(super) fn text_mask_capture(
+    ck: &OpCk,
+    action: op_editor_ui::TextMaskAction,
+) -> op_editor_ui::TextMaskResult {
+    use op_editor_ui::TextMaskResult as R;
+    let v = ck.text_mask_capture(action as u32);
+    match v.first().copied() {
+        Some(1.0) => R::Recording,
+        Some(2.0) => R::Ready(None),
+        Some(3.0) if v.len() == 5 && v[1..].iter().copied().all(f32::is_finite) => {
+            R::Ready(Some(Rect::xywh(v[1], v[2], v[3], v[4])))
+        }
+        Some(4.0) => R::Replayed,
+        _ => R::Unavailable,
+    }
+}

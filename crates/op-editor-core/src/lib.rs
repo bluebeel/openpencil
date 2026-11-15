@@ -39,6 +39,11 @@ pub mod table_filter_contract;
 pub mod table_pagination;
 pub mod text_effect_overlay;
 pub use chat_title::{is_default_chat_title, suggest_chat_title};
+mod canonical_ref_target;
+pub use canonical_ref_target::CanonicalRefTarget;
+mod canonical_splice_receipt;
+pub use canonical_splice_receipt::{CanonicalScope, CanonicalSplice, CanonicalSpliceTarget};
+mod canonical_save_receipt;
 pub mod clipboard;
 pub mod codegen;
 pub mod collab_admission_ui;
@@ -55,11 +60,25 @@ pub mod collab_wire;
 pub mod color_picker;
 pub mod color_picker_edit;
 mod color_picker_snapshot;
+pub use canonical_save_receipt::{
+    CanonicalAppend, CanonicalChildTarget, CanonicalHeaderChange, CanonicalHeaderField,
+};
 pub mod command;
 pub mod command_apply;
 mod command_apply_legacy;
 pub mod command_authored_subtree;
 pub mod command_batch;
+mod runtime_ids;
+mod sparse_atomic;
+pub use sparse_atomic::{validate_sparse_atomic_commands, SparseAtomicValidation};
+mod command_id_scope;
+mod node_json;
+pub use command_id_scope::{
+    AtomicCommandSimulation, CommandIdSequence, CommandSimulation, NodeRead, NodeReadOrder,
+    TrustedNodeLookup,
+};
+pub use edit_transaction::{AtomicAuthorityEdit, AtomicAuthorityError};
+pub use node_json::map_subtree_json;
 pub mod command_font_replace;
 pub mod command_layout_prop;
 pub mod command_node;
@@ -68,6 +87,7 @@ pub mod command_promote;
 pub mod command_refine;
 mod command_root_replace;
 pub mod command_style_replace;
+mod command_undo;
 mod component_backing;
 pub mod component_browser_state;
 pub mod component_recognition;
@@ -83,6 +103,9 @@ pub mod editor_toast;
 pub mod quality_report;
 pub mod size_class;
 // Runtime-fetched product assets for the browser bundle (native embeds them).
+mod derived_cache_identity;
+mod document_node_counts;
+pub use document_node_counts::{DocumentNodeCounts, ForestNodeCounts};
 pub mod editor_ui_state;
 pub mod export_batch;
 pub mod export_dialog_state;
@@ -160,6 +183,8 @@ pub mod selection_resolve;
 pub mod share_routes;
 pub mod state;
 pub mod statusbar_state;
+mod structural_moves;
+pub mod svg_gradient_composition;
 pub mod svg_import;
 pub mod svg_path_bounds;
 mod svg_path_data;
@@ -179,6 +204,9 @@ pub fn svg_path_data_bounds(d: &str) -> Option<(f32, f32, f32, f32)> {
         bounds.h as f32,
     ))
 }
+mod component_mutation_receipt;
+mod kit_creation_receipt;
+mod node_creation_receipt;
 pub mod screen_sets;
 pub mod text_edit;
 pub mod text_input_focus;
@@ -190,6 +218,9 @@ pub mod toolbar_state;
 pub mod topbar_state;
 pub mod ui_draft;
 pub mod uikit;
+pub use component_mutation_receipt::{ComponentDetachCapture, ComponentDetachResult};
+pub use kit_creation_receipt::KitRootCapture;
+pub use node_creation_receipt::InsertRootCapture;
 mod uikit_allocator;
 pub mod uikit_io;
 pub mod uikit_shadcn;
@@ -350,20 +381,24 @@ pub use collab_ui_state::{
 };
 pub use color_picker::{hsv_to_rgb, parse_hex_alpha, parse_hex_rgb, rgb_to_hex, rgb_to_hsv};
 pub use command::{
-    BatchInsertItem, EditorCommand, EffectField, LayoutPropValue, NodeFlag, StrokeSide,
-    StylePropValue, StylePropertyReplacement, VariableScalarPayload, VideoPlaybackField,
+    BatchInsertItem, BooleanPathReplacement, EditorCommand, EffectField, LayoutPropValue, NodeFlag,
+    StrokeSide, StylePropValue, StylePropertyReplacement, VariableScalarPayload,
+    VideoPlaybackField,
 };
 pub use command_node_attrs::{WidgetNumberField, WidgetTextField};
 pub use command_promote::PromoteResult;
 pub use command_style_replace::StyleReplaceError;
 pub use component_browser_state::ComponentBrowserButton;
-pub use components::{Component, ComponentLibrary, ComponentOption};
+pub use components::{
+    Component, ComponentCatalog, ComponentCatalogError, ComponentLibrary, ComponentOption,
+};
 pub use compositing::{fill_blend_mode_at, node_blend_mode, node_mask_type};
 pub use design_md::{extract_design_md_from_document, generate_design_md, parse_design_md};
 pub use design_md_button_state::DesignMdButton;
 pub use document_install::{DocumentInstallError, DocumentInstallReport, PreparedDocument};
 pub use edit_transaction::{
-    CompletedLocalEdit, EditOrigin, LocalEditCapture, LocalEditError, LocalEditOutcome,
+    CommandEditCapture, CommandEditError, CompletedLocalEdit, EditOrigin, LocalEditCapture,
+    LocalEditError, LocalEditOutcome,
 };
 pub use editor_ui_state::home::brand::{
     first_url, BrandSourceRequest, HomeBrandState, HomeBrandStatus, BRAND_HINT_MS,
@@ -416,8 +451,12 @@ pub use fills::{
 };
 pub use geometry::{aggregate_bounds, own_bounds, union_aggregate_bounds, DocRect};
 pub use git_button_state::GitButton;
-pub use history::{EditorSnapshot, History, HISTORY_CAP};
-pub use history_snapshot::{SharedComponents, SharedDoc};
+pub use history::{
+    ActorHistoryError, EditorSnapshot, History, HistoryActor, HistoryEntry, HistoryLimitError,
+    HistoryLimits, HistoryRetentionStatus, HistoryTag, ScopedEditorSnapshot, ScopedHistoryError,
+    HISTORY_CAP,
+};
+pub use history_snapshot::{SharedComponent, SharedComponents, SharedDoc, SharedNode};
 pub use hoist_app_state::{hoist_app_state, UNPLANNED_APP_STATE_IDX};
 pub use hosted_model_catalog::{
     HostedCatalogError, HostedCatalogField, HostedModelCapabilities, HostedModelCatalog,
@@ -473,3 +512,12 @@ pub use variables_panel_state::VariablesPanelButton;
 pub use viewport::Viewport;
 pub use walkers::ReorderDirection;
 pub use web_sync::WebSyncError;
+
+/// Split editable/export SVG stroke contours without curve flattening.
+pub fn svg_path_split_closed_contours(data: &str) -> Option<(String, String)> {
+    svg_path_data::split_closed_contours(data)
+}
+
+pub mod image_field_geometry;
+
+pub mod svg_image_composition;

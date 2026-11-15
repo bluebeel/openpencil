@@ -482,6 +482,7 @@ fn container_props_from_impl(
         width,
         height,
         layout: Some(layout),
+        preserve_geometry: None,
         gap,
         padding,
         justify_content,

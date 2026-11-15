@@ -68,9 +68,16 @@ impl McpTool for CopyNode {
             Ok(v) => v,
             Err(e) => return e,
         };
-        let target_parent = match parse_target_parent_arg(args) {
-            Ok(v) => v,
-            Err(e) => return e,
+        let target_parent = if ["parent", "parent_id", "target_parent_id"]
+            .iter()
+            .any(|key| args.contains_key(*key))
+        {
+            match parse_target_parent_arg(args) {
+                Ok(parent) => parent,
+                Err(error) => return error,
+            }
+        } else {
+            NodeId::NONE
         };
         let page_id = optional_page_id(args);
         let overrides_json = args
@@ -94,6 +101,35 @@ impl McpTool for CopyNode {
 
 pub fn copy_node_snapshot() -> CopyNode {
     CopyNode
+}
+
+/// A file host that owns the complete writer/actor and sequential allocation
+/// authority may return the fresh root id in the same successful response.
+/// Public live snapshots/custom allocator hosts keep CopyNode without a guess.
+pub struct CopyNodeWithId {
+    root_id: Option<String>,
+}
+pub fn copy_node_snapshot_with_authority(state: &op_editor_core::EditorState) -> CopyNodeWithId {
+    CopyNodeWithId {
+        root_id: state
+            .standalone_next_id_seed()
+            .ok()
+            .map(|counter| format!("n{counter}")),
+    }
+}
+impl McpTool for CopyNodeWithId {
+    fn name(&self) -> &str {
+        "copy_node"
+    }
+    fn call(&self, args: &BTreeMap<String, String>) -> ToolOutcome {
+        let mut outcome = CopyNode.call(args);
+        if let (ToolOutcome::OkWithCommand(fields, _), Some(id)) = (&mut outcome, &self.root_id) {
+            fields.insert("node_id".into(), id.clone());
+        }
+        // The ordinary applier still gates serialization on exact successful
+        // mutation and durable persistence. Rejection never emits this receipt.
+        outcome
+    }
 }
 
 #[allow(clippy::result_large_err)]

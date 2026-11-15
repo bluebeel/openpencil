@@ -13,7 +13,7 @@
 //! mutators stay page-model-agnostic.
 
 use crate::geometry::{union_aggregate_bounds, DocRect};
-use crate::id_allocator::{IdAllocError, IdAllocator, SequentialIdAllocator};
+use crate::id_allocator::{IdAllocError, IdAllocator};
 use crate::node_id::NodeId;
 use crate::pen_node_ext::PenNodeExt;
 use crate::selection::SelectionState;
@@ -21,6 +21,11 @@ use crate::state::EditorState;
 use crate::walkers::{self, find_node, find_node_mut, reorder_in_children, ReorderDirection};
 use jian_ops_schema::node::PenNode;
 use std::collections::HashSet;
+
+#[path = "clone_splice.rs"]
+pub(crate) mod clone_splice;
+#[path = "selection_nodes.rs"]
+pub(crate) mod selection_nodes;
 
 impl EditorState {
     // --- Active-page node access -------------------------------------
@@ -72,7 +77,8 @@ impl EditorState {
         if !self.selection.anchor.is_real() {
             return None;
         }
-        find_node(self.active_children(), &self.selection.anchor)
+        let scope = self.command_lookup_active_scope();
+        self.command_find_node(&scope, &self.selection.anchor)
     }
 
     /// True when `id` is in the active selection set.
@@ -92,15 +98,14 @@ impl EditorState {
         if self.instance_write_virtual_anchor.as_ref() == Some(id) {
             return true;
         }
-        if let Some(node) = find_node(self.active_children(), id) {
+        let scope = self.command_lookup_active_scope();
+        if let Some(node) = self.command_find_node(&scope, id) {
             return node_editable(node);
         }
-        let Some((ref_id, _child_id)) =
-            crate::instance_override::split_instance_child_anchor(id, &self.doc)
-        else {
+        let Some((ref_id, _child_id)) = self.split_instance_anchor(id) else {
             return false;
         };
-        find_node(self.active_children(), &ref_id)
+        self.command_find_node(&scope, &ref_id)
             .filter(|node| matches!(node, PenNode::Ref(_)))
             .is_some_and(node_editable)
     }
@@ -116,7 +121,9 @@ impl EditorState {
     /// every-descendant-visible rule made every imported frame
     /// permanently undeletable and immovable.
     pub fn is_subtree_unlocked(&self, id: &NodeId) -> bool {
-        find_node(self.active_children(), id).is_some_and(subtree_unlocked)
+        let scope = self.command_lookup_active_scope();
+        self.command_find_node(&scope, id)
+            .is_some_and(subtree_unlocked)
     }
 
     /// Largest editor-minted `n{N}` id suffix anywhere in the
@@ -141,17 +148,7 @@ impl EditorState {
     /// Every node + page id live in the document. Backs the
     /// allocator's collision check.
     pub fn collect_node_ids(&self) -> HashSet<NodeId> {
-        let mut out = HashSet::new();
-        if let Some(pages) = self.doc.pages.as_ref() {
-            for page in pages {
-                if let Some(id) = NodeId::new_opt(page.id.as_str()) {
-                    out.insert(id);
-                }
-                walkers::collect_ids(&page.children, &mut out);
-            }
-        }
-        walkers::collect_ids(&self.doc.children, &mut out);
-        out
+        crate::id_allocator::collect_document_ids(&self.doc)
     }
 
     /// Right-rail PropertyPanel visibility gate. Design and Interact require
@@ -166,10 +163,10 @@ impl EditorState {
             return false;
         }
         let children = self.active_children();
-        self.selection.set.iter().any(|id| {
-            find_node(children, id).is_some()
-                || crate::instance_override::split_instance_child_anchor(id, &self.doc).is_some()
-        })
+        self.selection
+            .set
+            .iter()
+            .any(|id| find_node(children, id).is_some() || self.split_instance_anchor(id).is_some())
     }
 
     /// True when a selection inspector or selection-independent Code panel
@@ -413,15 +410,19 @@ impl EditorState {
         if self.selection.set.is_empty() || (dx == 0.0 && dy == 0.0) {
             return false;
         }
-        // Owned, not borrowed from `self.selection` — the `HashSet<&str>`
-        // built below borrows these local `NodeId`s instead, so it can
-        // coexist with the `&mut self` borrow `active_children_mut()`
-        // needs.
+        // Resolve the entire selection once; checking editability with a
+        // separate tree search per ID was still quadratic on select-all.
+        let selected = selection_nodes::resolve(self.active_children(), &self.selection.set);
         let editable: Vec<NodeId> = self
             .selection
             .set
             .iter()
-            .filter(|id| self.is_editable(id))
+            .filter(|id| {
+                self.instance_write_virtual_anchor.as_ref() == Some(*id)
+                    || selected
+                        .get(id.as_str())
+                        .is_some_and(|node| node_editable(node))
+            })
             .cloned()
             .collect();
         if editable.is_empty() {
@@ -447,6 +448,9 @@ impl EditorState {
     pub fn delete_selected(&mut self) -> bool {
         if self.selection.set.is_empty() {
             return false;
+        }
+        if let Some(removed) = selection_nodes::delete(self) {
+            return removed;
         }
         let (deletable, kept): (Vec<NodeId>, Vec<NodeId>) = self
             .selection
@@ -477,7 +481,7 @@ impl EditorState {
     /// clone as the next sibling offset by `offset_doc_px`. Returns
     /// the new anchor id (last clone) on success.
     pub fn duplicate_selected(&mut self, next_id: &mut u64, offset_doc_px: f64) -> Option<NodeId> {
-        let mut allocator = SequentialIdAllocator::for_document(&self.doc, *next_id).ok()?;
+        let mut allocator = self.sequential_id_allocator(*next_id).ok()?;
         let result = self
             .duplicate_selected_with_allocator(&mut allocator, offset_doc_px)
             .ok()
@@ -489,13 +493,22 @@ impl EditorState {
     }
 
     /// Allocator-aware form of [`Self::duplicate_selected`].
-    pub fn duplicate_selected_with_allocator(
+    pub(crate) fn duplicate_selected_with_allocator_unobserved(
         &mut self,
         allocator: &mut dyn IdAllocator,
         offset_doc_px: f64,
     ) -> Result<Option<NodeId>, IdAllocError> {
         if self.selection.set.is_empty() {
             return Ok(None);
+        }
+        if let Some(prepared) = clone_splice::duplicate(self, allocator, offset_doc_px)? {
+            let ids = prepared.commit_with_locations(self);
+            if ids.is_empty() {
+                return Ok(None);
+            }
+            self.selection.anchor = ids.last().cloned().unwrap();
+            self.selection.set = ids;
+            return Ok(Some(self.selection.anchor.clone()));
         }
         let mut taken = self.collect_node_ids();
         let targets = self.selection.set.clone();
@@ -528,7 +541,14 @@ impl EditorState {
         if !sel.is_real() {
             return false;
         }
-        reorder_in_children(self.active_children_mut(), &sel, direction)
+        let scope = self.command_lookup_active_scope();
+        match self.command_lookup_unique(&scope, &sel) {
+            Some(Ok(Some(path))) => self.command_reorder_at(&scope, &path, direction),
+            Some(Ok(None)) => false,
+            // Duplicate IDs retain the compatibility walk, including its
+            // edge/no-op recursion behavior. Its index receipt is discarded.
+            _ => reorder_in_children(self.active_children_mut(), &sel, direction),
+        }
     }
 
     /// Move `source` to be a sibling immediately before `anchor`.
@@ -547,6 +567,11 @@ impl EditorState {
     /// a layer-panel drop into a container inserts at index 0, the top of
     /// the child list — `layer-dnd-utils.ts`).
     pub fn reorder_into(&mut self, source: NodeId, parent: NodeId) -> bool {
+        if let Some(result) =
+            crate::structural_moves::move_to(self, &source, &parent, Some(0), true)
+        {
+            return result;
+        }
         if source == parent || !source.is_real() || !parent.is_real() {
             return false;
         }
@@ -573,6 +598,9 @@ impl EditorState {
     }
 
     fn reorder_relative(&mut self, source: NodeId, anchor: NodeId, before: bool) -> bool {
+        if let Some(result) = crate::structural_moves::relative(self, &source, &anchor, before) {
+            return result;
+        }
         if source == anchor || !source.is_real() || !anchor.is_real() {
             return false;
         }
@@ -736,6 +764,10 @@ pub(crate) fn duplicate_in_children_with_allocator(
         return Ok(Some(new_id));
     }
     for child in children.iter_mut() {
+        // Searching must not author empty vectors on unrelated containers.
+        if child.children().is_none() {
+            continue;
+        }
         if let Some(grand) = child.children_mut() {
             if let Some(new_id) =
                 duplicate_in_children_with_allocator(grand, target, allocator, taken, offset)?

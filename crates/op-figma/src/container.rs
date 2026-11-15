@@ -5,6 +5,7 @@
 //! archive wrapper (`canvas.fig` + `images/*`).
 
 use crate::zip_reader::{read_zip, ZipError};
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::io::Read;
 
@@ -85,6 +86,7 @@ fn decompress_chunk(bytes: &[u8]) -> Vec<u8> {
         .is_ok()
         && out.len() <= MAX_CHUNK_SIZE
     {
+        out.shrink_to_fit();
         return out;
     }
     // Deflate failed — fall back to zstd, then to the raw bytes.
@@ -105,17 +107,28 @@ fn zstd_decompress(bytes: &[u8]) -> Option<Vec<u8>> {
     if out.len() > MAX_CHUNK_SIZE {
         return None;
     }
+    out.shrink_to_fit();
     Some(out)
 }
 
 /// Split a `.fig` file buffer into schema + data binary parts and
 /// extract embedded images.
+#[allow(dead_code)] // Eager container API remains available for compatibility diagnostics.
 pub fn fig_to_binary_parts(file_buffer: &[u8]) -> Result<FigBinaryParts, ContainerError> {
+    split_parts(file_buffer, true)
+}
+
+/// Keep encoded data bounded while the import decoder consumes one value at a time.
+pub(crate) fn fig_to_encoded_parts(file_buffer: &[u8]) -> Result<FigBinaryParts, ContainerError> {
+    split_parts(file_buffer, false)
+}
+
+fn split_parts(file_buffer: &[u8], decompress: bool) -> Result<FigBinaryParts, ContainerError> {
     let mut image_files: HashMap<String, Vec<u8>> = HashMap::new();
 
     // ZIP wrapper: anything not starting with the fig-kiwi magic.
-    let canvas: Vec<u8> = if has_fig_kiwi_magic(file_buffer) {
-        file_buffer.to_vec()
+    let canvas: Cow<'_, [u8]> = if has_fig_kiwi_magic(file_buffer) {
+        Cow::Borrowed(file_buffer)
     } else {
         let entries = read_zip(file_buffer).map_err(|e| match e {
             ZipError::NotZip => ContainerError::NotFigContainer,
@@ -131,7 +144,7 @@ pub fn fig_to_binary_parts(file_buffer: &[u8]) -> Result<FigBinaryParts, Contain
                 canvas_fig = Some(entry.data);
             }
         }
-        canvas_fig.ok_or(ContainerError::NoCanvasFig)?
+        Cow::Owned(canvas_fig.ok_or(ContainerError::NoCanvasFig)?)
     };
 
     if !has_fig_kiwi_magic(&canvas) {
@@ -152,12 +165,18 @@ pub fn fig_to_binary_parts(file_buffer: &[u8]) -> Result<FigBinaryParts, Contain
             break;
         }
         let raw_chunk = &canvas[start..start + chunk_size];
-        parts.push(decompress_chunk(raw_chunk));
+        parts.push(if decompress {
+            decompress_chunk(raw_chunk)
+        } else {
+            raw_chunk.to_vec()
+        });
         start += chunk_size;
     }
 
     Ok(FigBinaryParts { parts, image_files })
 }
+
+pub(crate) mod stream;
 
 #[cfg(test)]
 mod tests {
@@ -180,6 +199,15 @@ mod tests {
             buf.extend_from_slice(&comp);
         }
         buf
+    }
+
+    #[test]
+    fn decompressed_backing_does_not_retain_read_to_end_spare_capacity() {
+        let payload = vec![42; 70_001];
+        let fig = make_fig_container(&[&payload]);
+        let result = fig_to_binary_parts(&fig).unwrap();
+        assert_eq!(result.parts[0], payload);
+        assert_eq!(result.parts[0].capacity(), result.parts[0].len());
     }
 
     #[test]

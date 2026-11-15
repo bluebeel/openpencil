@@ -11,16 +11,27 @@ use crate::component_backing::{
     find_node_and_location, find_node_in_document, resolve_document_location, shallow_root,
     DocumentComponentBacking, DocumentNodeLocation,
 };
-use crate::id_allocator::{IdAllocError, IdAllocator, SequentialIdAllocator};
+use crate::id_allocator::{IdAllocError, IdAllocator};
 use crate::node_id::NodeId;
 use crate::pen_node_ext::PenNodeExt;
 use crate::state::EditorState;
 use crate::walkers;
-use jian_ops_schema::conversion::ConversionKind;
 use jian_ops_schema::node::PenNode;
 use jian_ops_schema::PenDocument;
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
+
+#[path = "component_document_index.rs"]
+mod document_index;
+#[path = "component_persistence.rs"]
+mod persistence;
+pub use persistence::{ComponentCatalog, ComponentCatalogError};
+#[path = "component_detach.rs"]
+mod detach;
+#[path = "component_edit.rs"]
+mod edit;
+#[path = "component_routes.rs"]
+mod routes;
 
 /// One reusable design fragment.
 ///
@@ -66,6 +77,60 @@ impl PartialEq for ComponentLibrary {
 }
 
 impl ComponentLibrary {
+    /// Lexical page-table authority: update routes without a getter Arc clone.
+    pub(crate) fn document_backing_mut(&mut self) -> &mut HashMap<NodeId, DocumentNodeLocation> {
+        Arc::make_mut(&mut self.document_backing)
+    }
+    pub(crate) fn apply_page_catalog_delta(
+        &mut self,
+        remove: &std::collections::HashSet<NodeId>,
+        add: Vec<(Component, DocumentNodeLocation)>,
+    ) {
+        if remove.is_empty() && add.is_empty() {
+            return;
+        }
+        self.invalidate_sorted_options();
+        self.components
+            .retain(|component| !remove.contains(&component.id));
+        {
+            let backing = self.document_backing_mut();
+            for id in remove {
+                backing.remove(id);
+            }
+            for (component, location) in &add {
+                backing.insert(component.id.clone(), location.clone());
+            }
+        }
+        self.components
+            .extend(add.into_iter().map(|(component, _)| component));
+    }
+    /// The caller has validated one exact entry and its rebased row position.
+    pub(crate) fn exchange_catalog_entry(
+        &mut self,
+        index: usize,
+        present: bool,
+        id: &NodeId,
+        replacement: Option<Component>,
+        backing: Option<DocumentNodeLocation>,
+    ) {
+        self.invalidate_sorted_options();
+        match (present, replacement) {
+            (true, Some(replacement)) => {
+                self.components[index] = replacement;
+            }
+            (true, None) => {
+                self.components.remove(index);
+            }
+            (false, Some(replacement)) => self.components.insert(index, replacement),
+            (false, None) => {}
+        }
+        let locations = Arc::make_mut(&mut self.document_backing);
+        if let Some(location) = backing {
+            locations.insert(id.clone(), location);
+        } else {
+            locations.remove(id);
+        }
+    }
     /// Shared, stable picker metadata sorted by display name then id.
     pub fn sorted_options(&self) -> Arc<[ComponentOption]> {
         Arc::clone(self.sorted_options.get_or_init(|| {
@@ -110,12 +175,36 @@ impl ComponentLibrary {
     /// an id walk when an edit has made that path stale. Directly inserted
     /// legacy components continue to borrow their owned `Component::root`.
     pub fn resolved_root<'a>(&'a self, doc: &'a PenDocument, id: &NodeId) -> Option<&'a PenNode> {
+        self.resolved_entry(doc, id).map(|(_, root)| root)
+    }
+    /// Resolve a known document-backed catalog slot without searching the
+    /// catalog again. Full-catalog validators already hold each exact entry;
+    /// calling resolved_root(id) in that loop turns validation quadratic.
+    /// Missing/stale routes retain the same document-wide identity fallback.
+    /// Owned external prototypes deliberately return None; callers needing
+    /// arbitrary first-ID semantics keep resolved_root.
+    pub fn resolved_document_root_at<'a>(
+        &'a self,
+        doc: &'a PenDocument,
+        index: usize,
+    ) -> Option<&'a PenNode> {
+        let component = self.components.get(index)?;
+        let location = self.document_backing.get(&component.id)?;
+        resolve_document_location(doc, location, component.id.as_str())
+            .or_else(|| find_node_in_document(doc, component.id.as_str()))
+    }
+    fn resolved_entry<'a>(
+        &'a self,
+        doc: &'a PenDocument,
+        id: &NodeId,
+    ) -> Option<(&'a Component, &'a PenNode)> {
         let component = self.find_by_id(id)?;
-        let Some(location) = self.document_backing.get(id) else {
-            return Some(&component.root);
+        let root = match self.document_backing.get(id) {
+            None => &component.root,
+            Some(location) => resolve_document_location(doc, location, id.as_str())
+                .or_else(|| find_node_in_document(doc, id.as_str()))?,
         };
-        resolve_document_location(doc, location, id.as_str())
-            .or_else(|| find_node_in_document(doc, id.as_str()))
+        Some((component, root))
     }
 
     /// Fast path used by active-page Ref expansion. Unlike
@@ -170,13 +259,24 @@ impl ComponentLibrary {
         if name.trim().is_empty() {
             return false;
         }
-        self.invalidate_sorted_options();
-        if let Some(c) = self.components.iter_mut().find(|c| &c.id == id) {
-            c.name = name;
-            true
-        } else {
-            false
+        let Some(index) = self
+            .components
+            .iter()
+            .position(|component| &component.id == id)
+        else {
+            return false;
+        };
+        if self.components[index].name == name {
+            return true;
         }
+        self.invalidate_sorted_options();
+        self.components[index].name = name;
+        true
+    }
+    /// Exact label exchange after all history targets were validated.
+    pub(crate) fn exchange_name_at(&mut self, index: usize, name: &mut String) {
+        self.invalidate_sorted_options();
+        std::mem::swap(&mut self.components[index].name, name);
     }
 
     /// Remove a component by id. Returns true when a component was
@@ -208,61 +308,7 @@ impl ComponentLibrary {
     /// document tree as component definitions; this keeps loaded `.op`
     /// files addressable even though the registry itself is transient.
     pub fn from_document(doc: &PenDocument) -> Self {
-        fn walk(
-            nodes: &[PenNode],
-            page_index: Option<usize>,
-            path: &mut Vec<usize>,
-            lib: &mut ComponentLibrary,
-            positions: &mut HashMap<NodeId, usize>,
-        ) {
-            for (index, node) in nodes.iter().enumerate() {
-                path.push(index);
-                if let PenNode::Frame(frame) = node {
-                    if frame.reusable == Some(true) {
-                        let id = NodeId::new(frame.base.id.clone());
-                        let name = frame
-                            .base
-                            .name
-                            .clone()
-                            .unwrap_or_else(|| frame.base.id.clone());
-                        lib.insert_document_backed_indexed(
-                            Component {
-                                id,
-                                name,
-                                root: shallow_root(node),
-                            },
-                            DocumentNodeLocation {
-                                page_index,
-                                child_path: path.clone().into_boxed_slice(),
-                            },
-                            positions,
-                        );
-                    }
-                }
-                if let Some(children) = node.children() {
-                    walk(children, page_index, path, lib, positions);
-                }
-                path.pop();
-            }
-        }
-
-        let mut lib = ComponentLibrary::default();
-        let mut path = Vec::new();
-        let mut positions = HashMap::new();
-        if let Some(pages) = doc.pages.as_ref() {
-            for (page_index, page) in pages.iter().enumerate() {
-                walk(
-                    &page.children,
-                    Some(page_index),
-                    &mut path,
-                    &mut lib,
-                    &mut positions,
-                );
-            }
-        }
-        walk(&doc.children, None, &mut path, &mut lib, &mut positions);
-        add_conversion_components(doc, &mut lib, &mut positions);
-        lib
+        document_index::from_document(doc)
     }
 
     fn insert_document_backed(&mut self, component: Component, location: DocumentNodeLocation) {
@@ -295,6 +341,28 @@ impl ComponentLibrary {
         }
     }
 
+    /// A prepared canonical placement already owns the exact route. Validate
+    /// its final identity instead of walking every unrelated page again.
+    pub(crate) fn register_document_component_at(
+        &mut self,
+        doc: &PenDocument,
+        id: NodeId,
+        name: String,
+        location: DocumentNodeLocation,
+    ) -> bool {
+        let Some(root) = resolve_document_location(doc, &location, id.as_str()) else {
+            return false;
+        };
+        self.insert_document_backed(
+            Component {
+                id,
+                name,
+                root: shallow_root(root),
+            },
+            location,
+        );
+        true
+    }
     pub(crate) fn register_document_component(
         &mut self,
         doc: &PenDocument,
@@ -316,44 +384,6 @@ impl ComponentLibrary {
     }
 }
 
-fn add_conversion_components(
-    doc: &PenDocument,
-    lib: &mut ComponentLibrary,
-    positions: &mut HashMap<NodeId, usize>,
-) {
-    let Some(spec) = doc.conversion.as_ref() else {
-        return;
-    };
-    for entry in &spec.entries {
-        if entry.kind != ConversionKind::Component {
-            continue;
-        }
-        let Some(node_id) = entry.node_id.as_deref().filter(|id| !id.is_empty()) else {
-            continue;
-        };
-        let Some((root, location)) = find_node_and_location(doc, node_id) else {
-            continue;
-        };
-        if !is_component_root(root) {
-            continue;
-        }
-        let name = root
-            .base()
-            .name
-            .clone()
-            .unwrap_or_else(|| entry.key.clone());
-        lib.insert_document_backed_indexed(
-            Component {
-                id: NodeId::new(node_id),
-                name,
-                root: shallow_root(root),
-            },
-            location,
-            positions,
-        );
-    }
-}
-
 fn is_component_root(node: &PenNode) -> bool {
     matches!(
         node,
@@ -365,31 +395,6 @@ fn set_reusable(node: &mut PenNode, reusable: bool) {
     if let PenNode::Frame(frame) = node {
         frame.reusable = reusable.then_some(true);
     }
-}
-
-/// Swap the node with `id` for `replacement` in place (same sibling
-/// slot), anywhere in `children`. True when the swap happened.
-fn replace_node_in_children(children: &mut [PenNode], id: &NodeId, replacement: PenNode) -> bool {
-    let mut slot = Some(replacement);
-    replace_node_inner(children, id, &mut slot)
-}
-
-fn replace_node_inner(children: &mut [PenNode], id: &NodeId, slot: &mut Option<PenNode>) -> bool {
-    if let Some(idx) = children.iter().position(|n| n.id_str() == id.as_str()) {
-        if let Some(replacement) = slot.take() {
-            children[idx] = replacement;
-            return true;
-        }
-        return false;
-    }
-    for child in children.iter_mut() {
-        if let Some(grand) = child.children_mut() {
-            if replace_node_inner(grand, id, slot) {
-                return true;
-            }
-        }
-    }
-    false
 }
 
 fn clear_reusable_in_document(doc: &mut jian_ops_schema::PenDocument, id: &NodeId) {
@@ -411,82 +416,61 @@ impl EditorState {
     /// runtime component registry. Frames also carry the canonical
     /// persisted `reusable` flag so reloads can rebuild the registry.
     pub fn create_component_from_node(&mut self, node_id: &NodeId, name: &str) -> bool {
-        let name = name.trim();
-        if !node_id.is_real() || name.is_empty() {
-            return false;
-        }
-        let Some(root) = walkers::find_node(self.active_children(), node_id) else {
-            return false;
-        };
-        if !is_component_root(root) {
-            return false;
-        }
-
-        let snap = self.snapshot_for_history();
-        if let Some(live) = walkers::find_node_mut(self.active_children_mut(), node_id) {
-            set_reusable(live, true);
-        }
-        if !self.components.register_document_component(
-            &self.doc,
-            node_id.clone(),
-            name.to_string(),
-        ) {
-            return false;
-        }
-        self.history_push_past(snap);
-        true
+        edit::create(self, node_id, Some(name))
     }
 
-    /// Promote a node using its current layer name as the component
-    /// label. Used by direct UI affordances that do not prompt.
+    /// Promote a node using its current layer name as the component label.
     pub fn create_component_from_node_name(&mut self, node_id: &NodeId) -> bool {
-        let Some(node) = walkers::find_node(self.active_children(), node_id) else {
-            return false;
-        };
-        let name = node
-            .base()
-            .name
-            .clone()
-            .unwrap_or_else(|| node.id_str().to_string());
-        self.create_component_from_node(node_id, &name)
+        edit::create(self, node_id, None)
     }
 
     /// Clone a registered component onto the active page with fresh
     /// ids. The inserted clone is standalone, so any reusable marker
     /// on the prototype root is cleared.
     pub fn instantiate_component(&mut self, component_id: &NodeId) -> Option<NodeId> {
-        let mut allocator = SequentialIdAllocator::for_document(&self.doc, 1).ok()?;
+        let mut allocator = crate::command_apply_legacy::LeafHighWaterAllocator(
+            self.standalone_id_allocator().ok()?,
+        );
         self.instantiate_component_with_allocator(component_id, &mut allocator)
             .ok()
             .flatten()
     }
 
     /// Allocator-aware form of [`Self::instantiate_component`].
-    pub fn instantiate_component_with_allocator(
+    pub(crate) fn instantiate_component_with_allocator_unobserved(
         &mut self,
         component_id: &NodeId,
         allocator: &mut dyn IdAllocator,
     ) -> Result<Option<NodeId>, IdAllocError> {
-        let (template, name) = {
-            let Some(component) = self.components.find_by_id(component_id) else {
+        let pending = crate::history::PendingScopedSnapshot::capture_auxiliary(
+            self,
+            &crate::EditorCommand::InstantiateComponent {
+                component_id: component_id.clone(),
+            },
+        );
+        let (mut clone, name) = {
+            let Some((component, template)) =
+                self.components.resolved_entry(&self.doc, component_id)
+            else {
                 return Ok(None);
             };
-            let Some(template) = self.components.resolved_root(&self.doc, component_id) else {
-                return Ok(None);
-            };
-            let template = template.clone();
-            (template, component.name.clone())
+            let mut taken = allocator.document_collision_ids(&self.doc);
+            (
+                walkers::deep_clone_with_allocator(template, allocator, &mut taken)?,
+                component.name.clone(),
+            )
         };
-        let mut taken = self.collect_node_ids();
-        let mut clone = walkers::deep_clone_with_allocator(&template, allocator, &mut taken)?;
         set_reusable(&mut clone, false);
         walkers::translate_subtree(&mut clone, 20.0, 20.0);
         clone.base_mut().name = Some(name);
         let new_id = NodeId::new(clone.base().id.clone());
-        let snap = self.snapshot_for_history();
+        let snap = pending
+            .is_none()
+            .then(|| self.snapshot_for_undo())
+            .flatten();
         self.active_children_mut().push(clone);
         self.set_single_selection(new_id.clone());
-        self.history_push_past(snap);
+        self.finish_component_history(pending, snap);
         Ok(Some(new_id))
     }
 
@@ -500,23 +484,27 @@ impl EditorState {
         {
             return false;
         }
-        let Some(PenNode::Ref(reference)) = walkers::find_node(self.active_children(), node_id)
-        else {
+        let Some(path) = routes::find(self.active_children(), node_id.as_str()) else {
+            return false;
+        };
+        let Some(PenNode::Ref(reference)) = routes::at(self.active_children(), &path) else {
             return false;
         };
         if reference.target == component_id.as_str() {
             return false;
         }
-
-        let snap = self.snapshot_for_history();
-        let Some(PenNode::Ref(reference)) =
-            walkers::find_node_mut(self.active_children_mut(), node_id)
+        if let Some(changed) = self.try_edit_ref_target_with_history(node_id, component_id.as_str())
+        {
+            return changed;
+        }
+        let snapshot = self.snapshot_for_undo();
+        let Some(PenNode::Ref(reference)) = routes::at_mut(self.active_children_mut(), &path)
         else {
             return false;
         };
         reference.target.clear();
         reference.target.push_str(component_id.as_str());
-        self.history_push_past(snap);
+        self.push_undo(snapshot);
         true
     }
 
@@ -526,57 +514,19 @@ impl EditorState {
     /// instance props overlaid, fresh ids — replacing the Ref in
     /// place. Returns the surviving node's id.
     pub fn detach_component(&mut self, node_id: &NodeId) -> Option<NodeId> {
-        let mut allocator = SequentialIdAllocator::for_document(&self.doc, 1).ok()?;
-        self.detach_component_with_allocator(node_id, &mut allocator)
-            .ok()
-            .flatten()
+        detach::standalone(self, node_id)
     }
 
     /// Allocator-aware form of [`Self::detach_component`].
-    pub fn detach_component_with_allocator(
+    pub(crate) fn detach_component_with_allocator_unobserved(
         &mut self,
         node_id: &NodeId,
         allocator: &mut dyn IdAllocator,
     ) -> Result<Option<NodeId>, IdAllocError> {
-        let Some(node) = walkers::find_node(self.active_children(), node_id).cloned() else {
+        let Some(plan) = detach::prepare(self, node_id) else {
             return Ok(None);
         };
-        let registered_component = self.components.find_by_id(node_id).is_some();
-        let reusable_frame = matches!(&node, PenNode::Frame(frame) if frame.reusable == Some(true));
-        if is_component_root(&node) && (registered_component || reusable_frame) {
-            let snap = self.snapshot_for_history();
-            if let Some(live) = walkers::find_node_mut(self.active_children_mut(), node_id) {
-                set_reusable(live, false);
-            }
-            self.components.remove(node_id);
-            self.history_push_past(snap);
-            return Ok(Some(node_id.clone()));
-        }
-
-        match &node {
-            PenNode::Ref(reference) => {
-                let Some(component) =
-                    crate::ref_resolve::find_component_node(&self.doc, &reference.target)
-                else {
-                    return Ok(None);
-                };
-                let Some(merged) = crate::ref_resolve::materialize_instance(&node, &component)
-                else {
-                    return Ok(None);
-                };
-                let mut taken = self.collect_node_ids();
-                let detached = walkers::deep_clone_with_allocator(&merged, allocator, &mut taken)?;
-                let new_id = NodeId::new(detached.base().id.clone());
-                let snap = self.snapshot_for_history();
-                if !replace_node_in_children(self.active_children_mut(), node_id, detached) {
-                    return Ok(None);
-                }
-                self.set_single_selection(new_id.clone());
-                self.history_push_past(snap);
-                Ok(Some(new_id))
-            }
-            _ => Ok(None),
-        }
+        detach::apply(self, plan, allocator)
     }
 
     /// Remove a component registration. If the source frame is still
@@ -585,10 +535,19 @@ impl EditorState {
         if self.components.find_by_id(component_id).is_none() {
             return false;
         }
-        let snap = self.snapshot_for_history();
+        let pending = crate::history::PendingScopedSnapshot::capture_auxiliary(
+            self,
+            &crate::EditorCommand::DeleteComponent {
+                component_id: component_id.clone(),
+            },
+        );
+        let snap = pending
+            .is_none()
+            .then(|| self.snapshot_for_undo())
+            .flatten();
         self.components.remove(component_id);
         clear_reusable_in_document(&mut self.doc, component_id);
-        self.history_push_past(snap);
+        self.finish_component_history(pending, snap);
         true
     }
 

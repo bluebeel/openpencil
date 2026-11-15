@@ -12,8 +12,12 @@
 //! accessors (`id`, `children`, `children_mut`, geometry getters /
 //! setters) without each mutator having to `match` all 12 variants.
 
+#[path = "node_shallow.rs"]
+mod node_shallow;
+pub use node_shallow::clone_without_children;
+
 use jian_ops_schema::node::PenNode;
-use jian_ops_schema::node::{AlignItems, JustifyContent, LayoutMode, PenNodeBase};
+use jian_ops_schema::node::{LayoutMode, PenNodeBase};
 use jian_ops_schema::sizing::SizingBehavior;
 
 /// Read a `SizingBehavior` as a concrete pixel number. Keyword /
@@ -39,6 +43,16 @@ pub trait PenNodeExt {
     /// Mutably borrow this node's children, if it is a container
     /// variant. Frame / Group / Rectangle / Ref carry `children`.
     fn children_mut(&mut self) -> Option<&mut Vec<PenNode>>;
+    /// Borrow only an already-authored child list. Search/metadata walkers must
+    /// not create Some(empty) overrides on an absent canonical/Ref child field.
+    /// External implementations retain a compatible guarded default.
+    fn children_mut_if_present(&mut self) -> Option<&mut Vec<PenNode>> {
+        if self.children().is_some() {
+            self.children_mut()
+        } else {
+            None
+        }
+    }
 
     /// True when this variant can hold children (Frame / Group /
     /// Rectangle / Ref). Used by reparenting + group ops.
@@ -124,27 +138,27 @@ macro_rules! base_arms {
 macro_rules! events_arms {
     ($self:ident) => {
         match $self {
-            PenNode::Frame(n) => n.events.as_ref(),
-            PenNode::Group(n) => n.events.as_ref(),
-            PenNode::Rectangle(n) => n.events.as_ref(),
-            PenNode::Ellipse(n) => n.events.as_ref(),
-            PenNode::Line(n) => n.events.as_ref(),
-            PenNode::Polygon(n) => n.events.as_ref(),
-            PenNode::Path(n) => n.events.as_ref(),
-            PenNode::Text(n) => n.events.as_ref(),
-            PenNode::TextInput(n) => n.events.as_ref(),
-            PenNode::Image(n) => n.events.as_ref(),
-            PenNode::IconFont(n) => n.events.as_ref(),
-            PenNode::TextArea(n) => n.events.as_ref(),
-            PenNode::Select(n) => n.events.as_ref(),
-            PenNode::Switch(n) => n.events.as_ref(),
-            PenNode::Checkbox(n) => n.events.as_ref(),
-            PenNode::Slider(n) => n.events.as_ref(),
-            PenNode::RadioGroup(n) => n.events.as_ref(),
-            PenNode::NumberInput(n) => n.events.as_ref(),
-            PenNode::Progress(n) => n.events.as_ref(),
-            PenNode::Tabs(n) => n.events.as_ref(),
-            PenNode::Ref(n) => n.events.as_ref(),
+            PenNode::Frame(n) => n.events.as_deref(),
+            PenNode::Group(n) => n.events.as_deref(),
+            PenNode::Rectangle(n) => n.events.as_deref(),
+            PenNode::Ellipse(n) => n.events.as_deref(),
+            PenNode::Line(n) => n.events.as_deref(),
+            PenNode::Polygon(n) => n.events.as_deref(),
+            PenNode::Path(n) => n.events.as_deref(),
+            PenNode::Text(n) => n.events.as_deref(),
+            PenNode::TextInput(n) => n.events.as_deref(),
+            PenNode::Image(n) => n.events.as_deref(),
+            PenNode::IconFont(n) => n.events.as_deref(),
+            PenNode::TextArea(n) => n.events.as_deref(),
+            PenNode::Select(n) => n.events.as_deref(),
+            PenNode::Switch(n) => n.events.as_deref(),
+            PenNode::Checkbox(n) => n.events.as_deref(),
+            PenNode::Slider(n) => n.events.as_deref(),
+            PenNode::RadioGroup(n) => n.events.as_deref(),
+            PenNode::NumberInput(n) => n.events.as_deref(),
+            PenNode::Progress(n) => n.events.as_deref(),
+            PenNode::Tabs(n) => n.events.as_deref(),
+            PenNode::Ref(n) => n.events.as_deref(),
         }
     };
 }
@@ -215,6 +229,17 @@ impl PenNodeExt for PenNode {
             PenNode::Rectangle(n) => Some(n.children.get_or_insert_with(Vec::new)),
             PenNode::Tabs(n) => Some(n.children.get_or_insert_with(Vec::new)),
             PenNode::Ref(n) => Some(n.children.get_or_insert_with(Vec::new)),
+            _ => None,
+        }
+    }
+
+    fn children_mut_if_present(&mut self) -> Option<&mut Vec<PenNode>> {
+        match self {
+            PenNode::Frame(n) => n.children.as_mut(),
+            PenNode::Group(n) => n.children.as_mut(),
+            PenNode::Rectangle(n) => n.children.as_mut(),
+            PenNode::Tabs(n) => n.children.as_mut(),
+            PenNode::Ref(n) => n.children.as_mut(),
             _ => None,
         }
     }
@@ -377,6 +402,7 @@ pub fn make_group(id: String, name: &str, children: Vec<PenNode>) -> PenNode {
 pub fn make_path(id: String, name: &str, first: (f64, f64)) -> PenNode {
     use jian_ops_schema::node::{PathNode, PenPathAnchor};
     PenNode::Path(PathNode {
+        view_box: None,
         base: PenNodeBase {
             id,
             name: Some(name.to_string()),
@@ -421,6 +447,3 @@ pub fn layout_mode_eq(a: &Option<LayoutMode>, b: LayoutMode) -> bool {
 /// Re-export so call sites that only need the alignment enums don't
 /// have to reach into `jian_ops_schema` directly.
 pub use jian_ops_schema::node::{AlignItems as OpsAlignItems, JustifyContent as OpsJustifyContent};
-
-#[allow(dead_code)]
-fn _enum_use(_a: AlignItems, _j: JustifyContent) {}

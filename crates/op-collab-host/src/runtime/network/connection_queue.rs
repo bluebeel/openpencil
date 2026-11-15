@@ -34,10 +34,12 @@ pub(super) fn queue_command_frame(
     lossy_presence: bool,
     now: Instant,
 ) -> Result<(), RuntimeError> {
-    // A coalescing push that lands on an existing key replaces it instead of
-    // growing the queue, so it is always safe; only a push that would take a
-    // new slot has to respect the reserve.
-    if lossy_presence && coalesce_key.is_none() && !lossy_queue_slot_available(driver) {
+    // Some(key) may be the first update for a different actor. Only a key
+    // actually queued can replace an item without claiming a reserved slot.
+    if lossy_presence
+        && !lossy_queue_slot_available(driver)
+        && coalesce_key.is_none_or(|key| !driver.has_queued_coalescing_key(key))
+    {
         return Ok(());
     }
     let result = match coalesce_key {

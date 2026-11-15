@@ -52,19 +52,20 @@ pub fn copy_clean_document_with_editor_meta_to_path(
         })?;
 
     let (tmp, file) = create_sibling_temp(target_path)?;
+    let mut cleanup = super::atomic_file::StagingCleanup::new(&tmp);
     let write_result = (|| {
-        let mut writer = std::io::BufWriter::with_capacity(1024 * 1024, file);
-        // `op_pen_loader::EditorMetaWriteError` belongs to a crate this pass
-        // does not own; render it with `to_string` so the adapter survives if
-        // that crate reshapes its error.
-        op_pen_loader::write_source_with_editor_meta(&mut writer, source, meta)
-            .map_err(|error| DocIoError::Serialize(error.to_string()))?;
-        std::io::Write::flush(&mut writer).map_err(|error| DocIoError::Io(error.to_string()))?;
-        drop(writer);
+        super::save_buffer::with_shared_buffered_file(file, |writer| {
+            // `op_pen_loader::EditorMetaWriteError` belongs to a crate this pass
+            // does not own; render it with `to_string` so the adapter survives if
+            // that crate reshapes its error.
+            op_pen_loader::write_source_with_editor_meta(writer, source, meta)
+                .map_err(|error| DocIoError::Serialize(error.to_string()))?;
+            Ok(())
+        })?;
         commit_staged_document(&tmp, target_path)
     })();
-    if write_result.is_err() {
-        let _ = std::fs::remove_file(&tmp);
+    if write_result.is_ok() {
+        cleanup.disarm();
     }
     write_result
 }
@@ -111,22 +112,23 @@ pub fn copy_document_to_current_schema_path(
             detail: error.to_string(),
         })?;
     let (tmp, file) = create_sibling_temp(target_path)?;
+    let mut cleanup = super::atomic_file::StagingCleanup::new(&tmp);
     let write_result = (|| {
-        let mut writer = std::io::BufWriter::with_capacity(1024 * 1024, file);
-        // Same unowned-`op_pen_loader` seam as above.
-        if normalize_legacy {
-            op_pen_loader::write_normalized_source_with_current_schema(&mut writer, source, meta)
-                .map_err(|error| DocIoError::Serialize(error.to_string()))?;
-        } else {
-            op_pen_loader::write_source_with_current_schema(&mut writer, source, meta)
-                .map_err(|error| DocIoError::Serialize(error.to_string()))?;
-        }
-        std::io::Write::flush(&mut writer).map_err(|error| DocIoError::Io(error.to_string()))?;
-        drop(writer);
+        super::save_buffer::with_shared_buffered_file(file, |writer| {
+            // Same unowned-`op_pen_loader` seam as above.
+            if normalize_legacy {
+                op_pen_loader::write_normalized_source_with_current_schema(writer, source, meta)
+                    .map_err(|error| DocIoError::Serialize(error.to_string()))?;
+            } else {
+                op_pen_loader::write_source_with_current_schema(writer, source, meta)
+                    .map_err(|error| DocIoError::Serialize(error.to_string()))?;
+            }
+            Ok(())
+        })?;
         commit_staged_document(&tmp, target_path)
     })();
-    if write_result.is_err() {
-        let _ = std::fs::remove_file(&tmp);
+    if write_result.is_ok() {
+        cleanup.disarm();
     }
     write_result
 }
@@ -175,6 +177,7 @@ mod tests {
                 pinned_style_guide: None,
                 share_recipe: None,
                 imported_from: None,
+                component_catalog: None,
             },
         )
         .expect("clean copy save");
@@ -208,6 +211,7 @@ mod tests {
                 pinned_style_guide: None,
                 share_recipe: None,
                 imported_from: None,
+                component_catalog: None,
             },
         )
         .expect("clean copy appends metadata");

@@ -46,4 +46,51 @@ impl RenderBackend for MeasureOnly<'_> {
     fn text_ascent_family(&mut self, font_size: f32, family: &str, weight: u16) -> f32 {
         self.inner.text_ascent_family(font_size, family, weight)
     }
+    fn text_first_baseline(&mut self, request: &op_editor_ui::TextBaselineRequest<'_>) -> f32 {
+        self.inner.text_first_baseline(request)
+    }
+    fn measure_text_styled(
+        &mut self,
+        text: &str,
+        font_size: f32,
+        weight: u16,
+        italic: bool,
+    ) -> f32 {
+        self.inner
+            .measure_text_styled(text, font_size, weight, italic)
+    }
+    fn measure_text_family_styled(
+        &mut self,
+        text: &str,
+        font_size: f32,
+        family: &str,
+        weight: u16,
+        italic: bool,
+    ) -> f32 {
+        self.inner
+            .measure_text_family_styled(text, font_size, family, weight, italic)
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn measure_text_family_kerned(
+        &mut self,
+        text: &str,
+        font_size: f32,
+        family: &str,
+        weight: u16,
+        italic: bool,
+        kerning: Option<bool>,
+        letter_spacing: f32,
+        font_features: &std::collections::BTreeMap<String, u32>,
+    ) -> f32 {
+        self.inner.measure_text_family_kerned(
+            text,
+            font_size,
+            family,
+            weight,
+            italic,
+            kerning,
+            letter_spacing,
+            font_features,
+        )
+    }
 }

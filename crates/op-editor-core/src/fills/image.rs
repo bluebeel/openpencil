@@ -10,10 +10,16 @@ pub fn first_image_fill_summary(node: &PenNode) -> Option<ImageFillSummary> {
         return None;
     };
     let trimmed_url = body.url.trim();
-    let transform = body
-        .transform
-        .as_ref()
-        .map(|m| [m.m00, m.m01, m.m02, m.m10, m.m11, m.m12]);
+    let transform = body.transform.as_ref().map(|m| {
+        [
+            m.m00 as f32,
+            m.m01 as f32,
+            m.m02 as f32,
+            m.m10 as f32,
+            m.m11 as f32,
+            m.m12 as f32,
+        ]
+    });
     let mode = match body.mode.as_ref() {
         // Older `.op` documents preserve Figma's wire representation:
         // interactively cropped images were serialized as STRETCH plus an
@@ -29,22 +35,22 @@ pub fn first_image_fill_summary(node: &PenNode) -> Option<ImageFillSummary> {
         mode,
         has_image: !trimmed_url.is_empty(),
         image_url: (!trimmed_url.is_empty()).then(|| body.url.to_string()),
-        tile_scale: Some(effective_image_tile_scale(body.tile_scale)),
+        tile_scale: Some(effective_image_tile_scale(body.tile_scale) as f32),
         transform,
         original_size: body.original_size.as_ref().and_then(|size| {
             (size.width.is_finite()
                 && size.height.is_finite()
                 && size.width > 0.0
                 && size.height > 0.0)
-                .then_some([size.width, size.height])
+                .then_some([size.width as f32, size.height as f32])
         }),
-        exposure: body.exposure.unwrap_or(0.0),
-        contrast: body.contrast.unwrap_or(0.0),
-        saturation: body.saturation.unwrap_or(0.0),
-        temperature: body.temperature.unwrap_or(0.0),
-        tint: body.tint.unwrap_or(0.0),
-        highlights: body.highlights.unwrap_or(0.0),
-        shadows: body.shadows.unwrap_or(0.0),
+        exposure: body.exposure.unwrap_or(0.0) as f32,
+        contrast: body.contrast.unwrap_or(0.0) as f32,
+        saturation: body.saturation.unwrap_or(0.0) as f32,
+        temperature: body.temperature.unwrap_or(0.0) as f32,
+        tint: body.tint.unwrap_or(0.0) as f32,
+        highlights: body.highlights.unwrap_or(0.0) as f32,
+        shadows: body.shadows.unwrap_or(0.0) as f32,
     })
 }
 
@@ -61,13 +67,14 @@ fn primary_image_fill_mut(node: &mut PenNode) -> Option<&mut ImageFillBody> {
 
 /// Set the primary image fill's fit mode.
 pub fn set_primary_image_fill_mode(node: &mut PenNode, mode: ImageFillMode) -> bool {
-    let node_width = node.width_px().map(|value| value as f32);
-    let node_height = node.height_px().map(|value| value as f32);
+    let node_width = node.width_px();
+    let node_height = node.height_px();
     let Some(body) = primary_image_fill_mut(node) else {
         return false;
     };
     let schema_mode = mode.to_schema();
     let mut changed = body.mode.as_ref() != Some(&schema_mode);
+    changed |= body.geometry.take().is_some();
     body.mode = Some(schema_mode);
     if mode == ImageFillMode::Crop {
         if body.transform.is_none() {
@@ -98,14 +105,17 @@ pub fn set_primary_image_fill_mode(node: &mut PenNode, mode: ImageFillMode) -> b
 pub const MIN_IMAGE_TILE_SCALE: f32 = 0.01;
 pub const MAX_IMAGE_TILE_SCALE: f32 = 100.0;
 
-fn validated_image_tile_scale(value: f32) -> Option<f32> {
+fn validated_image_tile_scale(value: f32) -> Option<f64> {
     if !value.is_finite() || value <= 0.0 {
         return None;
     }
-    Some(value.clamp(MIN_IMAGE_TILE_SCALE, MAX_IMAGE_TILE_SCALE))
+    Some(f64::from(value).clamp(
+        f64::from(MIN_IMAGE_TILE_SCALE),
+        f64::from(MAX_IMAGE_TILE_SCALE),
+    ))
 }
 
-fn effective_image_tile_scale(value: Option<f32>) -> f32 {
+fn effective_image_tile_scale(value: Option<f64>) -> f64 {
     value
         .filter(|scale| scale.is_finite() && *scale > 0.0)
         .unwrap_or(1.0)
@@ -125,6 +135,15 @@ pub fn set_primary_image_tile_scale(node: &mut PenNode, value: f32) -> bool {
     if effective_image_tile_scale(body.tile_scale) == value {
         return false;
     }
+    if let Some(pattern) = body.geometry.as_mut().and_then(|g| g.pattern.as_mut()) {
+        let ratio = value / effective_image_tile_scale(body.tile_scale);
+        let cell = kurbo::Affine::new(pattern.transform);
+        pattern.transform = (cell
+            * kurbo::Affine::translate((0.5, 0.5))
+            * kurbo::Affine::scale(ratio)
+            * kurbo::Affine::translate((-0.5, -0.5)))
+        .as_coeffs();
+    }
     body.tile_scale = (value != 1.0).then_some(value);
     true
 }
@@ -139,7 +158,7 @@ pub fn set_primary_image_adjustment(
     let Some(body) = primary_image_fill_mut(node) else {
         return false;
     };
-    let value = value.clamp(-100.0, 100.0);
+    let value = f64::from(value).clamp(-100.0, 100.0);
     match field {
         ImageAdjustmentField::Exposure => body.exposure = Some(value),
         ImageAdjustmentField::Contrast => body.contrast = Some(value),

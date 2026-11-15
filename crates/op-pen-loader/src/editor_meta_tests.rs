@@ -16,6 +16,7 @@ fn extracts_camel_and_legacy_snake_case_fields() {
             pinned_style_guide: None,
             share_recipe: None,
             imported_from: None,
+            component_catalog: None,
         })
     );
     assert_eq!(
@@ -30,6 +31,7 @@ fn extracts_camel_and_legacy_snake_case_fields() {
             pinned_style_guide: None,
             share_recipe: None,
             imported_from: None,
+            component_catalog: None,
         })
     );
 }
@@ -46,6 +48,7 @@ fn absent_preserve_field_keeps_legacy_false_semantics() {
             pinned_style_guide: None,
             share_recipe: None,
             imported_from: None,
+            component_catalog: None,
         })
     );
 }
@@ -64,6 +67,7 @@ fn missing_preserve_field_recovers_figma_geometry_from_canonical_page_id() {
             pinned_style_guide: None,
             share_recipe: None,
             imported_from: None,
+            component_catalog: None,
         })
     );
     assert_eq!(
@@ -78,6 +82,7 @@ fn missing_preserve_field_recovers_figma_geometry_from_canonical_page_id() {
             pinned_style_guide: None,
             share_recipe: None,
             imported_from: None,
+            component_catalog: None,
         })
     );
 }
@@ -101,6 +106,7 @@ fn explicit_false_overrides_figma_page_migration_for_both_spellings() {
                 pinned_style_guide: None,
                 share_recipe: None,
                 imported_from: None,
+                component_catalog: None,
             })
         );
     }
@@ -134,6 +140,7 @@ fn figma_like_but_noncanonical_page_id_does_not_trigger_migration() {
             pinned_style_guide: None,
             share_recipe: None,
             imported_from: None,
+            component_catalog: None,
         })
     );
 }
@@ -157,6 +164,7 @@ fn applying_metadata_clamps_page_and_restores_geometry_mode() {
             pinned_style_guide: None,
             share_recipe: None,
             imported_from: None,
+            component_catalog: None,
         },
     );
 
@@ -204,6 +212,7 @@ fn escaped_strings_nested_values_and_duplicate_keys_are_bounded_correctly() {
             pinned_style_guide: None,
             share_recipe: None,
             imported_from: None,
+            component_catalog: None,
         })
     );
 }
@@ -244,6 +253,7 @@ fn streaming_rewrite_preserves_legacy_document_bytes_outside_editor_meta() {
             pinned_style_guide: None,
             share_recipe: None,
             imported_from: None,
+            component_catalog: None,
         },
     )
     .expect("streaming metadata rewrite");
@@ -264,6 +274,7 @@ fn streaming_rewrite_preserves_legacy_document_bytes_outside_editor_meta() {
             pinned_style_guide: None,
             share_recipe: None,
             imported_from: None,
+            component_catalog: None,
         })
     );
 }
@@ -292,6 +303,7 @@ fn streaming_rewrite_appends_metadata_to_empty_and_nonempty_roots() {
                 pinned_style_guide: None,
                 share_recipe: None,
                 imported_from: None,
+                component_catalog: None,
             },
         )
         .expect("append metadata");
@@ -323,6 +335,7 @@ fn current_schema_rewrite_preserves_nested_unknown_fields() {
             pinned_style_guide: None,
             share_recipe: None,
             imported_from: None,
+            component_catalog: None,
         },
     )
     .expect("current-schema rewrite");

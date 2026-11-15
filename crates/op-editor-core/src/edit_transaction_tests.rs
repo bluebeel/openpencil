@@ -133,3 +133,45 @@ fn remote_install_does_not_participate_in_local_capture() {
     assert_eq!(state.doc.name.as_deref(), Some("remote"));
     assert!(!state.history.can_undo());
 }
+
+#[test]
+fn abort_open_edit_restores_document_history_and_keeps_revision_allocator_monotonic() {
+    use crate::EditorCommand;
+    let mut state = state_with(vec![rect("n1", "A", 0.0, 0.0, 10.0, 10.0)]);
+    state.set_single_selection(NodeId::new("n1"));
+    assert!(state.apply_undoable(EditorCommand::NudgeSelected { dx: 1, dy: 0 }));
+    assert!(state.undo());
+    let before = state.doc.clone();
+    let past = state.history.past.clone();
+    let future = state.history.future.clone();
+    let revision = state.document_revision();
+    let capture = state.begin_local_edit();
+    assert!(state.apply_undoable_captured_then(
+        EditorCommand::NudgeSelected { dx: 5, dy: 0 },
+        &capture,
+        |_| {},
+    ));
+    let allocated = state.revision_counter;
+    state.abort_local_edit(capture).unwrap();
+    assert_eq!(state.doc, before);
+    assert_eq!(state.history.past, past);
+    assert_eq!(state.history.future, future);
+    assert_eq!(state.document_revision(), revision);
+    assert_eq!(state.revision_counter, allocated);
+    assert!(state.apply_undoable(EditorCommand::NudgeSelected { dx: 1, dy: 0 }));
+    assert!(state.document_revision() > allocated);
+}
+
+#[test]
+fn abort_open_edit_refuses_a_replacement_generation() {
+    let mut state = EditorState::new();
+    let capture = state.begin_local_edit();
+    let mut replacement = state.doc.clone();
+    replacement.name = Some("Replacement".into());
+    state.replace_document(replacement);
+    assert!(matches!(
+        state.abort_local_edit(capture),
+        Err(LocalEditError::DocumentGenerationChanged { .. })
+    ));
+    assert_eq!(state.doc.name.as_deref(), Some("Replacement"));
+}

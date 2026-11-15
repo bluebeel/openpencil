@@ -24,6 +24,7 @@ use jian_ops_schema::style::{ImageFillBody, ImageFillMode, PenFill, SolidFillBod
 
 fn image_node(id: &str, src: &str, query: Option<&str>) -> PenNode {
     PenNode::Image(ImageNode {
+        geometry: None,
         base: PenNodeBase {
             id: id.to_string(),
             name: Some("Menu photo".into()),
@@ -58,6 +59,8 @@ fn image_node(id: &str, src: &str, query: Option<&str>) -> PenNode {
 
 fn text_label(id: &str, role: Option<&str>, content: &str) -> PenNode {
     PenNode::Text(TextNode {
+        font_features: None,
+        font_kerning: None,
         base: PenNodeBase {
             id: id.to_string(),
             name: Some("Label".into()),
@@ -78,6 +81,7 @@ fn text_label(id: &str, role: Option<&str>, content: &str) -> PenNode {
         text_growth: None,
         underline: None,
         strikethrough: None,
+        text_decoration_skip_ink: None,
         fill: None,
         effects: None,
         state: None,
@@ -169,6 +173,7 @@ fn rectangle_node_with_sizing(
 
 fn solid_fill() -> PenFill {
     PenFill::Solid(SolidFillBody {
+        enabled: None,
         color: "#E5E7EB".into(),
         explain: None,
         opacity: None,
@@ -177,12 +182,17 @@ fn solid_fill() -> PenFill {
 }
 
 fn image_fill(url: &str) -> PenFill {
-    PenFill::Image(ImageFillBody {
+    PenFill::Image(Box::new(ImageFillBody {
+        enabled: None,
+        geometry: None,
         url: url.into(),
+        thumbnail_url: None,
+        nearest_sampling: None,
         mode: Some(ImageFillMode::Crop),
         original_size: None,
         transform: None,
         tile_scale: None,
+        rotation: None,
         explain: None,
         opacity: None,
         blend_mode: None,
@@ -193,7 +203,7 @@ fn image_fill(url: &str) -> PenFill {
         tint: None,
         highlights: None,
         shadows: None,
-    })
+    }))
 }
 // `#[path]` is required: this file is itself loaded through a `#[path]`
 // attribute, so it does not own an implicit `image_search_session_tests/`

@@ -19,6 +19,7 @@
 #[cfg(all(op_auth_development_prebuilt, not(debug_assertions)))]
 compile_error!("the local op-auth archive override requires target debug assertions");
 
+mod collab_base64;
 mod collab_claims;
 mod collab_jwks;
 mod collab_jwks_cache;

@@ -57,7 +57,13 @@ fn history_pushed_inside_scope_is_repaired_to_hold_the_ref() {
         state.commit_history();
         state.set_selected_color(true, "#00ff00")
     });
-    let snapshot = state.history.past.back().expect("history entry pushed");
+    let snapshot = state
+        .history
+        .past
+        .back()
+        .expect("history entry pushed")
+        .full_snapshot()
+        .unwrap();
     let document = snapshot.doc.materialize();
     let node = find_node(&document.children, &NodeId::new("inst1")).expect("instance in snapshot");
     assert!(

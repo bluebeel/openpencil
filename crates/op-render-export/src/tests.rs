@@ -749,6 +749,8 @@ fn export_paints_styled_text_runs_with_decorations() {
         a: 1.0,
     });
     node.text_runs = vec![SceneTextRun {
+        fill_layers: None,
+        fill_disabled: false,
         start: 0,
         end: 5,
         font_size: 0.0,
@@ -757,6 +759,7 @@ fn export_paints_styled_text_runs_with_decorations() {
         italic: false,
         underline: true,
         strikethrough: false,
+        text_decoration_skip_ink: None,
     }];
     let scene = scene_with(vec![node]);
     let tmp = std::env::temp_dir().join(format!("op-export-styled-{}.png", std::process::id()));

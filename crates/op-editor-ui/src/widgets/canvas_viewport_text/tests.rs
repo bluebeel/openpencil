@@ -9,6 +9,8 @@ use crate::widgets::PaintCx;
 
 fn run(start: usize, end: usize) -> SceneTextRun {
     SceneTextRun {
+        fill_layers: None,
+        fill_disabled: false,
         start,
         end,
         font_size: 0.0,
@@ -17,6 +19,7 @@ fn run(start: usize, end: usize) -> SceneTextRun {
         italic: false,
         underline: false,
         strikethrough: false,
+        text_decoration_skip_ink: None,
     }
 }
 
@@ -86,6 +89,8 @@ struct CaptureBackend {
     fill_rects: Vec<Rect>,
     round_rects: Vec<Rect>,
     requested_baseline: Option<f32>,
+    handle_decorations: bool,
+    decoration_requests: Vec<(String, bool, Point2D, f32)>,
 }
 
 impl RenderBackend for CaptureBackend {
@@ -102,6 +107,15 @@ impl RenderBackend for CaptureBackend {
             self.contents.push(run.content.clone());
             self.weights.push(run.font_weight);
         }
+    }
+    fn draw_text_decoration(&mut self, request: &TextDecorationRequest<'_>) -> bool {
+        self.decoration_requests.push((
+            request.text.to_owned(),
+            request.skip_ink,
+            request.origin,
+            request.width,
+        ));
+        self.handle_decorations
     }
     fn clip_rect(&mut self, _: Rect) {}
     fn save(&mut self) {}
@@ -234,6 +248,7 @@ fn styled_runs_paint_separate_slices_with_run_weight() {
     let mut node = text_node("boldplain");
     node.text_runs = vec![
         SceneTextRun {
+            fill_layers: None,
             font_weight: 700,
             ..run(0, 4)
         },
@@ -259,6 +274,7 @@ fn styled_runs_paint_separate_slices_with_run_weight() {
 fn italic_run_sets_layout_italic_flag() {
     let mut node = text_node("ab");
     node.text_runs = vec![SceneTextRun {
+        fill_layers: None,
         italic: true,
         ..run(0, 2)
     }];
@@ -297,8 +313,10 @@ fn authored_line_height_requests_a_text_aware_first_baseline() {
 fn underline_and_strikethrough_stroke_at_metrics_offsets() {
     let mut node = text_node("abc");
     node.text_runs = vec![SceneTextRun {
+        fill_layers: None,
         underline: true,
         strikethrough: true,
+        text_decoration_skip_ink: None,
         ..run(0, 3)
     }];
     let mut backend = CaptureBackend::default();
@@ -373,6 +391,7 @@ fn segment_boundary_maps_onto_wrapped_lines() {
     node.text_runs = vec![
         run(0, 8),
         SceneTextRun {
+            fill_layers: None,
             font_weight: 700,
             ..run(8, 11)
         },
@@ -393,4 +412,58 @@ fn segment_boundary_maps_onto_wrapped_lines() {
     assert_eq!(backend.weights, vec![400, 400, 700]);
     // "rld" starts after "wo"'s 2-glyph advance on line 1.
     assert_eq!(backend.origins[2].x, 20.0);
+}
+
+#[test]
+fn explicit_decoration_metadata_keeps_utf8_styled_line_ranges_and_portable_fallback() {
+    let mut node = text_node("Aé g\np🧪");
+    node.text_decoration_skip_ink = Some(true);
+    node.underline = true;
+    node.text_runs = vec![
+        SceneTextRun {
+            fill_layers: None,
+            underline: true,
+            text_decoration_skip_ink: Some(false),
+            ..run(0, 3)
+        },
+        SceneTextRun {
+            fill_layers: None,
+            underline: true,
+            text_decoration_skip_ink: Some(true),
+            ..run(3, 5)
+        },
+        SceneTextRun {
+            fill_layers: None,
+            underline: true,
+            ..run(6, 11)
+        },
+    ];
+    for handled in [false, true] {
+        let mut backend = CaptureBackend {
+            handle_decorations: handled,
+            ..Default::default()
+        };
+        paint_text_node(
+            &mut PaintCx {
+                backend: &mut backend,
+            },
+            &node,
+            node.bounds,
+            1.0,
+            &None,
+        );
+        assert_eq!(
+            backend
+                .decoration_requests
+                .iter()
+                .map(|(text, skip, _, _)| (text.as_str(), *skip))
+                .collect::<Vec<_>>(),
+            vec![("Aé", false), (" g", true), ("p🧪", true)]
+        );
+        assert!(backend
+            .decoration_requests
+            .iter()
+            .all(|(_, _, p, width)| p.x.is_finite() && p.y.is_finite() && *width > 0.0));
+        assert_eq!(backend.lines.len(), if handled { 0 } else { 3 });
+    }
 }

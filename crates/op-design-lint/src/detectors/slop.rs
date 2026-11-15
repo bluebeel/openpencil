@@ -23,8 +23,8 @@ use crate::color::{hsl, parse_hex_color};
 use crate::issue::{FixProperty, Issue, IssueCategory, IssueSeverity};
 use crate::node_util::{
     children, default_theme, is_mobile_screen_chrome, is_node_visible, json_number, node_fills,
-    node_id, node_kind, node_kind_str, numeric_height, numeric_width, resolve_color_ref, NodeKind,
-    Theme, Variables,
+    node_id, node_kind, node_kind_str, numeric_height, numeric_width, resolve_color_ref_borrowed,
+    NodeKind, Theme, Variables,
 };
 
 /// Hue window (degrees) that reads as the purple-blue AI default. Violet
@@ -129,10 +129,10 @@ fn purple_glow_share(
 fn stops_all_purple(stops: &[GradientStop], variables: &Variables, theme: &Theme) -> bool {
     let mut evaluated = 0usize;
     for stop in stops {
-        let Some(raw) = resolve_color_ref(&stop.color, variables, theme) else {
+        let Some(raw) = resolve_color_ref_borrowed(&stop.color, variables, theme) else {
             continue;
         };
-        let Some(rgb) = parse_hex_color(&raw) else {
+        let Some(rgb) = parse_hex_color(raw) else {
             continue;
         };
         let (hue, saturation, _) = hsl(rgb);

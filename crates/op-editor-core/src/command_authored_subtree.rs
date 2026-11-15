@@ -9,27 +9,12 @@ use crate::walkers;
 use jian_ops_schema::node::PenNode;
 
 impl EditorState {
-    pub(crate) fn cmd_insert_authored_subtree(
-        &mut self,
-        nodes: Vec<PenNode>,
-        parent_id: &NodeId,
-    ) -> bool {
-        self.cmd_insert_authored_subtree_with_root_policy(nodes, parent_id, true)
-    }
-
-    pub(crate) fn cmd_insert_authored_subtree_preserving_roots(
-        &mut self,
-        nodes: Vec<PenNode>,
-        parent_id: &NodeId,
-    ) -> bool {
-        self.cmd_insert_authored_subtree_with_root_policy(nodes, parent_id, false)
-    }
-
-    fn cmd_insert_authored_subtree_with_root_policy(
+    pub(crate) fn cmd_insert_authored_subtree_with_root_policy(
         &mut self,
         nodes: Vec<PenNode>,
         parent_id: &NodeId,
         replace_empty_root: bool,
+        allocator: &mut dyn crate::IdAllocator,
     ) -> bool {
         if nodes.is_empty() {
             return false;
@@ -44,7 +29,17 @@ impl EditorState {
                 )
             })
             .flatten();
-        if parent_id.is_real() {
+        let scope = self.command_lookup_active_scope();
+        let destination = if parent_id.is_real() {
+            match self.command_insertion_path(&scope, parent_id) {
+                Some(Ok(path)) => Some(path),
+                Some(Err(())) => return false,
+                None => None,
+            }
+        } else {
+            None
+        };
+        if parent_id.is_real() && destination.is_none() {
             // Accept any container (matches `cmd_insert_subtree`), including an
             // empty one whose `children` is still `None` — the insert below
             // initializes it via `children_mut()` (`get_or_insert_with`). Using
@@ -56,21 +51,45 @@ impl EditorState {
             }
         }
 
-        let mut live = self.collect_node_ids();
-        if let Some(replacement) = replacement.as_ref() {
-            live.remove(crate::command_root_replace::replacement_node_id(
-                replacement,
-            ));
-        }
         let mut incoming = HashSet::new();
-        if !nodes
-            .iter()
-            .all(|node| collect_authored_ids(node, &live, &mut incoming))
-        {
+        let mut smallest_numeric = Some(u64::MAX);
+        let mut largest_numeric = None;
+        if !nodes.iter().all(|node| {
+            collect_authored_ids(
+                node,
+                &mut incoming,
+                &mut smallest_numeric,
+                &mut largest_numeric,
+            )
+        }) {
             return false;
         }
+        // Fresh sequential ids above the complete current document (including
+        // page ids) cannot collide. This borrowed scan avoids cloning/hashing
+        // the entire live id set for every program insert. Rich/custom ids keep
+        // the exact full collision check, including root-placeholder reuse.
+        let provably_fresh = smallest_numeric.is_some_and(|smallest| {
+            allocator
+                .authored_id_floor(&self.doc)
+                .is_some_and(|next| smallest >= next)
+        });
+        if !provably_fresh {
+            let mut live = self.collect_node_ids();
+            if let Some(replacement) = replacement.as_ref() {
+                live.remove(crate::command_root_replace::replacement_node_id(
+                    replacement,
+                ));
+            }
+            if incoming.iter().any(|id| live.contains(id)) {
+                return false;
+            }
+        }
 
-        if parent_id.is_real() {
+        if let Some(path) = destination {
+            if self.command_extend_at(&scope, &path, nodes).is_err() {
+                return false;
+            }
+        } else if parent_id.is_real() {
             let Some(parent) = walkers::find_node_mut(self.active_children_mut(), parent_id) else {
                 return false;
             };
@@ -87,14 +106,16 @@ impl EditorState {
             }
             roots.extend(nodes);
         }
+        allocator.authored_ids_inserted(largest_numeric);
         true
     }
 }
 
 fn collect_authored_ids(
     node: &PenNode,
-    live: &HashSet<NodeId>,
     incoming: &mut HashSet<NodeId>,
+    smallest_numeric: &mut Option<u64>,
+    largest_numeric: &mut Option<u64>,
 ) -> bool {
     // Every authored node MUST carry a valid (non-empty), doc-unique id — that
     // is the whole point of the authored path (vs `cmd_insert_subtree`, which
@@ -105,14 +126,19 @@ fn collect_authored_ids(
     let Some(id) = NodeId::new_opt(node.id_str()) else {
         return false;
     };
-    if live.contains(&id) || !incoming.insert(id) {
+    if !incoming.insert(id) {
         return false;
     }
+    if let Some(number) = walkers::parse_n_id(node.id_str()) {
+        *largest_numeric = Some(largest_numeric.unwrap_or(0).max(number));
+    }
+    *smallest_numeric = smallest_numeric
+        .and_then(|smallest| walkers::parse_n_id(node.id_str()).map(|number| smallest.min(number)));
     node.children()
         .map(|children| {
-            children
-                .iter()
-                .all(|child| collect_authored_ids(child, live, incoming))
+            children.iter().all(|child| {
+                collect_authored_ids(child, incoming, smallest_numeric, largest_numeric)
+            })
         })
         .unwrap_or(true)
 }

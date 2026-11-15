@@ -14,6 +14,7 @@ use op_editor_core::pen_node_ext::PenNodeExt;
 use super::scale::{self, px, spacing};
 use super::Ctx;
 use crate::fmt_num;
+use std::fmt::Write as _;
 
 /// How the parent lays this node out.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,43 +27,9 @@ pub(super) enum Parent {
     Stack,
 }
 
-/// Ordered, de-duplicated class list.
-#[derive(Debug, Default, Clone)]
-pub(super) struct Classes(Vec<String>);
-
-impl Classes {
-    pub(super) fn push(&mut self, class: impl Into<String>) {
-        let class = class.into();
-        if !class.is_empty() && !self.0.contains(&class) {
-            self.0.push(class);
-        }
-    }
-
-    pub(super) fn push_opt(&mut self, class: Option<impl Into<String>>) {
-        if let Some(class) = class {
-            self.push(class);
-        }
-    }
-
-    pub(super) fn extend(&mut self, other: Classes) {
-        for class in other.0 {
-            self.push(class);
-        }
-    }
-
-    pub(super) fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-
-    /// ` className="…"` attribute (leading space), or empty.
-    pub(super) fn attr(&self) -> String {
-        if self.0.is_empty() {
-            String::new()
-        } else {
-            format!(" className=\"{}\"", self.0.join(" "))
-        }
-    }
-}
+#[path = "codegen_tailwind_classes.rs"]
+mod classes;
+pub(super) use classes::Classes;
 
 // --- Accessors -------------------------------------------------------
 
@@ -254,8 +221,7 @@ pub(super) fn css_color(ctx: &mut Ctx, color: &str) -> Option<String> {
         color
             .chars()
             .filter(|c| !c.is_whitespace())
-            .collect::<String>()
-            .to_ascii_lowercase(),
+            .collect::<String>(),
     )
 }
 
@@ -265,7 +231,7 @@ pub(super) fn color_class(
     ctx: &mut Ctx,
     prefix: &str,
     color: &str,
-    alpha: Option<f32>,
+    alpha: Option<f64>,
 ) -> Option<String> {
     let suffix = alpha.map(scale::color_alpha_suffix).unwrap_or_default();
     let trimmed = color.trim();
@@ -277,11 +243,22 @@ pub(super) fn color_class(
         return None;
     }
     let value = css_color(ctx, trimmed)?;
-    let named = match value.as_str() {
-        "transparent" => Some("transparent"),
-        "#fff" | "#ffffff" | "#ffffffff" | "white" => Some("white"),
-        "#000" | "#000000" | "#000000ff" | "black" => Some("black"),
-        _ => None,
+    // CSS custom-property names are case-sensitive. Only compare aliases
+    // case-insensitively; do not lowercase authored var()/color expressions.
+    let named = if value.eq_ignore_ascii_case("transparent") {
+        Some("transparent")
+    } else if ["#fff", "#ffffff", "#ffffffff", "white"]
+        .iter()
+        .any(|name| value.eq_ignore_ascii_case(name))
+    {
+        Some("white")
+    } else if ["#000", "#000000", "#000000ff", "black"]
+        .iter()
+        .any(|name| value.eq_ignore_ascii_case(name))
+    {
+        Some("black")
+    } else {
+        None
     };
     if let Some(named) = named {
         return Some(format!("{prefix}-{named}{suffix}"));
@@ -294,15 +271,17 @@ pub(super) fn color_class(
 }
 
 fn gradient_stops(ctx: &mut Ctx, stops: &[jian_ops_schema::style::GradientStop]) -> String {
-    stops
-        .iter()
-        .filter_map(|stop| {
-            let color = css_color(ctx, &stop.color)?;
-            let offset = fmt_num((f64::from(stop.offset) * 1000.0).round() / 10.0);
-            Some(format!("{color}_{offset}%"))
-        })
-        .collect::<Vec<_>>()
-        .join(",")
+    let mut out = String::new();
+    for stop in stops {
+        let Some(color) = css_color(ctx, &stop.color) else {
+            continue;
+        };
+        if !out.is_empty() {
+            out.push(',');
+        }
+        let _ = write!(out, "{color}_{}%", fmt_num(stop.offset * 100.0));
+    }
+    out
 }
 
 /// Background utilities for the first paintable fill.
@@ -310,7 +289,7 @@ fn background(ctx: &mut Ctx, node: &PenNode, classes: &mut Classes) {
     let Some(fills) = fills(node) else {
         return;
     };
-    for fill in fills {
+    for fill in fills.iter().filter(|fill| fill.is_enabled()) {
         match fill {
             PenFill::Solid(body) => {
                 classes.push_opt(color_class(ctx, "bg", &body.color, body.opacity));
@@ -323,13 +302,13 @@ fn background(ctx: &mut Ctx, node: &PenNode, classes: &mut Classes) {
                 let stops = gradient_stops(ctx, &body.stops);
                 classes.push(format!(
                     "bg-[linear-gradient({}deg,{stops})]",
-                    fmt_num((css_angle * 100.0).round() / 100.0)
+                    fmt_num(css_angle)
                 ));
                 return;
             }
             PenFill::RadialGradient(body) if body.stops.len() >= 2 => {
-                let cx = fmt_num((f64::from(body.cx.unwrap_or(0.5)) * 1000.0).round() / 10.0);
-                let cy = fmt_num((f64::from(body.cy.unwrap_or(0.5)) * 1000.0).round() / 10.0);
+                let cx = fmt_num(body.cx.unwrap_or(0.5) * 100.0);
+                let cy = fmt_num(body.cy.unwrap_or(0.5) * 100.0);
                 let stops = gradient_stops(ctx, &body.stops);
                 classes.push(format!(
                     "bg-[radial-gradient(circle_at_{cx}%_{cy}%,{stops})]"
@@ -355,10 +334,17 @@ fn background(ctx: &mut Ctx, node: &PenNode, classes: &mut Classes) {
 
 /// First solid fill colour → `text-*` (text / icon foreground).
 pub(super) fn foreground(ctx: &mut Ctx, node: &PenNode) -> Option<String> {
-    fills(node)?.iter().find_map(|fill| match fill {
-        PenFill::Solid(body) => color_class(ctx, "text", &body.color, body.opacity),
-        _ => None,
-    })
+    let paints = fills(node)?;
+    if !paints.iter().any(PenFill::is_enabled) {
+        return Some("text-transparent".into());
+    }
+    paints
+        .iter()
+        .filter(|fill| fill.is_enabled())
+        .find_map(|fill| match fill {
+            PenFill::Solid(body) => color_class(ctx, "text", &body.color, body.opacity),
+            _ => None,
+        })
 }
 
 // --- Placement, sizing, layout ----------------------------------------
@@ -470,8 +456,20 @@ pub(super) fn layout(ctx: &mut Ctx, node: &PenNode, classes: &mut Classes) {
         return;
     };
     let children = node.children().map(Vec::as_slice).unwrap_or_default();
-    let any_absolute = children.iter().any(has_explicit_position);
-    let any_flow = children.iter().any(|child| !has_explicit_position(child));
+    let (mut any_absolute, mut any_flow) = (false, false);
+    for child in children
+        .iter()
+        .filter(|child| child.base().visible != Some(false))
+    {
+        if has_explicit_position(child) {
+            any_absolute = true;
+        } else {
+            any_flow = true;
+        }
+        if any_absolute && any_flow {
+            break;
+        }
+    }
     if any_absolute || matches!(c.layout, Some(LayoutMode::None)) && !children.is_empty() {
         classes.push("relative");
     }
@@ -603,13 +601,23 @@ fn border(ctx: &mut Ctx, node: &PenNode, classes: &mut Classes) {
     if matches!(node, PenNode::Path(_) | PenNode::Line(_)) {
         return;
     }
+    if stroke
+        .fill
+        .as_ref()
+        .is_some_and(|fills| !fills.iter().any(PenFill::is_enabled))
+    {
+        return;
+    }
     let color = stroke.fill.as_ref().and_then(|fills| {
-        fills.iter().find_map(|f| match f {
-            PenFill::Solid(body) => Some((body.color.clone(), body.opacity)),
-            _ => None,
-        })
+        fills
+            .iter()
+            .filter(|fill| fill.is_enabled())
+            .find_map(|f| match f {
+                PenFill::Solid(body) => Some((body.color.as_str(), body.opacity)),
+                _ => None,
+            })
     });
-    let sides: [(&str, f32); 4] = match &stroke.thickness {
+    let sides: [(&str, f64); 4] = match &stroke.thickness {
         StrokeThickness::Uniform(w) => [("t", *w), ("r", *w), ("b", *w), ("l", *w)],
         StrokeThickness::PerSide([t, r, b, l]) => [("t", *t), ("r", *r), ("b", *b), ("l", *l)],
         StrokeThickness::Sided(s) => [
@@ -702,12 +710,20 @@ pub(super) fn typography(ctx: &mut Ctx, text: &TextNode, node: &PenNode, classes
     if let Some(family) = text.font_family.as_deref() {
         classes.push_opt(font_family(ctx, family));
     }
-    if let Some(size) = text.font_size.filter(|s| s.is_finite() && *s > 0.0) {
-        classes.push(scale::font_size(size));
+    match &text.font_size {
+        Some(NumberOrExpression::Number(size)) if size.is_finite() && *size > 0.0 => {
+            classes.push(scale::font_size(*size));
+        }
+        Some(NumberOrExpression::Expression(expression)) => {
+            if let Some(value) = expression_length(ctx, expression) {
+                classes.push(format!("text-[length:{value}]"));
+            }
+        }
+        _ => {}
     }
     match &text.font_weight {
-        Some(FontWeight::Number(w)) => classes.push_opt(scale::font_weight(*w)),
-        Some(FontWeight::Keyword(k)) => classes.push_opt(scale::font_weight_keyword(k)),
+        Some(FontWeight::Number(w)) => classes.push_opt(scale::font_weight_class(*w)),
+        Some(FontWeight::Keyword(k)) => classes.push_opt(scale::font_weight_keyword_class(k)),
         None => {}
     }
     if let Some(lh) = text.line_height {

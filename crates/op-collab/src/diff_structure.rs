@@ -3,9 +3,9 @@ use std::collections::BTreeSet;
 use jian_ops_schema::{node::PenNode, PenDocument};
 
 use crate::{
-    apply_tree::{child_slot, child_slot_mut},
-    apply_txn, canonical_node_hash,
-    diff_fields::validate_new_node,
+    apply::apply_txn_owned,
+    canonical_node_hash,
+    diff_fields::{node_shell, validate_new_node},
     diff_index::{is_m1_basic_kind, node_kind, TreeIndex},
     ApplyContext, CollabOp, CollabTxn, DiffContext, DiffError,
 };
@@ -37,13 +37,13 @@ pub(crate) fn plan_structure(
             page: desired.page.clone(),
             parent_id: desired.parent.clone(),
             index,
-            node: node_shell(desired.node),
+            node: node_shell(desired.node)?,
         };
-        apply_planned(&mut working, &operation, context)?;
+        working = apply_planned(working, &operation, context)?;
         operations.push(operation);
     }
 
-    normalize_target_order(&mut working, after_index, context, &mut operations)?;
+    working = normalize_target_order(working, after_index, context, &mut operations)?;
 
     for id in &before_index.preorder {
         if !deleted.contains(id) {
@@ -68,25 +68,25 @@ pub(crate) fn plan_structure(
             node_id: id.clone(),
             expected_hash: canonical_node_hash(current_entry.node)?,
         };
-        apply_planned(&mut working, &operation, context)?;
+        working = apply_planned(working, &operation, context)?;
         operations.push(operation);
     }
 
-    normalize_target_order(&mut working, after_index, context, &mut operations)?;
+    working = normalize_target_order(working, after_index, context, &mut operations)?;
     Ok((working, operations))
 }
 
 fn normalize_target_order(
-    working: &mut PenDocument,
+    mut working: PenDocument,
     desired: &TreeIndex<'_>,
     context: &DiffContext,
     operations: &mut Vec<CollabOp>,
-) -> Result<(), DiffError> {
+) -> Result<PenDocument, DiffError> {
     for id in &desired.preorder {
         let target = desired
             .entry(id)
             .expect("desired preorder contains indexed nodes");
-        let current = TreeIndex::build(working)?;
+        let current = TreeIndex::build(&working)?;
         let current_entry = current
             .entry(id)
             .ok_or(DiffError::StructuralPlanningMismatch)?;
@@ -106,10 +106,10 @@ fn normalize_target_order(
             new_parent: target.parent.clone(),
             new_index: target.index,
         };
-        apply_planned(working, &operation, context)?;
+        working = apply_planned(working, &operation, context)?;
         operations.push(operation);
     }
-    Ok(())
+    Ok(working)
 }
 
 fn validate_structural_nodes(
@@ -157,27 +157,17 @@ fn require_basic(id: &str, node: &PenNode) -> Result<(), DiffError> {
     }
 }
 
-fn node_shell(node: &PenNode) -> PenNode {
-    let mut shell = node.clone();
-    let child_shape = child_slot(node).cloned().flatten().map(|_| Vec::new());
-    if let Some(slot) = child_slot_mut(&mut shell) {
-        *slot = child_shape;
-    }
-    shell
-}
-
 fn apply_planned(
-    document: &mut PenDocument,
+    document: PenDocument,
     operation: &CollabOp,
     context: &DiffContext,
-) -> Result<(), DiffError> {
+) -> Result<PenDocument, DiffError> {
     let mut apply_context = ApplyContext::standalone_trusted();
     apply_context.limits = context.limits;
-    *document = apply_txn(
+    apply_txn_owned(
         document,
         &CollabTxn::new(vec![operation.clone()]),
         &apply_context,
     )
-    .map_err(DiffError::Replay)?;
-    Ok(())
+    .map_err(DiffError::Replay)
 }

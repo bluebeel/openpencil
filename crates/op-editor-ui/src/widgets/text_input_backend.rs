@@ -225,8 +225,30 @@ impl RenderBackend for BaselineAdjustingBackend<'_> {
             );
     }
 
+    fn shadow_offset_in_local_space(&self, offset: Point2D) -> Point2D {
+        self.inner.shadow_offset_in_local_space(offset)
+    }
+
+    fn fill_round_rect_shadow(
+        &mut self,
+        rect: Rect,
+        radius: f32,
+        shadow: &crate::RoundRectShadowOptions,
+    ) -> bool {
+        self.inner.fill_round_rect_shadow(rect, radius, shadow)
+    }
+
     fn fill_drop_shadow(&mut self, rect: Rect, radius: f32, blur: f32, color: Color) {
         self.inner.fill_drop_shadow(rect, radius, blur, color);
+    }
+    fn fill_round_rect_shadow_per_corner(
+        &mut self,
+        rect: Rect,
+        radii: [f32; 4],
+        shadow: &crate::RoundRectShadowOptions,
+    ) -> bool {
+        self.inner
+            .fill_round_rect_shadow_per_corner(rect, radii, shadow)
     }
 
     fn fill_oval(&mut self, bounds: Rect, color: Color) {
@@ -377,6 +399,17 @@ impl RenderBackend for BaselineAdjustingBackend<'_> {
                 original_size,
                 tile_scale,
             );
+    }
+
+    fn draw_image_with_paint_options(
+        &mut self,
+        rect: Rect,
+        image_id: u64,
+        encoded: &[u8],
+        options: &crate::ImagePaintOptions<'_>,
+    ) {
+        self.inner
+            .draw_image_with_paint_options(rect, image_id, encoded, options);
     }
 
     fn fill_round_rect_linear_gradient(

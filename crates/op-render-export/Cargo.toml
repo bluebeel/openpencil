@@ -26,6 +26,10 @@ skia-safe = { version = "0.97.0", default-features = false, features = [
   "pdf",
 ] }
 
+[target.'cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))'.dependencies]
+# Keep codec support independent of the pinned Skia feature/archive variants.
+webp = { version = "0.3.1", default-features = false }
+
 [dev-dependencies]
 base64 = "0.22"
 jian-ops-schema = { path = "../../vendor/jian/crates/jian-ops-schema" }

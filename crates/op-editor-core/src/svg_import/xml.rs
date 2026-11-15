@@ -74,17 +74,7 @@ pub(super) fn compute_root_scale(root_attrs: &[(String, String)]) -> (f64, Style
     }
     // Children scale by `out / vb` — matches the TS impl exactly.
     let scale = (out_w / vb_w).min(out_h / vb_h).max(0.001);
-    let stroke_w = attr("stroke-width")
-        .and_then(|s| s.trim().parse::<f64>().ok())
-        .unwrap_or(1.0);
-    let ctx = StyleCtx {
-        fill: attr("fill").map(|s| s.to_string()),
-        stroke: attr("stroke").map(|s| s.to_string()),
-        stroke_width: stroke_w,
-        fill_rule: extract_style_or_attr(root_attrs, "fill-rule")
-            .as_deref()
-            .and_then(parse_svg_fill_rule),
-    };
+    let ctx = merge_style_ctx(&StyleCtx::default(), root_attrs);
     (scale, ctx)
 }
 
@@ -139,8 +129,15 @@ pub(super) fn parse_svg_tree(body: &str) -> Vec<SvgTree> {
             };
             continue;
         }
+        let source_tag = inner
+            .trim_start()
+            .split(|c: char| c.is_ascii_whitespace() || c == '/')
+            .next()
+            .unwrap_or("")
+            .to_string();
         if self_closing {
             out.push(SvgTree {
+                source_tag,
                 tag: tag_lower,
                 attrs,
                 children: Vec::new(),
@@ -152,6 +149,7 @@ pub(super) fn parse_svg_tree(body: &str) -> Vec<SvgTree> {
         let body_end = find_matching_close(body, body_start, &tag_lower).unwrap_or(body.len());
         let inner_body = &body[body_start..body_end];
         out.push(SvgTree {
+            source_tag,
             tag: tag_lower,
             attrs,
             children: parse_svg_tree(inner_body),

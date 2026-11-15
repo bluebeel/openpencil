@@ -7,20 +7,37 @@ use crate::layout_scene::{
 use crate::{Color, Rect};
 use std::fmt::Write as _;
 
+mod batch;
+mod gradient_geometry;
+mod stroke_paint;
+mod text_layers;
+mod text_paints;
+pub use batch::SvgNodeBatch;
+
+mod bounds;
+mod context;
+mod ids;
+mod masks;
+mod render;
+
 mod composite;
 #[cfg(test)]
 mod composite_tests;
+mod fill_layers;
+mod image_fields;
 mod image_metadata;
 #[path = "svg_export_rect.rs"]
 mod rect;
+mod resource_scope;
 mod transform;
 
 use rect::{emit_rect, emit_rect_fill, emit_rect_stroke_overlay, emit_widget_frame_background};
-use transform::{
-    apply_ancestor_clip_bounds, apply_clip_bounds, close_ancestor_clip_groups,
-    emit_affine_group_start, emit_ancestor_clip_defs, emit_ancestor_clip_groups_start,
-    find_node_with_ancestor_context, node_transform, svg_id, AncestorClip,
-};
+use transform::{apply_clip_bounds, emit_affine_group_start, node_transform, svg_id};
+
+use bounds::{collect_bounds, collect_sibling_bounds};
+use context::AncestorEffect;
+use ids::node_id;
+use render::emit_node;
 
 const MARGIN: f32 = 16.0;
 const TEXT_DEFAULT_FONT_SIZE: f32 = 13.0;
@@ -47,6 +64,32 @@ pub enum SvgExportError {
     NodeNotFound(String),
     /// The requested node exists but paints no geometry.
     NodePaintsNothing(String),
+    InvalidScale,
+    InvalidStyledText {
+        node_id: String,
+    },
+    StyledTextLimit {
+        node_id: String,
+        limit: usize,
+    },
+    UnsupportedStyledTextPaint {
+        node_id: String,
+        kind: &'static str,
+    },
+    ResourceNestingLimit {
+        limit: usize,
+    },
+    InvalidImage {
+        node_id: String,
+        source: op_editor_core::svg_image_composition::ImageSvgError,
+    },
+    UnsupportedGradientInterpolation {
+        node_id: String,
+    },
+    InvalidGradient {
+        node_id: String,
+        source: op_editor_core::svg_gradient_composition::GradientSvgError,
+    },
 }
 
 impl std::fmt::Display for SvgExportError {
@@ -58,6 +101,14 @@ impl std::fmt::Display for SvgExportError {
                 write!(f, "node {id} not found on the active page")
             }
             SvgExportError::NodePaintsNothing(id) => write!(f, "node {id} paints nothing"),
+            SvgExportError::UnsupportedGradientInterpolation{node_id}=>write!(f,"node {node_id} has a premultiplied alpha gradient that SVG cannot represent exactly"),
+            SvgExportError::InvalidGradient{node_id,source}=>write!(f,"node {node_id}: {source}"),
+            SvgExportError::InvalidImage{node_id,source}=>write!(f,"node {node_id}: {source}"),
+            SvgExportError::ResourceNestingLimit{limit}=>write!(f,"SVG resource callback nesting exceeds {limit}"),
+            SvgExportError::InvalidStyledText { node_id } => write!(f, "node {node_id} has invalid styled text geometry or coordinates"),
+            SvgExportError::StyledTextLimit { node_id, limit } => write!(f, "node {node_id} exceeds the SVG styled text definition budget ({limit} bytes)"),
+            SvgExportError::UnsupportedStyledTextPaint { node_id, kind } => write!(f, "node {node_id} has a styled text {kind} that SVG cannot represent exactly"),
+            SvgExportError::InvalidScale => write!(f, "SVG scale must be finite and positive"),
         }
     }
 }
@@ -75,34 +126,64 @@ pub fn serialize_active_page_svg(scene: &LayoutScene) -> Result<String, SvgExpor
     let Some(page) = scene.active_page() else {
         return Err(SvgExportError::NoActivePage);
     };
+    serialize_page_svg(page, 1.0)
+}
+
+/// Serialize a borrowed page without copying the containing scene. Scaling
+/// changes the output viewport; document geometry and the viewBox stay exact.
+pub fn serialize_page_svg(page: &ScenePage, scale: f32) -> Result<String, SvgExportError> {
     serialize_svg(
         &page.children,
         page_bounds(page).ok_or(SvgExportError::NothingToExport)?,
         MARGIN,
         glam::Affine2::IDENTITY,
         &[],
+        scale,
+        true,
     )
 }
 
 /// Serialize one active-page node and subtree, tightly cropped to its painted bounds.
 pub fn serialize_node_svg(scene: &LayoutScene, node_id: &str) -> Result<String, SvgExportError> {
     let page = scene.active_page().ok_or(SvgExportError::NoActivePage)?;
-    let (node, ancestor_xform, ancestor_clips) =
-        find_node_with_ancestor_context(&page.children, node_id)
-            .ok_or_else(|| SvgExportError::NodeNotFound(node_id.to_string()))?;
+    serialize_node_on_page_svg(page, node_id, 1.0)
+}
+
+/// Serialize a borrowed containing-page node with its ancestor transforms and
+/// clips. This also supports arbitrary-page headless export without scene clones.
+pub fn serialize_node_on_page_svg(
+    page: &ScenePage,
+    node_id: &str,
+    scale: f32,
+) -> Result<String, SvgExportError> {
+    SvgNodeBatch::new(page, &[node_id.to_owned()]).serialize(node_id, scale)
+}
+
+fn node_context_bounds(
+    node: &SceneNode,
+    ancestor_xform: glam::Affine2,
+    ancestor_effects: &[AncestorEffect<'_>],
+) -> Option<Rect> {
     let mut acc = BoundsAcc::new();
     collect_bounds(node, ancestor_xform, &mut acc);
-    let painted_bounds = acc
-        .into_rect()
-        .ok_or_else(|| SvgExportError::NodePaintsNothing(node_id.to_string()))?;
-    let bounds = apply_ancestor_clip_bounds(painted_bounds, &ancestor_clips)
-        .ok_or_else(|| SvgExportError::NodePaintsNothing(node_id.to_string()))?;
+    context::apply_bounds(acc.into_rect()?, ancestor_effects)
+}
+
+fn serialize_node_context(
+    node: &SceneNode,
+    ancestor_xform: glam::Affine2,
+    ancestor_effects: &[AncestorEffect<'_>],
+    bounds: Rect,
+    scale: f32,
+) -> Result<String, SvgExportError> {
     serialize_svg(
         std::slice::from_ref(node),
         bounds,
         0.0,
         ancestor_xform,
-        &ancestor_clips,
+        ancestor_effects,
+        scale,
+        false,
     )
 }
 
@@ -111,8 +192,19 @@ fn serialize_svg(
     bounds: Rect,
     margin: f32,
     root_xform: glam::Affine2,
-    ancestor_clips: &[AncestorClip],
+    ancestor_effects: &[AncestorEffect<'_>],
+    scale: f32,
+    sibling_roots: bool,
 ) -> Result<String, SvgExportError> {
+    let resource_capture = resource_scope::Capture::begin()?;
+    for node in nodes {
+        gradient_geometry::validate(node)?;
+    }
+    for effect in ancestor_effects {
+        if let AncestorEffect::Mask { node, .. } = effect {
+            gradient_geometry::validate(node)?;
+        }
+    }
     let view_x = bounds.origin.x - margin;
     let view_y = bounds.origin.y - margin;
     let view_w = bounds.size.x + margin * 2.0;
@@ -120,43 +212,89 @@ fn serialize_svg(
     if view_w <= 0.0 || view_h <= 0.0 {
         return Err(SvgExportError::NothingToExport);
     }
+    let output_w = view_w * scale;
+    let output_h = view_h * scale;
+    if !scale.is_finite() || scale <= 0.0 || !output_w.is_finite() || !output_h.is_finite() {
+        return Err(SvgExportError::InvalidScale);
+    }
+    let _text_coverage =
+        text_layers::coverage::Scope::root(Rect::xywh(view_x, view_y, view_w, view_h), root_xform);
     let mut svg = String::with_capacity(4096);
     let _ = write!(
         svg,
-        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="{view_x} {view_y} {view_w} {view_h}" width="{view_w}" height="{view_h}">"#
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="{view_x} {view_y} {view_w} {view_h}" width="{output_w}" height="{output_h}">"#
     );
-    emit_defs(&mut svg, nodes, ancestor_clips);
-    emit_ancestor_clip_groups_start(&mut svg, ancestor_clips);
+    emit_defs(&mut svg, nodes, ancestor_effects, sibling_roots)?;
+    context::emit_groups_start(&mut svg, ancestor_effects);
     let wraps_root = root_xform != glam::Affine2::IDENTITY;
     if wraps_root {
         emit_affine_group_start(&mut svg, root_xform);
     }
-    for node in nodes {
-        emit_node(&mut svg, node);
+    if sibling_roots {
+        masks::emit_siblings(&mut svg, nodes);
+    } else {
+        for node in nodes {
+            emit_node(&mut svg, node);
+        }
     }
     if wraps_root {
         svg.push_str("</g>");
     }
-    close_ancestor_clip_groups(&mut svg, ancestor_clips);
+    context::close_groups(&mut svg, ancestor_effects);
     svg.push_str("</svg>");
+    resource_capture.finish()?;
     Ok(svg)
 }
 
-fn emit_defs(out: &mut String, nodes: &[SceneNode], ancestor_clips: &[AncestorClip]) {
+fn emit_defs(
+    out: &mut String,
+    nodes: &[SceneNode],
+    ancestor_effects: &[AncestorEffect<'_>],
+    sibling_roots: bool,
+) -> Result<(), SvgExportError> {
     let mut defs = String::new();
-    emit_ancestor_clip_defs(&mut defs, ancestor_clips);
+    context::emit_defs(&mut defs, ancestor_effects);
     for node in nodes {
-        emit_node_defs(&mut defs, node);
+        emit_node_defs(&mut defs, node, sibling_roots)?;
     }
     if !defs.is_empty() {
         out.push_str("<defs>");
         out.push_str(&defs);
         out.push_str("</defs>");
     }
+    Ok(())
 }
 
-fn emit_node_defs(out: &mut String, n: &SceneNode) {
+fn emit_node_defs(
+    out: &mut String,
+    n: &SceneNode,
+    sibling_mask: bool,
+) -> Result<(), SvgExportError> {
+    if n.hidden {
+        return Ok(());
+    }
+    let _coordinates = crate::svg_path_coordinates::Scope::new(n.svg_view_box.as_deref());
+    let _text_coverage = text_layers::coverage::Scope::node(n);
     let id = svg_id(&n.id);
+    text_layers::emit_defs(out, n)?;
+    fill_layers::emit_defs(out, n)?;
+    if n.fill_layers.is_empty() {
+        if n.image_src.is_some() {
+            image_fields::emit_node_definition(out, n)?;
+        }
+    }
+    stroke_paint::emit_defs(out, n);
+    if let Some(shader) = &n.shader {
+        if let Some(paint) = shader.gradient.as_deref() {
+            gradient_geometry::emit(
+                out,
+                &format!("gradient-{id}"),
+                paint,
+                normalize_rect(n.bounds),
+                shader.opacity,
+            );
+        }
+    }
     if let Some(gradient) = &n.gradient {
         emit_gradient(
             out,
@@ -183,9 +321,13 @@ fn emit_node_defs(out: &mut String, n: &SceneNode) {
             emit_image_pattern(out, n, src, &id);
         }
     }
-    for child in &n.children {
-        emit_node_defs(out, child);
+    for child in n.visible_children() {
+        emit_node_defs(out, child, true)?;
     }
+    if sibling_mask {
+        masks::emit_definition(out, n, glam::Affine2::IDENTITY, false);
+    }
+    Ok(())
 }
 
 fn emit_gradient(out: &mut String, id: &str, gradient: &SceneGradient, bounds: Rect) {
@@ -263,138 +405,11 @@ fn emit_stops(out: &mut String, stops: &[crate::layout_scene::SceneGradientStop]
 
 fn page_bounds(page: &ScenePage) -> Option<Rect> {
     let mut acc = BoundsAcc::new();
-    for n in &page.children {
-        collect_bounds(n, glam::Affine2::IDENTITY, &mut acc);
-    }
+    collect_sibling_bounds(&page.children, glam::Affine2::IDENTITY, &mut acc);
     acc.into_rect()
 }
 
 use crate::scene_bounds::{normalize_rect, BoundsAcc, PaintCornerRules};
-
-/// SVG export counts gradient and image fills as own paint.
-const SVG_PAINT_RULES: PaintCornerRules = PaintCornerRules {
-    gradient_paints: true,
-    image_paints: true,
-};
-
-fn collect_bounds(n: &SceneNode, parent_xform: glam::Affine2, acc: &mut BoundsAcc) {
-    if n.hidden {
-        return;
-    }
-    let local_xform = parent_xform * node_transform(n);
-    if let Some(local_corners) = own_paint_corners(n) {
-        for p in local_corners {
-            let w = local_xform.transform_point2(p);
-            acc.add(w.x, w.y, w.x, w.y);
-        }
-    }
-    if n.clip_content && !n.children.is_empty() && n.bounds.size.x > 0.0 && n.bounds.size.y > 0.0 {
-        let mut child_acc = BoundsAcc::new();
-        for child in n.visible_children() {
-            collect_bounds(child, local_xform, &mut child_acc);
-        }
-        if let Some(visible) = child_acc
-            .into_rect()
-            .and_then(|bounds| apply_clip_bounds(bounds, n.bounds, local_xform))
-        {
-            acc.add(
-                visible.origin.x,
-                visible.origin.y,
-                visible.origin.x + visible.size.x,
-                visible.origin.y + visible.size.y,
-            );
-        }
-        return;
-    }
-    for child in n.visible_children() {
-        collect_bounds(child, local_xform, acc);
-    }
-}
-
-fn own_paint_corners(n: &SceneNode) -> Option<Vec<glam::Vec2>> {
-    if composite::has_widget_visual(n) {
-        // An empty input still paints its surface, placeholder and icons.
-        // Its degraded Text kind must not make the export appear empty.
-        let r = normalize_rect(n.bounds);
-        let pad = n.stroke.map_or(0.0, |stroke| stroke.width.max(0.0) / 2.0);
-        return Some(vec![
-            glam::Vec2::new(r.origin.x - pad, r.origin.y - pad),
-            glam::Vec2::new(r.origin.x + r.size.x + pad, r.origin.y - pad),
-            glam::Vec2::new(r.origin.x + r.size.x + pad, r.origin.y + r.size.y + pad),
-            glam::Vec2::new(r.origin.x - pad, r.origin.y + r.size.y + pad),
-        ]);
-    }
-    crate::scene_bounds::own_paint_corners(n, SVG_PAINT_RULES)
-}
-
-fn emit_node(out: &mut String, n: &SceneNode) {
-    if n.hidden {
-        return;
-    }
-    let local_xform = node_transform(n);
-    let needs_g = local_xform != glam::Affine2::IDENTITY;
-    if needs_g {
-        emit_affine_group_start(out, local_xform);
-    }
-    let composite_opacity = if n.composite_opacity.is_finite() {
-        n.composite_opacity.clamp(0.0, 1.0)
-    } else {
-        1.0
-    };
-    let needs_opacity_group = composite_opacity < 1.0;
-    if needs_opacity_group {
-        let _ = write!(out, r#"<g opacity="{composite_opacity}">"#);
-    }
-    let defers_rect_stroke = matches!(n.kind, NodeKind::Rect | NodeKind::Frame)
-        && !n.children.is_empty()
-        && n.stroke.is_some();
-    if matches!(n.kind, NodeKind::Frame) && composite::has_widget_visual(n) {
-        // Frame widgets retain their authored container behind the tab bar.
-        emit_widget_frame_background(out, n, defers_rect_stroke);
-    }
-    let composite_painted = composite::emit_visual(out, n);
-    if !composite_painted {
-        match &n.kind {
-            NodeKind::Rect | NodeKind::Frame if defers_rect_stroke => emit_rect_fill(out, n),
-            NodeKind::Rect | NodeKind::Frame => emit_rect(out, n),
-            NodeKind::Ellipse => emit_ellipse(out, n),
-            NodeKind::Polygon => emit_polygon(out, n),
-            NodeKind::Line => emit_line(out, n),
-            NodeKind::Path => emit_path(out, n),
-            NodeKind::Text => emit_text(out, n),
-            NodeKind::Group => {}
-            NodeKind::Other(_) => {
-                if n.image_src.is_some() {
-                    emit_image(out, n);
-                } else if n.fill.is_some() || n.gradient.is_some() || n.stroke.is_some() {
-                    emit_rect(out, n);
-                }
-            }
-        }
-    }
-    let clips_children = n.clip_content
-        && !n.children.is_empty()
-        && n.bounds.size.x != 0.0
-        && n.bounds.size.y != 0.0;
-    if clips_children {
-        let _ = write!(out, r#"<g clip-path="url(#clip-{})">"#, svg_id(&n.id));
-    }
-    for child in n.visible_children() {
-        emit_node(out, child);
-    }
-    if clips_children {
-        out.push_str("</g>");
-    }
-    if defers_rect_stroke && (!composite_painted || matches!(n.kind, NodeKind::Frame)) {
-        emit_rect_stroke_overlay(out, n);
-    }
-    if needs_opacity_group {
-        out.push_str("</g>");
-    }
-    if needs_g {
-        out.push_str("</g>");
-    }
-}
 
 fn emit_ellipse(out: &mut String, n: &SceneNode) {
     let r = normalize_rect(n.bounds);
@@ -406,7 +421,7 @@ fn emit_ellipse(out: &mut String, n: &SceneNode) {
     let _ = write!(
         out,
         r#"<ellipse id="{}" cx="{cx}" cy="{cy}" rx="{}" ry="{}"{}/>"#,
-        xml_escape(&n.id),
+        xml_escape(&node_id(&n.id)),
         r.size.x * 0.5,
         r.size.y * 0.5,
         fill_stroke_attrs(n),
@@ -429,12 +444,18 @@ fn emit_polygon(out: &mut String, n: &SceneNode) {
     let _ = write!(
         out,
         r#"<polygon id="{}" points="{point_attr}"{}/>"#,
-        xml_escape(&n.id),
+        xml_escape(&node_id(&n.id)),
         fill_stroke_attrs(n),
     );
 }
 
 fn emit_line(out: &mut String, n: &SceneNode) {
+    if n.stroke.is_none() && (n.stroke_disabled || n.fill_disabled) {
+        return;
+    }
+    if n.stroke_paint.is_some() {
+        return;
+    }
     let (color, width) = match n.stroke {
         Some(s) => (s.color, s.width),
         None => (n.fill.unwrap_or(Color::BLACK), 1.5),
@@ -445,7 +466,7 @@ fn emit_line(out: &mut String, n: &SceneNode) {
     let _ = write!(
         out,
         r#"<line id="{}" x1="{}" y1="{}" x2="{x2}" y2="{y2}"{}/>"#,
-        xml_escape(&n.id),
+        xml_escape(&node_id(&n.id)),
         r.origin.x,
         r.origin.y,
         stroke_attrs(color, width),
@@ -453,6 +474,18 @@ fn emit_line(out: &mut String, n: &SceneNode) {
 }
 
 fn emit_text(out: &mut String, n: &SceneNode) {
+    if text_layers::eligible(n) {
+        text_layers::emit(out, n);
+        return;
+    }
+    if n.fill_disabled
+        && !n
+            .text_runs
+            .iter()
+            .any(|run| !run.fill_disabled && run.fill.is_some())
+    {
+        return;
+    }
     let Some(text) = n.text.as_deref() else {
         return;
     };
@@ -467,7 +500,9 @@ fn emit_text(out: &mut String, n: &SceneNode) {
         TEXT_DEFAULT_FONT_SIZE
     };
     let line_h = base_size * 1.35;
-    let fill_attr = if color.a < 0.999 {
+    let fill_attr = if n.fill_disabled {
+        String::from(r#" fill="none""#)
+    } else if color.a < 0.999 {
         format!(
             r#" fill="{}" fill-opacity="{}""#,
             color_to_rgb(color),
@@ -481,8 +516,9 @@ fn emit_text(out: &mut String, n: &SceneNode) {
     } else {
         String::new()
     };
-    let _ = write!(out, r#"<g id="{}">"#, xml_escape(&n.id));
+    let _ = write!(out, r#"<g id="{}">"#, xml_escape(&node_id(&n.id)));
     let mut baseline_y = r.origin.y + base_size + 1.0;
+    let mut line_start = 0;
     for line in text.split('\n') {
         let _ = write!(
             out,
@@ -499,9 +535,10 @@ fn emit_text(out: &mut String, n: &SceneNode) {
                 ""
             },
             text_decoration_attr(n),
-            xml_escape(line),
+            text_paints::content(n, line, line_start),
         );
         baseline_y += line_h;
+        line_start += line.len() + 1;
     }
     out.push_str("</g>");
 }
@@ -523,7 +560,12 @@ fn emit_path(out: &mut String, n: &SceneNode) {
         }
         (d, String::new())
     };
-    let attrs = if n.svg_path.is_none() && !n.path_closed && n.stroke.is_none() {
+    let attrs = if n.svg_path.is_none()
+        && !n.path_closed
+        && n.stroke.is_none()
+        && !n.stroke_disabled
+        && !n.fill_disabled
+    {
         let color = n.fill.unwrap_or(Color::BLACK);
         format!(r#" fill="none"{}"#, stroke_attrs(color, 1.5))
     } else {
@@ -542,7 +584,7 @@ fn emit_path(out: &mut String, n: &SceneNode) {
     let _ = write!(
         out,
         r#"<path id="{}" d="{}"{transform}{vector_effect}{fill_rule}{}/>"#,
-        xml_escape(&n.id),
+        xml_escape(&node_id(&n.id)),
         xml_escape(&d),
         attrs
     );
@@ -550,6 +592,13 @@ fn emit_path(out: &mut String, n: &SceneNode) {
 
 fn svg_path_fit_transform(d: &str, bounds: Rect) -> String {
     let rect = normalize_rect(bounds);
+    if let Some([x, y, w, h]) = crate::svg_path_coordinates::current() {
+        let sx = rect.size.x / w;
+        let sy = rect.size.y / h;
+        let tx = rect.origin.x - x * sx;
+        let ty = rect.origin.y - y * sy;
+        return format!(r#" transform="matrix({sx} 0 0 {sy} {tx} {ty})""#);
+    }
     let Some((source_x, source_y, source_w, source_h)) = op_editor_core::svg_path_data_bounds(d)
     else {
         return format!(
@@ -573,9 +622,9 @@ fn svg_path_fit_transform(d: &str, bounds: Rect) -> String {
 }
 
 fn emit_image(out: &mut String, n: &SceneNode) {
-    let Some(src) = n.image_src.as_deref() else {
+    if n.image_src.is_none() {
         return;
-    };
+    }
     let r = normalize_rect(n.bounds);
     let id = svg_id(&n.id);
     let clip = if n.corner_radius > 0.0 {
@@ -583,36 +632,14 @@ fn emit_image(out: &mut String, n: &SceneNode) {
     } else {
         String::new()
     };
-    if n.image_fit == SceneImageFit::Tile {
-        let _ = write!(
-            out,
-            r#"<rect id="{}" x="{}" y="{}" width="{}" height="{}" fill="url(#image-pattern-{id})" opacity="{}"{clip}/>"#,
-            xml_escape(&n.id),
-            r.origin.x,
-            r.origin.y,
-            r.size.x,
-            r.size.y,
-            n.opacity.clamp(0.0, 1.0),
-        );
-        return;
-    }
-    let preserve = match n.image_fit {
-        SceneImageFit::Fit => "xMidYMid meet",
-        SceneImageFit::Crop | SceneImageFit::Fill => "xMidYMid slice",
-        SceneImageFit::Stretch => "none",
-        SceneImageFit::Tile => unreachable!("tile images return above"),
-    };
     let _ = write!(
         out,
-        r#"<image id="{}" x="{}" y="{}" width="{}" height="{}" href="{}" preserveAspectRatio="{}" opacity="{}"{clip}/>"#,
-        xml_escape(&n.id),
+        r#"<rect id="{}" x="{}" y="{}" width="{}" height="{}" fill="url(#image-field-{id})"{clip}/>"#,
+        xml_escape(&node_id(&n.id)),
         r.origin.x,
         r.origin.y,
         r.size.x,
-        r.size.y,
-        xml_escape(src),
-        preserve,
-        n.opacity.clamp(0.0, 1.0)
+        r.size.y
     );
 }
 
@@ -640,21 +667,38 @@ fn text_decoration_attr(n: &SceneNode) -> &'static str {
     }
 }
 
-fn xml_escape(text: &str) -> String {
-    op_util::xml_escape::escape_xml(text)
+#[path = "svg_export/escaped.rs"]
+mod escaped;
+fn xml_escape(text: &str) -> escaped::Escaped<'_> {
+    escaped::Escaped(text)
 }
 
 fn fill_stroke_attrs(n: &SceneNode) -> String {
     let mut s = fill_attrs(n);
-    if let Some(stroke) = n.stroke {
-        s.push_str(&stroke_attrs(stroke.color, stroke.width));
+    if n.stroke_paint.is_none() {
+        if let Some(stroke) = n.stroke {
+            s.push_str(&stroke_attrs(stroke.color, stroke.width));
+        }
     }
     s
 }
 
 fn fill_attrs(n: &SceneNode) -> String {
+    if n.fill_disabled {
+        return String::from(r#" fill="none""#);
+    }
+    if fill_layers::eligible(n) {
+        return r#" fill="none""#.into();
+    }
+    if n.image_src.is_some() {
+        return format!(r#" fill="url(#image-field-{})""#, svg_id(&n.id));
+    }
     let mut s = String::new();
-    if n.gradient.is_some() {
+    if n.gradient.is_some()
+        || n.shader
+            .as_ref()
+            .is_some_and(|shader| shader.gradient.is_some())
+    {
         let _ = write!(s, r#" fill="url(#gradient-{})""#, svg_id(&n.id));
     } else if let Some(fill) = n.fill {
         let _ = write!(s, r#" fill="{}""#, color_to_rgb(fill));

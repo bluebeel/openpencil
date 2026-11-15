@@ -13,17 +13,12 @@
 //!
 //! ## Sub-command restriction
 //!
-//! The rollback snapshot covers exactly the history-snapshot fields —
-//! document, selection, active page index, components
-//! ([`crate::history::EditorSnapshot`]). A command whose primary state
-//! lives OUTSIDE that snapshot (active tool, viewport, clipboard,
-//! the undo/redo stacks themselves, the transient active-theme pin)
-//! could not be rolled back, so [`batchable`] rejects it: the whole
-//! batch fails BEFORE any sub-command executes, with zero state
-//! change. The only production `Batch` producer today — the MCP
-//! `batch_program` executor — emits document commands exclusively
-//! (insert / update / replace / delete / move variants), so the
-//! restriction loses nothing and keeps the atomicity contract honest.
+//! Document, selection, active page and components use the existing history
+//! snapshot. A companion actor snapshot covers tool, viewport, UI drafts,
+//! active theme and clipboard writers. Undo/redo remain unsupported because
+//! they exchange the surrounding history itself. Nested Batch commands must
+//! be flattened and classified before application. A rejected member fails
+//! before any command executes.
 //!
 //! Allowed commands may still maintain doc-derived transient caches
 //! (the variable ref caches, the `preserve_authored_geometry` latch,
@@ -37,9 +32,19 @@ use crate::command::EditorCommand;
 use crate::command_apply::command_marks_document_dirty;
 use crate::{EditorState, IdAllocError, IdAllocator};
 
+#[path = "command_batch_actor.rs"]
+pub(crate) mod actor;
+
+impl EditorCommand {
+    /// Shares the exhaustive rollback classification used by Batch itself.
+    pub fn supports_atomic_batch(&self) -> bool {
+        batchable(self)
+    }
+}
+
 /// `true` when every piece of editor state `cmd` primarily mutates is
-/// covered by the pre-batch rollback snapshot (document, selection,
-/// active page index, components), so the all-or-nothing contract can
+/// covered by the document and actor rollback snapshots, so the
+/// all-or-nothing contract can
 /// genuinely restore it.
 ///
 /// Exhaustive on purpose: a new `EditorCommand` variant fails to
@@ -48,25 +53,19 @@ use crate::{EditorState, IdAllocError, IdAllocator};
 fn batchable(cmd: &EditorCommand) -> bool {
     use EditorCommand as C;
     match cmd {
-        // Primary state outside the rollback snapshot: the active
-        // tool, the viewport, the clipboard buffer (paste also READS
-        // it, making the outcome depend on un-snapshotted state), the
-        // undo/redo stacks themselves, and the transient active-theme
-        // pin. Nested batches are rejected so rollback stays
-        // single-level.
+        // History exchange remains outside this operation's rollback. Nested
+        // batches are flattened by planners so rollback stays single-level.
+        C::Undo | C::Redo | C::Batch { .. } => false,
+        // Document / selection / page / component mutators — fully
+        // covered by the pre-batch snapshot.
         C::SetActiveTool { .. }
         | C::SetViewport { .. }
         | C::CopySelected
         | C::CutSelected
         | C::PasteClipboard { .. }
-        | C::Undo
-        | C::Redo
         | C::SetActiveAxisValue { .. }
         | C::CycleActiveAxisValue { .. }
-        | C::Batch { .. } => false,
-        // Document / selection / page / component mutators — fully
-        // covered by the pre-batch snapshot.
-        C::SetVariableColor { .. }
+        | C::SetVariableColor { .. }
         | C::InsertNode { .. }
         | C::UpdateNode { .. }
         | C::PatchNodeData { .. }
@@ -93,6 +92,8 @@ fn batchable(cmd: &EditorCommand) -> bool {
         | C::UpsertComponent { .. }
         | C::UpsertScreen { .. }
         | C::InstantiateComponent { .. }
+        | C::DetachComponent { .. }
+        | C::SetInstanceComponent { .. }
         | C::CreateComponent { .. }
         | C::DeleteComponent { .. }
         | C::RenameComponent { .. }
@@ -118,6 +119,7 @@ fn batchable(cmd: &EditorCommand) -> bool {
         | C::DeleteSelected
         | C::NudgeSelected { .. }
         | C::GroupSelected
+        | C::ReplacePathsWithSvg(_)
         | C::UngroupSelected
         | C::ReorderSelected { .. }
         | C::SetNodeRotation { .. }
@@ -149,10 +151,29 @@ impl EditorState {
     /// failure. On success the whole batch lands as a SINGLE undo step
     /// (intermediate history entries pushed by sub-commands are
     /// collapsed into one pre-batch snapshot).
-    pub(crate) fn cmd_batch_with_allocator(
+    pub(crate) fn cmd_batch_with_checkpoint(
         &mut self,
         commands: Vec<EditorCommand>,
         allocator: &mut dyn IdAllocator,
+        checkpoint: Option<&crate::EditorSnapshot>,
+    ) -> Result<bool, IdAllocError> {
+        self.cmd_batch_with_checkpoints(commands, allocator, checkpoint, None)
+    }
+    pub(crate) fn cmd_batch_with_scoped_checkpoint(
+        &mut self,
+        commands: Vec<EditorCommand>,
+        allocator: &mut dyn IdAllocator,
+        scoped: &mut crate::history::PendingScopedSnapshot,
+    ) -> Result<bool, IdAllocError> {
+        debug_assert!(self.undo_capture_suspended);
+        self.cmd_batch_with_checkpoints(commands, allocator, None, Some(scoped))
+    }
+    fn cmd_batch_with_checkpoints(
+        &mut self,
+        commands: Vec<EditorCommand>,
+        allocator: &mut dyn IdAllocator,
+        checkpoint: Option<&crate::EditorSnapshot>,
+        mut scoped: Option<&mut crate::history::PendingScopedSnapshot>,
     ) -> Result<bool, IdAllocError> {
         if commands.is_empty() {
             return Ok(false);
@@ -164,42 +185,124 @@ impl EditorState {
         if !commands.iter().all(batchable) {
             return Ok(false);
         }
+        let actor = actor::BatchActorSnapshot::capture(self, &commands);
         let marks_document_dirty = commands.iter().any(command_marks_document_dirty);
-        let pre = self.snapshot_for_history();
-        let past_len = self.history.past.len();
-        // Sub-command history pushes clear the redo stack; park it so a
-        // rolled-back batch restores redo intact. O(1) move, no clone.
-        let saved_future = std::mem::take(&mut self.history.future);
-        for cmd in commands {
-            let outcome = self.apply_with_allocator(cmd, allocator);
-            if !matches!(&outcome, Ok(true)) {
-                // Restore the pre-batch history bookkeeping first (this
-                // is batch-specific — a plain restore does not touch the
-                // undo/redo stacks): drop any sub-command undo entries
-                // and hand the parked redo stack back intact.
-                self.history.past.truncate(past_len);
-                self.history.future = saved_future;
-                // Then route the document / selection / page / component
-                // / app-state-owner / revision restore through the same
-                // materializing path undo/redo use. `restore` rebuilds
-                // the owned doc from the shared snapshot and re-syncs the
-                // dirty flag. Ownership rolls back with doc.state — a
-                // stale entry would mark a key generation-owned that the
-                // restored document no longer carries, silently skipping
-                // later merges of that key.
-                self.restore(pre);
-                return outcome;
+        let pre = if scoped.is_none() {
+            Some(
+                checkpoint
+                    .cloned()
+                    .unwrap_or_else(|| self.snapshot_for_history()),
+            )
+        } else {
+            None
+        };
+        let before_revision = pre
+            .as_ref()
+            .map(|snapshot| snapshot.revision)
+            .unwrap_or_else(|| scoped.as_ref().unwrap().revision());
+        // Park both stacks, not just their lengths: intermediate pushes used
+        // to evict old entries at the cap, which truncate could not recover.
+        // An empty scratch history also isolates sub-command snapshot repairs.
+        let saved_history = std::mem::take(&mut self.history);
+        let was_suspended = std::mem::replace(&mut self.undo_capture_suspended, true);
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut scoped = crate::command_id_scope::ScopedIdAllocator::new(allocator);
+            let mut commands = commands.into_iter().peekable();
+            while let Some(cmd) = commands.next() {
+                if commands.peek().is_some() {
+                    if let Some(first) = crate::command_node_attrs::bulk::prepare(&cmd) {
+                        if let Some(second) = commands
+                            .peek()
+                            .and_then(crate::command_node_attrs::bulk::prepare)
+                        {
+                            let mut attributes =
+                                vec![cmd, commands.next().expect("peeked attribute command")];
+                            let mut prepared = vec![first, second];
+                            while let Some(next) = commands
+                                .peek()
+                                .and_then(crate::command_node_attrs::bulk::prepare)
+                            {
+                                prepared.push(next);
+                                attributes.push(commands.next().expect("peeked attribute command"));
+                            }
+                            for command in &attributes {
+                                scoped.prepare(command);
+                            }
+                            let outcome = crate::command_node_attrs::bulk::apply(
+                                self,
+                                &attributes,
+                                &prepared,
+                            );
+                            // Preserve the original monotonic counter on both
+                            // success and the accepted prefix of a failed span.
+                            let accepted = match outcome {
+                                Ok(()) => attributes.len(),
+                                Err(index) => index,
+                            };
+                            for _ in 0..accepted {
+                                self.mark_document_changed();
+                            }
+                            if outcome.is_err() {
+                                return Ok(false);
+                            }
+                            continue;
+                        }
+                    }
+                }
+                scoped.prepare(&cmd);
+                let outcome = self.apply_with_allocator(cmd, &mut scoped);
+                if !matches!(&outcome, Ok(true)) {
+                    return outcome;
+                }
+            }
+            Ok(true)
+        }));
+        self.undo_capture_suspended = was_suspended;
+        self.history = saved_history;
+        match outcome {
+            Ok(Ok(true)) => {
+                // The Batch revision collapses its accepted leaf revisions.
+                // Complete the final exact location receipt before that reset
+                // can equal a leaf's pre-command revision (same-length wraps
+                // or placeholder swaps still changed structural identity).
+                self.finish_accepted_command_locations();
+                if marks_document_dirty {
+                    self.revision = before_revision;
+                    self.sync_dirty_flag();
+                    if let Some(pre) = pre {
+                        self.history_push_past(pre);
+                    } else {
+                        self.mark_document_changed();
+                    }
+                }
+                Ok(true)
+            }
+            Ok(failure) => {
+                if let Some(pre) = pre {
+                    self.restore(pre);
+                } else {
+                    scoped
+                        .as_mut()
+                        .unwrap()
+                        .restore(self)
+                        .expect("page-local Batch rollback");
+                }
+                actor.restore(self);
+                failure
+            }
+            Err(panic) => {
+                if let Some(pre) = pre {
+                    self.restore(pre);
+                } else {
+                    scoped
+                        .as_mut()
+                        .unwrap()
+                        .restore(self)
+                        .expect("page-local Batch rollback");
+                }
+                actor.restore(self);
+                std::panic::resume_unwind(panic)
             }
         }
-        // Collapse any per-sub-command history entries into one batch
-        // entry, so a GUI undo reverts the whole program at once. The
-        // push also clears redo — standard semantics for a new edit.
-        self.history.past.truncate(past_len);
-        if marks_document_dirty {
-            self.revision = pre.revision;
-            self.sync_dirty_flag();
-            self.history_push_past(pre);
-        }
-        Ok(true)
     }
 }

@@ -74,6 +74,7 @@ pub mod design_md_llm_error;
 pub mod design_session;
 pub mod design_variants;
 pub mod doc_io;
+pub(crate) mod document_recovery;
 pub mod export;
 pub mod export_batch;
 pub mod export_html;
@@ -88,7 +89,10 @@ mod export_share_sanitize;
 mod export_share_template;
 mod figma_convert;
 mod figma_convert_error;
+#[cfg(test)]
+mod float_roundtrip_tests;
 pub mod generator_run_route;
+mod headless_fonts;
 pub mod hosted_models;
 pub mod hub_auth_client;
 pub mod hub_auth_error;

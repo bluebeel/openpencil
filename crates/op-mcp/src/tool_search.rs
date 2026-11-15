@@ -33,10 +33,10 @@
 //! Each catalog entry is a raw descriptor string such as
 //! `{"name":"batch_design","description":"...","inputSchema":{...}}`.
 //! Name and description are extracted with `parser::extract_string_field`
-//! — the same hand-rolled extractor used throughout op-mcp — so this
-//! module stays serde-free.
+//! using the borrowed envelope parser, so nested schema fields cannot shadow
+//! top-level names and escaped descriptions are searched as decoded text.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use super::{McpTool, ToolOutcome};
 use crate::parser::extract_string_field;
@@ -51,6 +51,13 @@ use crate::parser::extract_string_field;
 /// always return all matched names regardless of `max_results`.
 /// Missing names in a `select:` query are dropped silently.
 pub fn tool_search(catalog: &[&str], query: &str, max_results: usize) -> Vec<String> {
+    tool_search_refs(catalog, query, max_results)
+        .into_iter()
+        .map(str::to_owned)
+        .collect()
+}
+
+fn tool_search_refs<'a>(catalog: &[&'a str], query: &str, max_results: usize) -> Vec<&'a str> {
     let max = max_results.max(1);
     if let Some(rest) = query.strip_prefix("select:") {
         handle_select(catalog, rest)
@@ -60,32 +67,32 @@ pub fn tool_search(catalog: &[&str], query: &str, max_results: usize) -> Vec<Str
 }
 
 /// `select:Name1,Name2,...` path — exact name match, unknown names dropped.
-fn handle_select(catalog: &[&str], names_csv: &str) -> Vec<String> {
-    let mut results = Vec::new();
-    for raw in names_csv.split(',') {
-        let name = raw.trim();
-        if name.is_empty() {
-            continue;
+fn handle_select<'a>(catalog: &[&'a str], names_csv: &str) -> Vec<&'a str> {
+    // Extract each catalog name once, preserving first-descriptor-wins.
+    let mut by_name = BTreeMap::new();
+    for &descriptor in catalog {
+        if let Some(name) = extract_string_field(descriptor, "name") {
+            by_name.entry(name).or_insert(descriptor);
         }
-        // Find the first descriptor whose "name" field matches exactly.
-        if let Some(descriptor) = catalog
-            .iter()
-            .find(|d| extract_string_field(d, "name").as_deref() == Some(name))
-        {
-            // Deduplicate (same name requested twice).
-            let ds = descriptor.to_string();
-            if !results.contains(&ds) {
-                results.push(ds);
+    }
+    let mut seen = HashSet::new();
+    let mut results = Vec::new();
+    for name in names_csv
+        .split(',')
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+    {
+        if seen.insert(name) {
+            if let Some(&descriptor) = by_name.get(name) {
+                results.push(descriptor);
             }
         }
-        // Unknown names are silently dropped — no panic, matching
-        // discovery.rs semantics for the op-mcp synchronous path.
     }
     results
 }
 
 /// Keyword search — score every entry, sort, take top `max`.
-fn keyword_search(catalog: &[&str], query: &str, max: usize) -> Vec<String> {
+fn keyword_search<'a>(catalog: &[&'a str], query: &str, max: usize) -> Vec<&'a str> {
     let query_lower = query.to_ascii_lowercase();
     let terms: Vec<&str> = query_lower
         .split_whitespace()
@@ -95,8 +102,8 @@ fn keyword_search(catalog: &[&str], query: &str, max: usize) -> Vec<String> {
         return Vec::new();
     }
 
-    let mut scored: Vec<(String, u32, String)> = Vec::new();
-    for descriptor in catalog {
+    let mut scored = Vec::new();
+    for (index, &descriptor) in catalog.iter().enumerate() {
         let name = match extract_string_field(descriptor, "name") {
             Some(n) => n,
             None => continue,
@@ -104,7 +111,7 @@ fn keyword_search(catalog: &[&str], query: &str, max: usize) -> Vec<String> {
         let desc = extract_string_field(descriptor, "description").unwrap_or_default();
         let name_lower = name.to_ascii_lowercase();
         let desc_lower = desc.to_ascii_lowercase();
-        let parts = split_tool_name_parts(&name_lower);
+        let parts = split_tool_name_parts(&name, &name_lower);
 
         let mut score: u32 = 0;
         for term in &terms {
@@ -123,38 +130,54 @@ fn keyword_search(catalog: &[&str], query: &str, max: usize) -> Vec<String> {
             }
         }
         if score > 0 {
-            scored.push((name, score, descriptor.to_string()));
+            scored.push((name, score, index, descriptor));
         }
     }
     // Descending by score, then lexicographic name for stable tie-break.
-    scored.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-    scored.into_iter().take(max).map(|(_, _, d)| d).collect()
+    // Select only the requested prefix; the catalog index preserves the old
+    // stable-sort behavior when duplicate descriptors have equal names/scores.
+    let rank = |a: &(String, u32, usize, &str), b: &(String, u32, usize, &str)| {
+        b.1.cmp(&a.1)
+            .then_with(|| a.0.cmp(&b.0))
+            .then_with(|| a.2.cmp(&b.2))
+    };
+    if scored.len() > max {
+        scored.select_nth_unstable_by(max, rank);
+        scored.truncate(max);
+    }
+    scored.sort_unstable_by(rank);
+    scored
+        .into_iter()
+        .map(|(_, _, _, descriptor)| descriptor)
+        .collect()
 }
 
-/// Split a lowercase tool name into searchable parts.
-///
-/// Underscore-separated names (`batch_design`, `insert_node`) split on `_`.
-/// CamelCase names (`BatchDesign`) split on lowercase-to-uppercase transitions.
-fn split_tool_name_parts(name_lower: &str) -> Vec<String> {
-    // Underscore-separated (most op-mcp tools).
-    if name_lower.contains('_') {
-        return name_lower
-            .split('_')
-            .filter(|s| !s.is_empty())
-            .map(str::to_string)
-            .collect();
+/// Split snake_case and CamelCase names, borrowing slices from the existing
+/// ASCII-lowered name. ASCII case conversion preserves every UTF-8 boundary.
+fn split_tool_name_parts<'a>(original: &str, lower: &'a str) -> Vec<&'a str> {
+    let bytes = original.as_bytes();
+    let mut parts = Vec::new();
+    let mut start = 0;
+    for (index, &byte) in bytes.iter().enumerate() {
+        if byte == b'_' {
+            if start < index {
+                parts.push(&lower[start..index]);
+            }
+            start = index + 1;
+        } else if index > start
+            && byte.is_ascii_uppercase()
+            && (bytes[index - 1].is_ascii_lowercase()
+                || (bytes[index - 1].is_ascii_uppercase()
+                    && bytes.get(index + 1).is_some_and(u8::is_ascii_lowercase)))
+        {
+            parts.push(&lower[start..index]);
+            start = index;
+        }
     }
-    // CamelCase split: insert a split point before each run of a capital
-    // letter that follows a lowercase letter (already lowered, so we detect
-    // transitions via the original chars — we work on the lowered string
-    // but detect positions by looking at the original name lengths being
-    // equal, so just split on underscores if present, otherwise treat as
-    // a single part for snake_case-free tool names like "ToolSearch").
-    //
-    // For names already in lowercase without underscores (e.g. schema
-    // entries whose "name" is already snake_case with underscores handled
-    // above), return as a single part.
-    vec![name_lower.to_string()]
+    if start < lower.len() {
+        parts.push(&lower[start..]);
+    }
+    parts
 }
 
 /// `true` if `term` appears in `haystack` flanked by non-word characters
@@ -165,7 +188,7 @@ fn word_boundary_contains(haystack: &str, term: &str) -> bool {
     let term_bytes = term.as_bytes();
     let term_len = term_bytes.len();
     let hay_len = haystack_bytes.len();
-    if term_len > hay_len {
+    if term_len == 0 || term_len > hay_len {
         return false;
     }
     let mut start = 0usize;
@@ -183,7 +206,9 @@ fn word_boundary_contains(haystack: &str, term: &str) -> bool {
         if before_ok && after_ok {
             return true;
         }
-        start = abs + term_len;
+        // A failed boundary may overlap a later valid occurrence. Advance one
+        // Unicode scalar, not the entire term, and keep the next slice valid.
+        start = abs + haystack[abs..].chars().next().map_or(1, char::len_utf8);
     }
     false
 }
@@ -225,7 +250,7 @@ impl McpTool for ToolSearch {
             .unwrap_or(5)
             .max(1);
 
-        let matches = tool_search(self.catalog, query, max_results);
+        let matches = tool_search_refs(self.catalog, query, max_results);
         let count = matches.len();
 
         // Return OkJson so the nested descriptor strings survive
@@ -241,8 +266,9 @@ impl McpTool for ToolSearch {
 /// Shape: `{"query":"...", "count": N, "results": [<descriptor>, ...]}`
 /// The `results` array contains the full raw descriptor JSON strings,
 /// so the agent gets name + description + inputSchema in one call.
-fn build_result_json(query: &str, count: usize, descriptors: &[String]) -> String {
-    let mut out = String::with_capacity(256 + descriptors.iter().map(|d| d.len()).sum::<usize>());
+fn build_result_json(query: &str, count: usize, descriptors: &[impl AsRef<str>]) -> String {
+    let mut out =
+        String::with_capacity(256 + descriptors.iter().map(|d| d.as_ref().len()).sum::<usize>());
     out.push_str("{\"query\":");
     push_json_string(&mut out, query);
     out.push_str(",\"count\":");
@@ -253,7 +279,7 @@ fn build_result_json(query: &str, count: usize, descriptors: &[String]) -> Strin
             out.push(',');
         }
         // Each descriptor is already valid JSON — embed verbatim.
-        out.push_str(d);
+        out.push_str(d.as_ref());
     }
     out.push_str("]}");
     out
@@ -261,18 +287,7 @@ fn build_result_json(query: &str, count: usize, descriptors: &[String]) -> Strin
 
 /// Push a JSON-escaped string literal onto `buf`.
 fn push_json_string(buf: &mut String, s: &str) {
-    buf.push('"');
-    for c in s.chars() {
-        match c {
-            '"' => buf.push_str("\\\""),
-            '\\' => buf.push_str("\\\\"),
-            '\n' => buf.push_str("\\n"),
-            '\r' => buf.push_str("\\r"),
-            '\t' => buf.push_str("\\t"),
-            c => buf.push(c),
-        }
-    }
-    buf.push('"');
+    op_util::json_escape::push_json_quoted(buf, s);
 }
 
 /// Snapshot constructor — matches `get_guidelines_snapshot` convention.

@@ -55,7 +55,7 @@ fn component_swap_expands_override_target_instead_of_stale_base_children() {
                 "symbolData",
                 obj(vec![
                     ("symbolID", guid(1, 10)),
-                    ("symbolOverrides", FigValue::Array(Vec::new())),
+                    ("symbolOverrides", FigValue::Array(Vec::new().into())),
                 ]),
             ),
             (
@@ -110,7 +110,10 @@ fn root_symbol_override_controls_instance_layout_without_replacing_its_size() {
     let root_override = obj(vec![
         (
             "guidPath",
-            obj(vec![("guids", FigValue::Array(vec![guid(96_899, 1_296)]))]),
+            obj(vec![(
+                "guids",
+                FigValue::Array(vec![guid(96_899, 1_296)].into()),
+            )]),
         ),
         ("stackCounterSizing", FigValue::Str("FIXED".into())),
         // Root overrides may carry geometry, but the synthetic frame must
@@ -138,7 +141,10 @@ fn root_symbol_override_controls_instance_layout_without_replacing_its_size() {
                 "symbolData",
                 obj(vec![
                     ("symbolID", guid(96_899, 1_296)),
-                    ("symbolOverrides", FigValue::Array(vec![root_override])),
+                    (
+                        "symbolOverrides",
+                        FigValue::Array(vec![root_override].into()),
+                    ),
                 ]),
             ),
         ]),
@@ -176,7 +182,7 @@ fn empty_boolean_instance_paints_artwork_without_filling_its_wrapper() {
     let mut artwork = sized_rectangle("Icon artwork", 2, 21);
     artwork.figma.set(
         "fillPaints",
-        FigValue::Array(vec![solid_paint(1.0, 0.0, 0.0)]),
+        FigValue::Array(vec![solid_paint(1.0, 0.0, 0.0)].into()),
     );
     let symbol = TreeNode {
         figma: obj(vec![
@@ -222,7 +228,7 @@ fn empty_boolean_instance_paints_artwork_without_filling_its_wrapper() {
                     ("y", FigValue::Float(12.5)),
                 ]),
             ),
-            ("fillPaints", FigValue::Array(vec![result_paint])),
+            ("fillPaints", FigValue::Array(vec![result_paint].into())),
         ]),
         children: vec![instance],
     };
@@ -259,7 +265,7 @@ fn swapped_icon_cached_fill_does_not_paint_transparent_symbol_wrapper() {
     let mut artwork = sized_rectangle("shape", 2, 21);
     artwork.figma.set(
         "fillPaints",
-        FigValue::Array(vec![solid_paint(0.0, 0.0, 0.0)]),
+        FigValue::Array(vec![solid_paint(0.0, 0.0, 0.0)].into()),
     );
     let mut invisible_symbol_fill = solid_paint(1.0, 1.0, 1.0);
     invisible_symbol_fill.set("visible", FigValue::Bool(false));
@@ -275,7 +281,10 @@ fn swapped_icon_cached_fill_does_not_paint_transparent_symbol_wrapper() {
                     ("y", FigValue::Float(14.0)),
                 ]),
             ),
-            ("fillPaints", FigValue::Array(vec![invisible_symbol_fill])),
+            (
+                "fillPaints",
+                FigValue::Array(vec![invisible_symbol_fill].into()),
+            ),
         ]),
         children: vec![artwork],
     };
@@ -297,7 +306,7 @@ fn swapped_icon_cached_fill_does_not_paint_transparent_symbol_wrapper() {
             // though the target SYMBOL root is explicitly unpainted.
             (
                 "fillPaints",
-                FigValue::Array(vec![solid_paint(1.0, 1.0, 1.0)]),
+                FigValue::Array(vec![solid_paint(1.0, 1.0, 1.0)].into()),
             ),
         ]),
         children: Vec::new(),
@@ -316,7 +325,7 @@ fn swapped_icon_cached_fill_does_not_paint_transparent_symbol_wrapper() {
                     ("y", FigValue::Float(12.5)),
                 ]),
             ),
-            ("fillPaints", FigValue::Array(vec![result_paint])),
+            ("fillPaints", FigValue::Array(vec![result_paint].into())),
         ]),
         children: vec![swapped_instance],
     };
@@ -353,7 +362,7 @@ fn swapped_icon_without_root_paint_does_not_paint_transparent_symbol_wrapper() {
     let mut artwork = sized_rectangle("Vector", 2, 21);
     artwork.figma.set(
         "fillPaints",
-        FigValue::Array(vec![solid_paint(0.0, 0.0, 0.0)]),
+        FigValue::Array(vec![solid_paint(0.0, 0.0, 0.0)].into()),
     );
     let target = TreeNode {
         figma: obj(vec![
@@ -389,7 +398,7 @@ fn swapped_icon_without_root_paint_does_not_paint_transparent_symbol_wrapper() {
             // paint fields at all.
             (
                 "fillPaints",
-                FigValue::Array(vec![solid_paint(0.0, 0.0, 0.0)]),
+                FigValue::Array(vec![solid_paint(0.0, 0.0, 0.0)].into()),
             ),
         ]),
         children: Vec::new(),
@@ -408,7 +417,7 @@ fn swapped_icon_without_root_paint_does_not_paint_transparent_symbol_wrapper() {
                     ("y", FigValue::Float(14.0)),
                 ]),
             ),
-            ("fillPaints", FigValue::Array(vec![result_paint])),
+            ("fillPaints", FigValue::Array(vec![result_paint].into())),
         ]),
         children: vec![swapped_instance],
     };
@@ -445,7 +454,7 @@ fn swapped_component_visible_symbol_background_remains_artwork() {
     let mut artwork = sized_rectangle("foreground", 2, 21);
     artwork.figma.set(
         "fillPaints",
-        FigValue::Array(vec![solid_paint(1.0, 1.0, 1.0)]),
+        FigValue::Array(vec![solid_paint(1.0, 1.0, 1.0)].into()),
     );
     let target = TreeNode {
         figma: obj(vec![
@@ -461,7 +470,7 @@ fn swapped_component_visible_symbol_background_remains_artwork() {
             ),
             (
                 "fillPaints",
-                FigValue::Array(vec![solid_paint(1.0, 0.0, 0.0)]),
+                FigValue::Array(vec![solid_paint(1.0, 0.0, 0.0)].into()),
             ),
         ]),
         children: vec![artwork],
@@ -497,7 +506,7 @@ fn swapped_component_visible_symbol_background_remains_artwork() {
                     ("y", FigValue::Float(24.0)),
                 ]),
             ),
-            ("fillPaints", FigValue::Array(vec![result_paint])),
+            ("fillPaints", FigValue::Array(vec![result_paint].into())),
         ]),
         children: vec![swapped_instance],
     };
@@ -577,12 +586,12 @@ fn baked_boolean_geometry_yields_to_swapped_component_operand() {
     let mut painted_artwork = sized_rectangle("Target artwork", 2, 21);
     painted_artwork.figma.set(
         "fillPaints",
-        FigValue::Array(vec![solid_paint(1.0, 0.0, 0.0)]),
+        FigValue::Array(vec![solid_paint(1.0, 0.0, 0.0)].into()),
     );
     let mut stroked_artwork = sized_rectangle("Stroked target artwork", 2, 23);
     stroked_artwork.figma.set(
         "strokePaints",
-        FigValue::Array(vec![solid_paint(1.0, 0.0, 0.0)]),
+        FigValue::Array(vec![solid_paint(1.0, 0.0, 0.0)].into()),
     );
 
     let target = TreeNode {
@@ -635,11 +644,11 @@ fn baked_boolean_geometry_yields_to_swapped_component_operand() {
             ),
             (
                 "fillGeometry",
-                FigValue::Array(vec![obj(vec![("commandsBlob", FigValue::Uint(0))])]),
+                FigValue::Array(vec![obj(vec![("commandsBlob", FigValue::Uint(0))])].into()),
             ),
             (
                 "fillPaints",
-                FigValue::Array(vec![solid_paint(0.0, 0.5, 1.0)]),
+                FigValue::Array(vec![solid_paint(0.0, 0.5, 1.0)].into()),
             ),
         ]),
         children: vec![swapped_operand],

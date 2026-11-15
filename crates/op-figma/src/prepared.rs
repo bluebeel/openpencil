@@ -1,18 +1,23 @@
-//! Two-stage binary Figma import. Preparation performs the expensive
-//! decode, style resolution, and owned tree build once; callers can
-//! inspect lightweight page metadata before consuming the prepared
-//! file into either one page or the full document.
+//! Two-stage binary Figma import. Borrowed preparation resolves the source
+//! eagerly. Owned preparation validates and indexes exact node frames, then
+//! expands source data after page selection. Both expose the same page metadata
+//! and consume their source into one page or the complete document.
 
 use crate::common::FigLayoutMode;
-use crate::figma_types::{parse_fig_file, BlobOrString, FigmaDecodedFile};
+use crate::figma_types::{
+    parse_fig_file, parse_fig_file_with_observer, BlobOrString, FigmaDecodedFile,
+};
 use crate::image_resolver::{resolve_image_blobs_owned_with, ImageTransform};
 use crate::node_mapper::{
-    convert_tree_all_pages, convert_tree_page, empty_import_result, resolve_style_references,
+    convert_tree_all_pages_owned, empty_import_result, resolve_style_references_with_mode,
     FigmaImportResult, FigmaPageInfo,
 };
+use crate::progress::FigImportPhase;
 use crate::tree::{build_tree_owned, guid_to_string, is_user_page, TreeNode};
 use crate::{detect_kind, FigFileKind, FigImport, FigParseError};
 use std::collections::HashMap;
+
+mod owned;
 
 /// A decoded and indexed `.fig` file awaiting page conversion.
 ///
@@ -24,6 +29,7 @@ pub struct PreparedFig {
     file_name: String,
     layout_mode: FigLayoutMode,
     tree: Option<TreeNode>,
+    indexed: Option<owned::IndexedPreparation>,
     pages: Vec<FigmaPageInfo>,
     blobs: Vec<BlobOrString>,
     image_files: HashMap<String, Vec<u8>>,
@@ -43,14 +49,69 @@ pub fn prepare_fig_binary(
     Ok(PreparedFig::from_decoded(decoded, file_name, layout_mode))
 }
 
+/// Preparation with typed phase notifications; the ordinary API remains silent.
+pub fn prepare_fig_binary_with_observer(
+    bytes: &[u8],
+    file_name: &str,
+    layout_mode: FigLayoutMode,
+    observer: &mut dyn FnMut(FigImportPhase),
+) -> Result<PreparedFig, FigParseError> {
+    if detect_kind(bytes) != FigFileKind::Binary {
+        return Err(FigParseError::UnknownFormat);
+    }
+    let decoded = parse_fig_file_with_observer(bytes, observer)
+        .map_err(|error| FigParseError::Binary(error.to_string()))?;
+    Ok(PreparedFig::from_decoded_with_observer(
+        decoded,
+        file_name,
+        layout_mode,
+        observer,
+    ))
+}
+
+/// Consume the compressed source and defer complete node expansion until conversion.
+/// The borrowed preparation API remains available for reusable input buffers.
+pub fn prepare_fig_binary_owned(
+    bytes: Vec<u8>,
+    file_name: &str,
+    layout_mode: FigLayoutMode,
+) -> Result<PreparedFig, FigParseError> {
+    prepare_fig_binary_owned_with_observer(bytes, file_name, layout_mode, &mut |_| {})
+}
+
+/// Owned preparation with the same typed phase notifications as the borrowed API.
+pub fn prepare_fig_binary_owned_with_observer(
+    bytes: Vec<u8>,
+    file_name: &str,
+    layout_mode: FigLayoutMode,
+    observer: &mut dyn FnMut(FigImportPhase),
+) -> Result<PreparedFig, FigParseError> {
+    if detect_kind(&bytes) != FigFileKind::Binary {
+        return Err(FigParseError::UnknownFormat);
+    }
+    owned::prepare(bytes, file_name, layout_mode, observer)
+}
+
 impl PreparedFig {
     fn from_decoded(
-        mut decoded: FigmaDecodedFile,
+        decoded: FigmaDecodedFile,
         file_name: &str,
         layout_mode: FigLayoutMode,
     ) -> Self {
-        resolve_style_references(&mut decoded.node_changes);
-        let tree = build_tree_owned(std::mem::take(&mut decoded.node_changes));
+        Self::from_decoded_with_observer(decoded, file_name, layout_mode, &mut |_| {})
+    }
+
+    fn from_decoded_with_observer(
+        mut decoded: FigmaDecodedFile,
+        file_name: &str,
+        layout_mode: FigLayoutMode,
+        observer: &mut dyn FnMut(FigImportPhase),
+    ) -> Self {
+        let tree = owned::resolve_tree(
+            std::mem::take(&mut decoded.node_changes),
+            layout_mode,
+            observer,
+        );
         let pages = tree
             .as_ref()
             .map(|tree| {
@@ -61,14 +122,17 @@ impl PreparedFig {
                     .collect()
             })
             .unwrap_or_default();
-        Self {
+        let prepared = Self {
             file_name: file_name.to_string(),
             layout_mode,
             tree,
+            indexed: None,
             pages,
             blobs: decoded.blobs,
             image_files: decoded.image_files,
-        }
+        };
+        observer(FigImportPhase::Prepared);
+        prepared
     }
 
     /// User-visible pages in Figma page-panel order.
@@ -81,12 +145,31 @@ impl PreparedFig {
         self.into_page_with_images(page_index, None)
     }
 
+    /// Convert one page with notifications around conversion, source release
+    /// and image resolution. Existing conversion APIs retain a no-op observer.
+    pub fn into_page_with_observer(
+        self,
+        page_index: usize,
+        observer: &mut dyn FnMut(FigImportPhase),
+    ) -> Result<FigImport, FigParseError> {
+        self.into_page_with_images_and_observer(page_index, None, observer)
+    }
+
     /// Convert one page, transforming each referenced image at most
     /// once before embedding it as a data URL.
     pub fn into_page_with_images(
         self,
         page_index: usize,
         image_transform: Option<&ImageTransform<'_>>,
+    ) -> Result<FigImport, FigParseError> {
+        self.into_page_with_images_and_observer(page_index, image_transform, &mut |_| {})
+    }
+
+    fn into_page_with_images_and_observer(
+        self,
+        page_index: usize,
+        image_transform: Option<&ImageTransform<'_>>,
+        observer: &mut dyn FnMut(FigImportPhase),
     ) -> Result<FigImport, FigParseError> {
         let page_count = self.pages.len();
         if page_index >= page_count {
@@ -99,17 +182,29 @@ impl PreparedFig {
             file_name,
             layout_mode,
             tree,
+            indexed,
             blobs,
             image_files,
             ..
         } = self;
+        let tree = match indexed {
+            Some(source) => source.into_tree(Some(page_index), layout_mode, observer),
+            None => tree,
+        };
         let tree = tree.expect("prepared file with pages must have a document tree");
-        let result = convert_tree_page(&tree, blobs, &file_name, page_index, layout_mode);
-        // Conversion owns its output; release the decoded source tree
-        // before image transforms/base64 can allocate another large
-        // document-sized payload.
-        drop(tree);
-        Ok(resolve_images(result, image_files, image_transform))
+        observer(FigImportPhase::ConvertPage);
+        let result = crate::node_mapper::convert_tree_page_owned(
+            tree,
+            blobs,
+            &file_name,
+            page_index,
+            layout_mode,
+            observer,
+        );
+        observer(FigImportPhase::ResolveImages);
+        let result = resolve_images(result, image_files, image_transform);
+        observer(FigImportPhase::Complete);
+        Ok(result)
     }
 
     /// Convert every user-visible page without a host image transform.
@@ -127,16 +222,20 @@ impl PreparedFig {
             file_name,
             layout_mode,
             tree,
-            blobs,
+            indexed,
+            mut blobs,
             image_files,
             ..
         } = self;
-        let result = match tree {
-            Some(tree) => {
-                let result = convert_tree_all_pages(&tree, blobs, &file_name, layout_mode);
-                drop(tree);
-                result
+        let tree = match indexed {
+            Some(source) => {
+                blobs = blobs.into_iter().map(BlobOrString::packed).collect();
+                source.into_tree(None, layout_mode, &mut |_| {})
             }
+            None => tree,
+        };
+        let result = match tree {
+            Some(tree) => convert_tree_all_pages_owned(tree, blobs, &file_name, layout_mode),
             None => empty_import_result(&file_name, "No document root found", blobs),
         };
         Ok(resolve_images(result, image_files, image_transform))
@@ -193,15 +292,15 @@ mod tests {
     fn node(local_id: u32, node_type: &str, name: &str, parent: Option<u32>) -> FigValue {
         let mut fields = vec![
             ("guid", guid(local_id)),
-            ("type", FigValue::Str(node_type.to_string())),
-            ("name", FigValue::Str(name.to_string())),
+            ("type", FigValue::Str(node_type.to_string().into())),
+            ("name", FigValue::Str(name.to_string().into())),
         ];
         if let Some(parent) = parent {
             fields.push((
                 "parentIndex",
                 object(vec![
                     ("guid", guid(parent)),
-                    ("position", FigValue::Str(format!("{local_id:04}"))),
+                    ("position", FigValue::Str(format!("{local_id:04}").into())),
                 ]),
             ));
         }

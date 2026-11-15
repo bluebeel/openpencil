@@ -14,6 +14,7 @@ use std::sync::Arc;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DocumentNodeLocation {
     pub(crate) page_index: Option<usize>,
+    pub(crate) page_id: Option<Arc<str>>,
     pub(crate) child_path: Box<[usize]>,
 }
 
@@ -77,7 +78,7 @@ pub(crate) fn resolve_document_location<'a>(
     location: &DocumentNodeLocation,
     expected_id: &str,
 ) -> Option<&'a PenNode> {
-    let nodes = match location.page_index {
+    let nodes = match location.page_index_in(doc)? {
         Some(page_index) => &doc.pages.as_ref()?.get(page_index)?.children,
         None => &doc.children,
     };
@@ -97,6 +98,7 @@ pub(crate) fn find_node_and_location<'a>(
         nodes: &'a [PenNode],
         node_id: &str,
         page_index: Option<usize>,
+        page_id: Option<&Arc<str>>,
         path: &mut Vec<usize>,
     ) -> Option<(&'a PenNode, DocumentNodeLocation)> {
         for (index, node) in nodes.iter().enumerate() {
@@ -106,12 +108,13 @@ pub(crate) fn find_node_and_location<'a>(
                     node,
                     DocumentNodeLocation {
                         page_index,
+                        page_id: page_id.cloned(),
                         child_path: path.clone().into_boxed_slice(),
                     },
                 ));
             }
             if let Some(children) = node.children() {
-                if let Some(hit) = walk(children, node_id, page_index, path) {
+                if let Some(hit) = walk(children, node_id, page_index, page_id, path) {
                     return Some(hit);
                 }
             }
@@ -123,12 +126,19 @@ pub(crate) fn find_node_and_location<'a>(
     let mut path = Vec::new();
     if let Some(pages) = doc.pages.as_ref() {
         for (page_index, page) in pages.iter().enumerate() {
-            if let Some(hit) = walk(&page.children, node_id, Some(page_index), &mut path) {
+            let page_id: Arc<str> = Arc::from(page.id.as_str());
+            if let Some(hit) = walk(
+                &page.children,
+                node_id,
+                Some(page_index),
+                Some(&page_id),
+                &mut path,
+            ) {
                 return Some(hit);
             }
         }
     }
-    walk(&doc.children, node_id, None, &mut path)
+    walk(&doc.children, node_id, None, None, &mut path)
 }
 
 pub(crate) fn find_node_in_document<'a>(
@@ -136,4 +146,30 @@ pub(crate) fn find_node_in_document<'a>(
     node_id: &str,
 ) -> Option<&'a PenNode> {
     find_node_and_location(doc, node_id).map(|(node, _)| node)
+}
+
+impl DocumentNodeLocation {
+    /// The numeric slot is a hint. Page identity survives unrelated page-list
+    /// insertion/reorder without cloning every catalog backing map/history row.
+    pub(crate) fn page_index_in(&self, doc: &PenDocument) -> Option<Option<usize>> {
+        let Some(id) = &self.page_id else {
+            return match self.page_index {
+                Some(index) => doc.pages.as_ref()?.get(index).map(|_| Some(index)),
+                None => Some(None),
+            };
+        };
+        let pages = doc.pages.as_ref()?;
+        if let Some(index) = self
+            .page_index
+            .filter(|index| pages.get(*index).is_some_and(|page| page.id == id.as_ref()))
+        {
+            return Some(Some(index));
+        }
+        let mut found = pages
+            .iter()
+            .enumerate()
+            .filter(|(_, page)| page.id == id.as_ref());
+        let index = found.next()?.0;
+        found.next().is_none().then_some(Some(index))
+    }
 }

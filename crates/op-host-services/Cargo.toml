@@ -53,6 +53,7 @@ op-orchestrator = { path = "../op-orchestrator" }
 op-design-lint = { path = "../op-design-lint" }
 op-pen-loader = { path = "../op-pen-loader" }
 op-render-export = { path = "../op-render-export" }
+op-host-native = { path = "../op-host-native", default-features = false }
 # Shared image-slot detection + result write-back for the MCP
 # `enrich_images` tool (also used by op-host-desktop's search session).
 op-image-enrich = { path = "../op-image-enrich", features = ["net"] }
@@ -62,6 +63,8 @@ op-i18n = { path = "../op-i18n" }
 # Canonical JSON/HTML string escaping (dependency-free).
 op-util = { path = "../op-util" }
 jian-ops-schema = { path = "../../vendor/jian/crates/jian-ops-schema" }
+# Exact font-file registration is used by headless startup as well as tests.
+jian-skia = { path = "../../vendor/jian/crates/jian-skia", features = ["textlayout"] }
 agent = { path = "../../vendor/agent/crates/agent", default-features = false }
 anthropic-agent-sdk = { path = "../../vendor/anthropic-agent-sdk" }
 # Collaboration runtime — the daemon runs the same owner/guest actors the
@@ -91,6 +94,7 @@ futures = { version = "0.3", default-features = false, features = ["std"] }
 async-trait = "0.1"
 serde = { workspace = true }
 serde_json = { workspace = true }
+url = "2"
 base64 = "0.22"
 getrandom = "0.3"
 hmac = "0.12"
@@ -119,7 +123,6 @@ libc = "0.2"
 [dev-dependencies]
 jian-core = { path = "../../vendor/jian/crates/jian-core" }
 op-preview-core = { path = "../op-preview-core", features = ["testing", "gl-host"] }
-jian-skia = { path = "../../vendor/jian/crates/jian-skia", features = ["textlayout"] }
 # Controlled collaboration fixtures so the collab_state tests can drive the
 # real begin -> install -> reject/fail path instead of asserting on a
 # hand-built outcome value. Dev-only: the normal dependency above (line 53)

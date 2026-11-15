@@ -1084,6 +1084,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "color_quant"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3d7b894f5411737b7867f4827955924d7c254fc9f4d91a6aad6b097804b1018b"
+
+[[package]]
 name = "combine"
 version = "4.6.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2172,6 +2178,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "gif"
+version = "0.14.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ee8cfcc411d9adbbaba82fb72661cc1bcca13e8bba98b364e62b2dba8f960159"
+dependencies = [
+ "color_quant",
+ "weezl",
+]
+
+[[package]]
 name = "git2"
 version = "0.21.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2711,10 +2727,13 @@ checksum = "85ab80394333c02fe689eaf900ab500fbd0c2213da414687ebf995a65d5a6104"
 dependencies = [
  "bytemuck",
  "byteorder-lite",
+ "color_quant",
+ "gif",
  "image-webp",
  "moxcms",
  "num-traits",
  "png 0.18.1",
+ "qoi",
  "tiff",
  "zune-core",
  "zune-jpeg",
@@ -2875,8 +2894,11 @@ dependencies = [
 name = "jian-scene"
 version = "0.0.1"
 dependencies = [
+ "jian-core",
  "jian-ops-schema",
  "jian-widgets",
+ "kurbo",
+ "serde_json",
 ]
 
 [[package]]
@@ -2902,6 +2924,7 @@ version = "0.0.1"
 dependencies = [
  "glam",
  "jian-core",
+ "jian-ops-schema",
 ]
 
 [[package]]
@@ -3199,6 +3222,16 @@ dependencies = [
  "openssl-sys",
  "pkg-config",
  "vcpkg",
+]
+
+[[package]]
+name = "libwebp-sys"
+version = "0.9.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "54cd30df7c7165ce74a456e4ca9732c603e8dc5e60784558c1c6dc047f876733"
+dependencies = [
+ "cc",
+ "glob",
 ]
 
 [[package]]
@@ -4406,15 +4439,19 @@ version = "0.8.5"
 dependencies = [
  "base64 0.22.1",
  "glam",
+ "image",
  "jian-core",
  "jian-ops-schema",
  "jian-widgets",
+ "kurbo",
  "op-ai",
  "op-i18n",
  "op-orchestrator",
  "op-util",
  "serde",
  "serde_json",
+ "serde_stacker",
+ "svgtypes",
  "tracing",
 ]
 
@@ -4520,6 +4557,7 @@ dependencies = [
  "base64 0.22.1",
  "flate2",
  "jian-ops-schema",
+ "jian-skia",
  "op-editor-core",
  "op-editor-ui",
  "op-host-services",
@@ -4679,6 +4717,7 @@ dependencies = [
  "op-editor-host-core",
  "op-editor-ui",
  "op-figma",
+ "op-host-native",
  "op-hosted-models",
  "op-html",
  "op-i18n",
@@ -4698,6 +4737,7 @@ dependencies = [
  "skia-safe",
  "tokio",
  "tracing",
+ "url",
  "zip",
 ]
 
@@ -4867,6 +4907,7 @@ dependencies = [
  "jian-ops-schema",
  "jian-scene",
  "jian-skia",
+ "memmap2",
  "op-editor-core",
  "op-html",
  "op-util",
@@ -4921,6 +4962,7 @@ dependencies = [
  "op-host-native",
  "op-pen-loader",
  "skia-safe",
+ "webp",
 ]
 
 [[package]]
@@ -5452,6 +5494,15 @@ name = "pxfm"
 version = "0.1.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e0c5ccf5294c6ccd63a74f1565028353830a9c2f5eb0c682c355c471726a6e3f"
+
+[[package]]
+name = "qoi"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7f6d64c71eb498fe9eae14ce4ec935c555749aef511cca85b5568910d6e48001"
+dependencies = [
+ "bytemuck",
+]
 
 [[package]]
 name = "quick-error"
@@ -7837,6 +7888,15 @@ checksum = "5a6580f308b1fad9207618087a65c04e7a10bc77e02c8e84e9b00dd4b12fa0bb"
 dependencies = [
  "js-sys",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "webp"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c071456adef4aca59bf6a583c46b90ff5eb0b4f758fc347cea81290288f37ce1"
+dependencies = [
+ "libwebp-sys",
 ]
 
 [[package]]

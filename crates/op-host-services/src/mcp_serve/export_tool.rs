@@ -15,24 +15,25 @@
 //!
 //! Raster (png/jpeg/webp): delegates to `render_node_raster_bytes` (the
 //! same shared render core that `get_screenshot` uses).
-//! PDF: delegates to `render_nodes_pdf_bytes` (node-scoped, one page per
-//! requested node, cropped to that node's painted bounds).
+//! PDF defaults to one cropped file per node. pdfMode=combined returns one
+//! multipage document once, with a nodeIds list rather than duplicate blobs.
 
 use std::collections::BTreeMap;
 
+#[cfg(test)]
 use base64::Engine as _;
 use op_editor_core::EditorState;
 use op_editor_ui::layout_scene::LayoutScene;
 use op_mcp::{McpTool, ToolErrorCode, ToolOutcome};
 
-use crate::export::{render_node_raster_bytes, RasterFormat};
-use crate::export_pdf::render_nodes_pdf_bytes;
+use super::raster_snapshot::RasterSnapshot;
+use crate::export::RasterFormat;
 
 /// MCP tool struct — stores the layout-resolved scene snapshot derived
 /// at registration time from the live `EditorState`.
 pub struct ExportNodes {
     /// Layout-resolved scene snapshot.
-    scene: LayoutScene,
+    scene: RasterSnapshot,
 }
 
 impl McpTool for ExportNodes {
@@ -41,6 +42,9 @@ impl McpTool for ExportNodes {
     }
 
     fn call(&self, args: &BTreeMap<String, String>) -> ToolOutcome {
+        if let Err(error) = self.scene.ready() {
+            return ToolOutcome::Err(ToolErrorCode::ToolFailed, error.to_string());
+        }
         // --- parse nodeIds (required, JSON array encoded as flat string) ---
         // The MCP wire layer delivers structured array values as a JSON
         // string in the flat BTreeMap; callers pass either a JSON-encoded
@@ -68,7 +72,7 @@ impl McpTool for ExportNodes {
             _ => {
                 return ToolOutcome::Err(
                     ToolErrorCode::MissingArgument,
-                    "format is required (png|jpeg|webp|pdf)".into(),
+                    "format is required (png|jpeg|webp|pdf|svg)".into(),
                 )
             }
         };
@@ -79,9 +83,36 @@ impl McpTool for ExportNodes {
             .and_then(|s| s.trim().parse::<f32>().ok())
             .unwrap_or(1.0);
 
+        // Only a transport-owned scope can defer work. Standard public and
+        // stdio callers keep inline behavior; explicit unsupported streaming
+        // is refused rather than silently buffering the complete batch.
+        match args.get("delivery").map(String::as_str).unwrap_or("inline") {
+            "stream" => {
+                return super::export_stream::prepare(
+                    self.scene.clone(),
+                    node_ids,
+                    format_str,
+                    scale,
+                    args.get("pdfMode").map_or("separate", String::as_str),
+                )
+            }
+            "inline" => {}
+            _ => {
+                return ToolOutcome::Err(
+                    ToolErrorCode::InvalidArgument,
+                    "delivery must be inline or stream".into(),
+                )
+            }
+        }
         // --- render ---
         match format_str {
-            "pdf" => render_pdf(&self.scene, &node_ids, scale),
+            "pdf" => render_pdf(
+                &self.scene,
+                &node_ids,
+                scale,
+                args.get("pdfMode").map_or("separate", String::as_str),
+            ),
+            "svg" => render_svg(&self.scene, &node_ids, scale),
             fmt => {
                 let raster_fmt = match fmt {
                     "png" => RasterFormat::Png,
@@ -91,7 +122,7 @@ impl McpTool for ExportNodes {
                         return ToolOutcome::Err(
                             ToolErrorCode::InvalidArgument,
                             format!(
-                                "unknown format {other:?}: must be one of png, jpeg, webp, pdf"
+                                "unknown format {other:?}: must be one of png, jpeg, webp, pdf, svg"
                             ),
                         )
                     }
@@ -113,6 +144,25 @@ pub fn export_nodes_snapshot(state: &EditorState) -> ExportNodes {
 /// Build the tool over an already-derived scene (see
 /// `screenshot_tool::get_screenshot_from_scene`).
 pub(crate) fn export_nodes_from_scene(scene: LayoutScene) -> ExportNodes {
+    export_nodes_from_snapshot(RasterSnapshot::from_scene(scene))
+}
+
+pub(crate) fn export_nodes_snapshot_admitted(
+    state: &EditorState,
+    arguments: Option<&BTreeMap<String, String>>,
+) -> ExportNodes {
+    let ids = arguments
+        .and_then(|args| args.get("nodeIds"))
+        .map(|ids| parse_string_array(ids))
+        .unwrap_or_default();
+    export_nodes_from_snapshot(RasterSnapshot::capture_http(
+        state,
+        op_pen_loader::ExportScenePolicy::ActiveItems(ids.clone()),
+        || op_pen_loader::editor_state_to_active_items_layout_scene(state, &ids),
+    ))
+}
+
+pub(super) fn export_nodes_from_snapshot(scene: RasterSnapshot) -> ExportNodes {
     ExportNodes { scene }
 }
 
@@ -120,7 +170,7 @@ pub(crate) fn export_nodes_from_scene(scene: LayoutScene) -> ExportNodes {
 /// Unknown node ids and nodes that paint nothing are skipped; each
 /// skipped entry records an `error` field instead of `bytes_base64`.
 fn render_raster(
-    scene: &LayoutScene,
+    scene: &RasterSnapshot,
     node_ids: &[String],
     format: RasterFormat,
     scale: f32,
@@ -130,113 +180,92 @@ fn render_raster(
         RasterFormat::Jpeg => "jpeg",
         RasterFormat::Webp => "webp",
     };
-    let mut files: Vec<serde_json::Value> = Vec::new();
-    for id in node_ids {
-        match render_node_raster_bytes(scene, id, format, scale) {
-            Ok(bytes) => {
-                let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
-                files.push(serde_json::json!({
-                    "nodeId": id,
-                    "bytes_base64": b64,
-                    "format": format_label,
-                }));
-            }
-            Err(e) => {
-                // Skip with a note — partial success is more useful for
-                // multi-node batches than an all-or-nothing failure.
-                files.push(serde_json::json!({
-                    "nodeId": id,
-                    "error": e.to_string(),
-                    "format": format_label,
-                }));
-            }
-        }
-    }
-    ToolOutcome::OkJson(serde_json::json!({ "files": files }).to_string())
+    let mut files = super::export_result::Files::new();
+    scene.render_active_nodes(node_ids, format, scale, |id, result| {
+        files.node(id, format_label, result);
+    });
+    ToolOutcome::OkJson(files.finish())
 }
 
-/// Render each requested node as one PDF page and return a single base64
-/// blob. Because a PDF is a multi-page document, all requested nodes
-/// (that are found and paintable) land in one PDF file; each `files`
-/// entry shares that same `bytes_base64` value but carries its own
-/// `nodeId`.  Nodes that are unknown or paint nothing are reported with
-/// an `error` field and no bytes.
-fn render_pdf(scene: &LayoutScene, node_ids: &[String], scale: f32) -> ToolOutcome {
-    // Separate valid vs invalid ids up front so we can report per-id errors.
-    let page_opt = scene.active_page();
-
-    // Build per-id result: if a node is unknown we record an error entry.
-    // The PDF renderer skips unknowns internally, so we reconstruct the
-    // correspondence by checking page.find() ourselves first.
-    let page = match page_opt {
-        Some(p) => p,
-        None => {
-            // No active page at all — every id fails with the same error.
-            let files: Vec<serde_json::Value> = node_ids
-                .iter()
-                .map(|id| {
-                    serde_json::json!({
-                        "nodeId": id,
-                        "error": "no active page",
-                        "format": "pdf",
-                    })
-                })
-                .collect();
-            return ToolOutcome::OkJson(serde_json::json!({ "files": files }).to_string());
-        }
+fn render_svg(scene: &LayoutScene, node_ids: &[String], scale: f32) -> ToolOutcome {
+    let Some(page) = scene.active_page() else {
+        return ToolOutcome::Err(ToolErrorCode::ToolFailed, "no active page".into());
     };
+    let batch = op_render_export::NodeSvgBatch::new(page, node_ids);
+    let mut files = super::export_result::Files::new();
+    batch.render_each(node_ids, scale, |id, result| {
+        files.node(id, "svg", result);
+        true
+    });
+    ToolOutcome::OkJson(files.finish())
+}
 
-    let mut valid_ids: Vec<&str> = Vec::new();
-    let mut id_errors: BTreeMap<&str, String> = BTreeMap::new();
+/// Per-node PDF output is linear in requested content. Combined mode emits
+/// one shared document once, avoiding a full multipage blob copied per node.
+fn render_pdf(scene: &LayoutScene, node_ids: &[String], scale: f32, mode: &str) -> ToolOutcome {
+    let Some(page) = scene.active_page() else {
+        let mut files = super::export_result::Files::new();
+        for id in node_ids {
+            files.error(id, "pdf", "no active page");
+        }
+        return ToolOutcome::OkJson(files.finish());
+    };
+    if !matches!(mode, "separate" | "combined") {
+        return ToolOutcome::Err(
+            ToolErrorCode::InvalidArgument,
+            "pdfMode must be separate or combined".into(),
+        );
+    }
+    let resolved =
+        op_render_export::SceneSelectionBatch::new(page, node_ids.iter().map(String::as_str));
+    if mode == "separate" {
+        let mut cursor = resolved.cursor();
+        let mut files = super::export_result::Files::new();
+        op_render_export::with_batch_preparation(|| {
+            for id in node_ids {
+                let result = cursor
+                    .get(&resolved, id.as_str())
+                    .ok_or_else(|| crate::export::ExportError::NodeNotFoundOnPage {
+                        node_id: id.clone(),
+                        page_id: page.id.clone(),
+                    })
+                    .and_then(|selected| {
+                        crate::export_pdf::render_selected_node_pdf_bytes_scaled(selected, scale)
+                    });
+                files.node(id, "pdf", result);
+            }
+        });
+        return ToolOutcome::OkJson(files.finish());
+    }
+    let mut valid = Vec::new();
+    let mut errors = Vec::new();
+    let mut cursor = resolved.cursor();
     for id in node_ids {
-        if page.find(id).is_some() {
-            valid_ids.push(id.as_str());
-        } else {
-            id_errors.insert(
-                id.as_str(),
-                format!("node {id} not found on the active page"),
-            );
+        match cursor.get(&resolved, id.as_str()) {
+            Some(selected) if selected.is_visible() => valid.push(id.as_str()),
+            _ => errors.push((
+                id,
+                format!("node {id} is missing or hidden on the active page"),
+            )),
         }
     }
-
-    // Call the shared PDF renderer with valid ids only.
-    // `NoNodeIdsRequested` is exactly this case in the shared renderer's
-    // vocabulary, but its wording is the renderer's; this tool has always
-    // reported its own sentence here, so keep the message and only the
-    // message.
-    let pdf_result = if valid_ids.is_empty() {
-        Err("no valid node ids to render".to_string())
-    } else {
-        render_nodes_pdf_bytes(scene, &valid_ids, scale).map_err(|e| e.to_string())
-    };
-
-    match pdf_result {
+    if valid.is_empty() {
+        let mut files = super::export_result::Files::new();
+        for (id, error) in errors {
+            files.error(id, "pdf", &error);
+        }
+        return ToolOutcome::OkJson(files.finish());
+    }
+    match crate::export_pdf::render_selection_batch_pdf_bytes(&resolved, &valid, scale) {
         Ok(bytes) => {
-            let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
-            let files: Vec<serde_json::Value> = node_ids
-                .iter()
-                .map(|id| {
-                    if let Some(e) = id_errors.get(id.as_str()) {
-                        serde_json::json!({
-                            "nodeId": id,
-                            "error": e,
-                            "format": "pdf",
-                        })
-                    } else {
-                        serde_json::json!({
-                            "nodeId": id,
-                            "bytes_base64": b64,
-                            "format": "pdf",
-                        })
-                    }
-                })
-                .collect();
-            ToolOutcome::OkJson(serde_json::json!({ "files": files }).to_string())
+            let mut files = super::export_result::Files::new();
+            files.combined(&valid, "pdf", &bytes);
+            for (id, error) in errors {
+                files.error(id, "pdf", &error);
+            }
+            ToolOutcome::OkJson(files.finish())
         }
-        Err(e) => {
-            // Rendering failed for all valid ids — surface as tool error.
-            ToolOutcome::Err(ToolErrorCode::ToolFailed, e)
-        }
+        Err(error) => ToolOutcome::Err(ToolErrorCode::ToolFailed, error.to_string()),
     }
 }
 
@@ -280,7 +309,9 @@ mod tests {
     /// Build a minimal `ExportNodes` tool directly from a `LayoutScene` to
     /// avoid the `EditorState` round-trip in unit tests.
     fn tool_from_scene(scene: op_editor_ui::layout_scene::LayoutScene) -> ExportNodes {
-        ExportNodes { scene }
+        ExportNodes {
+            scene: RasterSnapshot::from_scene(scene),
+        }
     }
 
     fn call_tool(tool: &ExportNodes, node_ids_json: &str, format: &str) -> ToolOutcome {
@@ -385,7 +416,7 @@ mod tests {
         }
     }
 
-    /// PDF: both nodes produce a shared PDF blob that starts with %PDF-.
+    /// PDF: each node produces its own tightly cropped PDF file.
     #[test]
     fn export_two_nodes_pdf_returns_files_with_pdf_magic() {
         let tool = tool_from_scene(two_node_scene());

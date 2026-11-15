@@ -383,3 +383,113 @@ pub fn rename_variable_snapshot(state: &EditorState) -> RenameVariable {
         existing: all_variable_names(state),
     }
 }
+
+// Request-bound validators retain only queried names; discovery/public
+// snapshots above deliberately keep their existing complete-call contract.
+fn known_for_call(
+    state: &EditorState,
+    args: &BTreeMap<String, String>,
+    kind: VariableKind,
+) -> BTreeMap<String, ()> {
+    args.get("name")
+        .filter(|name| {
+            state
+                .find_variable(name)
+                .is_some_and(|def| def.kind == kind)
+        })
+        .map(|name| BTreeMap::from([(name.clone(), ())]))
+        .unwrap_or_default()
+}
+pub fn set_variable_number_snapshot_for_call(
+    state: &EditorState,
+    args: &BTreeMap<String, String>,
+) -> SetVariableNumber {
+    SetVariableNumber {
+        known: known_for_call(state, args, VariableKind::Number),
+    }
+}
+pub fn set_variable_string_snapshot_for_call(
+    state: &EditorState,
+    args: &BTreeMap<String, String>,
+) -> SetVariableString {
+    SetVariableString {
+        known: known_for_call(state, args, VariableKind::String),
+    }
+}
+pub fn set_variable_boolean_snapshot_for_call(
+    state: &EditorState,
+    args: &BTreeMap<String, String>,
+) -> SetVariableBoolean {
+    SetVariableBoolean {
+        known: known_for_call(state, args, VariableKind::Boolean),
+    }
+}
+pub fn set_variable_color_snapshot_for_call(
+    state: &EditorState,
+    args: &BTreeMap<String, String>,
+) -> super::SetVariableColor {
+    super::SetVariableColor {
+        known_colors: known_for_call(state, args, VariableKind::Color),
+    }
+}
+pub fn set_active_axis_value_snapshot_for_call(
+    state: &EditorState,
+    args: &BTreeMap<String, String>,
+) -> super::SetActiveAxisValue {
+    let axes = args
+        .get("axis")
+        .and_then(|axis| {
+            state
+                .doc
+                .themes
+                .as_ref()?
+                .get(axis)
+                .map(|values| BTreeMap::from([(axis.clone(), values.clone())]))
+        })
+        .unwrap_or_default();
+    super::SetActiveAxisValue { axes }
+}
+fn names_for_call(
+    state: &EditorState,
+    names: impl Iterator<Item = String>,
+) -> BTreeMap<String, ()> {
+    names
+        .filter(|name| state.find_variable(name).is_some())
+        .map(|name| (name, ()))
+        .collect()
+}
+pub fn create_variable_snapshot_for_call(
+    state: &EditorState,
+    args: &BTreeMap<String, String>,
+) -> CreateVariable {
+    CreateVariable {
+        existing: names_for_call(
+            state,
+            args.get("name")
+                .map(|name| name.trim().to_owned())
+                .into_iter(),
+        ),
+    }
+}
+pub fn delete_variable_snapshot_for_call(
+    state: &EditorState,
+    args: &BTreeMap<String, String>,
+) -> DeleteVariable {
+    DeleteVariable {
+        existing: names_for_call(state, args.get("name").cloned().into_iter()),
+    }
+}
+pub fn rename_variable_snapshot_for_call(
+    state: &EditorState,
+    args: &BTreeMap<String, String>,
+) -> RenameVariable {
+    RenameVariable {
+        existing: names_for_call(
+            state,
+            args.get("old_name")
+                .cloned()
+                .into_iter()
+                .chain(args.get("new_name").map(|name| name.trim().to_owned())),
+        ),
+    }
+}

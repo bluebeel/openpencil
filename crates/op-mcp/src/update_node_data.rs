@@ -7,9 +7,9 @@ use serde_json::Value;
 use super::{ToolErrorCode, ToolOutcome};
 
 #[allow(clippy::result_large_err)]
-pub(super) fn ts_update_patch_json(
+pub(super) fn parse_update_data(
     args: &BTreeMap<String, String>,
-) -> Result<Option<String>, ToolOutcome> {
+) -> Result<Option<Value>, ToolOutcome> {
     let Some(raw) = args.get("data") else {
         return Ok(None);
     };
@@ -25,8 +25,7 @@ pub(super) fn ts_update_patch_json(
             "data must be a JSON object".into(),
         ));
     };
-    ts_update_patch_json_value(&value)
-        .map_err(|error| ToolOutcome::Err(ToolErrorCode::InvalidArgument, error.to_string()))
+    Ok(Some(value))
 }
 
 /// A rich-patch normalization failure. Both variants are malformed-`fill_hex`
@@ -54,27 +53,43 @@ impl std::fmt::Display for UpdateDataError {
 impl std::error::Error for UpdateDataError {}
 
 pub(super) fn ts_update_patch_json_value(value: &Value) -> Result<Option<String>, UpdateDataError> {
-    let Some(obj) = value.as_object() else {
-        return Ok(None);
-    };
-    let is_rich = obj.is_empty()
-        || obj.keys().any(|key| !is_flat_update_data_key(key))
-        || uses_sizing_keyword(obj)
-        || fill_requires_rich_patch(obj);
-    if !is_rich {
-        return Ok(None);
+    if update_patch_is_rich(value) {
+        serialize_update_patch(value.clone()).map(Some)
+    } else {
+        Ok(None)
     }
+}
 
-    let mut patch = value.clone();
+pub(super) fn ts_update_patch_json_value_owned(
+    value: Value,
+) -> Result<Option<String>, UpdateDataError> {
+    if update_patch_is_rich(&value) {
+        serialize_update_patch(value).map(Some)
+    } else {
+        Ok(None)
+    }
+}
+
+pub(super) fn update_patch_is_rich(value: &Value) -> bool {
+    let Some(obj) = value.as_object() else {
+        return false;
+    };
+    obj.is_empty()
+        || obj.keys().any(|key| !is_flat_update_data_key(key))
+        || geometry_requires_rich_patch(obj)
+        || uses_sizing_keyword(obj)
+        || fill_requires_rich_patch(obj)
+}
+
+pub(super) fn serialize_update_patch(mut patch: Value) -> Result<String, UpdateDataError> {
     canonicalize_fill_hex_shortcut(&mut patch)?;
-    // Rich `fill` values stay on the canonical patch path. Normalize legacy
-    // string/object spellings before `PatchNodeData` deserializes the node.
+    // Preserve exact canonical normalization, moving the caller's owned Value.
     super::batch_design::normalize_node_shape(&mut patch);
-    Ok(Some(patch.to_string()))
+    Ok(patch.to_string())
 }
 
 /// `UpdateNode` stores width and height as integers, while canonical node data
-/// also accepts content/fill sizing keywords. Keep literal numeric geometry on
+/// also accepts content/fill sizing keywords. Keep integer geometry on
 /// the lightweight command, but route keyword sizing through the rich shallow
 /// patch so serde can preserve its `SizingBehavior` variant.
 fn uses_sizing_keyword(obj: &serde_json::Map<String, Value>) -> bool {
@@ -84,6 +99,17 @@ fn uses_sizing_keyword(obj: &serde_json::Map<String, Value>) -> bool {
             Some(Value::String(value))
                 if matches!(value.as_str(), "fit_content" | "fill_container")
         )
+    })
+}
+
+/// The flat command parses strict i32 strings. Preserve JSON integer literals
+/// in that range, but route floating spellings (including 3.0 and -0.0) and
+/// larger integers through canonical data so no geometry bits are discarded.
+/// Legacy numeric strings deliberately keep their existing parsing behavior.
+fn geometry_requires_rich_patch(obj: &serde_json::Map<String, Value>) -> bool {
+    ["x", "y", "width", "height"].into_iter().any(|key| {
+        matches!(obj.get(key), Some(Value::Number(number))
+            if number.as_i64().is_none_or(|value| i32::try_from(value).is_err()))
     })
 }
 
@@ -136,11 +162,11 @@ fn canonicalize_fill_hex_shortcut(value: &mut Value) -> Result<(), UpdateDataErr
     let Some(shortcut) = shortcut.or(camel_shortcut) else {
         return Ok(());
     };
-    let Some(hex) = shortcut.as_str() else {
+    let Value::String(hex) = shortcut else {
         return Err(UpdateDataError::FillHexNotString);
     };
-    if !validate_hex(hex) {
-        return Err(UpdateDataError::InvalidFillHex(hex.to_string()));
+    if !validate_hex(&hex) {
+        return Err(UpdateDataError::InvalidFillHex(hex));
     }
     obj.insert(
         "fill".into(),

@@ -5,7 +5,7 @@
 use crate::common::{collect_image_blobs, ConversionContext, FigLayoutMode};
 use crate::converters::{convert_children, convert_node};
 use crate::figma_types::FigmaDecodedFile;
-use crate::image_resolver::retain_referenced_image_blobs;
+use crate::image_resolver::collect_referenced_image_blobs;
 use crate::page_mapper::pen_page;
 use crate::tree::{
     build_tree, build_tree_for_clipboard, build_tree_owned, collect_components,
@@ -16,13 +16,21 @@ use jian_ops_schema::node::PenNode;
 use jian_ops_schema::page::PenPage;
 use std::collections::HashMap;
 
+mod dependencies;
+mod owned_all_pages;
+mod owned_page;
+pub(crate) use owned_all_pages::convert_tree_all_pages_owned;
+pub(crate) mod source_selection;
+pub(crate) use owned_page::convert_tree_page_owned;
 mod style_references;
 
 #[cfg(test)]
 use crate::kiwi::FigValue;
 #[cfg(test)]
 use style_references::non_empty_array;
+#[cfg(test)]
 pub use style_references::resolve_style_references;
+pub(crate) use style_references::resolve_style_references_with_mode;
 
 /// Outcome of a full-document Figma import.
 pub struct FigmaImportResult {
@@ -92,13 +100,13 @@ pub fn figma_all_pages_to_pen_document(
     file_name: &str,
     layout_mode: FigLayoutMode,
 ) -> FigmaImportResult {
-    resolve_style_references(&mut decoded.node_changes);
+    resolve_style_references_with_mode(&mut decoded.node_changes, layout_mode);
 
     let Some(tree) = build_tree_owned(std::mem::take(&mut decoded.node_changes)) else {
         return empty_import_result(file_name, "No document root found", decoded.blobs);
     };
 
-    convert_tree_all_pages(&tree, decoded.blobs, file_name, layout_mode)
+    convert_tree_all_pages_owned(tree, decoded.blobs, file_name, layout_mode)
 }
 
 pub(crate) fn convert_tree_all_pages(
@@ -127,6 +135,7 @@ pub(crate) fn convert_tree_all_pages(
         symbol_tree,
         warnings: Vec::new(),
         id_counter: counter,
+        retained_ids: Default::default(),
         blobs,
         layout_mode,
         instance_assignments,
@@ -145,8 +154,7 @@ pub(crate) fn convert_tree_all_pages(
     }
 
     let document = document_with_pages(file_name, pen_pages);
-    let mut image_blobs = collect_image_blobs(std::mem::take(&mut ctx.blobs));
-    retain_referenced_image_blobs(&document, &mut image_blobs);
+    let image_blobs = collect_referenced_image_blobs(&document, std::mem::take(&mut ctx.blobs));
     FigmaImportResult {
         document,
         warnings: ctx.warnings,
@@ -161,7 +169,7 @@ pub fn figma_to_pen_document(
     page_index: usize,
     layout_mode: FigLayoutMode,
 ) -> FigmaImportResult {
-    resolve_style_references(&mut decoded.node_changes);
+    resolve_style_references_with_mode(&mut decoded.node_changes, layout_mode);
 
     let Some(tree) = build_tree_owned(std::mem::take(&mut decoded.node_changes)) else {
         return empty_import_result(file_name, "No document root found", decoded.blobs);
@@ -195,6 +203,7 @@ pub(crate) fn convert_tree_page(
         symbol_tree,
         warnings: Vec::new(),
         id_counter: counter,
+        retained_ids: Default::default(),
         blobs,
         layout_mode,
         instance_assignments,
@@ -209,8 +218,7 @@ pub(crate) fn convert_tree_page(
     let pen = pen_page(page, format!("figma-page-{page_index}"), name, children);
 
     let document = document_with_pages(file_name, vec![pen]);
-    let mut image_blobs = collect_image_blobs(std::mem::take(&mut ctx.blobs));
-    retain_referenced_image_blobs(&document, &mut image_blobs);
+    let image_blobs = collect_referenced_image_blobs(&document, std::mem::take(&mut ctx.blobs));
     FigmaImportResult {
         document,
         warnings: ctx.warnings,
@@ -254,21 +262,28 @@ pub fn figma_node_changes_to_pen_nodes(
     mut decoded: FigmaDecodedFile,
     layout_mode: FigLayoutMode,
 ) -> FigmaClipboardResult {
-    resolve_style_references(&mut decoded.node_changes);
+    resolve_style_references_with_mode(&mut decoded.node_changes, layout_mode);
     let tree = build_tree(&decoded.node_changes);
 
-    let top_nodes: Vec<TreeNode> = if let Some(tree) = &tree {
-        let pages: Vec<&TreeNode> = tree.children.iter().filter(|c| is_user_page(c)).collect();
-        if let Some(page) = pages.first() {
-            page.children.clone()
-        } else if !tree.children.is_empty() {
-            tree.children.clone()
+    // Keep the complete source tree for symbols but borrow its selected roots;
+    // cloning that forest duplicated every nested style/geometry packet.
+    let fallback = if tree.is_none() {
+        build_tree_for_clipboard(&decoded.node_changes)
+    } else {
+        Vec::new()
+    };
+    let top_nodes: &[TreeNode] = if let Some(tree) = &tree {
+        if let Some(page) = tree.children.iter().find(|child| is_user_page(child)) {
+            &page.children
         } else {
-            Vec::new()
+            &tree.children
         }
     } else {
-        build_tree_for_clipboard(&decoded.node_changes)
+        &fallback
     };
+    // Both possible complete tree representations now own all source data.
+    // Retaining the decoded staging forest adds no semantic information.
+    drop(std::mem::take(&mut decoded.node_changes));
 
     if top_nodes.is_empty() {
         return FigmaClipboardResult {
@@ -281,13 +296,13 @@ pub fn figma_node_changes_to_pen_nodes(
     let mut component_map: HashMap<String, String> = HashMap::new();
     let mut symbol_tree: HashMap<String, &TreeNode> = HashMap::new();
     let mut counter: u32 = 1;
-    for node in &top_nodes {
+    for node in top_nodes {
         collect_components(node, &mut component_map, &mut counter);
     }
     if let Some(tree) = &tree {
         collect_symbol_tree(tree, &mut symbol_tree);
     }
-    for node in &top_nodes {
+    for node in top_nodes {
         collect_symbol_tree(node, &mut symbol_tree);
     }
     let mut instance_assignments: HashMap<String, String> = HashMap::new();
@@ -298,7 +313,7 @@ pub fn figma_node_changes_to_pen_nodes(
             &mut instance_assignments,
         );
     }
-    for node in &top_nodes {
+    for node in top_nodes {
         crate::instance::seed_assignments_from_instances(
             node,
             &symbol_tree,
@@ -311,17 +326,17 @@ pub fn figma_node_changes_to_pen_nodes(
         symbol_tree,
         warnings: Vec::new(),
         id_counter: counter,
+        retained_ids: Default::default(),
         blobs: decoded.blobs,
         layout_mode,
         instance_assignments,
         instance_expansions: Default::default(),
     };
     let mut nodes = Vec::new();
-    for tree_node in &top_nodes {
-        if tree_node.figma.get_bool("visible") == Some(false) {
-            continue;
-        }
-        if let Some(node) = convert_node(tree_node, None, &mut ctx) {
+    for tree_node in top_nodes {
+        let omitted = tree_node.figma.get_bool("visible") == Some(false);
+        if let Some(node) = ctx.retain_hidden_ids(omitted, |ctx| convert_node(tree_node, None, ctx))
+        {
             nodes.push(node);
         }
     }
@@ -343,18 +358,21 @@ mod tests {
     }
 
     fn solid(r: f32, g: f32, b: f32) -> FigValue {
-        FigValue::Array(vec![obj(vec![
-            ("type", FigValue::Str("SOLID".into())),
-            (
-                "color",
-                obj(vec![
-                    ("r", FigValue::Float(r)),
-                    ("g", FigValue::Float(g)),
-                    ("b", FigValue::Float(b)),
-                    ("a", FigValue::Float(1.0)),
-                ]),
-            ),
-        ])])
+        FigValue::Array(
+            vec![obj(vec![
+                ("type", FigValue::Str("SOLID".into())),
+                (
+                    "color",
+                    obj(vec![
+                        ("r", FigValue::Float(r)),
+                        ("g", FigValue::Float(g)),
+                        ("b", FigValue::Float(b)),
+                        ("a", FigValue::Float(1.0)),
+                    ]),
+                ),
+            ])]
+            .into(),
+        )
     }
 
     fn guid(session_id: u32, local_id: u32) -> FigValue {
@@ -496,7 +514,7 @@ mod tests {
                 "symbolData",
                 obj(vec![(
                     "symbolOverrides",
-                    FigValue::Array(vec![explicit_override]),
+                    FigValue::Array(vec![explicit_override].into()),
                 )]),
             ),
         ]);
@@ -537,7 +555,7 @@ mod tests {
                 "symbolData",
                 obj(vec![(
                     "symbolOverrides",
-                    FigValue::Array(vec![text_only_override]),
+                    FigValue::Array(vec![text_only_override].into()),
                 )]),
             ),
         ]);
@@ -582,7 +600,7 @@ mod tests {
                 "symbolData",
                 obj(vec![(
                     "symbolOverrides",
-                    FigValue::Array(vec![explicit_fill_override]),
+                    FigValue::Array(vec![explicit_fill_override].into()),
                 )]),
             ),
         ]);

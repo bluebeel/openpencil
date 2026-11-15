@@ -8,6 +8,28 @@ use std::path::{Path, PathBuf};
 
 use super::DocIoError;
 
+/// Remove an uncommitted sibling on both returned errors and unwinding.
+/// The caller disarms only after the existing atomic commit confirms success.
+pub(super) struct StagingCleanup<'a> {
+    path: &'a Path,
+    armed: bool,
+}
+impl<'a> StagingCleanup<'a> {
+    pub(super) fn new(path: &'a Path) -> Self {
+        Self { path, armed: true }
+    }
+    pub(super) fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+impl Drop for StagingCleanup<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = std::fs::remove_file(self.path);
+        }
+    }
+}
+
 /// Create a unique sibling with `create_new`, so overlapping saves and stale
 /// files from a recycled PID can never truncate one another.
 pub fn create_sibling_temp(path: &Path) -> Result<(PathBuf, std::fs::File), DocIoError> {

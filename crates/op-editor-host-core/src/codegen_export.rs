@@ -1,7 +1,7 @@
 //! Transport-free artifacts for Code panel downloads.
 
-use op_codegen::ai::bundle::{build_structure_bundle, BundleScope};
-use op_codegen::ai::stored_zip::build_stored_zip;
+use op_codegen::ai::bundle::{build_structure_bundle_zip, BundleScope};
+use op_codegen::ai::stored_zip::build_stored_zip_borrowed;
 use op_editor_core::EditorState;
 
 use crate::codegen::{build_codegen_nodes_json_limited, CodegenNodesJsonError};
@@ -80,16 +80,16 @@ pub fn generated_artifact(
                 .map(|asset| (asset.zip_path.as_str(), asset.bytes.len())),
         ),
     )?;
-    // The budget check above deliberately precedes every payload clone.
-    let mut files = Vec::with_capacity(1 + result.assets.len());
-    files.push((component_name, result.code.as_bytes().to_vec()));
-    files.extend(
-        result
-            .assets
-            .iter()
-            .map(|asset| (asset.zip_path.clone(), asset.bytes.clone())),
+    // Admission precedes archive allocation; payloads are borrowed directly
+    // into that one final output rather than cloned into a temporary file set.
+    let bytes = build_stored_zip_borrowed(
+        std::iter::once((component_name.as_str(), result.code.as_bytes())).chain(
+            result
+                .assets
+                .iter()
+                .map(|asset| (asset.zip_path.as_str(), asset.bytes.as_slice())),
+        ),
     );
-    let bytes = build_stored_zip(&files);
     ensure_artifact_budget(bytes.len())?;
     Ok(Some(CodegenArtifact {
         file_name: "component.zip".into(),
@@ -135,10 +135,9 @@ pub fn live_bundle_artifact(
                 .map(|asset| (asset.zip_path.as_str(), asset.bytes.len())),
         ),
     )?;
-    // Only clone raw/sanitized/asset payloads into bundle files after the
-    // conservative final ZIP size has passed the hard cap.
-    let bundle = build_structure_bundle(&raw_nodes_json, &sanitized_nodes_json, &assets, scope);
-    let bytes = build_stored_zip(&bundle.files);
+    // Only construct the archive after the conservative size check. Views
+    // and asset bytes remain borrowed until copied into the final ZIP once.
+    let bytes = build_structure_bundle_zip(&raw_nodes_json, &sanitized_nodes_json, &assets, scope);
     ensure_artifact_budget(bytes.len())?;
     Ok(Some(CodegenArtifact {
         file_name: "bundle.zip".into(),

@@ -5,6 +5,9 @@
 
 use super::*;
 
+#[path = "web_canvas_server/agent_admission_tests.rs"]
+mod agent_admission;
+
 struct MockStream {
     input: std::io::Cursor<Vec<u8>>,
     output: Vec<u8>,
@@ -72,6 +75,173 @@ fn mock_stream(request: &str) -> MockStream {
         input: std::io::Cursor::new(request.as_bytes().to_vec()),
         output: Vec::new(),
     }
+}
+
+#[test]
+fn resident_file_path_routes_alternate_documents_in_local_and_managed_modes() {
+    use op_editor_core::PenNodeExt;
+    for mode in [ServeMode::Local, ServeMode::Managed] {
+        let primary = write_temp_op(
+            "resident-primary",
+            r#"{"version":"1.0.0","children":[{"type":"rectangle","id":"root","name":"Primary disk","width":16,"height":16}]}"#,
+        );
+        let alternate = write_temp_op("resident-alternate", r#"{"version":"1.0.0","children":[]}"#);
+        let mut editor = crate::mcp_serve::load_editor_state(&primary).unwrap();
+        editor.doc.children[0].base_mut().name = Some("Primary unsaved live".into());
+        let mut canvas = WebCanvasState::new_with_path(editor, 3100, Some(primary.clone()));
+        canvas.mode = mode;
+        let state = Mutex::new(canvas);
+        let hub = SseHub::default();
+        let request = serde_json::json!({"jsonrpc":"2.0","id":71,"method":"tools/call","params":{"name":"add_page","arguments":{"filePath":alternate,"name":"Alternate write"}}}).to_string();
+        let frame = format!(
+            "POST /mcp HTTP/1.1\r\nHost: x\r\nContent-Length: {}\r\n\r\n{request}",
+            request.len()
+        );
+        let mut stream = mock_stream(&frame);
+        serve_one_in_mode(&mut stream, &state, &hub, mode).unwrap();
+        let response = String::from_utf8_lossy(&stream.output);
+        assert!(
+            response.contains("200 OK") && !response.contains("\"isError\":true"),
+            "{response}"
+        );
+        let saved = crate::mcp_serve::load_editor_state(&alternate).unwrap();
+        assert!(saved
+            .doc
+            .pages
+            .as_ref()
+            .unwrap()
+            .iter()
+            .any(|page| page.name == "Alternate write"));
+        {
+            let current = state.lock().unwrap();
+            assert_eq!(
+                current.version, 0,
+                "alternate writes must not dirty the primary canvas"
+            );
+            assert_eq!(
+                current.editor.doc.children[0].base().name.as_deref(),
+                Some("Primary unsaved live")
+            );
+        }
+        let request = serde_json::json!({"jsonrpc":"2.0","id":72,"method":"tools/call","params":{"name":"batch_get","arguments":{"filePath":primary,"readDepth":1}}}).to_string();
+        let frame = format!(
+            "POST /mcp HTTP/1.1\r\nHost: x\r\nContent-Length: {}\r\n\r\n{request}",
+            request.len()
+        );
+        let mut stream = mock_stream(&frame);
+        serve_one_in_mode(&mut stream, &state, &hub, mode).unwrap();
+        assert!(String::from_utf8_lossy(&stream.output).contains("Primary unsaved live"));
+        assert!(std::fs::read_to_string(&primary)
+            .unwrap()
+            .contains("Primary disk"));
+        let _ = std::fs::remove_file(primary);
+        let _ = std::fs::remove_file(alternate);
+    }
+}
+
+#[test]
+fn resident_agent_context_scopes_primary_selection_and_cross_file_clipboards() {
+    use op_editor_core::PenNodeExt;
+    let primary = write_temp_op(
+        "agent-primary",
+        r#"{"version":"1.0.0","children":[{"type":"rectangle","id":"root","name":"Shared root","width":16,"height":16}]}"#,
+    );
+    let alternate = write_temp_op("agent-alternate", r#"{"version":"1.0.0","children":[]}"#);
+    let editor = crate::mcp_serve::load_editor_state(&primary).unwrap();
+    let state = Mutex::new(WebCanvasState::new_with_path(
+        editor,
+        3100,
+        Some(primary.clone()),
+    ));
+    let hub = SseHub::default();
+    let call = |agent: &str, tool: &str, path: &std::path::Path, extra: serde_json::Value| {
+        let mut arguments = extra.as_object().unwrap().clone();
+        arguments.insert("agentId".into(), serde_json::json!(agent));
+        arguments.insert("filePath".into(), serde_json::json!(path));
+        let body = serde_json::json!({"jsonrpc":"2.0","id":73,"method":"tools/call","params":{"name":tool,"arguments":arguments}}).to_string();
+        let frame = format!(
+            "POST /mcp HTTP/1.1\r\nHost: x\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        let mut stream = mock_stream(&frame);
+        serve_one_in_mode(&mut stream, &state, &hub, ServeMode::Local).unwrap();
+        String::from_utf8(stream.output)
+            .unwrap()
+            .split_once("\r\n\r\n")
+            .unwrap()
+            .1
+            .to_string()
+    };
+    let ok = |response: String| {
+        assert!(!response.contains("\"isError\":true"), "{response}");
+    };
+    ok(call(
+        "A",
+        "set_selection",
+        &primary,
+        serde_json::json!({"node_id":"root"}),
+    ));
+    ok(call("A", "copy_selected", &primary, serde_json::json!({})));
+    let a_selection = call("A", "get_selection", &primary, serde_json::json!({}));
+    let b_selection = call("B", "get_selection", &primary, serde_json::json!({}));
+    let a: serde_json::Value =
+        serde_json::from_str(&crate::mcp_serve::tool_text(&a_selection)).unwrap();
+    let b: serde_json::Value =
+        serde_json::from_str(&crate::mcp_serve::tool_text(&b_selection)).unwrap();
+    assert_eq!(a["selectedIds"], serde_json::json!(["root"]));
+    assert_eq!(b["selectedIds"], serde_json::json!([]));
+    ok(call(
+        "A",
+        "paste_clipboard",
+        &alternate,
+        serde_json::json!({}),
+    ));
+    assert_eq!(
+        crate::mcp_serve::load_editor_state(&alternate)
+            .unwrap()
+            .doc
+            .children
+            .len(),
+        1
+    );
+    let empty_clipboard = call("B", "paste_clipboard", &alternate, serde_json::json!({}));
+    assert!(
+        empty_clipboard.contains("\"isError\":true"),
+        "{empty_clipboard}"
+    );
+    assert_eq!(
+        crate::mcp_serve::load_editor_state(&alternate)
+            .unwrap()
+            .doc
+            .children
+            .len(),
+        1
+    );
+    assert_eq!(
+        state.lock().unwrap().version,
+        0,
+        "isolated UI and alternate-file writes must not broadcast a primary document edit"
+    );
+    ok(call(
+        "A",
+        "nudge_selected",
+        &primary,
+        serde_json::json!({"dx":1,"dy":0}),
+    ));
+    let live = state.lock().unwrap();
+    assert_eq!(
+        live.version, 1,
+        "a shared primary document edit must still broadcast"
+    );
+    assert!(live.editor.selection.set.is_empty());
+    assert!(live.editor.clipboard.is_empty());
+    assert_eq!(
+        live.editor.doc.children[0].base().name.as_deref(),
+        Some("Shared root")
+    );
+    drop(live);
+    let _ = std::fs::remove_file(primary);
+    let _ = std::fs::remove_file(alternate);
 }
 
 /// One SSE payload for the hub tests.

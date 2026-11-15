@@ -196,8 +196,10 @@ fn paint_checkbox(
         cx.backend
             .fill_round_rect(box_rect, radius, ui_color(visual.active));
     }
-    cx.backend
-        .stroke_round_rect(box_rect, radius, ui_color(visual.inactive), stroke_w);
+    if !super::canvas_viewport_stroke_paint::paint_widget(cx, node, box_rect, radius, zoom) {
+        cx.backend
+            .stroke_round_rect(box_rect, radius, ui_color(visual.inactive), stroke_w);
+    }
     if on {
         // White check (✓) as a 3-point polyline, fractions matching the
         // jian-core visual: (0.24,0.52) → (0.42,0.70) → (0.76,0.30).
@@ -268,8 +270,14 @@ fn paint_slider(
         .fill_round_rect(knob, d / 2.0, ui_color(knob_color));
     let knob_stroke_width = node.stroke.map(|stroke| stroke.width).unwrap_or(1.0) * zoom;
     if knob_stroke_width > 0.0 {
-        cx.backend
-            .stroke_round_rect(knob, d / 2.0, ui_color(visual.inactive), knob_stroke_width);
+        if !super::canvas_viewport_stroke_paint::paint_widget(cx, node, knob, d / 2.0, zoom) {
+            cx.backend.stroke_round_rect(
+                knob,
+                d / 2.0,
+                ui_color(visual.inactive),
+                knob_stroke_width,
+            );
+        }
     }
 }
 
@@ -323,8 +331,10 @@ fn paint_select(
     }
     if let (Some(border), Some(stroke)) = (visual.border, node.stroke) {
         if stroke.width > 0.0 {
-            cx.backend
-                .stroke_round_rect(r, radius, ui_color(border), stroke.width * zoom);
+            if !super::canvas_viewport_stroke_paint::paint_widget(cx, node, r, radius, zoom) {
+                cx.backend
+                    .stroke_round_rect(r, radius, ui_color(border), stroke.width * zoom);
+            }
         }
     }
 
@@ -390,8 +400,10 @@ fn paint_radio_group(
             cx.backend
                 .fill_round_rect(circle, d / 2.0, ui_color(visual.active));
         }
-        cx.backend
-            .stroke_round_rect(circle, d / 2.0, ui_color(visual.inactive), stroke_width);
+        if !super::canvas_viewport_stroke_paint::paint_widget(cx, node, circle, d / 2.0, zoom) {
+            cx.backend
+                .stroke_round_rect(circle, d / 2.0, ui_color(visual.inactive), stroke_width);
+        }
         if on {
             let inner = d * 0.4;
             cx.backend.fill_round_rect(
@@ -443,8 +455,10 @@ fn paint_text_field(
     }
     if let (Some(border), Some(stroke)) = (visual.border, node.stroke) {
         if stroke.width > 0.0 {
-            cx.backend
-                .stroke_round_rect(r, radius, ui_color(border), stroke.width * zoom);
+            if !super::canvas_viewport_stroke_paint::paint_widget(cx, node, r, radius, zoom) {
+                cx.backend
+                    .stroke_round_rect(r, radius, ui_color(border), stroke.width * zoom);
+            }
         }
     }
 
@@ -525,12 +539,14 @@ fn paint_tabs(
     // stroke as a hairline, not as a no-op, so an authored `thickness: 0`
     // would still outline the bar.
     if let Some(stroke) = node.stroke.filter(|stroke| stroke.width > 0.0) {
-        cx.backend.stroke_round_rect(
-            bar,
-            bar_radius,
-            ui_color(visual.border.unwrap_or(visual.inactive)),
-            stroke.width * zoom,
-        );
+        if !super::canvas_viewport_stroke_paint::paint_widget(cx, node, bar, bar_radius, zoom) {
+            cx.backend.stroke_round_rect(
+                bar,
+                bar_radius,
+                ui_color(visual.border.unwrap_or(visual.inactive)),
+                stroke.width * zoom,
+            );
+        }
     }
     let active = super::canvas_viewport_paint::tabs_active_index(w);
     let n = w.options.len().max(1);

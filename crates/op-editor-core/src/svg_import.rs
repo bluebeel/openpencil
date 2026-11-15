@@ -1,25 +1,17 @@
 //! SVG import — parse an SVG document into canonical `PenNode`s and
 //! insert them onto the active page.
 //!
-//! TS parity with `apps/web/src/.../svg-parser.ts`. v1 scope:
+//! Imports basic shapes, inherited fill/stroke styles and nested groups.
+//! SVG path commands remain compound SVG d data, preserving elliptical arcs
+//! and fill rules. The legacy editable path reader supports every standard
+//! command with f64 coordinates; quadratic/arc segments become cubic handles.
+//! Nested XML transforms are composed in SVG order in f64 and baked into
+//! geometry. General transformed strokes become filled outlines where a
+//! canonical scalar stroke cannot represent them. Definitions, CSS stylesheets,
+//! masks/filters and nested viewport clipping remain outside this importer.
 //!
-//!   - Shape elements: `<rect>` / `<circle>` / `<ellipse>` / `<line>` /
-//!     `<polyline>` / `<polygon>`.
-//!   - `<path>` — the `M L H V C S Q T Z` command subset (absolute +
-//!     relative). Cubic / quadratic curves keep their bezier handles
-//!     (`Q`/`T` are promoted to cubics); `A` (elliptical arc) degrades
-//!     to a straight segment to its endpoint.
-//!   - `fill` attribute — `#rgb` / `#rrggbb` + a small named-colour
-//!     table; `none` leaves the node unfilled.
-//!
-//! Out of scope for v1 (skipped, not an error): `<g>` grouping,
-//! `transform` attributes, CSS `<style>`, `<defs>` / gradients,
-//! `stroke` styling. Elements are scanned flat, so a shape nested in a
-//! `<g>` still imports — just without the group's transform.
-//!
-//! The parser is hand-rolled (no XML / SVG crate) so `op-editor-core`
-//! stays dependency-light + wasm32-clean, matching the hand-rolled
-//! JSON parser discipline in `op-mcp`.
+//! The XML scanner is hand-rolled; path grammar and arc subdivision use the
+//! existing wasm-clean svgtypes/Kurbo dependencies.
 //!
 //! ### Module layout
 //!
@@ -37,23 +29,44 @@
 //! - `lexer` — hand-rolled tag / attribute / number scanning
 //! - `path_data` — the `<path d="…">` command reader
 
+mod colors;
+mod geometry;
+mod gradient_defs;
+mod gradient_metadata;
+mod image_defs;
+mod image_pattern_content;
+use image_pattern_content::single_image;
+mod image_metadata;
 mod lexer;
+mod mask_defs;
 mod nodes;
 mod path_data;
+mod resources;
 mod scale;
 mod style;
+mod transform;
+mod viewport_clip;
 mod xml;
 
+use geometry::*;
+use gradient_defs::*;
+use gradient_metadata::*;
+use image_defs::*;
+use image_metadata::*;
 use lexer::*;
+use mask_defs::*;
 use nodes::*;
 use path_data::*;
+use resources::*;
 use scale::*;
 use style::*;
+use transform::*;
+use viewport_clip::*;
 use xml::*;
 
 use crate::command_node::build_leaf_node;
 use crate::fills::set_primary_fill_hex;
-use crate::id_allocator::{IdAllocError, IdAllocator, SequentialIdAllocator};
+use crate::id_allocator::{IdAllocError, IdAllocator};
 use crate::node_id::NodeId;
 use crate::pen_node_ext::PenNodeExt;
 use crate::state::EditorState;
@@ -61,6 +74,10 @@ use jian_ops_schema::node::path::{PathFillRule, PenPathHandle};
 use jian_ops_schema::node::{PathNode, PenNode, PenNodeBase, PenPathAnchor};
 use jian_ops_schema::sizing::SizingBehavior;
 use jian_ops_schema::style::{PenFill, PenStroke, SolidFillBody, StrokeThickness};
+
+pub(crate) fn gradient_color_rgba(raw: &str) -> Option<[f64; 4]> {
+    colors::rgba(raw)
+}
 
 /// One parsed SVG element — tag name + raw attribute pairs.
 struct SvgElement {
@@ -95,6 +112,16 @@ struct StyleCtx {
     stroke: Option<String>,
     stroke_width: f64,
     fill_rule: Option<PathFillRule>,
+    stroke_cap: kurbo::Cap,
+    stroke_join: kurbo::Join,
+    stroke_miter: f64,
+    stroke_dashes: Vec<f64>,
+    stroke_dash_offset: f64,
+    fill_opacity: f64,
+    stroke_opacity: f64,
+    current_color: String,
+    clip_mode: bool,
+    image_rendering: Option<bool>,
 }
 
 impl Default for StyleCtx {
@@ -104,6 +131,16 @@ impl Default for StyleCtx {
             stroke: None,
             stroke_width: 1.0,
             fill_rule: None,
+            stroke_cap: kurbo::Cap::Butt,
+            stroke_join: kurbo::Join::Miter,
+            stroke_miter: 4.0,
+            stroke_dashes: Vec::new(),
+            stroke_dash_offset: 0.0,
+            fill_opacity: 1.0,
+            stroke_opacity: 1.0,
+            current_color: "black".into(),
+            clip_mode: false,
+            image_rendering: None,
         }
     }
 }
@@ -111,6 +148,8 @@ impl Default for StyleCtx {
 /// Tree element with parsed attrs + child elements (the recursive
 /// `<g>` case the old flat `parse_svg_elements` could not handle).
 struct SvgTree {
+    /// Preserve XML tag spelling for exact generated-definition verification.
+    source_tag: String,
     tag: String,
     attrs: Vec<(String, String)>,
     children: Vec<SvgTree>,
@@ -134,17 +173,9 @@ impl SvgTree {
 /// Tags ignored verbatim — definitions, gradients, clipping, scripts.
 /// Mirrors the TS `SKIP_TAGS` constant.
 const SKIP_TAGS: &[&str] = &[
-    "defs",
-    "style",
     "title",
     "desc",
     "metadata",
-    "clippath",
-    "mask",
-    "filter",
-    "lineargradient",
-    "radialgradient",
-    "symbol",
     "marker",
     "pattern",
     "script",
@@ -177,7 +208,7 @@ impl EditorState {
         offset: (f64, f64),
         name: Option<&str>,
     ) -> usize {
-        let Ok(mut allocator) = SequentialIdAllocator::for_document(&self.doc, *next_id) else {
+        let Ok(mut allocator) = self.sequential_id_allocator(*next_id) else {
             return 0;
         };
         let result = self.import_svg_named_with_allocator(&mut allocator, svg, offset, name);
@@ -186,7 +217,7 @@ impl EditorState {
     }
 
     /// Parse and import an SVG using a session-owned document allocator.
-    pub fn import_svg_with_allocator(
+    pub(crate) fn import_svg_with_allocator_unobserved(
         &mut self,
         allocator: &mut dyn IdAllocator,
         svg: &str,
@@ -196,7 +227,7 @@ impl EditorState {
     }
 
     /// Named allocator-aware form of [`Self::import_svg_named`].
-    pub fn import_svg_named_with_allocator(
+    pub(crate) fn import_svg_named_with_allocator_unobserved(
         &mut self,
         allocator: &mut dyn IdAllocator,
         svg: &str,
@@ -214,23 +245,45 @@ impl EditorState {
             Some(p) => p,
             None => return Ok(0),
         };
-        let (scale, root_ctx) = compute_root_scale(&root_attrs);
+        let (_, root_ctx) = compute_root_scale(&root_attrs);
+        let matrix = match root_transform(&root_attrs, offset) {
+            Ok(matrix) => matrix,
+            Err(error) => {
+                tracing::warn!(%error, "SVG root transform import rejected");
+                return Ok(0);
+            }
+        };
         let tree = parse_svg_tree(body);
         if tree.is_empty() {
             return Ok(0);
         }
+        let has_css_pi = svg
+            .as_bytes()
+            .windows(b"<?xml-stylesheet".len())
+            .any(|bytes| bytes.eq_ignore_ascii_case(b"<?xml-stylesheet"));
+        let resources = SvgResources::new(&tree, &root_attrs).with_stylesheet_hint(has_css_pi);
+        let viewport = match source_viewport(&root_attrs, [0.0, 0.0, 100.0, 100.0]) {
+            Ok(viewport) => viewport,
+            Err(error) => {
+                tracing::warn!(%error, "SVG viewport import rejected");
+                return Ok(0);
+            }
+        };
         let mut taken = self.collect_node_ids();
         let mut built: Vec<PenNode> = Vec::new();
         for el in &tree {
-            if let Some(node) =
-                element_to_node_ctx(el, &root_ctx, scale, offset, allocator, &mut taken)?
-            {
+            if let Some(node) = element_to_node_ctx(
+                el, &root_ctx, matrix, viewport, &resources, allocator, &mut taken,
+            )? {
                 built.push(node);
             }
         }
         if built.is_empty() {
             return Ok(0);
         }
+        // Canonical children are topmost-first; SVG siblings paint in source
+        // order, so reverse once at each imported sibling boundary.
+        built.reverse();
         let count = built.len();
         // Wrap the imported nodes in a Group so the user can move /
         // delete the SVG as a unit instead of `count` flat siblings
@@ -244,6 +297,7 @@ impl EditorState {
         let group = PenNode::Group(GroupNode {
             base: jian_ops_schema::node::base::PenNodeBase {
                 id: group_id.as_str().to_string(),
+                opacity: svg_node_opacity(&root_attrs),
                 name: Some(
                     group_name
                         .map(|s| s.to_string())
@@ -261,10 +315,12 @@ impl EditorState {
             gestures: None,
             route: None,
         });
-        let pre = self.snapshot_for_history();
+        let group = clip_viewport(group, &root_attrs, matrix, true, allocator, &mut taken)?;
+        let group_id = NodeId::new(group.base().id.clone());
+        let pre = self.snapshot_for_undo();
         self.active_children_mut().push(group);
         self.set_single_selection(group_id);
-        self.history_push_past(pre);
+        self.push_undo(pre);
         Ok(count)
     }
 }

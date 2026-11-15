@@ -1,5 +1,8 @@
 //! Property-panel edit mutators split out of `mutators.rs`.
 
+#[path = "selected_effect_history.rs"]
+mod selected_effect_history;
+
 use crate::pen_node_ext::PenNodeExt;
 use crate::state::EditorState;
 use crate::ui_draft::PropertyFocus;
@@ -20,9 +23,9 @@ fn stroke_side_for_focus(focus: PropertyFocus) -> Option<crate::StrokeSide> {
 fn stroke_values_for_mode_update(
     mode: crate::PaddingEditMode,
     focus: PropertyFocus,
-    value: f32,
-    mut values: [f32; 4],
-) -> [f32; 4] {
+    value: f64,
+    mut values: [f64; 4],
+) -> [f64; 4] {
     match mode {
         crate::PaddingEditMode::Single => [value; 4],
         crate::PaddingEditMode::Axis => match focus {
@@ -146,23 +149,35 @@ impl EditorState {
                 }
                 let values = self
                     .selected_node()
-                    .and_then(crate::fills::node_stroke_side_widths)
+                    .and_then(crate::fills::node_stroke_side_widths_exact)
                     .unwrap_or([0.0; 4]);
                 let mode = self.editor_ui.stroke_edit_mode.unwrap_or_else(|| {
-                    crate::PaddingEditMode::from_values(values[0], values[1], values[2], values[3])
+                    crate::PaddingEditMode::from_values(
+                        values[0] as f32,
+                        values[1] as f32,
+                        values[2] as f32,
+                        values[3] as f32,
+                    )
                 });
-                let values = stroke_values_for_mode_update(mode, focus, value.max(0.0), values);
-                for (side, width) in [
-                    (crate::StrokeSide::Top, values[0]),
-                    (crate::StrokeSide::Right, values[1]),
-                    (crate::StrokeSide::Bottom, values[2]),
-                    (crate::StrokeSide::Left, values[3]),
-                ] {
-                    if !self.cmd_set_node_stroke_side_width(&sel, side, width) {
-                        return false;
-                    }
-                }
-                return true;
+                let values =
+                    stroke_values_for_mode_update(mode, focus, f64::from(value.max(0.0)), values);
+                return self
+                    .with_selected_node(|node| {
+                        for (side, width) in [
+                            (crate::StrokeSide::Top, values[0]),
+                            (crate::StrokeSide::Right, values[1]),
+                            (crate::StrokeSide::Bottom, values[2]),
+                            (crate::StrokeSide::Left, values[3]),
+                        ] {
+                            if !crate::command_node_attrs::borrowed::set_node_stroke_side_width_exact(
+                                node, &sel, side, width,
+                            ) {
+                                return false;
+                            }
+                        }
+                        true
+                    })
+                    .unwrap_or(false);
             }
             PropertyFocus::PolygonSides => {
                 if !value.is_finite() {
@@ -410,63 +425,6 @@ impl EditorState {
         true
     }
 
-    /// Set the selected Path's winding rule and record one undo step.
-    pub fn set_selected_fill_rule(
-        &mut self,
-        fill_rule: jian_ops_schema::node::path::PathFillRule,
-    ) -> bool {
-        let sel = self.selection.anchor.clone();
-        if !sel.is_real() || !self.is_editable(&sel) {
-            return false;
-        }
-        let before = self.snapshot_for_history();
-        let instance_scope = self.begin_instance_write_for_anchor();
-        let wrote = self.cmd_set_path_fill_rule(&sel, fill_rule);
-        if let Some(scope) = instance_scope {
-            self.finish_instance_write(scope);
-        }
-        if wrote && self.snapshot_for_history() != before {
-            self.history_push_past(before);
-        }
-        wrote
-    }
-
-    /// Remove one selected-node effect and record one undo step.
-    pub fn remove_selected_effect(&mut self, index: usize) -> bool {
-        let sel = self.selection.anchor.clone();
-        if !sel.is_real() || !self.is_editable(&sel) {
-            return false;
-        }
-        let before = self.snapshot_for_history();
-        let instance_scope = self.begin_instance_write_for_anchor();
-        let wrote = self.cmd_remove_node_effect(&sel, index as u32);
-        if let Some(scope) = instance_scope {
-            self.finish_instance_write(scope);
-        }
-        if wrote && self.snapshot_for_history() != before {
-            self.history_push_past(before);
-        }
-        wrote
-    }
-
-    /// Write the shared optional effect visibility flag and record one undo step.
-    pub fn set_selected_effect_visible(&mut self, index: usize, visible: bool) -> bool {
-        let sel = self.selection.anchor.clone();
-        if !sel.is_real() || !self.is_editable(&sel) {
-            return false;
-        }
-        let before = self.snapshot_for_history();
-        let instance_scope = self.begin_instance_write_for_anchor();
-        let wrote = self.cmd_set_effect_visible(&sel, index, visible);
-        if let Some(scope) = instance_scope {
-            self.finish_instance_write(scope);
-        }
-        if wrote && self.snapshot_for_history() != before {
-            self.history_push_past(before);
-        }
-        wrote
-    }
-
     /// Write a string-typed widget prop (placeholder / value / label)
     /// on the anchor node. True on a real, editable selection whose
     /// variant actually carries the field.
@@ -578,7 +536,7 @@ impl EditorState {
         }
         let v = self
             .selected_node()
-            .and_then(crate::fills::node_stroke_side_widths)
+            .and_then(crate::fills::node_stroke_side_widths_exact)
             .unwrap_or([0.0; 4]);
         let reshaped = match mode {
             crate::PaddingEditMode::Single => [v[0]; 4],
@@ -591,7 +549,7 @@ impl EditorState {
             (crate::StrokeSide::Bottom, reshaped[2]),
             (crate::StrokeSide::Left, reshaped[3]),
         ] {
-            if !self.cmd_set_node_stroke_side_width(&sel, side, width) {
+            if !self.cmd_set_node_stroke_side_width_exact(&sel, side, width) {
                 return false;
             }
         }
@@ -616,12 +574,19 @@ impl EditorState {
 
     /// Run `f` on the selected, editable node, returning `false` when there
     /// is no real editable selection.
-    fn with_selected_node<R>(&mut self, f: impl FnOnce(&mut PenNode) -> R) -> Option<R> {
+    pub(crate) fn with_selected_node<R>(&mut self, f: impl FnOnce(&mut PenNode) -> R) -> Option<R> {
         let sel = self.selection.anchor.clone();
-        if !sel.is_real() || !self.is_editable(&sel) {
+        if !sel.is_real() {
             return None;
         }
-        find_node_mut(self.active_children_mut(), &sel).map(f)
+        let virtual_anchor = self.instance_write_virtual_anchor.as_ref() == Some(&sel);
+        let node = find_node_mut(self.active_children_mut(), &sel)?;
+        if !virtual_anchor
+            && (node.base().locked == Some(true) || node.base().visible == Some(false))
+        {
+            return None;
+        }
+        Some(f(node))
     }
 
     pub fn add_selected_fill(&mut self) -> bool {
@@ -665,18 +630,15 @@ impl EditorState {
     }
 
     pub fn set_selected_image_fill_mode(&mut self, mode: crate::ImageFillMode) -> bool {
-        let sel = self.selection.anchor.clone();
-        if !sel.is_real() || !self.is_editable(&sel) {
-            return false;
-        }
-        let Some(node) = find_node_mut(self.active_children_mut(), &sel) else {
-            return false;
-        };
-        let changed = if crate::image_node_props::set_image_node_mode(node, mode) {
-            true
-        } else {
-            crate::fills::set_primary_image_fill_mode(node, mode)
-        };
+        let changed = self
+            .with_selected_node(|node| {
+                if crate::image_node_props::set_image_node_mode(node, mode) {
+                    true
+                } else {
+                    crate::fills::set_primary_image_fill_mode(node, mode)
+                }
+            })
+            .unwrap_or(false);
         if changed {
             self.mark_document_changed();
         }
@@ -701,18 +663,15 @@ impl EditorState {
         field: crate::ImageAdjustmentField,
         value: f32,
     ) -> bool {
-        let sel = self.selection.anchor.clone();
-        if !sel.is_real() || !self.is_editable(&sel) {
-            return false;
-        }
-        let Some(node) = find_node_mut(self.active_children_mut(), &sel) else {
-            return false;
-        };
-        let changed = if crate::image_node_props::set_image_node_adjustment(node, field, value) {
-            true
-        } else {
-            crate::fills::set_primary_image_adjustment(node, field, value)
-        };
+        let changed = self
+            .with_selected_node(|node| {
+                if crate::image_node_props::set_image_node_adjustment(node, field, value) {
+                    true
+                } else {
+                    crate::fills::set_primary_image_adjustment(node, field, value)
+                }
+            })
+            .unwrap_or(false);
         if changed {
             self.mark_document_changed();
         }
@@ -720,18 +679,15 @@ impl EditorState {
     }
 
     pub fn reset_selected_image_adjustments(&mut self) -> bool {
-        let sel = self.selection.anchor.clone();
-        if !sel.is_real() || !self.is_editable(&sel) {
-            return false;
-        }
-        let Some(node) = find_node_mut(self.active_children_mut(), &sel) else {
-            return false;
-        };
-        let changed = if crate::image_node_props::reset_image_node_adjustments(node) {
-            true
-        } else {
-            crate::fills::reset_primary_image_adjustments(node)
-        };
+        let changed = self
+            .with_selected_node(|node| {
+                if crate::image_node_props::reset_image_node_adjustments(node) {
+                    true
+                } else {
+                    crate::fills::reset_primary_image_adjustments(node)
+                }
+            })
+            .unwrap_or(false);
         if changed {
             self.mark_document_changed();
         }

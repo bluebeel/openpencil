@@ -8,6 +8,7 @@ use crate::figma_types::FigColor;
 use crate::kiwi::FigValue;
 use jian_ops_schema::node::text::{TextAlign, TextAlignVertical, TextContent, TextGrowth};
 use jian_ops_schema::style::{FontStyleKind, StyledTextSegment};
+use std::collections::{BTreeMap, HashMap};
 
 /// Mapped text props — spread onto a `TextNode` by the converter.
 #[derive(Debug, Clone, PartialEq)]
@@ -17,6 +18,9 @@ pub struct TextProps {
     pub font_size: Option<f64>,
     pub font_weight: Option<u32>,
     pub font_style: Option<FontStyleKind>,
+    pub font_kerning: Option<bool>,
+    pub font_features: Option<BTreeMap<String, u32>>,
+    pub text_decoration_skip_ink: Option<bool>,
     pub letter_spacing: Option<f64>,
     pub line_height: Option<f64>,
     pub text_align: Option<TextAlign>,
@@ -46,9 +50,16 @@ pub fn map_figma_text_props(node: &FigValue) -> TextProps {
         } else {
             None
         },
+        font_kerning: map_font_kerning(node),
+        font_features: map_font_features(node),
+        text_decoration_skip_ink: Some(node.get_bool("textDecorationSkipInk").unwrap_or(true)),
         letter_spacing: map_letter_spacing(node),
         line_height: map_line_height(node),
-        text_align: map_text_align(node.get_str("textAlignHorizontal")),
+        // Figma omits LEFT defaults. Make it explicit so a centered parent
+        // cannot reinterpret this text as an unspecified legacy .op label.
+        text_align: Some(
+            map_text_align(node.get_str("textAlignHorizontal")).unwrap_or(TextAlign::Left),
+        ),
         text_align_vertical: map_text_align_vertical(node.get_str("textAlignVertical")),
         text_growth: map_text_growth(node.get_str("textAutoResize")),
         underline: None,
@@ -60,6 +71,61 @@ pub fn map_figma_text_props(node: &FigValue) -> TextProps {
         _ => {}
     }
     props
+}
+
+/// Figma enables kerning by default, including when feature arrays are omitted.
+/// Canonical `.op` files bypass this mapper and retain their optional setting.
+fn map_font_kerning(node: &FigValue) -> Option<bool> {
+    Some(
+        !node
+            .get_array("toggledOffOTFeatures")
+            .is_some_and(|disabled| {
+                disabled
+                    .iter()
+                    .any(|feature| feature.as_str() == Some("KERN"))
+            }),
+    )
+}
+
+fn map_font_features(node: &FigValue) -> Option<BTreeMap<String, u32>> {
+    let enabled = node.get_array("toggledOnOTFeatures");
+    let disabled = node.get_array("toggledOffOTFeatures");
+    let common = node.get_bool("fontVariantCommonLigatures");
+    if enabled.is_none() && disabled.is_none() && common.is_none() {
+        return None;
+    }
+    let mut features = BTreeMap::new();
+    if let Some(enabled) = common {
+        features.insert("liga".into(), u32::from(enabled));
+    }
+    for (values, setting) in [(enabled, 1), (disabled, 0)] {
+        for value in values.unwrap_or(&[]) {
+            let Some(tag) = value.as_str().filter(|tag| {
+                tag.len() == 4 && tag.bytes().all(|byte| byte.is_ascii_alphanumeric())
+            }) else {
+                continue;
+            };
+            features.insert(tag.to_ascii_lowercase(), setting);
+        }
+    }
+    if node
+        .get("textData")
+        .and_then(|text| text.get_array("styleOverrideTable"))
+        .is_some_and(|table| {
+            table.iter().any(|style| {
+                style.get_bool("fontVariantCommonLigatures") == Some(false)
+                    || style.get_array("toggledOffOTFeatures").is_some_and(|tags| {
+                        tags.iter().any(|tag| {
+                            tag.as_str()
+                                .is_some_and(|tag| tag.eq_ignore_ascii_case("liga"))
+                        })
+                    })
+            })
+        })
+    {
+        features.insert("liga".into(), 0);
+    }
+    Some(features)
 }
 
 /// Build the text content — plain string, or per-run styled segments
@@ -82,8 +148,16 @@ fn build_content(node: &FigValue) -> TextContent {
         return TextContent::Plain(characters.to_string());
     }
 
-    // Figma indexes characterStyleIDs by UTF-16 code unit.
-    let units: Vec<u16> = characters.encode_utf16().collect();
+    // Binary Figma tables are compact records keyed by styleID, which need
+    // not match their array offsets. Older clipboard payloads omit the keys.
+    let keyed_overrides: HashMap<i32, &FigValue> = table
+        .iter()
+        .filter_map(|entry| entry.get_f64("styleID").map(|id| (id as i32, entry)))
+        .collect();
+
+    // Figma indexes by UTF-16 code unit. Decode each exact run directly into
+    // its final owned String instead of retaining the whole UTF-16 buffer and
+    // then copying every lossy-decoded temporary again into a segment.
     let style_at = |i: usize| -> i32 {
         style_ids
             .get(i)
@@ -91,19 +165,25 @@ fn build_content(node: &FigValue) -> TextContent {
             .map(|v| v as i32)
             .unwrap_or(-1)
     };
-
-    let mut segments: Vec<StyledTextSegment> = Vec::new();
+    let mut units = characters.encode_utf16().enumerate().peekable();
     let mut current = style_ids.first().and_then(|v| v.as_f64()).unwrap_or(0.0) as i32;
-    let mut seg_start = 0usize;
-    for i in 1..=units.len() {
-        let sid = style_at(i);
-        if sid != current || i == units.len() {
-            if i > seg_start {
-                let seg_text = String::from_utf16_lossy(&units[seg_start..i]);
-                segments.push(build_segment(&seg_text, current, table));
+    let mut segments = Vec::new();
+    while units.peek().is_some() {
+        let run_units = std::iter::from_fn(|| {
+            let &(index, _) = units.peek()?;
+            // The first run's absent/non-numeric style defaults to 0; later
+            // missing IDs default to -1, exactly as the original boundary walk.
+            if index != 0 && style_at(index) != current {
+                return None;
             }
-            current = sid;
-            seg_start = i;
+            units.next().map(|(_, unit)| unit)
+        });
+        let text = std::char::decode_utf16(run_units)
+            .map(|value| value.unwrap_or(char::REPLACEMENT_CHARACTER))
+            .collect();
+        segments.push(build_segment(text, current, table, &keyed_overrides));
+        if let Some(&(index, _)) = units.peek() {
+            current = style_at(index);
         }
     }
 
@@ -111,7 +191,12 @@ fn build_content(node: &FigValue) -> TextContent {
         s.font_family.is_some()
             || s.font_size.is_some()
             || s.font_weight.is_some()
+            || s.font_style.is_some()
             || s.fill.is_some()
+            || s.fill_paints.is_some()
+            || s.underline.is_some()
+            || s.strikethrough.is_some()
+            || s.text_decoration_skip_ink.is_some()
     });
     if has_override {
         TextContent::Styled(segments)
@@ -121,25 +206,38 @@ fn build_content(node: &FigValue) -> TextContent {
 }
 
 /// Build one styled segment from a style-override-table entry.
-fn build_segment(text: &str, style_id: i32, table: &[FigValue]) -> StyledTextSegment {
+fn build_segment(
+    text: String,
+    style_id: i32,
+    table: &[FigValue],
+    keyed_overrides: &HashMap<i32, &FigValue>,
+) -> StyledTextSegment {
     let mut seg = StyledTextSegment {
-        text: text.to_string(),
+        text,
         font_family: None,
         font_size: None,
         font_weight: None,
         font_style: None,
         fill: None,
+        fill_paints: None,
         underline: None,
         strikethrough: None,
         href: None,
+        text_decoration_skip_ink: None,
     };
     if style_id <= 0 {
         return seg;
     }
     let idx = style_id as usize;
-    let Some(ov) = table.get(idx).or_else(|| table.get(idx - 1)) else {
+    let override_style = if keyed_overrides.is_empty() {
+        table.get(idx).or_else(|| table.get(idx - 1))
+    } else {
+        keyed_overrides.get(&style_id).copied()
+    };
+    let Some(ov) = override_style else {
         return seg;
     };
+    seg.text_decoration_skip_ink = ov.get_bool("textDecorationSkipInk");
     let font_name = ov.get("fontName");
     if let Some(family) = font_name.and_then(|f| f.get_str("family")) {
         if !family.is_empty() {
@@ -148,7 +246,7 @@ fn build_segment(text: &str, style_id: i32, table: &[FigValue]) -> StyledTextSeg
     }
     if let Some(size) = ov.get_f64("fontSize") {
         if size != 0.0 {
-            seg.font_size = Some(size as f32);
+            seg.font_size = Some(size);
         }
     }
     let style_lower = font_name
@@ -166,13 +264,16 @@ fn build_segment(text: &str, style_id: i32, table: &[FigValue]) -> StyledTextSeg
         Some("STRIKETHROUGH") => seg.strikethrough = Some(true),
         _ => {}
     }
-    if let Some(color) = ov
-        .get_array("fillPaints")
-        .and_then(|p| p.first())
-        .and_then(|p| p.get("color"))
-        .and_then(FigColor::from_value)
-    {
-        seg.fill = Some(figma_color_to_hex(&color));
+    if let Some(paints) = ov.get_array("fillPaints") {
+        seg.fill_paints = Some(crate::mappers::map_figma_fills(Some(paints)).unwrap_or_default());
+        seg.fill = seg.fill_paints.as_deref().and_then(|fills| {
+            fills.iter().find_map(|fill| match fill {
+                jian_ops_schema::style::PenFill::Solid(body) if fill.is_enabled() => {
+                    Some(body.color.clone())
+                }
+                _ => None,
+            })
+        });
     }
     seg
 }
@@ -201,46 +302,79 @@ fn canonical_font_family_value(family: &str) -> String {
 
 /// Apply Figma `textCase` (UPPER / LOWER / TITLE) to the content.
 fn apply_text_case(content: TextContent, text_case: Option<&str>) -> TextContent {
-    let transform: fn(&str) -> String = match text_case {
-        Some("UPPER") => |s| s.to_uppercase(),
-        Some("LOWER") => |s| s.to_lowercase(),
-        Some("TITLE") => title_case,
-        _ => return content,
+    let Some(text_case @ ("UPPER" | "LOWER" | "TITLE")) = text_case else {
+        return content;
     };
-    match content {
-        TextContent::Plain(s) => TextContent::Plain(transform(&s)),
-        TextContent::Styled(segs) => TextContent::Styled(
-            segs.into_iter()
-                .map(|mut s| {
-                    s.text = transform(&s.text);
-                    s
-                })
-                .collect(),
-        ),
+    let mut content = content;
+    match &mut content {
+        TextContent::Plain(text) => apply_owned_text_case(text, text_case),
+        TextContent::Styled(segments) => {
+            for segment in segments {
+                apply_owned_text_case(&mut segment.text, text_case);
+            }
+        }
+    }
+    content
+}
+
+fn apply_owned_text_case(text: &mut String, text_case: &str) {
+    match text_case {
+        "UPPER" if text.is_ascii() => text.make_ascii_uppercase(),
+        "LOWER" if text.is_ascii() => text.make_ascii_lowercase(),
+        "UPPER" => *text = text.to_uppercase(),
+        "LOWER" => *text = text.to_lowercase(),
+        "TITLE" => title_case_in_place(text),
+        _ => {}
     }
 }
 
 /// Uppercase the first word character after every word boundary —
 /// `\b\w` with ASCII `\w` (`[A-Za-z0-9_]`), matching JS.
+/// Retain the existing borrowed test helper; production reuses its owned text.
+#[cfg(test)]
 fn title_case(s: &str) -> String {
-    let is_word = |c: char| c.is_ascii_alphanumeric() || c == '_';
-    let mut out = String::with_capacity(s.len());
-    let mut prev_word = false;
-    for c in s.chars() {
-        if is_word(c) && !prev_word {
-            out.extend(c.to_uppercase());
-        } else {
-            out.push(c);
-        }
-        prev_word = is_word(c);
-    }
+    let mut out = s.to_string();
+    title_case_in_place(&mut out);
     out
+}
+
+fn title_case_in_place(text: &mut str) {
+    let mut prev_word = false;
+    for index in 0..text.len() {
+        let byte = text.as_bytes()[index];
+        let word = byte.is_ascii_alphanumeric() || byte == b'_';
+        if word && !prev_word {
+            // Only an ASCII byte is ever changed, so both endpoints are UTF-8
+            // boundaries. Non-ASCII scalars remain unchanged word separators.
+            if let Some(initial) = text.get_mut(index..index + 1) {
+                initial.make_ascii_uppercase();
+            }
+        }
+        prev_word = word;
+    }
 }
 
 /// Figma font-style string → numeric weight. First substring match
 /// wins; order matters (`extrabold` before `bold`, `extralight`
 /// before `light`).
 fn parse_font_weight(style: &str) -> Option<u32> {
+    // OpenType subfamily names use both joined and separated weight tokens
+    // ("Semi Bold", "Extra-Light"). A separator cannot turn a 600 weight into
+    // plain Bold700 or a 200 weight into Light300. Borrow ordinary names.
+    let normalized = if style
+        .bytes()
+        .any(|b| b.is_ascii_whitespace() || b == b'-' || b == b'_')
+    {
+        std::borrow::Cow::Owned(
+            style
+                .chars()
+                .filter(|c| !c.is_ascii_whitespace() && *c != '-' && *c != '_')
+                .collect::<String>(),
+        )
+    } else {
+        std::borrow::Cow::Borrowed(style)
+    };
+    let style = normalized.as_ref();
     if style.contains("thin") || style.contains("hairline") {
         Some(100)
     } else if style.contains("extralight") || style.contains("ultralight") {
@@ -264,7 +398,7 @@ fn parse_font_weight(style: &str) -> Option<u32> {
     }
 }
 
-/// Line height → unitless multiplier (3-decimal rounded).
+/// Line height → unitless multiplier, retaining the authored numeric precision.
 fn map_line_height(node: &FigValue) -> Option<f64> {
     let lh = node.get("lineHeight")?;
     let value = lh.get_f64("value")?;
@@ -278,7 +412,7 @@ fn map_line_height(node: &FigValue) -> Option<f64> {
         "RAW" => value,
         _ => return None,
     };
-    Some((mul * 1000.0).round() / 1000.0)
+    Some(mul)
 }
 
 /// Letter spacing → pixels (percent units resolved against font size).
@@ -292,7 +426,7 @@ fn map_letter_spacing(node: &FigValue) -> Option<f64> {
         "PIXELS" => Some(value),
         "PERCENT" => {
             let font_size = node.get_f64("fontSize").unwrap_or(14.0);
-            Some(((font_size * value / 100.0) * 100.0).round() / 100.0)
+            Some(font_size * value / 100.0)
         }
         _ => None,
     }

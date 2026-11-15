@@ -1,15 +1,17 @@
 use std::collections::BTreeMap;
 
+#[cfg(test)]
 use base64::Engine as _;
 use op_editor_core::EditorState;
-use op_editor_ui::layout_scene::LayoutScene;
 use op_mcp::{McpTool, ToolErrorCode, ToolOutcome};
 
-use crate::export::{render_node_on_page_raster_bytes, render_page_raster_bytes, RasterFormat};
-use crate::export_pdf::{render_node_on_page_pdf_bytes, render_page_pdf_bytes};
+use super::raster_snapshot::RasterSnapshot;
+use crate::export::{RasterFormat, RasterSampling, SharedRasterTarget};
+use crate::export_pdf::{render_node_on_page_pdf_bytes_scaled, render_page_pdf_bytes_scaled};
+use op_render_export::{render_node_on_page_svg_bytes, render_page_svg_bytes};
 
 pub struct ExportItem {
-    scene: LayoutScene,
+    scene: RasterSnapshot,
     selected_node_id: Option<String>,
 }
 
@@ -19,15 +21,33 @@ impl McpTool for ExportItem {
     }
 
     fn call(&self, args: &BTreeMap<String, String>) -> ToolOutcome {
+        if let Err(error) = self.scene.ready() {
+            return ToolOutcome::Err(ToolErrorCode::ToolFailed, error.to_string());
+        }
         let format = match args.get("format").map(|value| value.trim()) {
             Some(format) if !format.is_empty() => format,
             _ => {
                 return ToolOutcome::Err(
                     ToolErrorCode::MissingArgument,
-                    "format is required (png|jpeg|webp|pdf)".into(),
+                    "format is required (png|jpeg|webp|pdf|svg)".into(),
                 );
             }
         };
+        let sampling = match RasterSampling::parse(
+            args.get("rasterSampling")
+                .map_or("native", |value| value.trim()),
+        ) {
+            Ok(sampling) => sampling,
+            Err(error) => {
+                return ToolOutcome::Err(ToolErrorCode::InvalidArgument, error.to_string())
+            }
+        };
+        if matches!(format, "pdf" | "svg") && sampling != RasterSampling::Native {
+            return ToolOutcome::Err(
+                ToolErrorCode::InvalidArgument,
+                "rasterSampling applies only to PNG/JPEG/WebP exports".into(),
+            );
+        }
         let explicit_item_id = args.get("itemId").map(|value| value.trim());
         if explicit_item_id == Some("") {
             return ToolOutcome::Err(
@@ -52,52 +72,91 @@ impl McpTool for ExportItem {
             .and_then(|value| value.trim().parse::<f32>().ok())
             .unwrap_or(1.0);
 
-        let (bytes, item_type) = if let Some(page) =
-            self.scene.pages.iter().find(|page| page.id == item_id)
-        {
-            let result = match format {
-                "png" => render_page_raster_bytes(page, RasterFormat::Png, scale),
-                "jpeg" | "jpg" => render_page_raster_bytes(page, RasterFormat::Jpeg, scale),
-                "webp" => render_page_raster_bytes(page, RasterFormat::Webp, scale),
-                "pdf" => render_page_pdf_bytes(page),
-                other => return unsupported_format(other),
+        let (bytes, item_type) =
+            if let Some(page) = self.scene.pages.iter().find(|page| page.id == item_id) {
+                let result = match format {
+                    "png" => self.scene.render_with_sampling(
+                        SharedRasterTarget::Page {
+                            page_id: page.id.clone(),
+                        },
+                        RasterFormat::Png,
+                        scale,
+                        sampling,
+                    ),
+                    "jpeg" | "jpg" => self.scene.render_with_sampling(
+                        SharedRasterTarget::Page {
+                            page_id: page.id.clone(),
+                        },
+                        RasterFormat::Jpeg,
+                        scale,
+                        sampling,
+                    ),
+                    "webp" => self.scene.render_with_sampling(
+                        SharedRasterTarget::Page {
+                            page_id: page.id.clone(),
+                        },
+                        RasterFormat::Webp,
+                        scale,
+                        sampling,
+                    ),
+                    "pdf" => render_page_pdf_bytes_scaled(page, scale),
+                    "svg" => render_page_svg_bytes(page, scale),
+                    other => return unsupported_format(other),
+                };
+                (result, "page")
+            } else if let Some(page) = self
+                .scene
+                .pages
+                .iter()
+                .find(|page| page.find(item_id).is_some())
+            {
+                let result = match format {
+                    "png" => self.scene.render_with_sampling(
+                        SharedRasterTarget::Node {
+                            page_id: page.id.clone(),
+                            node_id: item_id.to_string(),
+                        },
+                        RasterFormat::Png,
+                        scale,
+                        sampling,
+                    ),
+                    "jpeg" | "jpg" => self.scene.render_with_sampling(
+                        SharedRasterTarget::Node {
+                            page_id: page.id.clone(),
+                            node_id: item_id.to_string(),
+                        },
+                        RasterFormat::Jpeg,
+                        scale,
+                        sampling,
+                    ),
+                    "webp" => self.scene.render_with_sampling(
+                        SharedRasterTarget::Node {
+                            page_id: page.id.clone(),
+                            node_id: item_id.to_string(),
+                        },
+                        RasterFormat::Webp,
+                        scale,
+                        sampling,
+                    ),
+                    "pdf" => render_node_on_page_pdf_bytes_scaled(page, item_id, scale),
+                    "svg" => render_node_on_page_svg_bytes(page, item_id, scale),
+                    other => return unsupported_format(other),
+                };
+                (result, "node")
+            } else {
+                return ToolOutcome::Err(
+                    ToolErrorCode::InvalidArgument,
+                    format!("item {item_id} is not a page or node in the document"),
+                );
             };
-            (result, "page")
-        } else if let Some(page) = self
-            .scene
-            .pages
-            .iter()
-            .find(|page| page.find(item_id).is_some())
-        {
-            let result = match format {
-                "png" => render_node_on_page_raster_bytes(page, item_id, RasterFormat::Png, scale),
-                "jpeg" | "jpg" => {
-                    render_node_on_page_raster_bytes(page, item_id, RasterFormat::Jpeg, scale)
-                }
-                "webp" => {
-                    render_node_on_page_raster_bytes(page, item_id, RasterFormat::Webp, scale)
-                }
-                "pdf" => render_node_on_page_pdf_bytes(page, item_id),
-                other => return unsupported_format(other),
-            };
-            (result, "node")
-        } else {
-            return ToolOutcome::Err(
-                ToolErrorCode::InvalidArgument,
-                format!("item {item_id} is not a page or node in the document"),
-            );
-        };
 
         match bytes {
-            Ok(bytes) => ToolOutcome::OkJson(
-                serde_json::json!({
-                    "itemId": item_id,
-                    "itemType": item_type,
-                    "format": canonical_format(format),
-                    "bytes_base64": base64::engine::general_purpose::STANDARD.encode(bytes),
-                })
-                .to_string(),
-            ),
+            Ok(bytes) => ToolOutcome::OkJson(super::export_result::item(
+                item_id,
+                item_type,
+                canonical_format(format),
+                &bytes,
+            )),
             Err(error) => ToolOutcome::Err(ToolErrorCode::ToolFailed, error.to_string()),
         }
     }
@@ -114,13 +173,55 @@ fn canonical_format(format: &str) -> &str {
 fn unsupported_format(format: &str) -> ToolOutcome {
     ToolOutcome::Err(
         ToolErrorCode::InvalidArgument,
-        format!("unknown format {format:?}: must be one of png, jpeg, webp, pdf"),
+        format!("unknown format {format:?}: must be one of png, jpeg, webp, pdf, svg"),
     )
 }
 
 pub fn export_item_snapshot(state: &EditorState) -> ExportItem {
     ExportItem {
-        scene: op_pen_loader::editor_state_to_layout_scene(state),
+        scene: RasterSnapshot::from_scene(op_pen_loader::editor_state_to_layout_scene(state)),
+        selected_node_id: state
+            .selection
+            .anchor
+            .is_real()
+            .then(|| state.selection.anchor.to_string()),
+    }
+}
+
+pub(crate) fn export_item_snapshot_for_call(
+    state: &EditorState,
+    args: Option<&BTreeMap<String, String>>,
+) -> ExportItem {
+    let item = args
+        .and_then(|args| args.get("itemId"))
+        .map(|id| id.trim())
+        .or_else(|| {
+            state
+                .selection
+                .anchor
+                .is_real()
+                .then(|| state.selection.anchor.as_str())
+        });
+    let policy = item.map_or(op_pen_loader::ExportScenePolicy::FullDocument, |id| {
+        op_pen_loader::ExportScenePolicy::Item(id.to_owned())
+    });
+    ExportItem {
+        scene: RasterSnapshot::capture_http(state, policy, || {
+            let item_id = args
+                .and_then(|args| args.get("itemId"))
+                .map(|id| id.trim())
+                .or_else(|| {
+                    state
+                        .selection
+                        .anchor
+                        .is_real()
+                        .then(|| state.selection.anchor.as_str())
+                });
+            match item_id {
+                Some(id) => op_pen_loader::editor_state_to_item_layout_scene(state, id),
+                None => op_pen_loader::editor_state_to_layout_scene(state),
+            }
+        }),
         selected_node_id: state
             .selection
             .anchor
@@ -173,7 +274,7 @@ mod tests {
 
     fn tool_from_scene(scene: LayoutScene, selected_node_id: Option<String>) -> ExportItem {
         ExportItem {
-            scene,
+            scene: RasterSnapshot::from_scene(scene),
             selected_node_id,
         }
     }
@@ -272,3 +373,7 @@ mod tests {
         ));
     }
 }
+
+#[cfg(test)]
+#[path = "export_item_scene_tests.rs"]
+mod item_scene_tests;

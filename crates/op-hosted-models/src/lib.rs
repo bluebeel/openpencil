@@ -76,7 +76,7 @@ fn reset(state: &mut State, session: Option<Session>) {
     state.refresh_at = Instant::now();
     let mut nonce = [0_u8; 32];
     state.namespace = if getrandom::fill(&mut nonce).is_ok() {
-        nonce.iter().map(|byte| format!("{byte:02x}")).collect()
+        hex_bytes(&nonce)
     } else {
         state.status = "failed";
         state.refresh_at = Instant::now() + Duration::from_secs(30);
@@ -195,15 +195,16 @@ pub fn sync_editor(editor: &mut EditorState) -> bool {
     refresh();
     let routes = {
         let state = STATE.lock().unwrap_or_else(|p| p.into_inner());
-        if editor.editor_ui.account.is_signed_in() {
-            state.routes.clone()
+        let routes = if editor.editor_ui.account.is_signed_in() {
+            state.routes.as_slice()
         } else {
-            Vec::new()
+            &[]
+        };
+        if editor.editor_ui.hosted_model_routes() == routes {
+            return false;
         }
+        routes.to_vec()
     };
-    if editor.editor_ui.hosted_model_routes() == routes.as_slice() {
-        return false;
-    }
     if routes.is_empty() || editor.replace_hosted_model_catalog(routes).is_err() {
         editor.clear_hosted_model_catalog();
     }
@@ -333,13 +334,34 @@ fn now_unix() -> u64 {
 }
 
 fn client() -> Result<reqwest::Client, HostedRuntimeError> {
-    reqwest::Client::builder()
+    // No default credentials/cookies are installed: every verified request
+    // supplies its own current bearer. Reuse TLS state and connections across
+    // agents without caching a failed initialization forever.
+    static CLIENT: Mutex<Option<reqwest::Client>> = Mutex::new(None);
+    let mut shared = CLIENT.lock().unwrap_or_else(|p| p.into_inner());
+    if let Some(client) = &*shared {
+        return Ok(client.clone());
+    }
+    let client = reqwest::Client::builder()
         .use_rustls_tls()
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(Duration::from_secs(10))
         .timeout(Duration::from_secs(120))
+        .pool_max_idle_per_host(128)
         .build()
-        .map_err(|_| HostedRuntimeError::Network)
+        .map_err(|_| HostedRuntimeError::Network)?;
+    *shared = Some(client.clone());
+    Ok(client)
+}
+
+fn hex_bytes(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(bytes.len().saturating_mul(2));
+    for byte in bytes {
+        output.push(HEX[(byte >> 4) as usize] as char);
+        output.push(HEX[(byte & 15) as usize] as char);
+    }
+    output
 }
 
 #[cfg(test)]

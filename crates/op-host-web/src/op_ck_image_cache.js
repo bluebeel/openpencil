@@ -89,6 +89,8 @@ const SVG_RASTER_SCALE = 2;
 const SVG_FAILURE_CAP = 1024;
 
 export function createWebImageCaches(CK) {
+  let disposed = false;
+  const svgRequests = new Map();
   const fullImageCache = new Map();
   let fullImageCacheBytes = 0;
   const thumbnailCache = new Map();
@@ -109,6 +111,7 @@ export function createWebImageCaches(CK) {
   };
 
   const installRasterizedSvg = (key, img) => {
+    if (disposed) return false;
     const sourceW = img.naturalWidth || img.width;
     const sourceH = img.naturalHeight || img.height;
     if (!(sourceW > 0) || !(sourceH > 0)) return false;
@@ -160,30 +163,35 @@ export function createWebImageCaches(CK) {
   // the wasm bundle would bust the 6 MiB ceiling for a codec the platform
   // already ships.
   const startSvgRaster = (key, encoded) => {
-    if (svgPending.has(key)) return;
+    if (disposed || svgPending.has(key)) return;
     svgPending.add(key);
     let url = null;
-    const settle = (installed) => {
-      if (url) URL.revokeObjectURL(url);
+    let img = null;
+    const cleanup = () => {
+      if (url) { URL.revokeObjectURL(url); url = null; }
+      if (img) { img.onload = null; img.onerror = null; }
       svgPending.delete(key);
-      if (!installed) rememberSvgFailure(key);
+      svgRequests.delete(key);
+    };
+    const settle = installed => {
+      cleanup();
+      if (!disposed && !installed) rememberSvgFailure(key);
     };
     try {
       const blob = new Blob([copyBytes(encoded)], { type: 'image/svg+xml' });
       url = URL.createObjectURL(blob);
-      const img = new Image();
+      img = new Image();
+      svgRequests.set(key, () => {
+        cleanup();
+        try { img.src = ''; } catch (_error) {}
+      });
       img.onload = () => {
-        try {
-          settle(installRasterizedSvg(key, img));
-        } catch (_error) {
-          settle(false);
-        }
+        try { settle(!disposed && installRasterizedSvg(key, img)); }
+        catch (_error) { settle(false); }
       };
       img.onerror = () => settle(false);
       img.src = url;
-    } catch (_error) {
-      settle(false);
-    }
+    } catch (_error) { settle(false); }
   };
 
   const evictFullImages = () => {
@@ -249,6 +257,7 @@ export function createWebImageCaches(CK) {
   // shipped unsafely. A full raster serves every requested size, so it
   // records itself as covering any edge.
   const installFullImage = (lo, hi, encoded, _maxEdgePx) => {
+    if (disposed) return false;
     const key = imageKey(lo, hi);
     if (fullImageCache.has(key)) return true;
 
@@ -288,6 +297,7 @@ export function createWebImageCaches(CK) {
   };
 
   const thumbnailImage = (lo, hi, jpeg) => {
+    if (disposed) return null;
     const key = imageKey(lo, hi);
     const hit = thumbnailCache.get(key);
     if (hit) {
@@ -389,6 +399,20 @@ export function createWebImageCaches(CK) {
   };
 
   return {
+    dispose() {
+      if (disposed) return;
+      disposed = true;
+      for (const cancel of svgRequests.values()) cancel();
+      svgRequests.clear(); svgPending.clear(); svgFailures.clear();
+      for (const entry of fullImageCache.values()) {
+        try { deleteImage(entry.image); } catch (_error) {}
+      }
+      for (const entry of thumbnailCache.values()) {
+        try { deleteImage(entry.image); } catch (_error) {}
+      }
+      fullImageCache.clear(); thumbnailCache.clear(); thumbnailFailures.clear();
+      fullImageCacheBytes = 0; thumbnailCacheBytes = 0;
+    },
     hasFullImage,
     fullImage,
     installFullImage,

@@ -7,11 +7,26 @@ use serde_json::json;
 use std::collections::BTreeMap;
 
 pub struct AnnotateImage {
-    state: EditorState,
+    state: Option<EditorState>,
+    prepared: Option<ToolOutcome>,
 }
 pub fn annotate_image_snapshot(state: &EditorState) -> AnnotateImage {
     AnnotateImage {
-        state: state.clone(),
+        state: Some(state.clone()),
+        prepared: None,
+    }
+}
+
+/// Capture only the response and command for this exact request. Scene
+/// resolution borrows the live state; only the disposable validation probe
+/// owns a document copy, and it excludes history from subsequent writes.
+pub fn annotate_image_snapshot_for_call(
+    state: &EditorState,
+    args: &BTreeMap<String, String>,
+) -> AnnotateImage {
+    AnnotateImage {
+        state: None,
+        prepared: Some(annotate_image_result(state, args)),
     }
 }
 
@@ -33,170 +48,187 @@ impl McpTool for AnnotateImage {
     fn name(&self) -> &str {
         "annotate_image"
     }
+    fn call_once(mut self: Box<Self>, args: &BTreeMap<String, String>) -> ToolOutcome {
+        match self.prepared.take() {
+            Some(outcome) => outcome,
+            None => self.call(args),
+        }
+    }
+
     fn call(&self, args: &BTreeMap<String, String>) -> ToolOutcome {
-        let Some(image_id) = args.get("imageId") else {
-            return ToolOutcome::Err(ToolErrorCode::MissingArgument, "imageId is required".into());
-        };
-        let Some(label) = args.get("label").filter(|s| !s.trim().is_empty()) else {
-            return ToolOutcome::Err(
-                ToolErrorCode::MissingArgument,
-                "Name the confirmed screenshot control in label".into(),
-            );
-        };
-        let mut source_box = [0.0; 4];
-        for (i, key) in ["x", "y", "width", "height"].iter().enumerate() {
-            let Some(value) = args.get(*key).and_then(|s| s.parse::<f64>().ok()) else {
-                return ToolOutcome::Err(
-                    ToolErrorCode::InvalidArgument,
-                    format!("{key} must be a normalized source-image number"),
-                );
-            };
-            source_box[i] = value;
+        if let Some(outcome) = &self.prepared {
+            return outcome.clone();
         }
-        let scene = op_pen_loader::editor_state_to_active_page_layout_scene(&self.state);
-        let Some(page) = scene.active_page() else {
-            return ToolOutcome::Err(ToolErrorCode::ToolFailed, "No active page".into());
-        };
-        let Some(image) = page.find(image_id) else {
-            return ToolOutcome::Err(
-                ToolErrorCode::ToolFailed,
-                "Screenshot image not found".into(),
-            );
-        };
-        if image.image_transform.is_some() {
-            return ToolOutcome::Err(
-                ToolErrorCode::ToolFailed,
-                "Reset the custom image transform before annotation".into(),
-            );
+        match self.state.as_ref() {
+            Some(state) => annotate_image_result(state, args),
+            None => ToolOutcome::Err(
+                ToolErrorCode::Internal,
+                "missing annotation snapshot".into(),
+            ),
         }
-        let Some(src) = image.image_src.as_deref() else {
+    }
+}
+
+fn annotate_image_result(state: &EditorState, args: &BTreeMap<String, String>) -> ToolOutcome {
+    let Some(image_id) = args.get("imageId") else {
+        return ToolOutcome::Err(ToolErrorCode::MissingArgument, "imageId is required".into());
+    };
+    let Some(label) = args.get("label").filter(|s| !s.trim().is_empty()) else {
+        return ToolOutcome::Err(
+            ToolErrorCode::MissingArgument,
+            "Name the confirmed screenshot control in label".into(),
+        );
+    };
+    let mut source_box = [0.0; 4];
+    for (i, key) in ["x", "y", "width", "height"].iter().enumerate() {
+        let Some(value) = args.get(*key).and_then(|s| s.parse::<f64>().ok()) else {
             return ToolOutcome::Err(
-                ToolErrorCode::ToolFailed,
-                "The screenshot pixels are unavailable".into(),
+                ToolErrorCode::InvalidArgument,
+                format!("{key} must be a normalized source-image number"),
             );
         };
-        let Some(size) = op_image_enrich::pixels::embedded_size(src) else {
-            return ToolOutcome::Err(
-                ToolErrorCode::ToolFailed,
-                "Import an embedded screenshot before annotating".into(),
-            );
-        };
-        let fit = match image.image_fit {
-            SceneImageFit::Fill | SceneImageFit::Crop => "cover",
-            SceneImageFit::Fit => "contain",
-            SceneImageFit::Stretch => "stretch",
-            _ => "unsupported",
-        };
-        let b = image.bounds;
-        let Some(projected) = op_image_enrich::pixels::project_source_box(
-            size,
-            [
-                b.origin.x as f64,
-                b.origin.y as f64,
-                b.size.x as f64,
-                b.size.y as f64,
-            ],
-            source_box,
-            fit,
-        ) else {
-            return ToolOutcome::Err(ToolErrorCode::InvalidArgument,"The target is outside the visible screenshot; use Fit to show the whole image and supply a confirmed 0..1 source rectangle".into());
-        };
-        let Some(parent) = parent_of(self.state.active_children(), image_id) else {
-            return ToolOutcome::Err(
-                ToolErrorCode::ToolFailed,
-                "Place the screenshot in a frame before annotating".into(),
-            );
-        };
-        let Some(parent_box) = page.find(parent.id_str()).map(|n| n.bounds) else {
-            return ToolOutcome::Err(
-                ToolErrorCode::ToolFailed,
-                "Screenshot frame unavailable".into(),
-            );
-        };
-        let children = parent.children().unwrap();
-        let at = children
-            .iter()
-            .position(|n| n.id_str() == image_id)
-            .unwrap();
-        let color = args.get("color").map(String::as_str).unwrap_or("#F97316");
-        let patch = json!({"x":projected[0]-parent_box.origin.x as f64,"y":projected[1]-parent_box.origin.y as f64,
+        source_box[i] = value;
+    }
+    let scene = op_pen_loader::editor_state_to_active_page_layout_scene(state);
+    let Some(page) = scene.active_page() else {
+        return ToolOutcome::Err(ToolErrorCode::ToolFailed, "No active page".into());
+    };
+    let Some(image) = page.find(image_id) else {
+        return ToolOutcome::Err(
+            ToolErrorCode::ToolFailed,
+            "Screenshot image not found".into(),
+        );
+    };
+    if image.image_transform.is_some() {
+        return ToolOutcome::Err(
+            ToolErrorCode::ToolFailed,
+            "Reset the custom image transform before annotation".into(),
+        );
+    }
+    let Some(src) = image.image_src.as_deref() else {
+        return ToolOutcome::Err(
+            ToolErrorCode::ToolFailed,
+            "The screenshot pixels are unavailable".into(),
+        );
+    };
+    let Some(size) = op_image_enrich::pixels::embedded_size(src) else {
+        return ToolOutcome::Err(
+            ToolErrorCode::ToolFailed,
+            "Import an embedded screenshot before annotating".into(),
+        );
+    };
+    let fit = match image.image_fit {
+        SceneImageFit::Fill | SceneImageFit::Crop => "cover",
+        SceneImageFit::Fit => "contain",
+        SceneImageFit::Stretch => "stretch",
+        _ => "unsupported",
+    };
+    let b = image.bounds;
+    let Some(projected) = op_image_enrich::pixels::project_source_box(
+        size,
+        [
+            b.origin.x as f64,
+            b.origin.y as f64,
+            b.size.x as f64,
+            b.size.y as f64,
+        ],
+        source_box,
+        fit,
+    ) else {
+        return ToolOutcome::Err(ToolErrorCode::InvalidArgument,"The target is outside the visible screenshot; use Fit to show the whole image and supply a confirmed 0..1 source rectangle".into());
+    };
+    let Some(parent) = parent_of(state.active_children(), image_id) else {
+        return ToolOutcome::Err(
+            ToolErrorCode::ToolFailed,
+            "Place the screenshot in a frame before annotating".into(),
+        );
+    };
+    let Some(parent_box) = page.find(parent.id_str()).map(|n| n.bounds) else {
+        return ToolOutcome::Err(
+            ToolErrorCode::ToolFailed,
+            "Screenshot frame unavailable".into(),
+        );
+    };
+    let children = parent.children().unwrap();
+    let at = children
+        .iter()
+        .position(|n| n.id_str() == image_id)
+        .unwrap();
+    let color = args.get("color").map(String::as_str).unwrap_or("#F97316");
+    let patch = json!({"x":projected[0]-parent_box.origin.x as f64,"y":projected[1]-parent_box.origin.y as f64,
             "width":projected[2],"height":projected[3],"name":format!("标注 · {label}"),"role":"image-annotation",
             "constraints":{"h":"left","v":"top"},"fill":[],"stroke":{"fill":[{"type":"solid","color":color}],"thickness":4.0}});
-        let (annotation_id, mut commands) = if let Some(id) = args.get("annotationId") {
-            let Some(node) = children
-                .iter()
-                .find(|n| n.id_str() == id && matches!(n, PenNode::Ellipse(_)))
-            else {
-                return ToolOutcome::Err(
-                    ToolErrorCode::InvalidArgument,
-                    "annotationId must be an ellipse in the screenshot's frame".into(),
-                );
-            };
-            (
-                node.id_str().to_owned(),
-                vec![EditorCommand::PatchNodeData {
-                    node_id: NodeId::new(id),
-                    patch_json: patch.to_string(),
-                    page_id: None,
-                }],
-            )
-        } else {
-            let mut id = format!("{image_id}-annotation");
-            let mut suffix = 1;
-            while op_editor_core::walkers::find_node(
-                self.state.active_children(),
-                &NodeId::new(&id),
-            )
-            .is_some()
-            {
-                id = format!("{image_id}-annotation-{suffix}");
-                suffix += 1;
-            }
-            let mut node = patch;
-            node["type"] = json!("ellipse");
-            node["id"] = json!(id);
-            let Ok(node) = serde_json::from_value(node) else {
-                return ToolOutcome::Err(
-                    ToolErrorCode::InvalidArgument,
-                    "Invalid annotation style".into(),
-                );
-            };
-            (
-                id,
-                vec![EditorCommand::InsertAuthoredSubtreePreservingRoots {
-                    nodes: vec![node],
-                    parent_id: NodeId::new(parent.id_str()),
-                    page_id: None,
-                }],
-            )
-        };
-        let target_index = at.saturating_sub(usize::from(
-            children
-                .iter()
-                .position(|n| n.id_str() == annotation_id)
-                .is_some_and(|i| i < at),
-        ));
-        commands.push(EditorCommand::MoveNode {
-            node_id: NodeId::new(&annotation_id),
-            target_parent: NodeId::new(parent.id_str()),
-            page_id: None,
-            index: Some(target_index),
-        });
-        let command = EditorCommand::Batch { commands };
-        let mut probe = self.state.clone();
-        if !probe.apply(command.clone()) {
+    let (annotation_id, mut commands) = if let Some(id) = args.get("annotationId") {
+        let Some(node) = children
+            .iter()
+            .find(|n| n.id_str() == id && matches!(n, PenNode::Ellipse(_)))
+        else {
             return ToolOutcome::Err(
-                ToolErrorCode::ToolFailed,
-                "The annotation cannot be applied in this editor scope".into(),
+                ToolErrorCode::InvalidArgument,
+                "annotationId must be an ellipse in the screenshot's frame".into(),
             );
-        }
-        ToolOutcome::OkJsonWithCommand(
-            json!({"annotationId":annotation_id,"imageId":image_id,"label":label,
-            "sourceBox":source_box,"documentBox":projected,"sourceSize":size})
-            .to_string(),
-            command,
+        };
+        (
+            node.id_str().to_owned(),
+            vec![EditorCommand::PatchNodeData {
+                node_id: NodeId::new(id),
+                patch_json: patch.to_string(),
+                page_id: None,
+            }],
         )
+    } else {
+        let mut id = format!("{image_id}-annotation");
+        let mut suffix = 1;
+        while op_editor_core::walkers::find_node(state.active_children(), &NodeId::new(&id))
+            .is_some()
+        {
+            id = format!("{image_id}-annotation-{suffix}");
+            suffix += 1;
+        }
+        let mut node = patch;
+        node["type"] = json!("ellipse");
+        node["id"] = json!(id);
+        let Ok(node) = serde_json::from_value(node) else {
+            return ToolOutcome::Err(
+                ToolErrorCode::InvalidArgument,
+                "Invalid annotation style".into(),
+            );
+        };
+        (
+            id,
+            vec![EditorCommand::InsertAuthoredSubtreePreservingRoots {
+                nodes: vec![node],
+                parent_id: NodeId::new(parent.id_str()),
+                page_id: None,
+            }],
+        )
+    };
+    let target_index = at.saturating_sub(usize::from(
+        children
+            .iter()
+            .position(|n| n.id_str() == annotation_id)
+            .is_some_and(|i| i < at),
+    ));
+    commands.push(EditorCommand::MoveNode {
+        node_id: NodeId::new(&annotation_id),
+        target_parent: NodeId::new(parent.id_str()),
+        page_id: None,
+        index: Some(target_index),
+    });
+    let command = EditorCommand::Batch { commands };
+    let mut probe = state.clone_for_command_simulation();
+    if !probe.apply(command.clone()) {
+        return ToolOutcome::Err(
+            ToolErrorCode::ToolFailed,
+            "The annotation cannot be applied in this editor scope".into(),
+        );
     }
+    ToolOutcome::OkJsonWithCommand(
+        json!({"annotationId":annotation_id,"imageId":image_id,"label":label,
+            "sourceBox":source_box,"documentBox":projected,"sourceSize":size})
+        .to_string(),
+        command,
+    )
 }
 
 #[cfg(test)]

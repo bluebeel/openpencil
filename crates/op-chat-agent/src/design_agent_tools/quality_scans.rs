@@ -295,7 +295,7 @@ pub fn scan_ring_issues(nodes: &[PenNode]) -> Vec<String> {
         }
         matches!(
             ellipse.stroke.as_ref().map(|s| &s.thickness),
-            Some(jian_ops_schema::style::StrokeThickness::Uniform(t)) if *t <= HAIRLINE
+            Some(jian_ops_schema::style::StrokeThickness::Uniform(t)) if *t <= f64::from(HAIRLINE)
         )
     }
     fn walk(nodes: &[PenNode], out: &mut Vec<String>) {

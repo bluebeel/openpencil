@@ -26,6 +26,7 @@ mod batch_design_dsl_error;
 mod batch_design_normalize;
 #[cfg(test)]
 mod batch_design_ops_tests;
+mod batch_design_prepared;
 #[cfg(test)]
 mod batch_design_ref_tests;
 pub mod batch_design_result;
@@ -48,8 +49,12 @@ mod batch_layered_guidelines;
 mod batch_layered_tests;
 mod batch_page;
 mod image_annotation;
-pub use image_annotation::annotate_image_snapshot;
+pub use image_annotation::{annotate_image_snapshot, annotate_image_snapshot_for_call};
+pub mod advanced_edit_tools;
 mod batch_program;
+mod batch_program_context;
+#[cfg(test)]
+mod batch_program_copy_tests;
 mod batch_program_dialect;
 #[cfg(test)]
 mod batch_program_dialect_corpus;
@@ -107,6 +112,7 @@ pub mod design_refine_result;
 pub mod document_save;
 #[cfg(test)]
 mod document_save_tests;
+pub mod document_summary;
 pub mod editor_state_tool;
 pub mod effect_normalize;
 pub mod element_tools;
@@ -143,11 +149,17 @@ pub mod parser;
 pub mod read_nodes;
 #[cfg(test)]
 mod read_nodes_tests;
+#[cfg(test)]
+mod read_record_tests;
+#[cfg(test)]
+mod read_snapshot_tests;
 pub mod read_tools;
 pub mod read_tools_extra;
+pub mod reload_document;
 pub mod reparent_tools;
 #[cfg(test)]
 mod replace_node_tests;
+mod requested_nodes;
 pub mod scalar_vars;
 #[cfg(test)]
 mod scalar_vars_tests;
@@ -172,6 +184,7 @@ mod theme_presets_tests;
 pub mod tools;
 #[cfg(test)]
 mod tools_tests;
+mod trusted_reads;
 pub mod ui_kit_tool;
 mod update_node_data;
 #[cfg(test)]
@@ -202,8 +215,9 @@ pub use op_editor_core::{
 pub use batch_design::{
     design_content_snapshot, design_skeleton_snapshot, DesignContent, DesignSkeleton,
 };
-pub use batch_design_result::{batch_design_snapshot, BatchDesign};
-pub use batch_get::{batch_get_snapshot, BatchGet};
+pub use batch_design_prepared::prepare_batch_design_call;
+pub use batch_design_result::{batch_design_snapshot, batch_design_snapshot_for_call, BatchDesign};
+pub use batch_get::{batch_get_snapshot, batch_get_snapshot_for_call, BatchGet};
 pub use batch_program_objects::parse_program_objects;
 pub use bulk_vars::{
     apply_design_system_snapshot, get_variables_snapshot, set_themes_snapshot,
@@ -214,10 +228,15 @@ pub use codegen_tools::{
     codegen_assemble_snapshot, codegen_clean_snapshot, codegen_plan_snapshot,
     codegen_submit_chunk_snapshot, CodegenAssemble, CodegenClean, CodegenPlan, CodegenSubmitChunk,
 };
+mod component_write_tools;
 pub use component_tools::{
     create_component_snapshot, delete_component_snapshot, instantiate_component_snapshot,
     rename_component_snapshot, set_node_collapsed_snapshot, CreateComponent, DeleteComponent,
     InstantiateComponent, RenameComponent, SetNodeCollapsed,
+};
+pub use component_write_tools::{
+    detach_component_snapshot, detach_component_snapshot_for_call, set_instance_component_snapshot,
+    set_instance_component_snapshot_for_call, DetachComponent, SetInstanceComponent,
 };
 pub use conversion_status::{conversion_status_snapshot, ConversionStatus};
 pub use conversion_tools::{
@@ -242,10 +261,15 @@ pub use design_md_tools::{
 pub use design_prompt::{get_design_prompt_snapshot, GetDesignPrompt};
 pub use design_refine_result::{design_refine_snapshot, DesignRefine};
 pub use document_save::{save_document_snapshot, SaveDocument};
-pub use extra_read_tools::{get_node_children_snapshot, ChildRecord, GetNodeChildren};
+pub use extra_read_tools::{
+    get_node_children_snapshot, get_node_children_snapshot_for_call, ChildRecord, GetNodeChildren,
+};
 pub use guidelines_tools::{get_guidelines_snapshot, GetGuidelines};
 pub use json_serializer::{response_to_json, tool_response_to_json};
-pub use lint_tools::{lint_document_snapshot, LintDocument};
+pub use lint_tools::{
+    lint_document_snapshot, lint_document_snapshot_for_call,
+    lint_document_snapshot_for_call_cached, LintDocument,
+};
 pub use node_attr_tools::{
     add_node_effect_snapshot, remove_node_effect_snapshot, set_ellipse_arc_snapshot,
     set_node_corner_radius_snapshot, set_node_fill_hex_snapshot, set_node_flip_snapshot,
@@ -269,8 +293,12 @@ pub use page_tools::{
     Undo,
 };
 pub use parser::parse_tool_call;
-pub use read_nodes::{read_nodes_snapshot, ReadNodes};
-pub use reparent_tools::{copy_node_snapshot, move_node_snapshot, CopyNode, MoveNode};
+pub use read_nodes::{read_nodes_snapshot, read_nodes_snapshot_for_call, ReadNodes};
+pub use reload_document::ReloadDocument;
+pub use reparent_tools::{
+    copy_node_snapshot, copy_node_snapshot_with_authority, move_node_snapshot, CopyNode,
+    CopyNodeWithId, MoveNode,
+};
 pub use scalar_vars::{
     create_variable_snapshot, delete_variable_snapshot, rename_variable_snapshot,
     set_variable_boolean_snapshot, set_variable_number_snapshot, set_variable_string_snapshot,
@@ -296,7 +324,8 @@ pub use style_guide_tools::{
     GetStyleGuide, GetStyleGuideTags, ListStyleGuides,
 };
 pub use style_ops_tools::{
-    replace_all_matching_properties_snapshot, search_all_unique_properties_snapshot,
+    replace_all_matching_properties_snapshot, replace_all_matching_properties_snapshot_for_call,
+    search_all_unique_properties_snapshot, search_all_unique_properties_snapshot_for_call,
     ReplaceAllMatchingProperties, SearchAllUniqueProperties,
 };
 pub use theme_presets::{
@@ -306,14 +335,19 @@ pub use theme_presets::{
 pub use tool_search::{tool_search, tool_search_snapshot, ToolSearch};
 pub use tools::{
     count_nodes_snapshot, document_info_snapshot, find_empty_space_snapshot,
-    find_node_by_name_snapshot, get_active_theme_snapshot, get_canvas_bounds_snapshot,
-    get_component_snapshot, get_history_depth_snapshot, get_node_parent_snapshot,
-    get_node_snapshot, get_selection_set_snapshot, get_viewport_snapshot, list_components_snapshot,
-    list_node_kinds_snapshot, list_pages_snapshot, list_variables_snapshot, selection_snapshot,
-    snapshot_layout_snapshot, CountNodes, FindEmptySpace, FindNodeByName, GetActiveTheme,
+    find_empty_space_snapshot_cached_for_call, find_empty_space_snapshot_for_call,
+    find_node_by_name_snapshot, find_node_by_name_snapshot_for_call, get_active_theme_snapshot,
+    get_canvas_bounds_snapshot, get_canvas_bounds_snapshot_cached, get_component_snapshot,
+    get_component_snapshot_cached_for_call, get_component_snapshot_for_call,
+    get_history_depth_snapshot, get_node_parent_snapshot, get_node_parent_snapshot_for_call,
+    get_node_snapshot, get_node_snapshot_for_call, get_selection_set_snapshot,
+    get_viewport_snapshot, list_components_snapshot, list_node_kinds_snapshot, list_pages_snapshot,
+    list_variables_snapshot, selection_snapshot, selection_snapshot_for_call,
+    snapshot_layout_snapshot, snapshot_layout_snapshot_cached_for_call,
+    snapshot_layout_snapshot_for_call, CountNodes, FindEmptySpace, FindNodeByName, GetActiveTheme,
     GetCanvasBounds, GetComponent, GetDocumentInfo, GetHistoryDepth, GetNode, GetNodeParent,
     GetSelection, GetSelectionSet, GetViewport, ListComponents, ListNodeKinds, ListPages,
-    ListVariables, NodeRecord, SnapshotLayout, VariableRecord,
+    ListVariables, NodeRecord, PreparedSelection, SnapshotLayout, VariableRecord,
 };
 pub use write_tools::{
     delete_node_snapshot, import_svg_snapshot, insert_node_snapshot, replace_node_snapshot,
@@ -447,6 +481,11 @@ pub enum ToolOutcome {
 pub trait McpTool: Send + Sync {
     fn name(&self) -> &str;
     fn call(&self, args: &BTreeMap<String, String>) -> ToolOutcome;
+    /// Consume a request-local tool, allowing prepared replies to move rather
+    /// than copy. Reusable registries retain the ordinary borrowed call path.
+    fn call_once(self: Box<Self>, args: &BTreeMap<String, String>) -> ToolOutcome {
+        self.call(args)
+    }
 }
 
 /// Registry — owned by the MCP server. v1 is a plain map; a future
@@ -472,56 +511,9 @@ impl ToolRegistry {
                 message: format!("unknown tool: {}", call.tool),
             };
         };
-        match tool.call(&call.arguments) {
-            ToolOutcome::Ok(result) => ToolResponse::Ok {
-                id: call.id,
-                result,
-                command: None,
-                json: None,
-                image: None,
-            },
-            ToolOutcome::OkWithCommand(result, command) => ToolResponse::Ok {
-                id: call.id,
-                result,
-                command: Some(command),
-                json: None,
-                image: None,
-            },
-            ToolOutcome::OkJson(json) => ToolResponse::Ok {
-                id: call.id,
-                result: BTreeMap::new(),
-                command: None,
-                json: Some(json),
-                image: None,
-            },
-            ToolOutcome::OkJsonWithCommand(json, command) => ToolResponse::Ok {
-                id: call.id,
-                result: BTreeMap::new(),
-                command: Some(command),
-                json: Some(json),
-                image: None,
-            },
-            ToolOutcome::OkImageContent {
-                image_base64,
-                mime_type,
-                metadata_json,
-            } => ToolResponse::Ok {
-                id: call.id,
-                result: BTreeMap::new(),
-                command: None,
-                json: metadata_json,
-                image: Some(Box::new(ImageContent {
-                    data: image_base64,
-                    mime_type,
-                })),
-            },
-            ToolOutcome::Err(code, message) => ToolResponse::Err {
-                id: call.id,
-                code,
-                message,
-            },
-        }
+        owned_dispatch::into_response(call.id, tool.call(&call.arguments))
     }
+
     pub fn names(&self) -> Vec<&str> {
         self.tools.keys().map(String::as_str).collect()
     }
@@ -626,7 +618,10 @@ where
                 response = ToolResponse::Err {
                     id,
                     code: ToolErrorCode::Internal,
-                    message: format!("host rejected command: {cmd:?}"),
+                    message: format!(
+                        "host rejected command: {}",
+                        op_util::bounded_debug::summary(cmd, 1024)
+                    ),
                 };
             }
         }
@@ -637,3 +632,6 @@ where
         writer.flush()?;
     }
 }
+
+#[path = "owned_dispatch.rs"]
+mod owned_dispatch;

@@ -82,11 +82,17 @@ impl Extractor {
 
     /// Materialize an asset for `source_url` (or reuse the deduped one) and
     /// return the `./assets/<file>` relative path to substitute back in.
-    fn materialize(&mut self, source_url: &str, owner_id: Option<&str>) -> Option<String> {
-        if let Some(existing) = self.seen.get(source_url) {
-            return Some(existing.clone());
+    fn materialize(
+        &mut self,
+        source_url: String,
+        owner_id: Option<&str>,
+    ) -> Result<String, String> {
+        if let Some(existing) = self.seen.get(source_url.as_str()) {
+            return Ok(existing.clone());
         }
-        let (mime, bytes) = parse_data_url(source_url)?;
+        let Some((mime, bytes)) = parse_data_url(&source_url) else {
+            return Err(source_url);
+        };
         let ext = infer_extension_from_mime(&mime);
         let id = format!("image-{}", self.next_index);
         self.next_index += 1;
@@ -101,20 +107,25 @@ impl Extractor {
             source_node_id: owner_id.unwrap_or_default().to_string(),
         };
         self.assets.push(asset);
-        self.seen
-            .insert(source_url.to_string(), relative_path.clone());
-        Some(relative_path)
+        self.seen.insert(source_url, relative_path.clone());
+        Ok(relative_path)
     }
 
     /// Rewrite a single string field in place if it holds a data-URL.
     fn rewrite_field(&mut self, field: &mut Value, owner_id: Option<&str>) {
-        if let Some(s) = field.as_str() {
-            if s.starts_with(DATA_URL_PREFIX) {
-                if let Some(path) = self.materialize(s, owner_id) {
-                    *field = Value::String(path);
-                }
-            }
+        if !field
+            .as_str()
+            .is_some_and(|source| source.starts_with(DATA_URL_PREFIX))
+        {
+            return;
         }
+        let Value::String(source) = std::mem::replace(field, Value::Null) else {
+            unreachable!()
+        };
+        let replacement = self
+            .materialize(source, owner_id)
+            .unwrap_or_else(|source| source);
+        *field = Value::String(replacement);
     }
 
     /// Rewrite image-fill `url` data-URLs inside a `fill`/`fills` field. A

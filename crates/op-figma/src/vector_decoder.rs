@@ -357,8 +357,19 @@ pub fn decode_figma_vector_path(
     node: &FigValue,
     blobs: &[BlobOrString],
 ) -> Option<DecodedVectorPath> {
-    let has_fills = any_visible(node.get_array("fillPaints"));
-    let has_strokes = any_visible(node.get_array("strokePaints"));
+    let active_fills = any_visible(node.get_array("fillPaints"));
+    let active_strokes = any_visible(node.get_array("strokePaints"));
+    let inactive_only = !active_fills && !active_strokes;
+    let has_fills = active_fills
+        || (inactive_only
+            && node
+                .get_array("fillPaints")
+                .is_some_and(|paints| !paints.is_empty()));
+    let has_strokes = active_strokes
+        || (inactive_only
+            && node
+                .get_array("strokePaints")
+                .is_some_and(|paints| !paints.is_empty()));
 
     // Fall through to the OPPOSITE paint geometry only when the
     // preferred key is ABSENT; a present-but-empty preferred stream
@@ -385,7 +396,7 @@ pub fn decode_figma_vector_path(
         let Some(idx) = geom.get_f64("commandsBlob") else {
             continue;
         };
-        if let Some(BlobOrString::Bytes(bytes)) = blobs.get(idx as usize) {
+        if let Some(bytes) = blobs.get(idx as usize).and_then(BlobOrString::as_bytes) {
             if let Some(decoded) = decode_figma_path_blob(bytes) {
                 path_parts.push(decoded);
             }
@@ -493,9 +504,7 @@ pub fn decode_vector_network_blob(
 ) -> Option<DecodedVectorPath> {
     let vector_data = node.get("vectorData")?;
     let blob_idx = vector_data.get_f64("vectorNetworkBlob")? as usize;
-    let BlobOrString::Bytes(blob) = blobs.get(blob_idx)? else {
-        return None;
-    };
+    let blob = blobs.get(blob_idx)?.as_bytes()?;
     if blob.len() < 12 {
         return None;
     }

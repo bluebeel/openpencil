@@ -6,11 +6,20 @@
 //! `OpCk` call bodies for the shape / gradient / SVG-path ops live in `ops`
 //! and the trait methods here forward to them.
 
+#[path = "backend_image_geometry.rs"]
+mod image_geometry;
+#[path = "backend_shadow.rs"]
+mod shadow;
+#[path = "backend_stroke_paint.rs"]
+mod stroke_paint;
+
 use op_editor_ui::{
     Color, ImageAdjustments, ImageBlendMode, ImageDrawMode, Point2D, Rect, RenderBackend,
     TextBaselineRequest, TextLayout,
 };
 use wasm_bindgen::prelude::*;
+#[path = "path_coordinates.rs"]
+mod path_coordinates;
 
 use super::bindings::{op_ck_init, set_image_cache_factory, web_image_cache_factory, OpCk};
 use super::convert::{
@@ -30,11 +39,52 @@ pub struct CanvasKitBackend {
 }
 
 impl RenderBackend for CanvasKitBackend {
+    fn draw_image_with_paint_options(
+        &mut self,
+        rect: Rect,
+        id: u64,
+        encoded: &[u8],
+        options: &op_editor_ui::ImagePaintOptions<'_>,
+    ) {
+        image_geometry::draw(self, rect, id, encoded, options);
+    }
+
+    fn supports_stroke_paint_fields(&self) -> bool {
+        true
+    }
+    fn push_paint_space(&mut self, rect: Rect) {
+        self.ck
+            .push_paint_space(rect.origin.x, rect.origin.y, rect.size.x, rect.size.y);
+    }
+    fn text_mask_capture(
+        &mut self,
+        action: op_editor_ui::TextMaskAction,
+    ) -> op_editor_ui::TextMaskResult {
+        ops::text_mask_capture(&self.ck, action)
+    }
+    fn paint_field_bounds(&mut self) -> Option<Rect> {
+        ops::paint_field_bounds(&self.ck)
+    }
+    fn pop_paint_space(&mut self) {
+        self.ck.pop_paint_space();
+    }
+    fn stroke_geometry(
+        &mut self,
+        geometry: op_editor_ui::StrokeGeometry<'_>,
+        options: &op_editor_ui::StrokeMaskOptions<'_>,
+        color: Color,
+    ) -> bool {
+        let _coordinates = path_coordinates::Scope::new(&self.ck);
+        stroke_paint::draw(&self.ck, geometry, options, color);
+        true
+    }
+
     fn begin_frame(&mut self) {
         self.ck.begin_frame();
         if (self.dpr - 1.0).abs() > f32::EPSILON {
             self.ck.scale(self.dpr, self.dpr);
         }
+        self.ck.capture_shadow_basis();
     }
     fn end_frame(&mut self) {
         self.ck.end_frame();
@@ -43,9 +93,17 @@ impl RenderBackend for CanvasKitBackend {
     fn fill_rect(&mut self, rect: Rect, color: Color) {
         ops::fill_rect(&self.ck, rect, color);
     }
+    fn shadow_offset_in_local_space(&self, offset: Point2D) -> Point2D {
+        let local = self.ck.shadow_offset_in_local_space(offset.x, offset.y);
+        match local.as_slice() {
+            [x, y] if x.is_finite() && y.is_finite() => Point2D::new(*x, *y),
+            _ => offset,
+        }
+    }
     fn stroke_rect(&mut self, rect: Rect, color: Color, width: f32) {
         ops::stroke_rect(&self.ck, rect, color, width);
     }
+    shadow::shadow_methods!();
     fn fill_round_rect(&mut self, rect: Rect, radius: f32, color: Color) {
         ops::fill_round_rect(&self.ck, rect, radius, color);
     }
@@ -221,9 +279,11 @@ impl RenderBackend for CanvasKitBackend {
         color: Color,
         even_odd: bool,
     ) {
+        let _coordinates = path_coordinates::Scope::new(&self.ck);
         ops::fill_svg_path_in_rect_with_fill_rule(&self.ck, d, rect, color, even_odd);
     }
     fn stroke_svg_path_in_rect(&mut self, d: &str, rect: Rect, color: Color, width: f32) {
+        let _coordinates = path_coordinates::Scope::new(&self.ck);
         ops::stroke_svg_path_in_rect(&self.ck, d, rect, color, width);
     }
     fn fill_svg_path_in_rect_linear_gradient(
@@ -252,6 +312,7 @@ impl RenderBackend for CanvasKitBackend {
         opacity: f32,
         even_odd: bool,
     ) {
+        let _coordinates = path_coordinates::Scope::new(&self.ck);
         ops::fill_svg_path_in_rect_linear_gradient_with_fill_rule(
             &self.ck, d, rect, stops, angle_deg, opacity, even_odd,
         );
@@ -288,6 +349,7 @@ impl RenderBackend for CanvasKitBackend {
         opacity: f32,
         even_odd: bool,
     ) {
+        let _coordinates = path_coordinates::Scope::new(&self.ck);
         ops::fill_svg_path_in_rect_radial_gradient_with_fill_rule(
             &self.ck,
             d,
@@ -329,57 +391,14 @@ impl RenderBackend for CanvasKitBackend {
         color: Color,
         even_odd: bool,
     ) {
+        let _coordinates = path_coordinates::Scope::new(&self.ck);
         ops::fill_inner_shadow_svg_path_with_fill_rule(
             &self.ck, d, rect, offset_x, offset_y, blur, color, even_odd,
         );
     }
 
     fn draw_text(&mut self, layout: &TextLayout, origin: Point2D) {
-        let italic = layout.italic();
-        for run in layout.runs() {
-            let x = origin.x + run.origin.x;
-            let y = origin.y + run.origin.y;
-            // `TextRun.color` is `jian_core::scene::Color` (0-255 u8 channels),
-            // unlike the f32-channel `Color` the fill ops take.
-            let c = run.color;
-            let (cr, cg, cb, ca) = (
-                f32::from(c.r()) / 255.0,
-                f32::from(c.g()) / 255.0,
-                f32::from(c.b()) / 255.0,
-                f32::from(c.a()) / 255.0,
-            );
-            // Same predicate the native host uses, so the two never disagree
-            // about which runs need bidi + contextual joining.
-            if op_editor_core::text_script::needs_complex_shaping(run.content.as_str()) {
-                self.ck.draw_shaped_text(
-                    run.content.as_str(),
-                    run.font_family.as_str(),
-                    x,
-                    y,
-                    run.font_size,
-                    run.font_weight as i32,
-                    italic,
-                    cr,
-                    cg,
-                    cb,
-                    ca,
-                );
-                continue;
-            }
-            self.ck.draw_text(
-                run.content.as_str(),
-                run.font_family.as_str(),
-                x,
-                y,
-                run.font_size,
-                run.font_weight as i32,
-                italic,
-                cr,
-                cg,
-                cb,
-                ca,
-            );
-        }
+        ops::draw_text(&self.ck, layout, origin);
     }
     fn image_decoded(&mut self, image_id: u64, encoded: &[u8], max_edge_px: u32) -> bool {
         let _ = encoded;
@@ -654,6 +673,7 @@ impl RenderBackend for CanvasKitBackend {
         self.ck.clip_polygon(&flat);
     }
     fn clip_svg_path_in_rect(&mut self, d: &str, rect: Rect, even_odd: bool) {
+        let _coordinates = path_coordinates::Scope::new(&self.ck);
         self.ck.clip_svg_path_in_rect(
             d,
             rect.origin.x,
@@ -682,6 +702,11 @@ impl RenderBackend for CanvasKitBackend {
     fn push_mask_source_layer(&mut self, luminance: bool) {
         self.ck.push_mask_source_layer(luminance);
     }
+    fn push_mask_source_layer_with_color_space(&mut self, luminance: bool, linear_rgb: bool) {
+        self.ck
+            .push_mask_source_layer_with_color_space(luminance, linear_rgb);
+    }
+
     fn push_blend_layer(&mut self, mode: ImageBlendMode) {
         self.ck.push_blend_layer(image_blend_mode_code(mode));
     }
@@ -715,6 +740,15 @@ impl RenderBackend for CanvasKitBackend {
     }
 }
 
+impl CanvasKitBackend {
+    /// Release an exclusively owned bridge (for SDK detach/superseded attach).
+    /// General backend Drop cannot do this: host measurement owners may share
+    /// the JS handle. Call only after its final paint/measure use.
+    pub fn dispose(&self) {
+        let _ = self.ck.dispose();
+    }
+}
+
 /// Initialise CanvasKit on `canvas_id` and return a ready `CanvasKitBackend`.
 pub async fn init_backend(
     canvas_id: &str,
@@ -722,9 +756,14 @@ pub async fn init_backend(
     logical_w: u32,
     logical_h: u32,
 ) -> Result<CanvasKitBackend, JsValue> {
+    let dpr = if dpr.is_finite() && dpr > 0.0 {
+        dpr.max(1.0)
+    } else {
+        1.0
+    };
     let image_cache_factory = web_image_cache_factory();
     set_image_cache_factory(&image_cache_factory);
-    let promise = op_ck_init(canvas_id)?;
+    let promise = op_ck_init(canvas_id, dpr, logical_w.max(1), logical_h.max(1))?;
     let ck_val = wasm_bindgen_futures::JsFuture::from(promise).await?;
     let ck: OpCk = ck_val.unchecked_into();
     Ok(CanvasKitBackend::new(ck, dpr, logical_w, logical_h))

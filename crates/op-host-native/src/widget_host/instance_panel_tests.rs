@@ -193,7 +193,12 @@ fn color_picker_on_virtual_child_opens_edits_and_keeps_ref_history() {
         .back()
         .expect("picker edit history");
     assert!(matches!(
-        snapshot.doc.snapshot_find_node(0, &NodeId::new("inst1")),
+        snapshot
+            .full_snapshot()
+            .expect("native picker uses complete public undo capture")
+            .doc
+            .snapshot_find_node(0, &NodeId::new("inst1"))
+            .map(|node| node.metadata()),
         Some(PenNode::Ref(_))
     ));
 }

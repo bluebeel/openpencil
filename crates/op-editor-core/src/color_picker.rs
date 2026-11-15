@@ -22,8 +22,8 @@
 //! undo only when the colour actually changed.
 
 use crate::color_picker_snapshot::{
-    effect_color_hex, gradient_stop_hex, scalar_as_hex, snapshot_find_node, snapshot_variable_hex,
-    splice_alpha, variant_scalar,
+    effect_color_hex, gradient_stop_hex, scalar_as_hex, snapshot_find_node, snapshot_node_differs,
+    snapshot_variable_hex, splice_alpha, variant_scalar,
 };
 use crate::fills::{
     first_solid_fill_hex, first_solid_stroke_hex, push_drop_shadow, set_primary_fill_hex,
@@ -171,28 +171,9 @@ impl EditorState {
         }
         // A Ref root or virtual child seeds from its effective display
         // node so the picker opens on the override-effective colour.
-        let display_node;
-        let node = match self.selected_node() {
-            Some(node) => {
-                match crate::instance_override::resolve_instance_display_node(&self.doc, node) {
-                    Some(display) => {
-                        display_node = display;
-                        &display_node
-                    }
-                    None => node,
-                }
-            }
-            None => {
-                let Some(display) =
-                    crate::instance_override::resolve_instance_display_node_for_anchor(
-                        &self.doc, &sel,
-                    )
-                else {
-                    return false;
-                };
-                display_node = display;
-                &display_node
-            }
+        let display_node = self.instance_display_header(&sel);
+        let Some(node) = display_node.as_ref().or_else(|| self.selected_node()) else {
+            return false;
         };
         let current_hex = match target {
             ColorTarget::Fill => indexed_solid_fill_hex(node, fill_index),
@@ -457,11 +438,9 @@ impl EditorState {
             before != after
         } else if let Some(ref_id) = match self.selected_node() {
             Some(jian_ops_schema::node::PenNode::Ref(_)) => Some(self.selection.anchor.clone()),
-            _ => crate::instance_override::split_instance_child_anchor(
-                &self.selection.anchor,
-                &self.doc,
-            )
-            .map(|(ref_id, _child_id)| ref_id),
+            _ => self
+                .split_instance_anchor(&self.selection.anchor)
+                .map(|(ref_id, _child_id)| ref_id),
         } {
             // Instance anchors keep their colours in `descendants`
             // overrides — the per-target colour readers see `None` on
@@ -470,16 +449,21 @@ impl EditorState {
             // Ours: the anchor may be a VIRTUAL instance-child id
             // (`ref::child`) that no walker can find — compare the REF
             // node resolved from the split instead of the raw anchor.
-            snapshot_find_node(&snap, &ref_id)
-                != crate::walkers::find_node(self.active_children(), &ref_id)
+            snapshot_node_differs(
+                snapshot_find_node(&snap, &ref_id),
+                crate::walkers::find_node(self.active_children(), &ref_id),
+            )
         } else {
             let sel = self.selection.anchor.clone();
             let fill_index = state.fill_index;
-            let before = snapshot_find_node(&snap, &sel).and_then(|n| match state.target {
-                ColorTarget::Fill => indexed_solid_fill_hex(n, fill_index),
-                ColorTarget::Stroke => first_solid_stroke_hex(n).map(str::to_string),
-                ColorTarget::GradientStop(i) => gradient_stop_hex(n, i),
-                ColorTarget::EffectColor(i) => effect_color_hex(n, i),
+            let before = snapshot_find_node(&snap, &sel).and_then(|view| {
+                let n = view.metadata();
+                match state.target {
+                    ColorTarget::Fill => indexed_solid_fill_hex(n, fill_index),
+                    ColorTarget::Stroke => first_solid_stroke_hex(n).map(str::to_string),
+                    ColorTarget::GradientStop(i) => gradient_stop_hex(n, i),
+                    ColorTarget::EffectColor(i) => effect_color_hex(n, i),
+                }
             });
             let after = self.selected_node().and_then(|n| match state.target {
                 ColorTarget::Fill => indexed_solid_fill_hex(n, fill_index),

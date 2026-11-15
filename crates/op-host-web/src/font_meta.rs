@@ -44,6 +44,67 @@ pub(crate) fn parse_family(bytes: &[u8]) -> Option<String> {
     typographic.or(family)
 }
 
+/// Actual binary descriptors for the browser shaping alias. Unknown/invalid
+/// axes refuse only this optional alias; CanvasKit registration remains intact.
+pub(crate) struct BrowserStyle {
+    pub style: &'static str,
+    pub weight: String,
+    pub variations: String,
+}
+pub(crate) fn browser_style(bytes: &[u8]) -> Option<BrowserStyle> {
+    use std::fmt::Write;
+    let face = ttf_parser::Face::parse(bytes, 0).ok()?;
+    let mut low = f32::from(face.weight().to_number());
+    let mut high = low;
+    let mut variations = String::new();
+    for axis in face.variation_axes() {
+        if axis.tag == ttf_parser::Tag::from_bytes(b"wght") {
+            low = axis.min_value.max(1.0);
+            high = axis.max_value.min(1000.0);
+            continue;
+        }
+        if !axis.def_value.is_finite() {
+            return None;
+        }
+        if !variations.is_empty() {
+            variations.push_str(", ");
+        }
+        variations.push_str("'");
+        for byte in axis.tag.to_bytes() {
+            if !(0x20..=0x7e).contains(&byte) {
+                return None;
+            }
+            if matches!(byte, b'\\' | b'\'') {
+                variations.push('\\');
+            }
+            variations.push(char::from(byte));
+        }
+        write!(variations, "' {}", axis.def_value).ok()?;
+    }
+    if !(low.is_finite() && high.is_finite() && low >= 1.0 && high <= 1000.0 && low <= high) {
+        return None;
+    }
+    let weight = if low == high {
+        low.to_string()
+    } else {
+        format!("{low} {high}")
+    };
+    if variations.is_empty() {
+        variations.push_str("normal");
+    }
+    Some(BrowserStyle {
+        style: if face.is_italic() {
+            "italic"
+        } else if face.is_oblique() {
+            "oblique"
+        } else {
+            "normal"
+        },
+        weight,
+        variations,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::parse_family;

@@ -16,7 +16,7 @@ pub fn set_primary_fill_opacity(node: &mut PenNode, opacity: f32) -> bool {
     if node_fills(node).map(|f| f.is_empty()).unwrap_or(true) {
         return false;
     }
-    let opacity = opacity.clamp(0.0, 1.0);
+    let opacity = f64::from(opacity).clamp(0.0, 1.0);
     let Some(fills) = node_fills_mut(node) else {
         return false;
     };
@@ -50,7 +50,8 @@ pub fn set_primary_gradient_angle(node: &mut PenNode, angle_deg: f32) -> bool {
     };
     match first {
         PenFill::LinearGradient(b) => {
-            b.angle = Some(angle_deg);
+            b.geometry = None;
+            b.angle = Some(f64::from(angle_deg));
             true
         }
         _ => false,
@@ -104,7 +105,7 @@ pub fn set_primary_gradient_stop_offset(node: &mut PenNode, index: usize, frac: 
     let Some(stop) = stops.get_mut(index) else {
         return false;
     };
-    stop.offset = frac.clamp(0.0, 1.0);
+    stop.offset = f64::from(frac).clamp(0.0, 1.0);
     true
 }
 

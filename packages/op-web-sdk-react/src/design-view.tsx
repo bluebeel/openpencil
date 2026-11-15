@@ -14,49 +14,78 @@ export interface DesignViewProps {
   children?: ReactNode;
 }
 
-/**
- * Renders a canvas, creates an OpViewer on mount, and exposes it to
- * descendant hooks via DesignProvider. Destroys the viewer on unmount.
- * Handles the async race: if unmount occurs before createViewer resolves,
- * the late-arriving viewer is destroyed immediately.
- */
+interface ReadyViewer {
+  viewer: OpViewer;
+  wasmUrl?: string;
+  hasDocument: boolean;
+}
+
+/** Mount one viewer per canvas/module. Document replacements reuse its renderer. */
 export function DesignView(props: DesignViewProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [viewer, setViewer] = useState<OpViewer | null>(null);
+  const latest = useRef(props);
+  latest.current = props;
+  const live = useRef<{ viewer: OpViewer; source: DesignViewProps['doc'] } | null>(null);
+  const [ready, setReady] = useState<ReadyViewer | null>(null);
+  const [failure, setFailure] = useState<{ error: unknown } | null>(null);
+  const hasDocument = props.doc !== undefined;
 
   useEffect(() => {
-    let cancelled = false;
-    // Track the viewer that was synchronously assigned so the cleanup
-    // path can destroy it even if setViewer batching hasn't flushed.
-    let made: OpViewer | null = null;
     const canvas = canvasRef.current;
     if (!canvas) return;
+    let cancelled = false;
+    let made: OpViewer | null = null;
+    const abort = new AbortController();
+    setReady(null);
+    setFailure(null);
 
-    createViewer({ canvas, doc: props.doc, wasmUrl: props.wasmUrl }).then((v) => {
-      if (cancelled) {
-        // Component unmounted before the promise resolved — destroy immediately.
-        v.destroy();
-        return;
-      }
-      made = v;
-      setViewer(v);
-      props.onLoad?.(v);
-    });
+    // Read the latest document after async initialization. Superseded props
+    // never force a parse/layout of a large document that cannot be displayed.
+    createViewer({ canvas, wasmUrl: props.wasmUrl, signal: abort.signal })
+      .then((viewer) => {
+        if (cancelled) {
+          viewer.destroy();
+          return;
+        }
+        made = viewer;
+        const source = latest.current.doc;
+        if (source !== undefined) viewer.load(source);
+        live.current = { viewer, source };
+        setReady({ viewer, wasmUrl: props.wasmUrl, hasDocument });
+        latest.current.onLoad?.(viewer);
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        if (live.current?.viewer === made) live.current = null;
+        try { made?.destroy(); } catch { /* Preserve initialization failure. */ }
+        setReady(null);
+        setFailure({ error });
+      });
 
     return () => {
       cancelled = true;
-      // Destroy synchronously if the viewer was already assigned.
+      abort.abort();
+      if (live.current?.viewer === made) live.current = null;
       made?.destroy();
     };
-    // Re-create when doc identity or wasmUrl changes.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [props.doc, props.wasmUrl]);
+  }, [props.wasmUrl, hasDocument]);
 
+  useEffect(() => {
+    const current = live.current;
+    if (current && current.viewer === ready?.viewer && props.doc !== undefined && current.source !== props.doc) {
+      current.viewer.load(props.doc);
+      current.source = props.doc;
+    }
+  }, [props.doc, ready]);
+
+  if (failure) throw failure.error;
+  const viewer = ready?.wasmUrl === props.wasmUrl && ready?.hasDocument === hasDocument
+    ? ready?.viewer
+    : null;
   return createElement(
     'div',
     { className: props.className },
     createElement('canvas', { ref: canvasRef, style: { width: '100%', height: '100%', display: 'block' } }),
-    // Only render children once the viewer is ready.
     viewer ? createElement(DesignProvider, { viewer }, props.children) : null,
   );
 }

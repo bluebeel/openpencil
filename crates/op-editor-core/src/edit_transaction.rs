@@ -10,6 +10,10 @@ use crate::history::{EditorSnapshot, History};
 use crate::state::EditorState;
 use jian_ops_schema::PenDocument;
 use std::collections::BTreeMap;
+mod atomic_authority;
+mod command_capture;
+pub use atomic_authority::{AtomicAuthorityEdit, AtomicAuthorityError};
+pub use command_capture::{CommandEditCapture, CommandEditError};
 
 /// Source of a document edit or install.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,6 +38,12 @@ pub enum EditOrigin {
 pub struct LocalEditCapture {
     generation: u64,
     rollback: RollbackState,
+}
+
+impl LocalEditCapture {
+    pub(crate) fn undo_anchor(&self) -> &EditorSnapshot {
+        &self.rollback.snapshot
+    }
 }
 
 /// Result of ending a local edit.
@@ -126,6 +136,16 @@ impl EditorState {
         }
     }
 
+    /// Discard an open edit after a failed external commit, without cloning
+    /// complete before/after documents. The shared checkpoint restores content,
+    /// history and document-dependent UI state; the revision allocator stays
+    /// monotonic. View-only clipboard state remains outside document history.
+    pub fn abort_local_edit(&mut self, capture: LocalEditCapture) -> Result<(), LocalEditError> {
+        self.ensure_local_edit_generation(capture.generation)?;
+        self.restore_local_edit_rollback(capture.rollback);
+        Ok(())
+    }
+
     /// Finish one local edit and return its exact document delta.
     ///
     /// A no-op removes any legacy history/revision bookkeeping accidentally
@@ -178,6 +198,11 @@ impl EditorState {
             return Err(LocalEditError::DocumentChangedAfterEdit);
         }
 
+        self.restore_local_edit_rollback(rollback);
+        Ok(())
+    }
+
+    fn restore_local_edit_rollback(&mut self, rollback: RollbackState) {
         let RollbackState {
             snapshot,
             history,
@@ -190,7 +215,6 @@ impl EditorState {
         self.codegen.reset_for_document_replacement();
         self.instance_write_virtual_anchor = None;
         jian_ops_schema::image_thumbs::activate_for_document(&self.doc);
-        Ok(())
     }
 
     fn ensure_local_edit_generation(&self, expected: u64) -> Result<(), LocalEditError> {
@@ -202,3 +226,6 @@ impl EditorState {
         }
     }
 }
+
+#[path = "edit_transaction/atomic_components.rs"]
+mod component_proof;

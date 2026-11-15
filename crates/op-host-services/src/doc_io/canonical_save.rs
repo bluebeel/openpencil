@@ -33,15 +33,16 @@ impl CanonicalSaveSnapshot {
     /// immediately before the edit, so all untouched top-level subtrees can
     /// be retained by `Arc` rather than deep-cloned on the UI thread.
     pub fn capture_reusing(state: &EditorState, previous: Option<&Self>) -> Self {
-        let history_anchor = state
-            .history
-            .future
-            .back()
-            .or_else(|| state.history.past.back())
-            .map(|snapshot| &snapshot.doc);
-        let anchor = previous
-            .map(|snapshot| &snapshot.document)
-            .or(history_anchor);
+        let anchor = previous.map(|snapshot| &snapshot.document).or_else(|| {
+            state
+                .history
+                .future
+                .iter()
+                .rev()
+                .chain(state.history.past.iter().rev())
+                .find_map(|entry| entry.full_snapshot())
+                .map(|snapshot| &snapshot.doc)
+        });
         Self {
             document: SharedDoc::capture(&state.doc, anchor),
             editor_meta: EditorMeta::from_state(state),
@@ -56,6 +57,10 @@ impl CanonicalSaveSnapshot {
     /// The view state this snapshot will embed under `editorMeta`.
     pub fn editor_meta(&self) -> EditorMeta {
         self.editor_meta.clone()
+    }
+
+    pub(crate) fn editor_meta_ref(&self) -> &EditorMeta {
+        &self.editor_meta
     }
 
     pub(crate) fn image_thumbnails(&self) -> &ImageThumbSnapshot {
@@ -117,10 +122,11 @@ pub(super) fn write_canonical_document_with_thumbnails<W: Write>(
 pub(super) fn write_serializable_document_with_thumbnails<
     W: Write,
     D: Serialize + jian_ops_schema::image_table::SaveImageOrder + ?Sized,
+    M: Serialize,
 >(
     writer: &mut W,
     document: &D,
-    meta: EditorMeta,
+    meta: M,
     thumbnails: &ImageThumbSnapshot,
 ) -> Result<StreamingSaveStats, DocIoError> {
     let stats = jian_ops_schema::image_table::write_document_with_extension(
@@ -133,6 +139,32 @@ pub(super) fn write_serializable_document_with_thumbnails<
     // `jian_ops_schema` is not owned by this pass — carry its sentence
     // verbatim so the wire text is unchanged.
     .map_err(|e| DocIoError::Serialize(e.to_string()))?;
+    Ok(StreamingSaveStats {
+        wrote_images_table: stats.wrote_images_table,
+        wrote_image_thumbs: stats.wrote_image_thumbs,
+    })
+}
+
+/// Compact autosaves retain the pretty writer's typed numeric spellings and
+/// field/image order while omitting insignificant whitespace.
+pub(super) fn write_compact_document_with_thumbnails<
+    W: Write,
+    D: Serialize + jian_ops_schema::image_table::SaveImageOrder + ?Sized,
+    M: Serialize,
+>(
+    writer: &mut W,
+    document: &D,
+    meta: M,
+    thumbnails: &ImageThumbSnapshot,
+) -> Result<StreamingSaveStats, DocIoError> {
+    let stats = jian_ops_schema::image_table::write_object_compact_with_extension(
+        writer,
+        document,
+        thumbnails,
+        "editorMeta",
+        &meta,
+    )
+    .map_err(|error| DocIoError::Serialize(error.to_string()))?;
     Ok(StreamingSaveStats {
         wrote_images_table: stats.wrote_images_table,
         wrote_image_thumbs: stats.wrote_image_thumbs,

@@ -16,6 +16,7 @@ use super::{
 
 fn solid_fill(hex: &str) -> PenFill {
     PenFill::Solid(SolidFillBody {
+        enabled: None,
         color: hex.to_string(),
         explain: None,
         opacity: None,
@@ -27,7 +28,7 @@ fn style_ops_state() -> op_editor_core::EditorState {
     let mut bg = rect("n2", "Card background", 0.0, 0.0, 240.0, 120.0);
     if let PenNode::Rectangle(r) = &mut bg {
         r.container.fill = Some(vec![solid_fill("#ffffff")]);
-        r.container.stroke = Some(PenStroke {
+        r.container.stroke = Some(PenStroke::from(jian_ops_schema::style::PenStrokeBody {
             thickness: StrokeThickness::Uniform(2.0),
             align: None,
             join: None,
@@ -35,7 +36,7 @@ fn style_ops_state() -> op_editor_core::EditorState {
             dash_pattern: None,
             dash_offset: None,
             fill: Some(vec![solid_fill("#222222")]),
-        });
+        }));
         r.container.corner_radius = Some(CornerRadius::Uniform(8.0));
         r.container.padding = Some(Padding::LtrB([4.0, 8.0, 4.0, 8.0]));
         r.container.gap = Some(NumberOrExpression::Number(12.0));
@@ -45,7 +46,7 @@ fn style_ops_state() -> op_editor_core::EditorState {
     if let PenNode::Text(t) = &mut title {
         t.fill = Some(vec![solid_fill("#111111")]);
         t.font_family = Some("Inter".into());
-        t.font_size = Some(16.0);
+        t.font_size = Some(16.0.into());
         t.font_weight = Some(FontWeight::Number(700));
     }
 

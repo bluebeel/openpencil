@@ -403,6 +403,11 @@ pub(super) fn remove_nested_duplicate_status_bars(state: &mut EditorState) -> us
             continue;
         }
         fn prune(node: &mut PenNode, keep_canonical: bool, removed: &mut usize) {
+            // Do not turn absent component overrides or leaf children into
+            // explicit empty arrays while walking unrelated screen content.
+            if node.children().is_none_or(|children| children.is_empty()) {
+                return;
+            }
             let Some(children) = node.children_mut() else {
                 return;
             };

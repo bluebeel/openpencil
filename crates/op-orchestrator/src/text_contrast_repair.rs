@@ -99,9 +99,14 @@ pub(crate) fn repair_chip_text_contrast(sink: &mut dyn DocSink, root_id: &str) -
     else {
         return 0;
     };
-    let doc = document_for_lint(sink.state());
-    let variables = doc.variables.clone().unwrap_or_default();
-    let theme = op_design_lint::node_util::default_theme(doc.themes.as_ref());
+    let empty_variables = op_design_lint::node_util::Variables::new();
+    let variables = sink
+        .state()
+        .doc
+        .variables
+        .as_ref()
+        .unwrap_or(&empty_variables);
+    let theme = op_design_lint::node_util::default_theme(sink.state().doc.themes.as_ref());
     let rects = resolved_rects(sink.state());
 
     let mut offenders: Vec<ContrastOffender> = Vec::new();
@@ -234,7 +239,7 @@ fn first_usable_fill_kind(fills: Option<&Vec<PenFill>>) -> FillKind {
                 if body.color.is_empty() {
                     continue;
                 }
-                return FillKind::Solid(body.color.clone(), body.opacity.unwrap_or(1.0));
+                return FillKind::Solid(body.color.clone(), body.opacity.unwrap_or(1.0) as f32);
             }
             PenFill::Image(body) => {
                 if body.opacity == Some(0.0) {
@@ -672,9 +677,14 @@ pub(crate) fn repair_text_contrast(sink: &mut dyn DocSink, root_id: &str) -> usi
     else {
         return 0;
     };
-    let doc = document_for_lint(sink.state());
-    let variables = doc.variables.clone().unwrap_or_default();
-    let theme = op_design_lint::node_util::default_theme(doc.themes.as_ref());
+    let empty_variables = op_design_lint::node_util::Variables::new();
+    let variables = sink
+        .state()
+        .doc
+        .variables
+        .as_ref()
+        .unwrap_or(&empty_variables);
+    let theme = op_design_lint::node_util::default_theme(sink.state().doc.themes.as_ref());
     let rects = resolved_rects(sink.state());
     let mut offenders = Vec::new();
     collect_contrast_offenders(root, &[], &variables, &theme, &rects, &mut offenders);
@@ -771,20 +781,6 @@ fn token_hex(
 ) -> Option<String> {
     let hex = op_design_lint::node_util::resolve_color_ref(&format!("${token}"), variables, theme)?;
     hex.starts_with('#').then_some(hex)
-}
-
-/// The lint crate reads a `PenDocument`; the orchestrator holds an
-/// `EditorState`. Project just enough for the detector: its walk needs the
-/// node tree plus the variable and theme tables.
-fn document_for_lint(state: &op_editor_core::EditorState) -> jian_ops_schema::PenDocument {
-    // Clone the document and swap in the ACTIVE page's nodes: the detector
-    // walks `children`, and the orchestrator may be working on a page that is
-    // not the document's first. Cloning rather than rebuilding field-by-field
-    // keeps this correct when the schema grows a field.
-    let mut doc = state.doc.clone();
-    doc.children = state.active_children().to_vec();
-    doc.pages = None;
-    doc
 }
 
 #[cfg(test)]

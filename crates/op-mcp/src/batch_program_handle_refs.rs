@@ -60,23 +60,29 @@ fn extract_at(value: &mut Value, path: &mut Vec<usize>, out: &mut Vec<HandleChil
     else {
         return;
     };
-    let entries = std::mem::take(children);
     let mut inline_objects = 0usize;
-    for entry in entries {
-        match entry {
-            Value::String(handle) => out.push(HandleChildRef {
+    // Compact in place, keeping the authored array's storage and entry order.
+    children.retain_mut(|entry| match entry {
+        Value::String(handle) => {
+            let mut handle = std::mem::take(handle);
+            let start = handle.len() - handle.trim_start().len();
+            let length = handle.trim().len();
+            handle.truncate(start + length);
+            handle.drain(..start);
+            out.push(HandleChildRef {
                 container_path: path.clone(),
                 inline_before: inline_objects,
-                handle: handle.trim().to_string(),
-            }),
-            other => {
-                if other.is_object() {
-                    inline_objects += 1;
-                }
-                children.push(other);
-            }
+                handle,
+            });
+            false
         }
-    }
+        other => {
+            if other.is_object() {
+                inline_objects += 1;
+            }
+            true
+        }
+    });
     let mut object_index = 0usize;
     for child in children.iter_mut() {
         if !child.is_object() {

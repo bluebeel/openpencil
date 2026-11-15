@@ -1,4 +1,5 @@
-use serde_json::Value;
+use crate::mcp_http_cli::{raw_object, raw_text};
+use serde_json::{value::RawValue, Value};
 
 use super::{
     flag_value, json_escape, pair, required_pos, resolve_arg, resolve_file_path_arg, tool_call,
@@ -48,21 +49,23 @@ fn map_codegen_export(flags: &Flags) -> Result<Command, CliError> {
 /// returning a JSON summary. Entry paths come from the server, so any
 /// absolute or parent-escaping path is refused rather than written.
 pub(super) fn write_codegen_export(response: &str, out_dir: &str) -> Result<String, CliError> {
-    let value: Value = serde_json::from_str(response).map_err(|error| {
+    let value: &RawValue = serde_json::from_str(response).map_err(|error| {
         CliError::Payload(format!("codegen_export returned invalid JSON: {error}"))
     })?;
-    let files = value
+    let fields = raw_object(value.get())
+        .ok_or_else(|| CliError::Payload("codegen_export response is missing files".into()))?;
+    let files = fields
         .get("files")
-        .and_then(Value::as_object)
+        .and_then(|raw| raw_object(raw.get()))
         .ok_or_else(|| CliError::Payload("codegen_export response is missing files".into()))?;
     let root = std::path::Path::new(out_dir);
     let mut written = Vec::with_capacity(files.len());
-    for (relative, content) in files {
+    for (relative, content) in &files {
         let path = std::path::Path::new(relative);
         let safe = path
             .components()
             .all(|c| matches!(c, std::path::Component::Normal(_)));
-        let Some(content) = content.as_str().filter(|_| safe) else {
+        let Some(content) = raw_text(content).filter(|_| safe) else {
             return Err(CliError::Payload(format!(
                 "codegen_export returned an unsafe file entry {relative:?}"
             )));
@@ -73,12 +76,16 @@ pub(super) fn write_codegen_export(response: &str, out_dir: &str) -> Result<Stri
                 CliError::Io(format!("cannot create {}: {error}", parent.display()))
             })?;
         }
-        std::fs::write(&target, content)
+        std::fs::write(&target, content.as_bytes())
             .map_err(|error| CliError::Io(format!("cannot write {}: {error}", target.display())))?;
         written.push(Value::String(target.display().to_string()));
     }
+    let framework = fields
+        .get("framework")
+        .and_then(|raw| serde_json::from_str::<Value>(raw.get()).ok())
+        .unwrap_or(Value::Null);
     Ok(serde_json::json!({
-        "framework": value.get("framework").cloned().unwrap_or(Value::Null),
+        "framework": framework,
         "files": written,
     })
     .to_string())

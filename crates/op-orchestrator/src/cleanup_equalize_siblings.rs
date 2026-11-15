@@ -365,10 +365,10 @@ fn plan_family_repairs(
     // of that state, not drift: it neither votes nor is edited.
     let voters = text_voters(family);
     for (position, _text) in first_texts.iter().enumerate() {
-        let font_sizes: Vec<Option<f64>> = voters
+        let font_sizes: Vec<Option<jian_ops_schema::node::NumberOrExpression>> = voters
             .iter()
             .map(|&i| match family[i].text_nodes.get(position) {
-                Some(PenNode::Text(text)) => text.font_size,
+                Some(PenNode::Text(text)) => text.font_size.clone(),
                 _ => None,
             })
             .collect();

@@ -1,4 +1,5 @@
-use super::{jian_color_to_color4f, to_sk_rect, NativeBackend};
+use super::svg_raster_cache::{SvgRasterCacheEntry, SvgRasterKey};
+use super::{jian_color_to_color4f, raster_point, to_sk_rect, NativeBackend};
 use op_editor_ui::{Color, Point2D, Rect};
 use std::hash::{Hash, Hasher};
 
@@ -12,7 +13,6 @@ use std::hash::{Hash, Hasher};
 /// entry cap as the safety bound on tiny paths.
 const SVG_PATH_CACHE_BYTE_BUDGET: usize = 64 * 1024 * 1024;
 const SVG_PATH_CACHE_MAX_ENTRIES: usize = 65536;
-const SVG_RASTER_CACHE_CAP: usize = 256;
 const SVG_RASTER_COMPLEXITY_MIN: usize = 4096;
 const SVG_RASTER_MAX_PIXELS: i32 = 2_000_000;
 const SVG_RASTER_PAD: f32 = 2.0;
@@ -23,25 +23,9 @@ pub(super) struct SvgPathCacheEntry {
     even_odd: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(super) struct SvgRasterKey {
-    path_key: u64,
-    d_len: usize,
-    even_odd: bool,
-    color_rgba: u32,
-    size_bits: u32,
-    viewbox_bits: u32,
-    dpi_bits: u32,
-}
-
-pub(super) struct SvgRasterCacheEntry {
-    image: skia_safe::Image,
-    offset: Point2D,
-    size: Point2D,
-}
-
 struct SvgRasterRequest<'a> {
     path_key: u64,
+    source: &'a str,
     d_len: usize,
     path: &'a skia_safe::Path,
     even_odd: bool,
@@ -51,7 +35,7 @@ struct SvgRasterRequest<'a> {
 }
 
 impl NativeBackend {
-    fn cached_svg_path(&mut self, d: &str) -> Option<(u64, skia_safe::Path, bool)> {
+    pub(super) fn cached_svg_path(&mut self, d: &str) -> Option<(u64, skia_safe::Path, bool)> {
         let key = svg_path_key(d);
         if let Some(entry) = self.svg_path_cache.get(&key) {
             if entry.d == d {
@@ -101,8 +85,12 @@ impl NativeBackend {
         &mut self,
         req: SvgRasterRequest<'_>,
     ) -> Option<&SvgRasterCacheEntry> {
+        if jian_skia::raster_sampling::is_point_sampling() || super::vector_document::is_pdf() {
+            return None;
+        }
         let SvgRasterRequest {
             path_key,
+            source,
             d_len,
             path,
             even_odd,
@@ -122,18 +110,6 @@ impl NativeBackend {
         } else {
             1.0
         };
-        let raster_s = s * dpi;
-        let pad_px = (SVG_RASTER_PAD * dpi).ceil();
-        let bounds = path.compute_tight_bounds();
-        if !bounds.is_finite() || bounds.is_empty() {
-            return None;
-        }
-        let width = (bounds.width() * raster_s).abs().ceil() as i32 + (pad_px as i32 * 2);
-        let height = (bounds.height() * raster_s).abs().ceil() as i32 + (pad_px as i32 * 2);
-        if width <= 0 || height <= 0 || width.saturating_mul(height) > SVG_RASTER_MAX_PIXELS {
-            return None;
-        }
-
         let key = SvgRasterKey {
             path_key,
             d_len,
@@ -143,9 +119,32 @@ impl NativeBackend {
             viewbox_bits: viewbox.to_bits(),
             dpi_bits: dpi.to_bits(),
         };
-        if self.svg_raster_cache.contains_key(&key) {
-            return self.svg_raster_cache.get(&key);
+        if self.svg_raster_cache.contains_key(&key, source) {
+            return self.svg_raster_cache.get(&key, source);
         }
+
+        let raster_s = s * dpi;
+        let pad_px = (SVG_RASTER_PAD * dpi).ceil();
+        let bounds = path.compute_tight_bounds();
+        if !bounds.is_finite() || bounds.is_empty() {
+            return None;
+        }
+        if !pad_px.is_finite() {
+            return None;
+        }
+        let pad = (pad_px as i64).checked_mul(2)?;
+        let width = ((bounds.width() * raster_s).abs().ceil() as i64).checked_add(pad)?;
+        let height = ((bounds.height() * raster_s).abs().ceil() as i64).checked_add(pad)?;
+        if width <= 0
+            || height <= 0
+            || width.saturating_mul(height) > i64::from(SVG_RASTER_MAX_PIXELS)
+        {
+            return None;
+        }
+        // Positive dimensions with a product below2M are representable as i32.
+        // Validate before narrowing; enormous valid floats must not overflow
+        // the old padding addition and panic before the fallback can run.
+        let (width, height) = (width as i32, height as i32);
 
         let mut surface = skia_safe::surfaces::raster_n32_premul((width, height))?;
         let raster_canvas = surface.canvas();
@@ -161,7 +160,7 @@ impl NativeBackend {
             raster_path.set_fill_type(skia_safe::PathFillType::EvenOdd);
         }
         let mut paint = skia_safe::Paint::new(jian_color_to_color4f(color), None);
-        paint.set_anti_alias(true);
+        jian_skia::raster_sampling::configure_geometry(&mut paint);
         raster_canvas.draw_path(&raster_path, &paint);
         raster_canvas.restore_to_count(save);
 
@@ -173,17 +172,8 @@ impl NativeBackend {
             ),
             size: Point2D::new(width as f32 / dpi, height as f32 / dpi),
         };
-        self.svg_raster_cache.insert(key, entry);
-        self.svg_raster_cache_order.push_back(key);
-        while self.svg_raster_cache.len() > SVG_RASTER_CACHE_CAP {
-            match self.svg_raster_cache_order.pop_front() {
-                Some(oldest) => {
-                    self.svg_raster_cache.remove(&oldest);
-                }
-                None => break,
-            }
-        }
-        self.svg_raster_cache.get(&key)
+        self.svg_raster_cache.insert(key, source, entry);
+        self.svg_raster_cache.get(&key, source)
     }
 
     /// Step 5 SVG icons: parse an SVG path `d` string once, scale from
@@ -204,14 +194,14 @@ impl NativeBackend {
         let s = size / 24.0;
         let mut matrix = skia_safe::Matrix::new_identity();
         matrix.set_scale_translate((s, s), (top_left.x, top_left.y));
-        let path = path.with_transform(&matrix);
+        let path = super::vector_text::transformed_path(&path, &matrix, false);
         let mut paint = skia_safe::Paint::new(jian_color_to_color4f(color), None);
         paint.set_stroke(true);
         paint.set_stroke_width(width);
-        paint.set_anti_alias(true);
+        jian_skia::raster_sampling::configure_geometry(&mut paint);
         paint.set_stroke_cap(skia_safe::PaintCap::Round);
         paint.set_stroke_join(skia_safe::PaintJoin::Round);
-        canvas.draw_path(&path, &paint);
+        raster_point::draw_path(canvas, &path, &paint);
     }
 
     /// Stroke an arbitrary document SVG path fitted into `rect` by
@@ -233,10 +223,10 @@ impl NativeBackend {
         let mut paint = skia_safe::Paint::new(jian_color_to_color4f(color), None);
         paint.set_stroke(true);
         paint.set_stroke_width(width);
-        paint.set_anti_alias(true);
+        jian_skia::raster_sampling::configure_geometry(&mut paint);
         paint.set_stroke_cap(skia_safe::PaintCap::Round);
         paint.set_stroke_join(skia_safe::PaintJoin::Round);
-        canvas.draw_path(&path, &paint);
+        raster_point::draw_path(canvas, &path, &paint);
     }
 
     /// Fill an SVG path scaled from `viewbox x viewbox` to
@@ -285,6 +275,7 @@ impl NativeBackend {
         let even_odd = explicit_even_odd.unwrap_or(inferred_even_odd);
         if let Some(raster) = self.cached_raster_svg_path(SvgRasterRequest {
             path_key,
+            source: d,
             d_len: d.len(),
             path: &path,
             even_odd,
@@ -297,20 +288,17 @@ impl NativeBackend {
                 size: raster.size,
             };
             let mut paint = skia_safe::Paint::default();
-            paint.set_anti_alias(true);
+            jian_skia::raster_sampling::configure_geometry(&mut paint);
             canvas.draw_image_rect(&raster.image, None, to_sk_rect(dst), &paint);
             return;
         }
         let s = size / viewbox;
         let mut matrix = skia_safe::Matrix::new_identity();
         matrix.set_scale_translate((s, s), (top_left.x, top_left.y));
-        let mut path = path.with_transform(&matrix);
-        if even_odd {
-            path.set_fill_type(skia_safe::PathFillType::EvenOdd);
-        }
+        let path = super::vector_text::transformed_path(&path, &matrix, even_odd);
         let mut paint = skia_safe::Paint::new(jian_color_to_color4f(color), None);
-        paint.set_anti_alias(true);
-        canvas.draw_path(&path, &paint);
+        jian_skia::raster_sampling::configure_geometry(&mut paint);
+        raster_point::draw_path(canvas, &path, &paint);
     }
 
     /// Fill an arbitrary document SVG path fitted into `rect` by its
@@ -345,14 +333,15 @@ impl NativeBackend {
         even_odd: bool,
     ) {
         let Some((_, path, _)) = self.cached_svg_path(d) else {
-            canvas.clip_rect(to_sk_rect(Rect::ZERO), skia_safe::ClipOp::Intersect, true);
+            canvas.clip_rect(
+                to_sk_rect(Rect::ZERO),
+                skia_safe::ClipOp::Intersect,
+                jian_skia::raster_sampling::geometry_antialias(),
+            );
             return;
         };
-        let mut path = fit_path_to_rect(&path, rect);
-        if even_odd {
-            path.set_fill_type(skia_safe::PathFillType::EvenOdd);
-        }
-        canvas.clip_path(&path, skia_safe::ClipOp::Intersect, true);
+        let path = fit_path_to_rect_with_rule(&path, rect, even_odd);
+        raster_point::clip_path(canvas, &path);
     }
 
     fn fill_svg_path_in_rect_impl(
@@ -367,13 +356,10 @@ impl NativeBackend {
             return;
         };
         let even_odd = explicit_even_odd.unwrap_or(inferred_even_odd);
-        let mut path = fit_path_to_rect(&path, rect);
-        if even_odd {
-            path.set_fill_type(skia_safe::PathFillType::EvenOdd);
-        }
+        let path = fit_path_to_rect_with_rule(&path, rect, even_odd);
         let mut paint = skia_safe::Paint::new(jian_color_to_color4f(color), None);
-        paint.set_anti_alias(true);
-        canvas.draw_path(&path, &paint);
+        jian_skia::raster_sampling::configure_geometry(&mut paint);
+        raster_point::draw_path(canvas, &path, &paint);
     }
 
     /// Fill a document SVG path (fitted into `rect`) with a linear
@@ -436,18 +422,7 @@ impl NativeBackend {
             return;
         };
         let (start, end) = super::gradient::linear_gradient_endpoints(rect, angle_deg);
-        let (colors, offsets) = super::gradient::gradient_color_arrays(stops, opacity);
-        let grad_colors = skia_safe::gradient::Colors::new(
-            &colors[..],
-            Some(offsets.as_slice()),
-            skia_safe::TileMode::Clamp,
-            None,
-        );
-        let gradient = skia_safe::gradient::Gradient::new(
-            grad_colors,
-            super::gradient::premul_interpolation(),
-        );
-        let shader = skia_safe::gradient::shaders::linear_gradient((start, end), &gradient, None);
+        let shader = super::gradient::linear_shader(start, end, stops, opacity);
         self.draw_path_with_gradient(canvas, &path, shader, stops, opacity);
     }
 
@@ -529,19 +504,7 @@ impl NativeBackend {
             rect.origin.y + rect.size.y * cy_frac.clamp(0.0, 1.0),
         );
         let outer = ((rect.size.x.max(rect.size.y)) * radius_frac.clamp(0.0, 1.0)).max(0.01);
-        let (colors, offsets) = super::gradient::gradient_color_arrays(stops, opacity);
-        let grad_colors = skia_safe::gradient::Colors::new(
-            &colors[..],
-            Some(offsets.as_slice()),
-            skia_safe::TileMode::Clamp,
-            None,
-        );
-        let gradient = skia_safe::gradient::Gradient::new(
-            grad_colors,
-            super::gradient::premul_interpolation(),
-        );
-        let shader =
-            skia_safe::gradient::shaders::radial_gradient((center, outer), &gradient, None);
+        let shader = super::gradient::radial_shader(center, outer, stops, opacity);
         self.draw_path_with_gradient(canvas, &path, shader, stops, opacity);
     }
 
@@ -555,10 +518,7 @@ impl NativeBackend {
     ) -> Option<skia_safe::Path> {
         let (_, path, inferred_even_odd) = self.cached_svg_path(d)?;
         let even_odd = explicit_even_odd.unwrap_or(inferred_even_odd);
-        let mut path = fit_path_to_rect(&path, rect);
-        if even_odd {
-            path.set_fill_type(skia_safe::PathFillType::EvenOdd);
-        }
+        let path = fit_path_to_rect_with_rule(&path, rect, even_odd);
         Some(path)
     }
 
@@ -583,8 +543,8 @@ impl NativeBackend {
                 None,
             ),
         };
-        paint.set_anti_alias(true);
-        canvas.draw_path(path, &paint);
+        jian_skia::raster_sampling::configure_geometry(&mut paint);
+        raster_point::draw_path(canvas, path, &paint);
     }
 
     /// Paint an inset (inner) shadow for a document SVG path fitted
@@ -665,21 +625,23 @@ impl NativeBackend {
         };
 
         canvas.save();
-        canvas.clip_path(&path, skia_safe::ClipOp::Intersect, true);
+        raster_point::clip_path(canvas, &path);
         canvas.save_layer(&skia_safe::canvas::SaveLayerRec::default());
 
         let mut fill = skia_safe::Paint::new(jian_color_to_color4f(color), None);
-        fill.set_anti_alias(true);
+        jian_skia::raster_sampling::configure_geometry(&mut fill);
         canvas.draw_path(&path, &fill);
 
         let mut cut = skia_safe::Paint::default();
-        cut.set_anti_alias(true);
-        cut.set_blend_mode(skia_safe::BlendMode::DstOut);
+        jian_skia::raster_sampling::configure_geometry(&mut cut);
+        jian_skia::raster_sampling::set_blend_mode(&mut cut, skia_safe::BlendMode::DstOut);
         let sigma = blur * 0.5;
         if sigma > 0.0 {
-            if let Some(mask) =
-                skia_safe::MaskFilter::blur(skia_safe::BlurStyle::Normal, sigma, false)
-            {
+            if let Some(mask) = skia_safe::MaskFilter::blur(
+                skia_safe::BlurStyle::Normal,
+                sigma,
+                jian_skia::raster_sampling::shadow_respects_ctm(),
+            ) {
                 cut.set_mask_filter(mask);
             }
         }
@@ -720,7 +682,37 @@ fn has_multiple_close_commands(d: &str) -> bool {
 }
 
 fn fit_path_to_rect(path: &skia_safe::Path, rect: Rect) -> skia_safe::Path {
-    let bounds = path.compute_tight_bounds();
+    fit_path_to_rect_with_rule(path, rect, false)
+}
+pub(super) fn fit_path_to_rect_with_rule(
+    path: &skia_safe::Path,
+    rect: Rect,
+    even_odd: bool,
+) -> skia_safe::Path {
+    if let Some([x, y, w, h]) = op_editor_ui::svg_path_coordinates::current() {
+        let sx = rect.size.x / w;
+        let sy = rect.size.y / h;
+        let mut matrix = skia_safe::Matrix::new_identity();
+        matrix.set_scale_translate((sx, sy), (rect.origin.x - x * sx, rect.origin.y - y * sy));
+        if matrix.is_finite() && rect.size.x > 0.0 && rect.size.y > 0.0 {
+            return super::vector_text::transformed_path(path, &matrix, even_odd);
+        }
+    }
+    super::vector_text::fitted_path(
+        path,
+        [rect.origin.x, rect.origin.y, rect.size.x, rect.size.y],
+        even_odd,
+        || {
+            let mut fitted = fit_path_to_rect_uncached(path, rect);
+            if even_odd {
+                fitted.set_fill_type(skia_safe::PathFillType::EvenOdd);
+            }
+            fitted
+        },
+    )
+}
+fn fit_path_to_rect_uncached(path: &skia_safe::Path, rect: Rect) -> skia_safe::Path {
+    let bounds = super::vector_text::tight_bounds(path);
     if !bounds.is_finite()
         || !rect.size.x.is_finite()
         || !rect.size.y.is_finite()
@@ -750,9 +742,6 @@ fn fit_path_to_rect(path: &skia_safe::Path, rect: Rect) -> skia_safe::Path {
     path.with_transform(&matrix)
 }
 
-fn color_key(c: Color) -> u32 {
-    fn ch(v: f32) -> u32 {
-        (v.clamp(0.0, 1.0) * 255.0).round() as u32
-    }
-    (ch(c.r) << 24) | (ch(c.g) << 16) | (ch(c.b) << 8) | ch(c.a)
+fn color_key(c: Color) -> [u32; 4] {
+    [c.r.to_bits(), c.g.to_bits(), c.b.to_bits(), c.a.to_bits()]
 }

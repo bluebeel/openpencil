@@ -3,6 +3,9 @@
 use crate::command_node::build_leaf_node;
 use crate::fills::{set_primary_fill_hex, set_primary_stroke_hex};
 use crate::walkers::find_node;
+
+#[path = "host_support_boolean.rs"]
+mod boolean_removal;
 use crate::{EditorState, IdAllocError, IdAllocator, NodeId, Tool};
 use jian_ops_schema::node::image::ImageNode;
 use jian_ops_schema::node::{IconFontNode, PathNode, PenNode, PenNodeBase};
@@ -19,7 +22,7 @@ struct BooleanPathStyle {
 impl EditorState {
     /// Spawn a node for a creatable tool using the caller's id policy.
     #[allow(clippy::too_many_arguments)]
-    pub fn create_node_for_tool_with_allocator(
+    pub(crate) fn create_node_for_tool_with_allocator_unobserved(
         &mut self,
         tool: Tool,
         allocator: &mut dyn IdAllocator,
@@ -55,7 +58,7 @@ impl EditorState {
                 init_h.round().max(0.0) as i32,
             ),
         };
-        let mut taken = self.collect_node_ids();
+        let mut taken = allocator.document_collision_ids(&self.doc);
         let id = allocator.allocate(&mut taken)?;
         let Some(mut node) = build_leaf_node(
             kind,
@@ -85,7 +88,7 @@ impl EditorState {
     }
 
     /// Insert a default-sized image centered on the current viewport.
-    pub fn insert_image_node_at_viewport_with_allocator(
+    pub(crate) fn insert_image_node_at_viewport_with_allocator_unobserved(
         &mut self,
         name: &str,
         src: &str,
@@ -97,7 +100,7 @@ impl EditorState {
     }
 
     /// Insert an aspect-preserving image centered on the current viewport.
-    pub fn insert_image_node_at_viewport_sized_with_allocator(
+    pub(crate) fn insert_image_node_at_viewport_sized_with_allocator_unobserved(
         &mut self,
         name: &str,
         src: &str,
@@ -114,7 +117,7 @@ impl EditorState {
     }
 
     /// Insert an aspect-preserving image centered at a document point.
-    pub fn insert_image_node_at_doc_point_sized_with_allocator(
+    pub(crate) fn insert_image_node_at_doc_point_sized_with_allocator_unobserved(
         &mut self,
         name: &str,
         src: &str,
@@ -158,9 +161,11 @@ impl EditorState {
         centre: (f64, f64),
         allocator: &mut dyn IdAllocator,
     ) -> Result<Option<NodeId>, IdAllocError> {
-        let mut taken = self.collect_node_ids();
+        let mut taken = allocator.document_collision_ids(&self.doc);
         let id = allocator.allocate(&mut taken)?;
         let node = PenNode::Image(ImageNode {
+            nearest_sampling: None,
+            geometry: None,
             base: PenNodeBase {
                 id: id.as_str().to_string(),
                 name: Some(name.to_string()),
@@ -200,7 +205,7 @@ impl EditorState {
     }
 
     /// Insert an icon-font node using the caller's id policy.
-    pub fn insert_icon_font_node_at_with_allocator(
+    pub(crate) fn insert_icon_font_node_at_with_allocator_unobserved(
         &mut self,
         icon_name: &str,
         family: &str,
@@ -213,7 +218,7 @@ impl EditorState {
             return Ok(None);
         }
         const SIZE: f64 = 32.0;
-        let mut taken = self.collect_node_ids();
+        let mut taken = allocator.document_collision_ids(&self.doc);
         let id = allocator.allocate(&mut taken)?;
         let node = PenNode::IconFont(IconFontNode {
             base: PenNodeBase {
@@ -245,7 +250,7 @@ impl EditorState {
     }
 
     /// Insert an SVG-path icon, falling back to an icon-font node.
-    pub fn insert_icon_node_at_with_allocator(
+    pub(crate) fn insert_icon_node_at_with_allocator_unobserved(
         &mut self,
         icon_name: &str,
         family: &str,
@@ -264,10 +269,11 @@ impl EditorState {
             );
         };
         const SIZE: f64 = 32.0;
-        let mut taken = self.collect_node_ids();
+        let mut taken = allocator.document_collision_ids(&self.doc);
         let id = allocator.allocate(&mut taken)?;
         let icon_id = format!("{}:{icon_name}", family.trim());
         let node = PenNode::Path(PathNode {
+            view_box: None,
             base: PenNodeBase {
                 id: id.as_str().to_string(),
                 name: Some(icon_id.clone()),
@@ -302,7 +308,7 @@ impl EditorState {
     }
 
     /// Replace boolean-op sources with one path using the caller's id policy.
-    pub fn replace_paths_with_polyline_with_allocator(
+    pub(crate) fn replace_paths_with_polyline_with_allocator_unobserved(
         &mut self,
         source_ids: &[NodeId],
         contours: &[Vec<(f64, f64)>],
@@ -315,10 +321,6 @@ impl EditorState {
         if usable.is_empty() {
             return Ok(None);
         }
-        let style = source_ids
-            .iter()
-            .find_map(|id| find_node(self.active_children(), id).map(boolean_path_style))
-            .unwrap_or_default();
         let bounds = usable.iter().flat_map(|contour| contour.iter()).fold(
             (
                 f64::INFINITY,
@@ -335,16 +337,43 @@ impl EditorState {
             for (index, (x, y)) in contour.iter().enumerate() {
                 let point = (*x - bounds.0, *y - bounds.1);
                 if index == 0 {
-                    d.push_str(&format!("M {:.2} {:.2}", point.0, point.1));
+                    d.push_str(&format!("M {} {}", point.0, point.1));
                 } else {
-                    d.push_str(&format!(" L {:.2} {:.2}", point.0, point.1));
+                    d.push_str(&format!(" L {} {}", point.0, point.1));
                 }
             }
             d.push_str(" Z");
         }
-        let mut taken = self.collect_node_ids();
+        self.replace_paths_with_svg_with_allocator(source_ids, d, bounds, allocator)
+    }
+
+    /// Commit a host-computed boolean path without flattening its curves.
+    /// `d` uses local coordinates; bounds describe its document-space extent.
+    /// History and selection stay with the caller, as for the polyline API.
+    pub(crate) fn replace_paths_with_svg_with_allocator_unobserved(
+        &mut self,
+        source_ids: &[NodeId],
+        d: String,
+        bounds: (f64, f64, f64, f64),
+        allocator: &mut dyn IdAllocator,
+    ) -> Result<Option<NodeId>, IdAllocError> {
+        if d.trim().is_empty()
+            || ![bounds.0, bounds.1, bounds.2, bounds.3]
+                .iter()
+                .all(|v| v.is_finite())
+            || bounds.2 < bounds.0
+            || bounds.3 < bounds.1
+        {
+            return Ok(None);
+        }
+        let style = source_ids
+            .iter()
+            .find_map(|id| find_node(self.active_children(), id).map(boolean_path_style))
+            .unwrap_or_default();
+        let mut taken = allocator.document_collision_ids(&self.doc);
         let id = allocator.allocate(&mut taken)?;
         let node = PenNode::Path(PathNode {
+            view_box: None,
             base: PenNodeBase {
                 id: id.as_str().to_string(),
                 name: Some("Boolean Result".to_string()),
@@ -372,8 +401,10 @@ impl EditorState {
             route: None,
             limits: Default::default(),
         });
-        for source_id in source_ids {
-            crate::walkers::remove_from_children(self.active_children_mut(), source_id);
+        if !boolean_removal::remove_unambiguous_leaves(self.active_children_mut(), source_ids) {
+            for source_id in source_ids {
+                crate::walkers::remove_from_children(self.active_children_mut(), source_id);
+            }
         }
         self.active_children_mut().push(node);
         Ok(Some(id))
@@ -393,6 +424,7 @@ fn scaled_image_size(pixel_width: u32, pixel_height: u32) -> Option<(f64, f64)> 
 
 fn default_icon_fill() -> PenFill {
     PenFill::Solid(SolidFillBody {
+        enabled: None,
         color: "#111827".to_string(),
         explain: None,
         opacity: None,

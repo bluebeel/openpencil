@@ -82,22 +82,19 @@ pub(crate) fn strip_outer_quotes(raw: &str) -> String {
 /// plain (possibly quoted) ref.
 pub(crate) fn resolve_path_expr(raw: &str, bindings: &BTreeMap<String, String>) -> String {
     if raw.contains('+') {
-        return raw
-            .split('+')
-            .map(|part| {
-                let t = part.trim();
-                if t.starts_with('"') || t.starts_with('\'') {
-                    // TS `slice(1, -1)` — drop the delimiters.
-                    let mut cs = t.chars();
-                    cs.next();
-                    cs.next_back();
-                    cs.as_str().to_string()
-                } else {
-                    bindings.get(t).cloned().unwrap_or_else(|| t.to_string())
-                }
-            })
-            .collect::<Vec<_>>()
-            .join("");
+        let mut path = String::with_capacity(raw.len());
+        for part in raw.split('+') {
+            let token = part.trim();
+            if token.starts_with('"') || token.starts_with('\'') {
+                let mut chars = token.chars();
+                chars.next();
+                chars.next_back();
+                path.push_str(chars.as_str());
+            } else {
+                path.push_str(bindings.get(token).map_or(token, String::as_str));
+            }
+        }
+        return path;
     }
     resolve_ref(raw, bindings)
 }
@@ -118,10 +115,10 @@ pub(crate) fn find_node_by_path<'a>(
 ) -> Option<&'a PenNode> {
     let mut parts = path.split('/');
     let first = parts.next()?;
-    let first_id = lookup_id(first, alias);
-    let mut current = op_editor_core::walkers::find_node(children, &NodeId::new(&first_id))?;
+    let first_id = alias.get(first).map_or(first, String::as_str);
+    let mut current = op_editor_core::walkers::find_node(children, &NodeId::new_opt(first_id)?)?;
     for part in parts {
-        let part_id = lookup_id(part, alias);
+        let part_id = alias.get(part).map_or(part, String::as_str);
         let kids = current.children()?;
         current = kids.iter().find(|c| c.id_str() == part_id)?;
     }
@@ -192,8 +189,9 @@ pub(crate) fn resolve_page_index(state: &EditorState, raw: &str) -> Option<usize
 
 /// TS error-line preview: 200 chars + `...`.
 pub(crate) fn line_preview(line: &str) -> String {
-    let mut preview: String = line.chars().take(200).collect();
-    if line.chars().count() > 200 {
+    let mut chars = line.chars();
+    let mut preview: String = chars.by_ref().take(200).collect();
+    if chars.next().is_some() {
         preview.push_str("...");
     }
     preview
@@ -201,13 +199,5 @@ pub(crate) fn line_preview(line: &str) -> String {
 
 /// TS `countNodes`.
 pub(crate) fn count_forest(nodes: &[PenNode]) -> usize {
-    nodes
-        .iter()
-        .map(|node| {
-            1 + node
-                .children()
-                .map(|children| count_forest(children))
-                .unwrap_or(0)
-        })
-        .sum()
+    super::tools::read_walk::nodes(nodes).count()
 }

@@ -1,6 +1,6 @@
 //! UIKit instantiation through a document-wide id allocator.
 
-use crate::id_allocator::{IdAllocError, IdAllocator, SequentialIdAllocator};
+use crate::id_allocator::{IdAllocError, IdAllocator};
 use crate::pen_node_ext::PenNodeExt;
 use crate::uikit::apply_kit_overrides;
 use crate::{walkers, EditorState, NodeId};
@@ -35,7 +35,7 @@ impl EditorState {
         doc_y: f64,
         overrides_json: Option<&str>,
     ) -> Option<NodeId> {
-        let mut allocator = SequentialIdAllocator::for_document(&self.doc, 1).ok()?;
+        let mut allocator = self.sequential_id_allocator(1).ok()?;
         self.instantiate_kit_component_under_parent_with_allocator(
             kit_id,
             component_id,
@@ -51,7 +51,7 @@ impl EditorState {
 
     /// Parent-aware UIKit instantiation using the caller's id policy.
     #[allow(clippy::too_many_arguments)]
-    pub fn instantiate_kit_component_under_parent_with_allocator(
+    pub(crate) fn instantiate_kit_component_under_parent_with_allocator_unobserved(
         &mut self,
         kit_id: &str,
         component_id: &str,
@@ -67,7 +67,7 @@ impl EditorState {
                 _ => return Ok(None),
             }
         }
-        let (template, label, kit_vars) = {
+        let (mut authored, label, kit_vars) = {
             let Some(kit) = self.ui_kits.iter().find(|kit| kit.id == kit_id) else {
                 return Ok(None);
             };
@@ -78,13 +78,24 @@ impl EditorState {
             else {
                 return Ok(None);
             };
+            // Read original template references before overrides, exactly as
+            // the existing kit contract. Retain only referenced definitions,
+            // rather than cloning the entire kit map and template twice.
+            let mut refs = std::collections::BTreeSet::new();
+            crate::uikit_io::collect_template_variable_refs(&component.template, &mut refs);
+            let variables: Vec<_> = refs
+                .into_iter()
+                .filter_map(|reference| {
+                    let name = reference.strip_prefix('$').unwrap_or(&reference);
+                    Some((name.to_owned(), kit.variables.as_ref()?.get(name)?.clone()))
+                })
+                .collect();
             (
                 component.template.clone(),
                 component.name.clone(),
-                kit.variables.clone(),
+                variables,
             )
         };
-        let mut authored = template.clone();
         authored.base_mut().name = Some(label);
         let dx = doc_x - authored.base().x.unwrap_or(0.0);
         let dy = doc_y - authored.base().y.unwrap_or(0.0);
@@ -95,27 +106,22 @@ impl EditorState {
 
         // Allocate the complete subtree before copying variables or mutating
         // the live tree, so exhaustion is document-atomic.
-        let mut taken = self.collect_node_ids();
+        let mut taken = allocator.document_collision_ids(&self.doc);
         let mut clone = walkers::deep_clone_with_allocator(&authored, allocator, &mut taken)?;
         if let PenNode::Frame(frame) = &mut clone {
             frame.reusable = None;
         }
         let new_id = NodeId::new(clone.base().id.clone());
-        let snap = self.snapshot_for_history();
+        let snap = self.snapshot_for_undo();
 
-        if let Some(vars) = kit_vars {
-            let mut refs = std::collections::BTreeSet::new();
-            crate::uikit_io::collect_template_variable_refs(&template, &mut refs);
-            for reference in refs {
-                let name = reference.strip_prefix('$').unwrap_or(&reference);
-                if let Some(definition) = vars.get(name) {
-                    let document_vars = self.doc.variables.get_or_insert_with(Default::default);
-                    if !document_vars.contains_key(name) {
-                        document_vars.insert(name.to_string(), definition.clone());
-                    }
-                }
-            }
+        for (name, definition) in kit_vars {
+            self.doc
+                .variables
+                .get_or_insert_with(Default::default)
+                .entry(name)
+                .or_insert(definition);
         }
+        let root_slot = (!parent_id.is_real()).then(|| self.active_children().len());
         if parent_id.is_real() {
             let Some(parent) = walkers::find_node_mut(self.active_children_mut(), parent_id) else {
                 return Ok(None);
@@ -128,7 +134,10 @@ impl EditorState {
             self.active_children_mut().push(clone);
         }
         self.set_single_selection(new_id.clone());
-        self.history_push_past(snap);
+        self.push_undo(snap);
+        if let Some(index) = root_slot {
+            crate::kit_creation_receipt::record_root(self, kit_id, component_id, index, &new_id);
+        }
         Ok(Some(new_id))
     }
 }

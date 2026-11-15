@@ -21,7 +21,15 @@
 
 mod adapter;
 mod authored_geometry;
+mod computed_geometry;
+mod geometry_cache;
+pub use geometry_cache::editor_state_to_page_item_geometry_cached;
+pub use geometry_cache::editor_state_to_page_parent_geometry_cached;
+pub use geometry_cache::page_nodes_by_id_cached;
 mod editor_meta;
+mod editor_meta_live;
+mod inline_editor_document;
+pub use inline_editor_document::InlineEditorDocument;
 mod editor_meta_error;
 mod editor_meta_family;
 mod editor_meta_import;
@@ -30,6 +38,14 @@ mod editor_scene;
 mod effects;
 mod full_content_snapshot;
 mod initial_text_snapshot;
+mod item_scene;
+mod selected_scene;
+pub use computed_geometry::{
+    editor_state_to_page_item_geometry, editor_state_to_page_parent_geometry, ComputedGeometry,
+};
+pub use selected_scene::editor_state_to_active_items_layout_scene;
+#[cfg(test)]
+mod item_scene_tests;
 mod layout_repair;
 mod layout_scene;
 mod legacy_payload_repair;
@@ -51,7 +67,15 @@ mod measure_cache;
 mod path_bounds;
 #[cfg(test)]
 mod property_edit_scene_tests;
+mod query_scene_cache;
 mod scene_cache;
+mod scene_inputs;
+pub use query_scene_cache::{
+    active_query_items_scene_cached, active_query_scene_cached, prepare_export_scene_cached,
+    query_hit_index_cached, query_marquee_index_cached, query_scene_cache_stats,
+    query_snap_index_cached, CachedExportScene, ExportScenePolicy, ExportSceneUnavailable,
+    QuerySceneCacheStats,
+};
 mod shader_preset;
 #[cfg(test)]
 mod snapshot_scene_tests;
@@ -69,6 +93,7 @@ pub(crate) fn current_font_generation() -> u64 {
 pub(crate) fn current_font_generation() -> u64 {
     0
 }
+mod gradient_geometry;
 mod style_payload;
 mod text_style;
 mod widget_payload;
@@ -94,6 +119,7 @@ pub use editor_scene::{
     editor_state_to_active_page_layout_scene, editor_state_to_export_layout_scene,
     editor_state_to_layout_scene,
 };
+pub use item_scene::{editor_state_to_item_layout_scene, editor_state_to_page_item_layout_scene};
 pub use layout_scene::{
     pen_document_to_layout_scene, pen_document_to_layout_scene_for_preview,
     pen_document_to_layout_scene_for_preview_with_measure,
@@ -113,7 +139,7 @@ pub use adapter::{
 };
 pub use editor_meta::{
     apply_editor_meta, apply_editor_meta_or_legacy_fallback, extract_editor_meta,
-    extract_editor_meta_with_report, write_source_with_current_schema,
+    extract_editor_meta_checked, extract_editor_meta_with_report, write_source_with_current_schema,
     write_source_with_editor_meta, EditorMeta, EditorMetaExtraction,
 };
 pub use editor_meta_error::EditorMetaWriteError;
@@ -127,6 +153,10 @@ pub use library::{
 pub use payload::{
     load_canonical, normalize_video_alias, write_normalized_source_with_current_schema, DocPayload,
     NodePayload, NormalizedWriteError, PagePayload, StrokePayload,
+};
+#[cfg(not(target_arch = "wasm32"))]
+pub use payload::{
+    load_canonical_file_with_compatibility, CanonicalFileLoad, CanonicalFileLoadError,
 };
 pub use variables::{var_table_from_payload, var_table_to_payload, VarTablePayload};
 
@@ -227,3 +257,6 @@ mod editor_state_var_table_tests {
         assert!(table.active_theme.is_empty());
     }
 }
+
+#[cfg(test)]
+mod borrowed_layout_tests;

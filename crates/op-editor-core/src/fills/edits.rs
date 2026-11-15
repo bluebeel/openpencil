@@ -106,7 +106,7 @@ pub fn set_fill_opacity_at(node: &mut PenNode, index: usize, opacity: f32) -> bo
     let Some(fills) = node_fills_mut(node) else {
         return false;
     };
-    let opacity = opacity.clamp(0.0, 1.0);
+    let opacity = f64::from(opacity).clamp(0.0, 1.0);
     match fills.get_mut(index) {
         Some(PenFill::Solid(b)) => {
             b.opacity = Some(opacity);
@@ -143,14 +143,16 @@ pub fn set_primary_stroke_hex(node: &mut PenNode, hex: &str) -> bool {
     let Some(slot) = node_stroke_mut(node) else {
         return false;
     };
-    let stroke = slot.get_or_insert_with(|| PenStroke {
-        thickness: StrokeThickness::Uniform(1.0),
-        align: None,
-        join: None,
-        cap: None,
-        dash_pattern: None,
-        dash_offset: None,
-        fill: None,
+    let stroke = slot.get_or_insert_with(|| {
+        PenStroke::from(jian_ops_schema::style::PenStrokeBody {
+            thickness: StrokeThickness::Uniform(1.0),
+            align: None,
+            join: None,
+            cap: None,
+            dash_pattern: None,
+            dash_offset: None,
+            fill: None,
+        })
     });
     let fills = stroke.fill.get_or_insert_with(Vec::new);
     if let Some(body) = fills.iter_mut().find_map(|f| match f {
@@ -172,6 +174,7 @@ pub fn push_drop_shadow(node: &mut PenNode) -> bool {
         return false;
     };
     effects.push(PenEffect::Shadow(ShadowBody {
+        blur_kernel: None,
         inner: None,
         visible: None,
         offset_x: 0.0,

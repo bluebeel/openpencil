@@ -1,3 +1,6 @@
+#[path = "authored_layout.rs"]
+mod authored_layout;
+
 use std::collections::BTreeMap;
 
 use jian_ops_schema::node::base::PenNodeBase;
@@ -6,17 +9,20 @@ use jian_ops_schema::sizing::SizingBehavior;
 
 pub fn rects_for_roots(roots: &[PenNode]) -> BTreeMap<String, [f32; 4]> {
     let mut out = BTreeMap::new();
+    let mut computed = Vec::new();
     for root in roots {
-        collect_rect(root, 0.0, 0.0, &mut out);
+        collect_rect(root, 0.0, 0.0, &mut out, &mut computed);
     }
+    authored_layout::apply(&computed, &mut out);
     out
 }
 
-fn collect_rect(
-    node: &PenNode,
+fn collect_rect<'a>(
+    node: &'a PenNode,
     parent_x: f32,
     parent_y: f32,
     out: &mut BTreeMap<String, [f32; 4]>,
+    computed: &mut Vec<&'a PenNode>,
 ) {
     let base = base_of(node);
     let x = parent_x + base.x.unwrap_or(0.0) as f32;
@@ -24,7 +30,10 @@ fn collect_rect(
     let (w, h) = size_of(node);
     out.insert(base.id.clone(), [x, y, w, h]);
     for child in children_of(node) {
-        collect_rect(child, x, y, out);
+        collect_rect(child, x, y, out, computed);
+    }
+    if authored_layout::has_override(node) {
+        computed.push(node); // postorder: intrinsic first, allocated in reverse
     }
 }
 
@@ -101,3 +110,7 @@ fn base_of(node: &PenNode) -> &PenNodeBase {
         PenNode::Ref(n) => &n.base,
     }
 }
+
+#[cfg(test)]
+#[path = "authored_layout_tests.rs"]
+mod authored_layout_tests;

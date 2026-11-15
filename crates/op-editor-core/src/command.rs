@@ -130,6 +130,18 @@ pub struct BatchInsertItem {
     pub fill: Option<Vec<jian_ops_schema::style::PenFill>>,
 }
 
+/// Native Boolean geometry prepared against one immutable editor authority.
+/// Apply rechecks identity, revision and selection before removing operands.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BooleanPathReplacement {
+    pub source_ids: Vec<NodeId>,
+    pub d: String,
+    pub bounds: (f64, f64, f64, f64),
+    pub document_generation: u64,
+    pub document_revision: u64,
+    pub active_page_index: usize,
+}
+
 /// One editor mutation. The applier validates every argument BEFORE
 /// touching the document so a bad arg never half-mutates it.
 #[derive(Debug, Clone, PartialEq)]
@@ -366,6 +378,13 @@ pub enum EditorCommand {
     },
     /// Instantiate a registered component onto the active page.
     InstantiateComponent { component_id: NodeId },
+    /// Materialize a canonical Ref or unregister a reusable definition in place.
+    DetachComponent { node_id: NodeId },
+    /// Change only a canonical Ref's target, preserving its authored overrides.
+    SetInstanceComponent {
+        node_id: NodeId,
+        component_id: NodeId,
+    },
     /// Promote an active-page Frame / Group / Rectangle to a component.
     CreateComponent { node_id: NodeId, name: String },
     /// Remove a component registration.
@@ -478,6 +497,8 @@ pub enum EditorCommand {
     NudgeSelected { dx: i32, dy: i32 },
     /// `Cmd+G` — wrap the multi-selected siblings in a new Group.
     GroupSelected,
+    /// Replace the selected canonical shapes with one curve-preserving path.
+    ReplacePathsWithSvg(Box<BooleanPathReplacement>),
     /// `Cmd+Shift+G` — replace a selected Group with its children.
     UngroupSelected,
     /// Move the selection up / down in z-order.

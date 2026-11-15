@@ -8,6 +8,9 @@
 use super::*;
 use std::collections::{BTreeMap, BTreeSet};
 
+#[path = "loop_finalize_compare.rs"]
+mod replay_compare;
+
 /// A successfully recorded whole-document loop finalization.
 ///
 /// The commands are ordered exactly like [`apply_loop_finalize_counted`] and
@@ -129,24 +132,26 @@ pub fn record_loop_finalize_counted(
         run_loop_finalize_prelude(&mut sink, &mut summary);
     }
     if !state.active_children().is_empty() {
-        let before_direct = state.clone();
+        let before_direct = snapshot_direct_nodes(&state, "semantic passes")?;
         let canvas_width = run_loop_finalize_direct_passes(&mut state, &mut summary);
         commands.extend(record_same_id_shallow_patches(
-            &before_direct,
+            before_direct,
             &state,
             "semantic passes",
             true,
         )?);
 
-        let before_hoist = state.clone();
-        if let Some(command) = apply_loop_finalize_app_state_hoist(&mut state) {
-            commands.extend(record_same_id_shallow_patches(
-                &before_hoist,
-                &state,
-                "app-state hoist",
-                false,
-            )?);
-            commands.push(command);
+        {
+            let before_hoist = snapshot_direct_nodes(&state, "app-state hoist")?;
+            if let Some(command) = apply_loop_finalize_app_state_hoist(&mut state) {
+                commands.extend(record_same_id_shallow_patches(
+                    before_hoist,
+                    &state,
+                    "app-state hoist",
+                    false,
+                )?);
+                commands.push(command);
+            }
         }
 
         {
@@ -157,10 +162,10 @@ pub fn record_loop_finalize_counted(
             run_loop_finalize_cleanup(&mut sink, canvas_width, &mut summary);
         }
 
-        let before_text_fill = state.clone();
+        let before_text_fill = snapshot_direct_nodes(&state, "text fill")?;
         run_loop_finalize_text_fill(&mut state);
         commands.extend(record_same_id_shallow_patches(
-            &before_text_fill,
+            before_text_fill,
             &state,
             "text fill",
             false,
@@ -183,13 +188,7 @@ pub fn record_loop_finalize_counted(
             "whole-document finalize command replay was rejected atomically",
         ));
     }
-    let expected = serde_json::to_value(&state.doc).map_err(|error| {
-        RecordLoopFinalizeError::new(format!("serialize finalized document: {error}"))
-    })?;
-    let actual = serde_json::to_value(&replay.doc).map_err(|error| {
-        RecordLoopFinalizeError::new(format!("serialize replayed document: {error}"))
-    })?;
-    if actual != expected {
+    if !replay_compare::matches(&state.doc, &replay.doc)? {
         return Err(RecordLoopFinalizeError::new(
             "whole-document finalize replay diverged from the direct App finalizer",
         ));
@@ -222,13 +221,15 @@ struct DirectNodeSnapshot {
 /// carries the new tag and required fields while nulling fields absent from the
 /// canonical replacement. Added ids, moves/reorders, or any other deletion
 /// fail closed instead of being guessed into a broad subtree replacement.
+type DirectForestSnapshot = (BTreeMap<String, DirectNodeSnapshot>, Vec<String>);
+
 fn record_same_id_shallow_patches(
-    before: &EditorState,
+    before: DirectForestSnapshot,
     after: &EditorState,
     phase: &str,
     allow_leaf_type_rewrite: bool,
 ) -> Result<Vec<EditorCommand>, RecordLoopFinalizeError> {
-    let (before_nodes, before_order) = snapshot_direct_nodes(before, phase)?;
+    let (before_nodes, before_order) = before;
     let (after_nodes, after_order) = snapshot_direct_nodes(after, phase)?;
 
     for id in after_nodes.keys() {
@@ -374,7 +375,7 @@ fn direct_child_ids(children: &Option<Option<Vec<String>>>) -> &[String] {
 fn snapshot_direct_nodes(
     state: &EditorState,
     phase: &str,
-) -> Result<(BTreeMap<String, DirectNodeSnapshot>, Vec<String>), RecordLoopFinalizeError> {
+) -> Result<DirectForestSnapshot, RecordLoopFinalizeError> {
     fn walk(
         nodes: &[PenNode],
         parent: Option<&str>,
@@ -384,7 +385,10 @@ fn snapshot_direct_nodes(
     ) -> Result<(), RecordLoopFinalizeError> {
         for (index, node) in nodes.iter().enumerate() {
             let id = node.id_str().to_string();
-            let value = serde_json::to_value(node).map_err(|error| {
+            let value = serde_json::to_value(
+                op_editor_core::history_snapshot::BorrowedNodeMetadata::new(node),
+            )
+            .map_err(|error| {
                 RecordLoopFinalizeError::new(format!("serialize node {id} during {phase}: {error}"))
             })?;
             let Value::Object(object) = value else {
@@ -395,17 +399,18 @@ fn snapshot_direct_nodes(
             let children_wire = match object.get("children") {
                 None => None,
                 Some(Value::Null) => Some(None),
-                Some(Value::Array(children)) => {
-                    let mut ids = Vec::with_capacity(children.len());
-                    for child in children {
-                        let Some(child_id) = child.get("id").and_then(Value::as_str) else {
-                            return Err(RecordLoopFinalizeError::new(format!(
-                                "child without id below {id} during {phase}"
-                            )));
-                        };
-                        ids.push(child_id.to_string());
-                    }
-                    Some(Some(ids))
+                Some(Value::Array(_)) => {
+                    let Some(children) = node.children() else {
+                        return Err(RecordLoopFinalizeError::new(format!(
+                            "non-array children on node {id} during {phase}"
+                        )));
+                    };
+                    Some(Some(
+                        children
+                            .iter()
+                            .map(|child| child.id_str().to_string())
+                            .collect(),
+                    ))
                 }
                 Some(_) => {
                     return Err(RecordLoopFinalizeError::new(format!(

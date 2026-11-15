@@ -15,7 +15,11 @@
 use op_editor_core::BooleanOp;
 use op_editor_ui::layout_scene::{regular_polygon_points, LayoutScene, NodeKind, SceneNode};
 use op_editor_ui::{Point2D, Rect};
-use skia_safe::{ContourMeasureIter, Matrix, Path as SkPath, PathBuilder, PathOp, Rect as SkRect};
+use skia_safe::{
+    ContourMeasureIter, Matrix, Path as SkPath, PathBuilder, PathFillType, PathOp, RRect,
+    Rect as SkRect, Vector,
+};
+use std::collections::{HashMap, HashSet};
 
 /// Result of a boolean-op computation — the source shape ids to remove +
 /// the result contours. One closed polyline per contour (doc-space
@@ -24,6 +28,15 @@ use skia_safe::{ContourMeasureIter, Matrix, Path as SkPath, PathBuilder, PathOp,
 pub struct BooleanResult {
     pub source_ids: Vec<String>,
     pub contours: Vec<Vec<(f64, f64)>>,
+}
+
+/// Curve-preserving result used by the native editor. Skia serializes its
+/// boolean path directly; there is no document-pixel arc-length sampling or
+/// decimal rounding here. Skia's SVG writer owns rational-conic conversion.
+pub struct BooleanSvgResult {
+    pub source_ids: Vec<String>,
+    pub d: String,
+    pub bounds: (f64, f64, f64, f64),
 }
 
 /// Compute `op` over the selected boolean-compatible shape nodes.
@@ -38,12 +51,61 @@ pub fn compute_boolean_op(
     selected: &[String],
     op: BooleanOp,
 ) -> Option<BooleanResult> {
+    let (source_ids, acc) = compute_path(scene, selected, op)?;
+    let result_contours = flatten_path(&acc);
+    if result_contours.is_empty() {
+        return None;
+    }
+    Some(BooleanResult {
+        source_ids,
+        contours: result_contours
+            .iter()
+            .map(|c| c.iter().map(|p| (p.x as f64, p.y as f64)).collect())
+            .collect(),
+    })
+}
+
+pub fn compute_boolean_svg(
+    scene: &LayoutScene,
+    selected: &[String],
+    op: BooleanOp,
+) -> Option<BooleanSvgResult> {
+    let (source_ids, path) = compute_path(scene, selected, op)?;
+    if path.is_empty() {
+        return None;
+    }
+    let bounds = path.compute_tight_bounds();
+    let mut translation = Matrix::new_identity();
+    translation.set_translate((-bounds.left(), -bounds.top()));
+    let d = path.with_transform(&translation).to_svg();
+    if d.is_empty() {
+        return None;
+    }
+    Some(BooleanSvgResult {
+        source_ids,
+        d,
+        bounds: (
+            f64::from(bounds.left()),
+            f64::from(bounds.top()),
+            f64::from(bounds.right()),
+            f64::from(bounds.bottom()),
+        ),
+    })
+}
+
+fn compute_path(
+    scene: &LayoutScene,
+    selected: &[String],
+    op: BooleanOp,
+) -> Option<(Vec<String>, SkPath)> {
     let page = scene.active_page()?;
     let mut source_ids = Vec::with_capacity(selected.len());
     let mut sk_paths = Vec::with_capacity(selected.len());
+    let wanted: HashSet<&str> = selected.iter().map(String::as_str).collect();
+    let mut paths = HashMap::with_capacity(wanted.len());
+    collect_selected_paths(&page.children, &wanted, &mut Vec::new(), &mut paths)?;
     for id in selected {
-        let node = page.find(id)?;
-        let path = build_node_path(node)?;
+        let path = paths.get(id)?.clone();
         source_ids.push(id.clone());
         sk_paths.push(path);
     }
@@ -60,22 +122,36 @@ pub fn compute_boolean_op(
     for p in &sk_paths[1..] {
         acc = acc.op(p, pop)?;
     }
-    let result_contours = flatten_path(&acc);
-    if result_contours.is_empty() {
-        return None;
+    Some((source_ids, acc))
+}
+
+fn collect_selected_paths<'a>(
+    nodes: &'a [SceneNode],
+    wanted: &HashSet<&str>,
+    ancestors: &mut Vec<&'a SceneNode>,
+    paths: &mut HashMap<String, SkPath>,
+) -> Option<()> {
+    for node in nodes {
+        if paths.len() == wanted.len() {
+            break;
+        }
+        if wanted.contains(node.id.as_str()) && !paths.contains_key(&node.id) {
+            let mut path = build_node_path(node)?;
+            for ancestor in ancestors.iter().rev() {
+                path = apply_node_rotation(path, ancestor);
+            }
+            paths.insert(node.id.clone(), path);
+        }
+        ancestors.push(node);
+        collect_selected_paths(&node.children, wanted, ancestors, paths)?;
+        ancestors.pop();
     }
-    Some(BooleanResult {
-        source_ids,
-        contours: result_contours
-            .iter()
-            .map(|c| c.iter().map(|p| (p.x as f64, p.y as f64)).collect())
-            .collect(),
-    })
+    Some(())
 }
 
 fn build_node_path(node: &SceneNode) -> Option<SkPath> {
     let path = match node.kind {
-        NodeKind::Frame | NodeKind::Rect => build_rect_path(node.bounds),
+        NodeKind::Frame | NodeKind::Rect => build_rounded_rect_path(node),
         NodeKind::Ellipse => build_oval_path(node.bounds),
         NodeKind::Polygon => {
             build_polyline_path(&regular_polygon_points(node.bounds, node.polygon_sides))
@@ -104,7 +180,34 @@ fn build_node_path(node: &SceneNode) -> Option<SkPath> {
         }
         NodeKind::Group | NodeKind::Text | NodeKind::Other(_) => None,
     }?;
+    let mut path = path;
+    path.set_fill_type(if node.even_odd_fill {
+        PathFillType::EvenOdd
+    } else {
+        PathFillType::Winding
+    });
     Some(apply_node_rotation(path, node))
+}
+
+fn build_rounded_rect_path(node: &SceneNode) -> Option<SkPath> {
+    let radii = node.corner_radii.unwrap_or([node.corner_radius; 4]);
+    if radii.iter().all(|radius| *radius <= 0.0) {
+        return build_rect_path(node.bounds);
+    }
+    let bounds = node.bounds;
+    if bounds.size.x <= 0.0 || bounds.size.y <= 0.0 {
+        return None;
+    }
+    let rect = SkRect::from_xywh(
+        bounds.origin.x,
+        bounds.origin.y,
+        bounds.size.x,
+        bounds.size.y,
+    );
+    let radii = radii.map(|radius| Vector::new(radius.max(0.0), radius.max(0.0)));
+    let mut builder = PathBuilder::new();
+    builder.add_rrect(RRect::new_rect_radii(rect, &radii), None, None);
+    Some(builder.detach())
 }
 
 fn build_rect_path(bounds: Rect) -> Option<SkPath> {
@@ -207,14 +310,28 @@ fn fit_path_to_rect(path: &SkPath, rect: Rect) -> SkPath {
 }
 
 fn apply_node_rotation(path: SkPath, node: &SceneNode) -> SkPath {
-    if node.rotation.abs() <= f32::EPSILON {
+    if node.rotation.abs() <= f32::EPSILON && !node.flip_x && !node.flip_y {
         return path;
     }
     let b = node.aggregate_bounds();
     let pivot = skia_safe::Point::new(b.origin.x + b.size.x / 2.0, b.origin.y + b.size.y / 2.0);
     let mut matrix = Matrix::new_identity();
+    // Paint concatenates mirror then rotation; points experience rotation
+    // before the mirror. Apply the same composition in document space.
     matrix.set_rotate(node.rotation.to_degrees(), Some(pivot));
-    path.with_transform(&matrix)
+    let path = path.with_transform(&matrix);
+    if node.flip_x || node.flip_y {
+        matrix.set_scale(
+            (
+                if node.flip_x { -1.0 } else { 1.0 },
+                if node.flip_y { -1.0 } else { 1.0 },
+            ),
+            Some(pivot),
+        );
+        path.with_transform(&matrix)
+    } else {
+        path
+    }
 }
 
 /// Flatten the boolean result into one closed polyline per contour.

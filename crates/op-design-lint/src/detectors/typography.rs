@@ -15,8 +15,8 @@ use serde_json::Value;
 use crate::color::color_contrast;
 use crate::issue::{FixProperty, Issue, IssueCategory, IssueSeverity};
 use crate::node_util::{
-    children, default_theme, is_node_visible, node_fills, node_id, resolve_color_ref, Theme,
-    Variables,
+    children, default_theme, is_node_visible, node_fills, node_id, resolve_color_ref_borrowed,
+    Theme, Variables,
 };
 
 /// Contrast ratio below which normal-size text is flagged. Port of the TS
@@ -91,7 +91,7 @@ fn low_contrast_text_with_thresholds(
     let mut found = Vec::new();
     collect_low_contrast(
         root,
-        &[],
+        "#FFFFFF",
         variables,
         &theme,
         normal_threshold,
@@ -103,8 +103,8 @@ fn low_contrast_text_with_thresholds(
 
 fn collect_low_contrast<'a>(
     node: &'a PenNode,
-    ancestors: &[&'a PenNode],
-    variables: &Variables,
+    background: &'a str,
+    variables: &'a Variables,
     theme: &Theme,
     normal_threshold: f64,
     large_threshold: f64,
@@ -115,9 +115,9 @@ fn collect_low_contrast<'a>(
     }
     if let PenNode::Text(text) = node {
         if let Some(raw_text) = first_solid_color(text.fill.as_ref()) {
-            if let Some(text_color) = resolve_color_ref(&raw_text, variables, theme) {
-                let bg_color = ancestor_bg_color(ancestors, variables, theme);
-                let ratio = color_contrast(&text_color, &bg_color);
+            if let Some(text_color) = resolve_color_ref_borrowed(raw_text, variables, theme) {
+                let bg_color = background;
+                let ratio = color_contrast(text_color, bg_color);
                 let is_large = is_large_text(text);
                 let threshold = if is_large {
                     large_threshold
@@ -127,8 +127,8 @@ fn collect_low_contrast<'a>(
                 if ratio.is_finite() && ratio < threshold {
                     found.push(LowContrastText {
                         node_id: node_id(node).to_string(),
-                        text_color,
-                        bg_color,
+                        text_color: text_color.to_owned(),
+                        bg_color: bg_color.to_owned(),
                         ratio,
                         threshold,
                         is_large,
@@ -137,12 +137,15 @@ fn collect_low_contrast<'a>(
             }
         }
     }
-    let mut next = ancestors.to_vec();
-    next.push(node);
-    for child in children(node) {
+    let children = children(node);
+    if children.is_empty() {
+        return;
+    }
+    let next_background = own_bg_color(node, variables, theme).unwrap_or(background);
+    for child in children {
         collect_low_contrast(
             child,
-            &next,
+            next_background,
             variables,
             theme,
             normal_threshold,
@@ -157,15 +160,16 @@ pub fn detect_text_bg_contrast(root: &PenNode, doc: &PenDocument) -> Vec<Issue> 
     let empty_vars = Variables::new();
     let variables = doc.variables.as_ref().unwrap_or(&empty_vars);
     let theme = default_theme(doc.themes.as_ref());
-    walk(root, &[], variables, &theme, &mut issues);
+    walk(root, "#FFFFFF", variables, &theme, &mut issues);
     issues
 }
 
-/// Recursive walk carrying the ancestor chain (closest ancestor last).
+/// The exact nearest resolvable ancestor background is computed once per
+/// node and borrowed by its descendants, instead of copying ancestor lists.
 fn walk<'a>(
     node: &'a PenNode,
-    ancestors: &[&'a PenNode],
-    variables: &Variables,
+    background: &'a str,
+    variables: &'a Variables,
     theme: &Theme,
     issues: &mut Vec<Issue>,
 ) {
@@ -173,50 +177,39 @@ fn walk<'a>(
     // (pen-core `isNodeVisible`). A `visible:false` / `enabled:false` subtree
     // is never walked. opacity=0 is intentionally NOT a prune condition — the
     // renderer treats opacity as a paint alpha, not a skip flag; an
-    // opacity=0 wrapper is still walked, and `ancestor_bg_color` skips its
+    // opacity=0 wrapper is still walked, and background propagation skips its
     // fill so contrast is computed against the real bg behind it.
     if !is_node_visible(node) {
         return;
     }
     if let PenNode::Text(text) = node {
-        check_text(node, text, ancestors, variables, theme, issues);
+        check_text(node, text, background, variables, theme, issues);
     }
-    let mut next = ancestors.to_vec();
-    next.push(node);
-    for child in children(node) {
-        walk(child, &next, variables, theme, issues);
+    let children = children(node);
+    if children.is_empty() {
+        return;
+    }
+    let next_background = own_bg_color(node, variables, theme).unwrap_or(background);
+    for child in children {
+        walk(child, next_background, variables, theme, issues);
     }
 }
 
-/// Resolve the nearest ancestor solid background color. Walks ancestors
-/// closest-first, skipping `opacity:0` / `visible:false` wrappers and
-/// fills with no usable solid color; the first resolvable solid color wins.
-/// Defaults to `#FFFFFF` (the canvas bg) when the chain runs out.
-fn ancestor_bg_color(ancestors: &[&PenNode], variables: &Variables, theme: &Theme) -> String {
-    for ancestor in ancestors.iter().rev() {
-        // A node-level opacity=0 / visible=false hides the WHOLE wrapper
-        // including its fill — skip it so the real bg further up wins.
-        if crate::node_util::opacity(ancestor) == 0.0 {
-            continue;
-        }
-        if !is_node_visible(ancestor) {
-            continue;
-        }
-        let Some(raw) = first_solid_color(node_fills(ancestor)) else {
-            continue;
-        };
-        if let Some(resolved) = resolve_color_ref(&raw, variables, theme) {
-            return resolved;
-        }
+/// Exactly the candidate that the former closest-first ancestor scan would
+/// accept at this node. Unresolved/transparent wrappers inherit the prior
+/// candidate, preserving order, visibility and opacity policy by induction.
+fn own_bg_color<'a>(node: &'a PenNode, variables: &'a Variables, theme: &Theme) -> Option<&'a str> {
+    if crate::node_util::opacity(node) == 0.0 || !is_node_visible(node) {
+        return None;
     }
-    "#FFFFFF".to_string()
+    resolve_color_ref_borrowed(first_solid_color(node_fills(node))?, variables, theme)
 }
 
 /// Port of the `checkText` closure (`detectors-typography.ts:185-212`).
 fn check_text(
     node: &PenNode,
     text: &TextNode,
-    ancestors: &[&PenNode],
+    background: &str,
     variables: &Variables,
     theme: &Theme,
     issues: &mut Vec<Issue>,
@@ -224,12 +217,12 @@ fn check_text(
     let Some(raw_text) = first_solid_color(text.fill.as_ref()) else {
         return; // no fill or non-solid — renderer default applies, skip
     };
-    let Some(text_color) = resolve_color_ref(&raw_text, variables, theme) else {
+    let Some(text_color) = resolve_color_ref_borrowed(raw_text, variables, theme) else {
         return; // unresolvable ref
     };
 
-    let bg_color = ancestor_bg_color(ancestors, variables, theme);
-    let ratio = color_contrast(&text_color, &bg_color);
+    let bg_color = background;
+    let ratio = color_contrast(text_color, bg_color);
     if !ratio.is_finite() {
         return; // either color failed to parse
     }
@@ -265,7 +258,7 @@ fn check_text(
 /// (`opacity == 0`, or a 9-char `#RRGGBBAA` with alpha `00`), returns the
 /// first solid color, or the first stop of the first gradient. `None` when
 /// there is no usable color (image fills, missing fills, transparent wrappers).
-fn first_solid_color(fills: Option<&Vec<PenFill>>) -> Option<String> {
+fn first_solid_color(fills: Option<&Vec<PenFill>>) -> Option<&str> {
     let fills = fills?;
     for fill in fills {
         match fill {
@@ -276,14 +269,14 @@ fn first_solid_color(fills: Option<&Vec<PenFill>>) -> Option<String> {
                 if is_transparent_hex(&body.color) {
                     continue;
                 }
-                return Some(body.color.clone());
+                return Some(body.color.as_str());
             }
             PenFill::LinearGradient(body) => {
                 if body.opacity == Some(0.0) {
                     continue;
                 }
                 if let Some(stop) = body.stops.first() {
-                    return Some(stop.color.clone());
+                    return Some(stop.color.as_str());
                 }
             }
             PenFill::RadialGradient(body) => {
@@ -291,7 +284,7 @@ fn first_solid_color(fills: Option<&Vec<PenFill>>) -> Option<String> {
                     continue;
                 }
                 if let Some(stop) = body.stops.first() {
-                    return Some(stop.color.clone());
+                    return Some(stop.color.as_str());
                 }
             }
             PenFill::MeshGradient(body) => {
@@ -299,7 +292,7 @@ fn first_solid_color(fills: Option<&Vec<PenFill>>) -> Option<String> {
                     continue;
                 }
                 if let Some(stop) = body.stops.first() {
-                    return Some(stop.color.clone());
+                    return Some(stop.color.as_str());
                 }
             }
             PenFill::Shader(body) => {
@@ -311,7 +304,7 @@ fn first_solid_color(fills: Option<&Vec<PenFill>>) -> Option<String> {
                 // (else fall through to the next fill).
                 if let Some(map) = &body.uniforms {
                     if let Some(hex) = map.values().find_map(|v| match v {
-                        jian_ops_schema::style::ShaderUniformValue::Color(c) => Some(c.clone()),
+                        jian_ops_schema::style::ShaderUniformValue::Color(c) => Some(c.as_str()),
                         _ => None,
                     }) {
                         return Some(hex);
@@ -337,7 +330,7 @@ fn is_transparent_hex(color: &str) -> bool {
 /// Only the numeric path is large-eligible — a `Keyword` weight cannot
 /// `parseInt` to a finite number, matching the TS `NaN` result.
 fn is_large_text(text: &TextNode) -> bool {
-    let Some(font_size) = text.font_size else {
+    let Some(font_size) = text.font_size_px() else {
         return false;
     };
     if font_size >= 24.0 {

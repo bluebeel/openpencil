@@ -33,6 +33,8 @@ pub(crate) fn base_payload(base: &PenNodeBase, kind: &str) -> NodePayload {
         h: 0.0,
         fill: None,
         fill_layers: Vec::new(),
+        fill_disabled: false,
+        stroke_disabled: false,
         stroke: None,
         text: None,
         font_family: String::new(),
@@ -61,11 +63,15 @@ pub(crate) fn base_payload(base: &PenNodeBase, kind: &str) -> NodePayload {
         mask_type: base.mask_type,
         even_odd_fill: false,
         svg_path: None,
+        svg_view_box: None,
         font_size: 0.0,
         font_weight: 0,
+        font_kerning: None,
+        font_features: Default::default(),
         italic: false,
         underline: false,
         strikethrough: false,
+        text_decoration_skip_ink: None,
         text_runs: Vec::new(),
         line_height: 0.0,
         letter_spacing: 0.0,
@@ -76,6 +82,11 @@ pub(crate) fn base_payload(base: &PenNodeBase, kind: &str) -> NodePayload {
         layer_blur: None,
         background_blur: None,
         image_src: None,
+        image_thumbnail_src: None,
+        image_nearest_sampling: None,
+        image_rotation_degrees: None,
+        image_geometry: None,
+        image_paint: None,
         video: None,
         image_fit: None,
         image_blend_mode: None,
@@ -102,7 +113,7 @@ pub(crate) fn apply_container_style(
     corner_radius: Option<&CornerRadius>,
 ) {
     assign_first_fill(p, fill);
-    p.stroke = stroke_to_payload(stroke);
+    assign_stroke(p, stroke);
     p.corner_radii = match corner_radius {
         Some(CornerRadius::PerCorner(corners)) => Some(corners.map(|radius| radius as f32)),
         _ => None,
@@ -127,13 +138,15 @@ pub(crate) fn assign_first_fill(p: &mut NodePayload, fills: Option<&[PenFill]>) 
     // Preserve the complete canonical stack for renderers that understand
     // layered fills. Keep populating the historical primary-fill projection
     // below so serialized payloads remain consumable by older clients.
+    let first = first_active_fill(fills);
+    p.fill_disabled = fills.is_some() && first.is_none();
     p.fill_layers = fills.unwrap_or_default().to_vec();
     p.fill = first_solid_color(fills);
-    p.fill_type = first_fill_type(fills);
-    p.gradient = first_gradient(fills);
-    p.shader = first_shader(fills);
+    p.fill_type = first_fill_type(first);
+    p.gradient = first_gradient(first);
+    p.shader = first_shader(first);
     if let Some((url, fit, transform, original_size, tile_scale, adjustments)) =
-        first_image_fill(fills)
+        first_image_fill(first)
     {
         p.image_src = Some(url);
         p.image_fit = Some(fit);
@@ -141,11 +154,21 @@ pub(crate) fn assign_first_fill(p: &mut NodePayload, fills: Option<&[PenFill]>) 
         p.image_original_size = original_size;
         p.image_tile_scale = tile_scale;
         p.image_adjustments = adjustments;
+        if let Some(PenFill::Image(body)) = first {
+            p.image_thumbnail_src = body.thumbnail_url.clone();
+            p.image_nearest_sampling = body.nearest_sampling;
+            p.image_rotation_degrees = body.rotation.map(|value| value as f32);
+            p.image_geometry = body.geometry.clone();
+        }
     }
 }
 
-fn first_image_fill(fills: Option<&[PenFill]>) -> Option<ImageFillPayload> {
-    let body = fills?.first().and_then(|f| match f {
+fn first_active_fill(fills: Option<&[PenFill]>) -> Option<&PenFill> {
+    fills?.iter().find(|fill| fill.is_enabled())
+}
+
+fn first_image_fill(first: Option<&PenFill>) -> Option<ImageFillPayload> {
+    let body = first.and_then(|f| match f {
         PenFill::Image(b) => Some(b),
         _ => None,
     })?;
@@ -158,16 +181,17 @@ fn first_image_fill(fills: Option<&[PenFill]>) -> Option<ImageFillPayload> {
             image_fill_mode_to_payload(body.mode.as_ref()),
             body.transform
                 .as_ref()
-                .map(|m| [m.m00, m.m01, m.m02, m.m10, m.m11, m.m12]),
+                .map(|m| [m.m00, m.m01, m.m02, m.m10, m.m11, m.m12].map(|value| value as f32)),
             body.original_size.as_ref().and_then(|size| {
                 (size.width.is_finite()
                     && size.height.is_finite()
                     && size.width > 0.0
                     && size.height > 0.0)
-                    .then_some([size.width, size.height])
+                    .then_some([size.width as f32, size.height as f32])
             }),
             body.tile_scale
-                .filter(|scale| scale.is_finite() && *scale > 0.0),
+                .filter(|scale| scale.is_finite() && *scale > 0.0)
+                .map(|value| value as f32),
             image_fill_adjustments(body),
         ))
     }
@@ -198,13 +222,13 @@ pub(crate) fn image_fill_adjustments(
     body: &jian_ops_schema::style::ImageFillBody,
 ) -> Option<ImageAdjustmentPayload> {
     adjustments_payload(
-        body.exposure,
-        body.contrast,
-        body.saturation,
-        body.temperature,
-        body.tint,
-        body.highlights,
-        body.shadows,
+        body.exposure.map(|value| value as f32),
+        body.contrast.map(|value| value as f32),
+        body.saturation.map(|value| value as f32),
+        body.temperature.map(|value| value as f32),
+        body.tint.map(|value| value as f32),
+        body.highlights.map(|value| value as f32),
+        body.shadows.map(|value| value as f32),
     )
 }
 
@@ -249,28 +273,37 @@ fn adjustments_payload(
         .then_some(payload)
 }
 
-fn first_gradient(fills: Option<&[PenFill]>) -> Option<GradientPayload> {
-    gradient_payload(fills?.first()?)
+fn first_gradient(first: Option<&PenFill>) -> Option<GradientPayload> {
+    gradient_payload(first?)
 }
 
 /// Resolve one canonical gradient layer without projecting away siblings.
 pub(crate) fn gradient_payload(fill: &PenFill) -> Option<GradientPayload> {
+    if !fill.is_enabled() {
+        return None;
+    }
     match fill {
         PenFill::LinearGradient(body) => {
+            if body.geometry.is_some() {
+                return None;
+            }
             let stops = gradient_stops(&body.stops)?;
             Some(GradientPayload::Linear {
-                angle_deg: body.angle.unwrap_or(0.0),
-                opacity: body.opacity.unwrap_or(1.0).clamp(0.0, 1.0),
+                angle_deg: (body.angle.unwrap_or(0.0) as f32),
+                opacity: (body.opacity.unwrap_or(1.0) as f32).clamp(0.0, 1.0),
                 stops,
             })
         }
         PenFill::RadialGradient(body) => {
+            if body.geometry.is_some() {
+                return None;
+            }
             let stops = gradient_stops(&body.stops)?;
             Some(GradientPayload::Radial {
-                cx: body.cx.unwrap_or(0.5).clamp(0.0, 1.0),
-                cy: body.cy.unwrap_or(0.5).clamp(0.0, 1.0),
-                radius: body.radius.unwrap_or(0.5).clamp(0.0, 1.0),
-                opacity: body.opacity.unwrap_or(1.0).clamp(0.0, 1.0),
+                cx: (body.cx.unwrap_or(0.5) as f32).clamp(0.0, 1.0),
+                cy: (body.cy.unwrap_or(0.5) as f32).clamp(0.0, 1.0),
+                radius: (body.radius.unwrap_or(0.5) as f32).clamp(0.0, 1.0),
+                opacity: (body.opacity.unwrap_or(1.0) as f32).clamp(0.0, 1.0),
                 stops,
             })
         }
@@ -280,7 +313,7 @@ pub(crate) fn gradient_payload(fill: &PenFill) -> Option<GradientPayload> {
                 rows: body.rows.max(2),
                 cols: body.cols.max(2),
                 colors,
-                opacity: body.opacity.unwrap_or(1.0).clamp(0.0, 1.0),
+                opacity: (body.opacity.unwrap_or(1.0) as f32).clamp(0.0, 1.0),
             })
         }
         _ => None,
@@ -292,43 +325,48 @@ pub(crate) fn gradient_payload(fill: &PenFill) -> Option<GradientPayload> {
 /// `vec4`); the fallback colour is the first `color` uniform, else
 /// mid-gray, so a host that can't compile the program still paints a
 /// visible block. SkSL source stays untrusted — not validated here.
-fn first_shader(fills: Option<&[PenFill]>) -> Option<ShaderPayload> {
-    shader_payload(fills?.first()?)
+fn first_shader(first: Option<&PenFill>) -> Option<ShaderPayload> {
+    shader_payload(first?)
 }
 
 /// Resolve one canonical shader layer without projecting away siblings.
 pub(crate) fn shader_payload(fill: &PenFill) -> Option<ShaderPayload> {
+    if !fill.is_enabled() {
+        return None;
+    }
+    if let Some(gradient) = crate::gradient_geometry::paint(fill) {
+        return crate::gradient_geometry::shader(gradient);
+    }
     let PenFill::Shader(body) = fill else {
         return None;
     };
     let expanded = crate::shader_preset::expand(body);
-    let sksl = match &expanded {
-        Some(preset) => preset.sksl.clone(),
-        None => body
-            .sksl
-            .as_ref()
-            .filter(|source| !source.trim().is_empty())?
-            .clone(),
+    let from_preset = expanded.is_some();
+    let (sksl, mut uniforms) = match expanded {
+        Some(preset) => (preset.sksl, preset.uniforms),
+        None => (
+            body.sksl
+                .as_ref()
+                .filter(|source| !source.trim().is_empty())?
+                .clone(),
+            Vec::new(),
+        ),
     };
-    let mut uniforms: Vec<ShaderUniformPayload> = expanded
-        .as_ref()
-        .map(|preset| preset.uniforms.clone())
-        .unwrap_or_default();
     let mut fallback: Option<[f32; 4]> = None;
     if let Some(map) = &body.uniforms {
         for (name, val) in map {
             match val {
-                ShaderUniformValue::Float(f) if expanded.is_none() => {
+                ShaderUniformValue::Float(f) if !from_preset => {
                     uniforms.push(ShaderUniformPayload {
                         name: name.clone(),
-                        values: vec![*f],
+                        values: vec![*f as f32],
                     });
                 }
                 ShaderUniformValue::Vec(v) => {
-                    if expanded.is_none() && !v.is_empty() {
+                    if !from_preset && !v.is_empty() {
                         uniforms.push(ShaderUniformPayload {
                             name: name.clone(),
-                            values: v.clone(),
+                            values: v.iter().map(|value| *value as f32).collect(),
                         });
                     }
                 }
@@ -337,7 +375,7 @@ pub(crate) fn shader_payload(fill: &PenFill) -> Option<ShaderPayload> {
                         // Premultiply for the vec4 binding (matches the
                         // jian-core scene walker's color-uniform rule).
                         let a = rgba[3];
-                        if expanded.is_none() {
+                        if !from_preset {
                             uniforms.push(ShaderUniformPayload {
                                 name: name.clone(),
                                 values: vec![rgba[0] * a, rgba[1] * a, rgba[2] * a, a],
@@ -353,9 +391,10 @@ pub(crate) fn shader_payload(fill: &PenFill) -> Option<ShaderPayload> {
         }
     }
     Some(ShaderPayload {
+        gradient: None,
         sksl,
         uniforms,
-        opacity: body.opacity.unwrap_or(1.0).clamp(0.0, 1.0),
+        opacity: (body.opacity.unwrap_or(1.0) as f32).clamp(0.0, 1.0),
         // Mid-gray when no colour uniform exists.
         fallback: fallback.unwrap_or([0.5, 0.5, 0.5, 1.0]),
     })
@@ -367,18 +406,23 @@ pub(crate) fn shader_payload(fill: &PenFill) -> Option<ShaderPayload> {
 /// fully populated for the triangulator. Returns `None` for a
 /// degenerate (< 2×2) grid so the caller falls back to solid.
 fn mesh_colors(body: &jian_ops_schema::style::MeshGradientBody) -> Option<Vec<[f32; 4]>> {
-    let rows = body.rows.max(2);
-    let cols = body.cols.max(2);
     if body.rows < 2 || body.cols < 2 {
         return None;
     }
-    let mut colors = vec![[0.0, 0.0, 0.0, 0.0]; (rows * cols) as usize];
-    for s in &body.stops {
-        if s.row >= rows || s.col >= cols {
+    let rows = usize::try_from(body.rows).ok()?;
+    let cols = usize::try_from(body.cols).ok()?;
+    let cells = rows.checked_mul(cols)?;
+    let mut colors = Vec::new();
+    colors.try_reserve_exact(cells).ok()?;
+    colors.resize(cells, [0.0, 0.0, 0.0, 0.0]);
+    for stop in &body.stops {
+        let row = usize::try_from(stop.row).ok()?;
+        let col = usize::try_from(stop.col).ok()?;
+        if row >= rows || col >= cols {
             continue;
         }
-        if let Some(rgba) = parse_color(&s.color) {
-            colors[(s.row * cols + s.col) as usize] = rgba;
+        if let Some(rgba) = parse_color(&stop.color) {
+            colors[row * cols + col] = rgba;
         }
     }
     Some(colors)
@@ -394,7 +438,7 @@ fn gradient_stops(
         stops
             .iter()
             .map(|s| GradientStopPayload {
-                offset: s.offset.clamp(0.0, 1.0),
+                offset: (s.offset as f32).clamp(0.0, 1.0),
                 color: parse_color(&s.color).unwrap_or([0.0, 0.0, 0.0, 1.0]),
             })
             .collect(),
@@ -407,6 +451,9 @@ fn first_solid_color(fills: Option<&[PenFill]>) -> Option<[f32; 4]> {
 
 /// Paintable solid fallback for one canonical fill layer.
 pub(crate) fn fill_fallback_color(fill: &PenFill) -> Option<[f32; 4]> {
+    if !fill.is_enabled() {
+        return None;
+    }
     match fill {
         PenFill::Solid(body) => {
             if let Some(rgba) = parse_color(&body.color) {
@@ -457,33 +504,47 @@ pub(crate) fn fill_fallback_color(fill: &PenFill) -> Option<[f32; 4]> {
     None
 }
 
-fn first_fill_type(fills: Option<&[PenFill]>) -> String {
-    let Some(fills) = fills else {
-        return "solid".into();
-    };
-    match fills.first() {
-        Some(PenFill::LinearGradient(_)) => "linear".into(),
-        Some(PenFill::RadialGradient(_)) => "radial".into(),
-        Some(PenFill::MeshGradient(_)) => "mesh".into(),
-        Some(PenFill::Shader(_)) => "shader".into(),
-        Some(PenFill::Image(_)) => "image".into(),
-        _ => "solid".into(),
+fn first_fill_type(first: Option<&PenFill>) -> String {
+    match first {
+        Some(PenFill::LinearGradient(_)) => "linear",
+        Some(PenFill::RadialGradient(_)) => "radial",
+        Some(PenFill::MeshGradient(_)) => "mesh",
+        Some(PenFill::Shader(_)) => "shader",
+        Some(PenFill::Image(_)) => "image",
+        _ => "solid",
     }
+    .into()
+}
+
+pub(crate) fn disabled_fills(fills: Option<&[PenFill]>) -> bool {
+    fills.is_some_and(|fills| !fills.iter().any(PenFill::is_enabled))
+}
+
+pub(crate) fn assign_stroke(p: &mut NodePayload, stroke: Option<&PenStroke>) {
+    p.stroke_disabled = stroke.is_some_and(|stroke| disabled_fills(stroke.fill.as_deref()));
+    p.stroke = stroke_to_payload(stroke);
 }
 
 pub(crate) fn stroke_to_payload(s: Option<&PenStroke>) -> Option<StrokePayload> {
     let s = s?;
+    if disabled_fills(s.fill.as_deref()) {
+        return None;
+    }
     let (width, sides) = match &s.thickness {
-        StrokeThickness::Uniform(n) => (*n, None),
-        StrokeThickness::PerSide(sides) => {
-            (sides.iter().copied().fold(0.0_f32, f32::max), Some(*sides))
-        }
+        StrokeThickness::Uniform(n) => (*n as f32, None),
+        StrokeThickness::PerSide(sides) => (
+            sides
+                .iter()
+                .map(|side| *side as f32)
+                .fold(0.0_f32, f32::max),
+            Some(sides.map(|side| side as f32)),
+        ),
         StrokeThickness::Sided(sided) => {
             let sides = [
-                sided.top.unwrap_or(0.0),
-                sided.right.unwrap_or(0.0),
-                sided.bottom.unwrap_or(0.0),
-                sided.left.unwrap_or(0.0),
+                sided.top.unwrap_or(0.0) as f32,
+                sided.right.unwrap_or(0.0) as f32,
+                sided.bottom.unwrap_or(0.0) as f32,
+                sided.left.unwrap_or(0.0) as f32,
             ];
             (sides.iter().copied().fold(0.0_f32, f32::max), Some(sides))
         }
@@ -505,7 +566,20 @@ pub(crate) fn stroke_to_payload(s: Option<&PenStroke>) -> Option<StrokePayload> 
         Some(StrokeAlign::Outside) => 1,
         Some(StrokeAlign::Center) | None => 0,
     };
+    let simple_paint = matches!(s.fill.as_deref(),Some([PenFill::Solid(body)]) if body.blend_mode.as_ref().is_none_or(|mode|*mode==jian_ops_schema::style::BlendMode::Normal));
+    let styled = s.cap.is_some()
+        || s.join.is_some()
+        || s.dash_pattern
+            .as_ref()
+            .is_some_and(|dash| dash.iter().any(|value| *value > 0.0));
+    let detail =
+        if styled || (!simple_paint && s.fill.as_ref().is_some_and(|fill| !fill.is_empty())) {
+            Some(Box::new((**s).clone()))
+        } else {
+            None
+        };
     Some(StrokePayload {
+        detail,
         color,
         width,
         sides,
@@ -513,8 +587,8 @@ pub(crate) fn stroke_to_payload(s: Option<&PenStroke>) -> Option<StrokePayload> 
     })
 }
 
-pub(crate) fn apply_alpha(rgba: [f32; 4], opacity: Option<f32>) -> [f32; 4] {
-    let a = opacity.unwrap_or(1.0).clamp(0.0, 1.0);
+pub(crate) fn apply_alpha(rgba: [f32; 4], opacity: Option<f64>) -> [f32; 4] {
+    let a = (opacity.unwrap_or(1.0) as f32).clamp(0.0, 1.0);
     [rgba[0], rgba[1], rgba[2], rgba[3] * a]
 }
 
@@ -543,38 +617,52 @@ pub(crate) fn parse_color(s: &str) -> Option<[f32; 4]> {
     if let Some(rgba) = parse_hex(t) {
         return Some(rgba);
     }
-    let lower = t.to_ascii_lowercase();
-    let inner = lower
-        .strip_prefix("rgba(")
-        .or_else(|| lower.strip_prefix("rgb("))?
-        .strip_suffix(')')?;
-    let parts: Vec<&str> = inner.split(',').map(str::trim).collect();
-    if parts.len() < 3 {
+    let inner = if t
+        .get(..5)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("rgba("))
+    {
+        &t[5..]
+    } else if t
+        .get(..4)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("rgb("))
+    {
+        &t[4..]
+    } else {
         return None;
     }
-    let r = parts[0].parse::<f32>().ok()?;
-    let g = parts[1].parse::<f32>().ok()?;
-    let b = parts[2].parse::<f32>().ok()?;
-    let a = if parts.len() >= 4 {
-        parts[3].parse::<f32>().ok()?
-    } else {
-        1.0
+    .strip_suffix(')')?;
+    let mut parts = inner.split(',').map(str::trim);
+    // Preserve normalization-before-f32 narrowing and the original numeric
+    // accept-set, including rare case-normalized special/exponent tokens.
+    let r = functional_component::<f64>(parts.next()?)?;
+    let g = functional_component::<f64>(parts.next()?)?;
+    let b = functional_component::<f64>(parts.next()?)?;
+    let a = match parts.next() {
+        Some(alpha) => functional_component::<f32>(alpha)?,
+        None => 1.0,
     };
     Some([
-        (r / 255.0).clamp(0.0, 1.0),
-        (g / 255.0).clamp(0.0, 1.0),
-        (b / 255.0).clamp(0.0, 1.0),
+        (r / 255.0).clamp(0.0, 1.0) as f32,
+        (g / 255.0).clamp(0.0, 1.0) as f32,
+        (b / 255.0).clamp(0.0, 1.0) as f32,
         a.clamp(0.0, 1.0),
     ])
 }
 
-pub(crate) fn short_src(src: &str) -> String {
-    let s = src.rsplit('/').next().unwrap_or(src);
-    if s.chars().count() > 24 {
-        let head: String = s.chars().take(24).collect();
-        format!("{head}…")
+fn functional_component<T: std::str::FromStr>(value: &str) -> Option<T> {
+    if value.bytes().any(|byte| byte.is_ascii_uppercase()) {
+        value.to_ascii_lowercase().parse().ok()
     } else {
-        s.to_string()
+        value.parse().ok()
+    }
+}
+
+pub(crate) fn short_src(src: &str) -> String {
+    let name = src.rsplit('/').next().unwrap_or(src);
+    if let Some((end, _)) = name.char_indices().nth(24) {
+        format!("{}…", &name[..end])
+    } else {
+        name.to_owned()
     }
 }
 
@@ -585,7 +673,7 @@ mod color_tests {
 
     fn stop(offset: f32, color: &str) -> GradientStop {
         GradientStop {
-            offset,
+            offset: f64::from(offset),
             color: color.to_string(),
         }
     }
@@ -601,6 +689,26 @@ mod color_tests {
         assert!((rgba[3] - 0.18).abs() < 1e-6);
         assert_eq!(parse_color("rgb(255,128,0)").map(|c| c[3]), Some(1.0));
         assert_eq!(parse_color("not-a-colour"), None);
+    }
+
+    #[test]
+    fn functional_rgb_normalizes_before_narrowing_and_preserves_integer_hex() {
+        for normalized in [
+            f32::from_bits(0x3e808180),
+            0.1234567,
+            10.0 / 255.0,
+            0.71234566,
+        ] {
+            let source = format!("rgba({},0,0,0.05)", f64::from(normalized) * 255.0);
+            let parsed = parse_color(&source).unwrap();
+            assert_eq!(parsed[0].to_bits(), normalized.to_bits());
+            assert_eq!(parsed[3].to_bits(), 0.05_f32.to_bits());
+        }
+        for byte in 0..=255 {
+            let source = format!("rgb({byte},{byte},{byte})");
+            let hex = format!("#{byte:02x}{byte:02x}{byte:02x}");
+            assert_eq!(parse_color(&source), parse_color(&hex));
+        }
     }
 
     #[test]

@@ -24,16 +24,15 @@ pub type ImageTransform<'a> = dyn Fn(&[u8]) -> Option<Vec<u8>> + 'a;
 /// Encode raw image bytes as a `data:` URL, sniffing the MIME type
 /// from the leading magic bytes (PNG fallback).
 fn blob_to_data_url(bytes: &[u8]) -> String {
-    let mime = match bytes {
-        [0xFF, 0xD8, ..] => "image/jpeg",
-        [0x47, 0x49, ..] => "image/gif",
-        [0x52, 0x49, ..] => "image/webp",
-        _ => "image/png",
+    let prefix = match bytes {
+        [0xFF, 0xD8, ..] => "data:image/jpeg;base64,",
+        [0x47, 0x49, ..] => "data:image/gif;base64,",
+        [0x52, 0x49, ..] => "data:image/webp;base64,",
+        _ => "data:image/png;base64,",
     };
-    let prefix = format!("data:{mime};base64,");
     let encoded_len = base64::encoded_len(bytes.len(), true).unwrap_or(0);
     let mut url = String::with_capacity(prefix.len().saturating_add(encoded_len));
-    url.push_str(&prefix);
+    url.push_str(prefix);
     base64::engine::general_purpose::STANDARD.encode_string(bytes, &mut url);
     url
 }
@@ -186,10 +185,19 @@ impl<'a> BlobCache<'a> {
     }
 }
 
-#[derive(Default)]
 struct ReferencedImages {
     blobs: HashSet<u32>,
-    files: HashSet<String>,
+    files: HashSet<Box<str>>,
+    include_files: bool,
+}
+impl Default for ReferencedImages {
+    fn default() -> Self {
+        Self {
+            blobs: HashSet::new(),
+            files: HashSet::new(),
+            include_files: true,
+        }
+    }
 }
 
 fn collect_source_ref(source: &str, refs: &mut ReferencedImages) {
@@ -198,8 +206,12 @@ fn collect_source_ref(source: &str, refs: &mut ReferencedImages) {
         .and_then(|value| value.parse().ok())
     {
         refs.blobs.insert(index);
-    } else if let Some(hash) = source.strip_prefix("__hash:") {
-        refs.files.insert(hash.to_string());
+    } else if refs.include_files {
+        if let Some(hash) = source.strip_prefix("__hash:") {
+            if !refs.files.contains(hash) {
+                refs.files.insert(hash.into());
+            }
+        }
     }
 }
 
@@ -210,11 +222,33 @@ fn collect_fill_refs(fills: Option<&[PenFill]>, refs: &mut ReferencedImages) {
             continue;
         };
         collect_source_ref(&image.url, refs);
+        if let Some(thumbnail) = &image.thumbnail_url {
+            collect_source_ref(thumbnail, refs);
+        }
     }
 }
 
 fn collect_stroke_refs(stroke: Option<&PenStroke>, refs: &mut ReferencedImages) {
     collect_fill_refs(stroke.and_then(|stroke| stroke.fill.as_deref()), refs);
+}
+
+fn collect_state_refs(
+    states: Option<&jian_ops_schema::state_override::WidgetStates>,
+    refs: &mut ReferencedImages,
+) {
+    let Some(states) = states else { return };
+    for state in [
+        states.hover.as_ref(),
+        states.pressed.as_ref(),
+        states.focused.as_ref(),
+        states.disabled.as_ref(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        collect_fill_refs(state.fill.as_deref(), refs);
+        collect_stroke_refs(state.stroke.as_ref(), refs);
+    }
 }
 
 fn collect_node_refs(node: &PenNode, refs: &mut ReferencedImages) {
@@ -254,12 +288,18 @@ fn collect_node_refs(node: &PenNode, refs: &mut ReferencedImages) {
             None
         }
         PenNode::Text(text) => {
+            if let jian_ops_schema::node::text::TextContent::Styled(segments) = &text.content {
+                for segment in segments {
+                    collect_fill_refs(segment.fill_paints.as_deref(), refs);
+                }
+            }
             collect_fill_refs(text.fill.as_deref(), refs);
             None
         }
         PenNode::TextInput(input) => {
             collect_fill_refs(input.fill.as_deref(), refs);
             collect_stroke_refs(input.stroke.as_ref(), refs);
+            collect_state_refs(input.states.as_deref(), refs);
             None
         }
         PenNode::Image(image) => {
@@ -274,46 +314,55 @@ fn collect_node_refs(node: &PenNode, refs: &mut ReferencedImages) {
         PenNode::TextArea(area) => {
             collect_fill_refs(area.fill.as_deref(), refs);
             collect_stroke_refs(area.stroke.as_ref(), refs);
+            collect_state_refs(area.states.as_deref(), refs);
             None
         }
         PenNode::Select(select) => {
             collect_fill_refs(select.fill.as_deref(), refs);
             collect_stroke_refs(select.stroke.as_ref(), refs);
+            collect_state_refs(select.states.as_deref(), refs);
             None
         }
         PenNode::Switch(switch) => {
             collect_fill_refs(switch.fill.as_deref(), refs);
             collect_stroke_refs(switch.stroke.as_ref(), refs);
+            collect_state_refs(switch.states.as_deref(), refs);
             None
         }
         PenNode::Checkbox(checkbox) => {
             collect_fill_refs(checkbox.fill.as_deref(), refs);
             collect_stroke_refs(checkbox.stroke.as_ref(), refs);
+            collect_state_refs(checkbox.states.as_deref(), refs);
             None
         }
         PenNode::Slider(slider) => {
             collect_fill_refs(slider.fill.as_deref(), refs);
             collect_stroke_refs(slider.stroke.as_ref(), refs);
+            collect_state_refs(slider.states.as_deref(), refs);
             None
         }
         PenNode::RadioGroup(group) => {
             collect_fill_refs(group.fill.as_deref(), refs);
             collect_stroke_refs(group.stroke.as_ref(), refs);
+            collect_state_refs(group.states.as_deref(), refs);
             None
         }
         PenNode::NumberInput(input) => {
             collect_fill_refs(input.fill.as_deref(), refs);
             collect_stroke_refs(input.stroke.as_ref(), refs);
+            collect_state_refs(input.states.as_deref(), refs);
             None
         }
         PenNode::Progress(progress) => {
             collect_fill_refs(progress.fill.as_deref(), refs);
             collect_stroke_refs(progress.stroke.as_ref(), refs);
+            collect_state_refs(progress.states.as_deref(), refs);
             None
         }
         PenNode::Tabs(tabs) => {
             collect_fill_refs(tabs.fill.as_deref(), refs);
             collect_stroke_refs(tabs.stroke.as_ref(), refs);
+            collect_state_refs(tabs.states.as_deref(), refs);
             tabs.children.as_ref()
         }
         PenNode::Ref(reference) => reference.children.as_ref(),
@@ -326,7 +375,14 @@ fn collect_node_refs(node: &PenNode, refs: &mut ReferencedImages) {
 }
 
 fn collect_document_refs(doc: &PenDocument) -> ReferencedImages {
-    let mut refs = ReferencedImages::default();
+    collect_document_refs_mode(doc, true)
+}
+
+fn collect_document_refs_mode(doc: &PenDocument, include_files: bool) -> ReferencedImages {
+    let mut refs = ReferencedImages {
+        include_files,
+        ..Default::default()
+    };
     if let Some(pages) = &doc.pages {
         for page in pages {
             for child in &page.children {
@@ -340,9 +396,40 @@ fn collect_document_refs(doc: &PenDocument) -> ReferencedImages {
     refs
 }
 
+/// Same full-document reachability rule as collect-all then retain, but do
+/// not inflate packed images that the completed canonical document cannot use.
+/// Geometry and unknown source fields are not rewritten by this ownership move.
+pub(crate) fn collect_referenced_image_blobs(
+    doc: &PenDocument,
+    mut blobs: Vec<crate::figma_types::BlobOrString>,
+) -> HashMap<u32, Vec<u8>> {
+    let mut any_images = false;
+    for blob in &mut blobs {
+        if blob.is_image() {
+            any_images = true;
+        } else {
+            // This consumed pool's geometry has already been converted. It
+            // cannot contribute image output and need not overlap the census.
+            // Retain each original index; image placeholders never get rebased.
+            *blob = crate::figma_types::BlobOrString::Bytes(Vec::new());
+        }
+    }
+    if !any_images {
+        return HashMap::new();
+    }
+    let refs = collect_document_refs_mode(doc, false);
+    blobs
+        .into_iter()
+        .enumerate()
+        .filter(|(index, _)| refs.blobs.contains(&(*index as u32)))
+        .filter_map(|(index, blob)| blob.into_image().map(|bytes| (index as u32, bytes)))
+        .collect()
+}
+
 /// Discard raw in-container image blobs which the converted document
 /// cannot reach. Single-page imports otherwise retain images used only
 /// by the other pages until the base64 phase completes.
+#[cfg(test)]
 pub(crate) fn retain_referenced_image_blobs(
     doc: &PenDocument,
     image_blobs: &mut HashMap<u32, Vec<u8>>,
@@ -356,11 +443,9 @@ fn patch_fills(fills: &mut Option<Vec<PenFill>>, cache: &mut BlobCache) -> usize
     if let Some(fills) = fills {
         for fill in fills {
             if let PenFill::Image(img) = fill {
-                if img.url.starts_with("__blob:") || img.url.starts_with("__hash:") {
-                    if let Some(url) = cache.resolve(&img.url) {
-                        img.url = url;
-                        count += 1;
-                    }
+                count += patch_source(&mut img.url, cache);
+                if let Some(thumbnail) = &mut img.thumbnail_url {
+                    count += patch_source(thumbnail, cache);
                 }
             }
         }
@@ -383,6 +468,27 @@ fn patch_source(source: &mut ImageSrc, cache: &mut BlobCache) -> usize {
     };
     *source = resolved;
     1
+}
+
+fn patch_states(
+    states: Option<&mut jian_ops_schema::state_override::WidgetStates>,
+    cache: &mut BlobCache,
+) -> usize {
+    let Some(states) = states else { return 0 };
+    let mut count = 0;
+    for state in [
+        states.hover.as_mut(),
+        states.pressed.as_mut(),
+        states.focused.as_mut(),
+        states.disabled.as_mut(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        count += patch_fills(&mut state.fill, cache);
+        count += patch_stroke(&mut state.stroke, cache);
+    }
+    count
 }
 
 /// Patch one node's image fills, then recurse into its children.
@@ -424,12 +530,18 @@ fn patch_node(node: &mut PenNode, cache: &mut BlobCache) -> usize {
             None
         }
         PenNode::Text(t) => {
+            if let jian_ops_schema::node::text::TextContent::Styled(segments) = &mut t.content {
+                for segment in segments {
+                    count += patch_fills(&mut segment.fill_paints, cache);
+                }
+            }
             count += patch_fills(&mut t.fill, cache);
             None
         }
         PenNode::TextInput(input) => {
             count += patch_fills(&mut input.fill, cache);
             count += patch_stroke(&mut input.stroke, cache);
+            count += patch_states(input.states.as_deref_mut(), cache);
             None
         }
         PenNode::Image(image) => {
@@ -444,46 +556,55 @@ fn patch_node(node: &mut PenNode, cache: &mut BlobCache) -> usize {
         PenNode::TextArea(area) => {
             count += patch_fills(&mut area.fill, cache);
             count += patch_stroke(&mut area.stroke, cache);
+            count += patch_states(area.states.as_deref_mut(), cache);
             None
         }
         PenNode::Select(select) => {
             count += patch_fills(&mut select.fill, cache);
             count += patch_stroke(&mut select.stroke, cache);
+            count += patch_states(select.states.as_deref_mut(), cache);
             None
         }
         PenNode::Switch(switch) => {
             count += patch_fills(&mut switch.fill, cache);
             count += patch_stroke(&mut switch.stroke, cache);
+            count += patch_states(switch.states.as_deref_mut(), cache);
             None
         }
         PenNode::Checkbox(checkbox) => {
             count += patch_fills(&mut checkbox.fill, cache);
             count += patch_stroke(&mut checkbox.stroke, cache);
+            count += patch_states(checkbox.states.as_deref_mut(), cache);
             None
         }
         PenNode::Slider(slider) => {
             count += patch_fills(&mut slider.fill, cache);
             count += patch_stroke(&mut slider.stroke, cache);
+            count += patch_states(slider.states.as_deref_mut(), cache);
             None
         }
         PenNode::RadioGroup(group) => {
             count += patch_fills(&mut group.fill, cache);
             count += patch_stroke(&mut group.stroke, cache);
+            count += patch_states(group.states.as_deref_mut(), cache);
             None
         }
         PenNode::NumberInput(input) => {
             count += patch_fills(&mut input.fill, cache);
             count += patch_stroke(&mut input.stroke, cache);
+            count += patch_states(input.states.as_deref_mut(), cache);
             None
         }
         PenNode::Progress(progress) => {
             count += patch_fills(&mut progress.fill, cache);
             count += patch_stroke(&mut progress.stroke, cache);
+            count += patch_states(progress.states.as_deref_mut(), cache);
             None
         }
         PenNode::Tabs(tabs) => {
             count += patch_fills(&mut tabs.fill, cache);
             count += patch_stroke(&mut tabs.stroke, cache);
+            count += patch_states(tabs.states.as_deref_mut(), cache);
             tabs.children.as_mut()
         }
         PenNode::Ref(r) => r.children.as_mut(),
@@ -535,9 +656,15 @@ pub(crate) fn resolve_image_blobs_owned_with(
     mut image_files: HashMap<String, Vec<u8>>,
     transform: Option<&ImageTransform<'_>>,
 ) -> usize {
+    if image_blobs.is_empty() && image_files.is_empty() {
+        return 0;
+    }
     let refs = collect_document_refs(doc);
     image_blobs.retain(|index, _| refs.blobs.contains(index));
-    image_files.retain(|hash, _| refs.files.contains(hash));
+    image_files.retain(|hash, _| refs.files.contains(hash.as_str()));
+    // These lookup-only identities are no longer needed while encoded output
+    // and the remaining raw pools coexist.
+    drop(refs);
     if image_blobs.is_empty() && image_files.is_empty() {
         return 0;
     }

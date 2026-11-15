@@ -22,8 +22,8 @@ fn walk_unlabeled_inputs(node: &PenNode, issues: &mut Vec<Issue>) {
     // Only the two writable text-entry kinds carry both `placeholder` and
     // `semantics` in a way that makes "unlabeled" meaningful.
     let fields = match node {
-        PenNode::TextInput(n) => Some((n.placeholder.as_deref(), n.semantics.as_ref())),
-        PenNode::TextArea(n) => Some((n.placeholder.as_deref(), n.semantics.as_ref())),
+        PenNode::TextInput(n) => Some((n.placeholder.as_deref(), n.semantics.as_deref())),
+        PenNode::TextArea(n) => Some((n.placeholder.as_deref(), n.semantics.as_deref())),
         _ => None,
     };
     if let Some((placeholder, semantics)) = fields {

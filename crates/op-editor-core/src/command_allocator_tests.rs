@@ -384,7 +384,7 @@ fn command_dispatch_has_no_legacy_allocator_escape_hatch() {
         "apply_import_svg_on_active_page",
         "instantiate_component_with_allocator",
         "apply_kit_component_on_page",
-        "cmd_batch_with_allocator",
+        "cmd_batch_with_checkpoint(commands, allocator, checkpoint)",
     ] {
         assert!(
             source.contains(required),

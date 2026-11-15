@@ -11,6 +11,8 @@ use tokio::process::{ChildStderr, ChildStdin, ChildStdout, Command as TokioComma
 
 mod process_tree;
 
+#[cfg(unix)]
+pub use process_tree::process_exists;
 use process_tree::{combine_shutdown_and_reap, combine_signal_results, shutdown_without_reap};
 pub use process_tree::{
     kill_process_tree, kill_tokio_process_tree, terminate_process_tree,
@@ -47,14 +49,16 @@ pub fn wait_for_child_or<T>(
     interval: Duration,
     mut probe: impl FnMut() -> Option<T>,
 ) -> io::Result<WaitOutcome<T>> {
-    for _ in 0..attempts {
+    for attempt in 0..attempts {
         if let Some(value) = probe() {
             return Ok(WaitOutcome::Ready(value));
         }
         if let Some(status) = child.try_wait()? {
             return Ok(WaitOutcome::Exited(status));
         }
-        thread::sleep(interval);
+        if attempt + 1 < attempts {
+            thread::sleep(interval);
+        }
     }
     Ok(WaitOutcome::TimedOut)
 }
@@ -66,11 +70,13 @@ pub fn wait_until_false(
     interval: Duration,
     mut still_up: impl FnMut() -> bool,
 ) -> bool {
-    for _ in 0..attempts {
+    for attempt in 0..attempts {
         if !still_up() {
             return true;
         }
-        thread::sleep(interval);
+        if attempt + 1 < attempts {
+            thread::sleep(interval);
+        }
     }
     false
 }
@@ -101,6 +107,11 @@ impl LineStreamChild {
         let mut command = TokioCommand::new(program);
         command.args(args);
         command.envs(envs);
+        // This convenience API owns command construction. Give its piped child
+        // a dedicated group so shutdown can address descendants safely. The
+        // preconfigured spawn_command API keeps its caller's group policy.
+        #[cfg(unix)]
+        command.process_group(0);
         Self::spawn_command(command)
     }
 

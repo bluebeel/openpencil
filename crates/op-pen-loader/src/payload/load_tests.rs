@@ -442,13 +442,17 @@ fn disabled_legacy_fill_entries_stay_unpainted() {
     let PenNode::Frame(frame) = &loaded.value.children[0] else {
         panic!("frame node expected");
     };
-    assert!(frame.container.fill.as_ref().is_some_and(Vec::is_empty));
+    assert!(frame
+        .container
+        .fill
+        .as_ref()
+        .is_some_and(|fills| fills.len() == 1 && !fills[0].is_enabled()));
     assert!(frame
         .container
         .stroke
         .as_ref()
         .and_then(|stroke| stroke.fill.as_ref())
-        .is_some_and(Vec::is_empty));
+        .is_some_and(|fills| fills.len() == 1 && !fills[0].is_enabled()));
 }
 
 #[test]

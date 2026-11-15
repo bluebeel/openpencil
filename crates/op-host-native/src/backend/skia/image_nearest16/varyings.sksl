@@ -1,0 +1,82 @@
+uniform float2 varyingMeta;
+uniform float4 varyingForward;
+uniform float4 varyingOffset;
+uniform float4 varyingA[8];
+uniform float4 varyingB[8];
+uniform float4 varyingC[8];
+uniform float4 varyingOrigin[4];
+uniform float4 varyingEdge[4];
+uniform float4 varyingSide[4];
+float4 vertexA(int index) {
+    if (index == 0) return varyingA[0];
+    if (index == 1) return varyingA[1];
+    if (index == 2) return varyingA[2];
+    if (index == 3) return varyingA[3];
+    if (index == 4) return varyingA[4];
+    if (index == 5) return varyingA[5];
+    if (index == 6) return varyingA[6];
+    return varyingA[7];
+}
+float4 vertexB(int index) {
+    if (index == 0) return varyingB[0];
+    if (index == 1) return varyingB[1];
+    if (index == 2) return varyingB[2];
+    if (index == 3) return varyingB[3];
+    if (index == 4) return varyingB[4];
+    if (index == 5) return varyingB[5];
+    if (index == 6) return varyingB[6];
+    return varyingB[7];
+}
+float4 vertexC(int index) {
+    if (index == 0) return varyingC[0];
+    if (index == 1) return varyingC[1];
+    if (index == 2) return varyingC[2];
+    if (index == 3) return varyingC[3];
+    if (index == 4) return varyingC[4];
+    if (index == 5) return varyingC[5];
+    if (index == 6) return varyingC[6];
+    return varyingC[7];
+}
+float4 vertexOrigin(int index) {
+    if (index == 0) return varyingOrigin[0];
+    if (index == 1) return varyingOrigin[1];
+    if (index == 2) return varyingOrigin[2];
+    return varyingOrigin[3];
+}
+float4 vertexEdge(int index) {
+    if (index == 0) return varyingEdge[0];
+    if (index == 1) return varyingEdge[1];
+    if (index == 2) return varyingEdge[2];
+    return varyingEdge[3];
+}
+float4 vertexSide(int index) {
+    if (index == 0) return varyingSide[0];
+    if (index == 1) return varyingSide[1];
+    if (index == 2) return varyingSide[2];
+    return varyingSide[3];
+}
+float2 vertexUv(float2 p, float2 offset, float2 fallback) {
+    if (varyingMeta.x == 0.0) return fallback;
+    float2 pixel = floor(float2(varyingForward.x*p.x + varyingForward.y*p.y,
+                               varyingForward.z*p.x + varyingForward.w*p.y) + varyingOffset.xy);
+    int camera = 0;
+    float2 tile = float2(0.0);
+    if (grid != 0.0) {
+        float2 samplePosition = (offset + .5) * varyingMeta.y;
+        tile = floor(samplePosition);
+        float jitterX = fract(samplePosition.x);
+        camera = jitterX < .25 ? 2 : (jitterX < .5 ? 1 : (jitterX < .75 ? 0 : 3));
+    }
+    float2 source = pixel * varyingMeta.y + tile;
+    source.y = -source.y;
+    int2 point = int2(source * 16.0);
+    int4 edge = int4(vertexEdge(camera));
+    int determinant = edge.x * (point.y - edge.w) - edge.y * (point.x - edge.z);
+    bool first = determinant == 0 ? vertexSide(camera).y != 0.0
+                                 : ((determinant > 0) == (vertexSide(camera).x > 0.0));
+    int index = camera * 2 + (first ? 0 : 1);
+    float2 relative = source - (first ? vertexOrigin(camera).xy : vertexOrigin(camera).zw);
+    float4 row = vertexC(index) + relative.y * vertexB(index);
+    float4 result = row + relative.x * vertexA(index);
+    return result.xy * (1.0 / result.z);
+}

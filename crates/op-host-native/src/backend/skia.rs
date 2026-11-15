@@ -11,7 +11,6 @@
 //! The backend deliberately does **not** `impl RenderBackend` for OP's
 //! widget-facing trait (spec §5.2.1 mirror surface, no direct impl in
 //! Step 1a; saved for Step 1c+ widget tree).
-
 use op_editor_ui::{Color, Point2D, Rect};
 
 /// OP `Rect` (`origin / size: Vec2`) → Jian `euclid::Rect<f32>`.
@@ -66,15 +65,29 @@ pub(super) fn jian_color_to_color4f(c: Color) -> skia_safe::Color4f {
 // Gradient shader paint methods (`fill_round_rect_linear_gradient`
 // / `_radial_gradient`) and their helpers live in the sibling
 // `gradient.rs` so this spine stays under the 800-line cap. The
-// methods are added to `NativeBackend` via a sibling `impl` block.
 mod caches;
+mod corner_shadow;
 mod gradient;
 mod image;
 mod image_diagnostics;
+mod image_explicit_field;
+mod image_nearest16;
+mod image_paint_field;
+mod image_precision;
+mod image_rotation;
+mod image_supersample;
 mod layer;
+mod paint_space;
 mod path;
+mod raster_point;
+mod rounded_shadow;
+mod sampled_clip;
 mod shaped_text;
+mod stroke_paint;
+mod svg_raster_cache;
 mod text;
+mod vector_document;
+mod vector_text;
 #[cfg(test)]
 use image::{cover_rect, figma_image_local_matrix, image_adjustment_matrix};
 pub use image_diagnostics::{
@@ -117,13 +130,13 @@ pub struct NativeBackend {
     /// Small, paint-thread-decoded blur-up rasters. This cache is isolated
     /// from the full-resolution worker-populated image LRU.
     thumb_cache: image::ThumbCache,
+    paint_spaces: Vec<op_editor_ui::Rect>,
     svg_path_cache: std::collections::HashMap<u64, path::SvgPathCacheEntry>,
     svg_path_cache_order: std::collections::VecDeque<u64>,
     /// Sum of `SvgPathCacheEntry` d-string lengths — the byte proxy the
     /// path-cache budget evicts against (parsed path size tracks d length).
     svg_path_cache_bytes: usize,
-    svg_raster_cache: std::collections::HashMap<path::SvgRasterKey, path::SvgRasterCacheEntry>,
-    svg_raster_cache_order: std::collections::VecDeque<path::SvgRasterKey>,
+    svg_raster_cache: svg_raster_cache::SvgRasterCache,
     dot_point_buffer: Vec<skia_safe::Point>,
     /// Compiled-SkSL `RuntimeEffect` cache (same spirit as the typeface
     /// cache above): compile-once-per-unique-source so per-frame
@@ -231,6 +244,7 @@ impl NativeBackend {
     /// image cache. The convenience `with_dpi` covers the common
     /// "fresh backend" path.
     pub fn new(skia: jian_skia::SkiaBackend, dpi: f32) -> Self {
+        crate::svg_image_source::install();
         // `FontMgr::new()` + `new_from_data` are DirectWrite on Windows.
         // Serialize with all other font work (reentrant); the prewarm loop
         // below resolves ~50 glyphs and is likewise locked per call.
@@ -254,11 +268,11 @@ impl NativeBackend {
             image_cache_tick: 0,
             raster_generation: 0,
             thumb_cache: image::ThumbCache::default(),
+            paint_spaces: Vec::new(),
             svg_path_cache: std::collections::HashMap::new(),
             svg_path_cache_order: std::collections::VecDeque::new(),
             svg_path_cache_bytes: 0,
-            svg_raster_cache: std::collections::HashMap::new(),
-            svg_raster_cache_order: std::collections::VecDeque::new(),
+            svg_raster_cache: svg_raster_cache::SvgRasterCache::default(),
             dot_point_buffer: Vec::new(),
             shader_cache: jian_skia::ShaderCache::new(),
         };
@@ -319,6 +333,9 @@ impl NativeBackend {
     /// a solid `Paint`.
     #[tracing::instrument(skip(self, canvas))]
     pub fn fill_rect(&mut self, canvas: &skia_safe::Canvas, rect: Rect, color: Color) {
+        if raster_point::rect(canvas, rect, color, None) {
+            return;
+        }
         // jian-skia multiplies authored colour alpha by `Paint.opacity`.
         // This bridge has no separate opacity, so leave the paint at 1.0;
         // copying `color.a` there would square every translucent fill.
@@ -339,6 +356,9 @@ impl NativeBackend {
         color: Color,
         width: f32,
     ) {
+        if raster_point::rect(canvas, rect, color, Some(width)) {
+            return;
+        }
         let paint = jian_core::render::Paint {
             fill: None,
             stroke: Some(jian_core::render::StrokeOp {
@@ -365,7 +385,7 @@ impl NativeBackend {
     /// `canvas.clipRRect(..., ClipOp.Intersect, true)`).
     pub fn clip_round_rect(&self, canvas: &skia_safe::Canvas, rect: Rect, radius: f32) {
         let rrect = skia_safe::RRect::new_rect_xy(to_sk_rect(rect), radius, radius);
-        canvas.clip_rrect(rrect, skia_safe::ClipOp::Intersect, true);
+        sampled_clip::clip_rrect(canvas, &rrect);
     }
 
     pub fn clip_round_rect_per_corner(
@@ -376,17 +396,21 @@ impl NativeBackend {
     ) {
         let vectors = radii.map(|radius| skia_safe::Vector::new(radius, radius));
         let rrect = skia_safe::RRect::new_rect_radii(to_sk_rect(rect), &vectors);
-        canvas.clip_rrect(rrect, skia_safe::ClipOp::Intersect, true);
+        sampled_clip::clip_rrect(canvas, &rrect);
     }
 
     pub fn clip_oval(&self, canvas: &skia_safe::Canvas, bounds: Rect) {
         let oval = skia_safe::RRect::new_oval(to_sk_rect(bounds));
-        canvas.clip_rrect(oval, skia_safe::ClipOp::Intersect, true);
+        sampled_clip::clip_rrect(canvas, &oval);
     }
 
     pub fn clip_polygon(&self, canvas: &skia_safe::Canvas, points: &[Point2D]) {
         if points.len() < 3 {
-            canvas.clip_rect(to_sk_rect(Rect::ZERO), skia_safe::ClipOp::Intersect, true);
+            canvas.clip_rect(
+                to_sk_rect(Rect::ZERO),
+                skia_safe::ClipOp::Intersect,
+                jian_skia::raster_sampling::geometry_antialias(),
+            );
             return;
         }
         let mut builder = skia_safe::PathBuilder::new();
@@ -395,7 +419,7 @@ impl NativeBackend {
             builder.line_to((point.x, point.y));
         }
         builder.close();
-        canvas.clip_path(&builder.detach(), skia_safe::ClipOp::Intersect, true);
+        raster_point::clip_path(canvas, &builder.detach());
     }
 
     /// Stroke a single line segment. Step 4 visual lift addition —
@@ -415,9 +439,9 @@ impl NativeBackend {
         let mut paint = skia_safe::Paint::new(jian_color_to_color4f(color), None);
         paint.set_stroke(true);
         paint.set_stroke_width(width);
-        paint.set_anti_alias(true);
+        raster_point::prepare_solid(&mut paint);
         paint.set_stroke_cap(skia_safe::PaintCap::Round);
-        canvas.draw_line((from.x, from.y), (to.x, to.y), &paint);
+        raster_point::draw_line(canvas, from, to, &paint);
     }
 
     /// Filled rounded rectangle — used for shadcn-style chip / panel /
@@ -434,8 +458,8 @@ impl NativeBackend {
         // Skia paints aren't AA by default — chip / button edges
         // come out stair-stepped without this. Same call mirrored
         // into stroke_round_rect / stroke_line / stroke_svg_path.
-        paint.set_anti_alias(true);
-        canvas.draw_round_rect(to_sk_rect(rect), radius, radius, &paint);
+        raster_point::prepare_solid(&mut paint);
+        raster_point::draw_round_rect(canvas, to_sk_rect(rect), radius, radius, &paint);
     }
 
     pub fn fill_round_rect_per_corner(
@@ -448,15 +472,15 @@ impl NativeBackend {
         let vectors = radii.map(|radius| skia_safe::Vector::new(radius, radius));
         let rrect = skia_safe::RRect::new_rect_radii(to_sk_rect(rect), &vectors);
         let mut paint = skia_safe::Paint::new(jian_color_to_color4f(color), None);
-        paint.set_anti_alias(true);
-        canvas.draw_rrect(rrect, &paint);
+        raster_point::prepare_solid(&mut paint);
+        raster_point::draw_rrect(canvas, &rrect, &paint);
     }
 
     /// Drop shadow — a gaussian-blurred filled rounded rectangle.
-    /// `blur` is the CSS-style blur radius (doc-px × zoom, applied
-    /// by the caller); skia's mask-filter takes a sigma, and the
-    /// CSS blur-radius → sigma conversion is `radius / 2`. A zero
-    /// blur degrades to a crisp filled round rect.
+    /// `blur` is the CSS-style radius; sigma is `radius / 2`. Scene exports
+    /// additionally map sigma through the canvas transform; direct/live
+    /// callers retain their caller-scaled device-space blur. A zero blur
+    /// degrades to a crisp filled round rect.
     pub fn fill_drop_shadow(
         &self,
         canvas: &skia_safe::Canvas,
@@ -466,15 +490,17 @@ impl NativeBackend {
         color: Color,
     ) {
         let mut paint = skia_safe::Paint::new(jian_color_to_color4f(color), None);
-        paint.set_anti_alias(true);
         let sigma = blur * 0.5;
         if sigma > 0.0 {
-            if let Some(mask) =
-                skia_safe::MaskFilter::blur(skia_safe::BlurStyle::Normal, sigma, false)
-            {
+            if let Some(mask) = skia_safe::MaskFilter::blur(
+                skia_safe::BlurStyle::Normal,
+                sigma,
+                jian_skia::raster_sampling::shadow_respects_ctm(),
+            ) {
                 paint.set_mask_filter(mask);
             }
         }
+        raster_point::prepare_solid(&mut paint);
         canvas.draw_round_rect(to_sk_rect(rect), radius, radius, &paint);
     }
 
@@ -491,8 +517,8 @@ impl NativeBackend {
         let mut paint = skia_safe::Paint::new(jian_color_to_color4f(color), None);
         paint.set_stroke(true);
         paint.set_stroke_width(width);
-        paint.set_anti_alias(true);
-        canvas.draw_round_rect(to_sk_rect(rect), radius, radius, &paint);
+        raster_point::prepare_solid(&mut paint);
+        raster_point::draw_round_rect(canvas, to_sk_rect(rect), radius, radius, &paint);
     }
 
     pub fn stroke_round_rect_per_corner(
@@ -508,25 +534,25 @@ impl NativeBackend {
         let mut paint = skia_safe::Paint::new(jian_color_to_color4f(color), None);
         paint.set_stroke(true);
         paint.set_stroke_width(width);
-        paint.set_anti_alias(true);
-        canvas.draw_rrect(rrect, &paint);
+        raster_point::prepare_solid(&mut paint);
+        raster_point::draw_rrect(canvas, &rrect, &paint);
     }
 
     /// Filled ellipse inscribed in `bounds`. Uses skia's native
     /// oval primitive so the curve is properly anti-aliased.
     pub fn fill_oval(&self, canvas: &skia_safe::Canvas, bounds: Rect, color: Color) {
         let mut paint = skia_safe::Paint::new(jian_color_to_color4f(color), None);
-        paint.set_anti_alias(true);
-        canvas.draw_oval(to_sk_rect(bounds), &paint);
+        raster_point::prepare_solid(&mut paint);
+        raster_point::draw_oval(canvas, to_sk_rect(bounds), &paint);
     }
 
     /// Stroked ellipse inscribed in `bounds`.
     pub fn stroke_oval(&self, canvas: &skia_safe::Canvas, bounds: Rect, color: Color, width: f32) {
         let mut paint = skia_safe::Paint::new(jian_color_to_color4f(color), None);
-        paint.set_anti_alias(true);
+        raster_point::prepare_solid(&mut paint);
         paint.set_stroke(true);
         paint.set_stroke_width(width);
-        canvas.draw_oval(to_sk_rect(bounds), &paint);
+        raster_point::draw_oval(canvas, to_sk_rect(bounds), &paint);
     }
 
     /// Fill a closed polygon outlined by `points`. Builds a fresh
@@ -546,8 +572,8 @@ impl NativeBackend {
         builder.close();
         let path = builder.detach();
         let mut paint = skia_safe::Paint::new(jian_color_to_color4f(color), None);
-        paint.set_anti_alias(true);
-        canvas.draw_path(&path, &paint);
+        raster_point::prepare_solid(&mut paint);
+        raster_point::draw_path(canvas, &path, &paint);
     }
 
     /// Stroke a closed polygon as ONE antialiased path with round joins.
@@ -573,12 +599,12 @@ impl NativeBackend {
         builder.close();
         let path = builder.detach();
         let mut paint = skia_safe::Paint::new(jian_color_to_color4f(color), None);
-        paint.set_anti_alias(true);
+        raster_point::prepare_solid(&mut paint);
         paint.set_stroke(true);
         paint.set_stroke_width(width);
         paint.set_stroke_join(skia_safe::PaintJoin::Round);
         paint.set_stroke_cap(skia_safe::PaintCap::Round);
-        canvas.draw_path(&path, &paint);
+        raster_point::draw_path(canvas, &path, &paint);
     }
 
     /// Fill a batch of identical round dots in one draw call.
@@ -597,7 +623,7 @@ impl NativeBackend {
             return;
         }
         let mut paint = skia_safe::Paint::new(jian_color_to_color4f(color), None);
-        paint.set_anti_alias(true);
+        raster_point::prepare_solid(&mut paint);
         paint.set_stroke(true);
         paint.set_stroke_cap(skia_safe::PaintCap::Round);
         paint.set_stroke_width(radius * 2.0);
@@ -632,7 +658,7 @@ impl NativeBackend {
         let filter =
             skia_safe::image_filters::blur((sigma, sigma), skia_safe::TileMode::Decal, None, None);
         let mut paint = skia_safe::Paint::default();
-        paint.set_anti_alias(true);
+        jian_skia::raster_sampling::configure_geometry(&mut paint);
         if let Some(f) = filter {
             paint.set_image_filter(f);
         }
@@ -654,9 +680,14 @@ impl NativeBackend {
             canvas.save();
             return;
         };
-        let rec = skia_safe::canvas::SaveLayerRec::default()
+        let mut paint = skia_safe::Paint::default();
+        jian_skia::raster_sampling::configure_paint(&mut paint);
+        let mut rec = skia_safe::canvas::SaveLayerRec::default()
             .backdrop(&filter)
             .backdrop_tile_mode(skia_safe::TileMode::Clamp);
+        if jian_skia::raster_sampling::is_point_sampling() {
+            rec = rec.paint(&paint);
+        }
         canvas.save_layer(&rec);
     }
 
@@ -748,13 +779,16 @@ mod tests;
 mod image_thumb_tests;
 
 #[cfg(test)]
+#[path = "skia/image_sampling_tests.rs"]
+mod image_sampling_tests;
+
+#[cfg(test)]
 #[path = "skia/font_fallback_tests.rs"]
 mod font_fallback_tests;
 
 #[cfg(test)]
 #[path = "skia/complex_script_tests.rs"]
 mod complex_script_tests;
-
 // Gated off Windows: exercises `jian_skia::register_imported_font` (skia
 // `FontMgr::new_from_data`, DirectWrite on Windows) from parallel test-worker
 // threads, which segfaults in Windows CI. Production resolves fonts on the
@@ -762,3 +796,5 @@ mod complex_script_tests;
 #[cfg(all(test, not(target_os = "windows")))]
 #[path = "skia/font_import_tests.rs"]
 mod font_import_tests;
+#[cfg(test)]
+mod rounded_shadow_tests;

@@ -46,6 +46,7 @@ fn shader_body(
     uniforms: BTreeMap<String, ShaderUniformValue>,
 ) -> ShaderFillBody {
     ShaderFillBody {
+        enabled: None,
         preset: preset.map(str::to_string),
         sksl,
         uniforms: (!uniforms.is_empty()).then_some(uniforms),
@@ -113,7 +114,7 @@ fn invalid_num_octaves_warns_with_the_loader_resolution() {
         );
     }
 
-    for value in [2.5, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+    for value in [2.5, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
         let body = turbulence_uniform("numOctaves", ShaderUniformValue::Float(value));
         let issues = shader_issues("hero", &body);
         assert_eq!(issues.len(), 1, "{value} must warn");

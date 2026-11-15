@@ -30,18 +30,20 @@ pub(crate) fn expand(body: &ShaderFillBody) -> Option<ExpandedShaderPreset> {
 
 fn expand_turbulence(body: &ShaderFillBody) -> ExpandedShaderPreset {
     let base_frequency = match uniform(body, "baseFrequency") {
-        Some(ShaderUniformValue::Float(value)) => vec![*value, *value],
+        Some(ShaderUniformValue::Float(value)) => vec![*value as f32, *value as f32],
         // Preserve the authored vector arity. The existing runtime uniform
         // binder remains the single authority that accepts or rejects it.
-        Some(ShaderUniformValue::Vec(values)) if !values.is_empty() => values.clone(),
+        Some(ShaderUniformValue::Vec(values)) if !values.is_empty() => {
+            values.iter().map(|value| *value as f32).collect()
+        }
         _ => vec![DEFAULT_BASE_FREQUENCY, DEFAULT_BASE_FREQUENCY],
     };
     let seed = match uniform(body, "seed") {
-        Some(ShaderUniformValue::Float(value)) => *value,
+        Some(ShaderUniformValue::Float(value)) => *value as f32,
         _ => DEFAULT_SEED,
     };
     let num_octaves = match uniform(body, "numOctaves") {
-        Some(ShaderUniformValue::Float(value)) => resolve_num_octaves(*value).effective(),
+        Some(ShaderUniformValue::Float(value)) => resolve_num_octaves(*value as f32).effective(),
         _ => DEFAULT_NUM_OCTAVES,
     };
 
@@ -75,9 +77,7 @@ fn uniform<'a>(body: &'a ShaderFillBody, name: &str) -> Option<&'a ShaderUniform
 /// statements so RuntimeEffect executes only the requested amount of work and
 /// the source string remains a natural compile-cache key.
 fn turbulence_sksl(num_octaves: usize) -> String {
-    let mut source = String::with_capacity(1_600);
-    source.push_str(
-        r#"uniform float2 baseFrequency;
+    const HEAD: &str = r#"uniform float2 baseFrequency;
 uniform float seed;
 uniform float2 size;
 
@@ -105,28 +105,30 @@ half4 main(float2 fragCoord) {
     float amplitude = 0.5;
     float total = 0.0;
     float weight = 0.0;
-"#,
-    );
-
-    for octave in 0..num_octaves {
-        if octave != 0 {
-            source.push_str(
-                "    point = point * 2.0 + float2(17.0, 29.0);\n\
-                 amplitude *= 0.5;\n",
-            );
-        }
-        source.push_str(
-            "    total += value_noise(point) * amplitude;\n\
-             weight += amplitude;\n",
-        );
-    }
-
-    source.push_str(
-        r#"    float noise = total / max(weight, 0.0001);
+"#;
+    const STEP: &str = "    point = point * 2.0 + float2(17.0, 29.0);\n\
+                 amplitude *= 0.5;\n";
+    const SAMPLE: &str = "    total += value_noise(point) * amplitude;\n\
+             weight += amplitude;\n";
+    const TAIL: &str = r#"    float noise = total / max(weight, 0.0001);
     return half4(noise, noise, noise, 1.0);
 }
-"#,
-    );
+"#;
+    // Caller resolves num_octaves through the existing bounded preset policy.
+    // The output's exact literal lengths avoid growth and retained spare bytes.
+    let capacity = HEAD.len()
+        + TAIL.len()
+        + SAMPLE.len() * num_octaves
+        + STEP.len() * num_octaves.saturating_sub(1);
+    let mut source = String::with_capacity(capacity);
+    source.push_str(HEAD);
+    for octave in 0..num_octaves {
+        if octave != 0 {
+            source.push_str(STEP);
+        }
+        source.push_str(SAMPLE);
+    }
+    source.push_str(TAIL);
     source
 }
 
@@ -137,6 +139,7 @@ mod tests {
 
     fn body_with_uniforms(uniforms: BTreeMap<String, ShaderUniformValue>) -> ShaderFillBody {
         ShaderFillBody {
+            enabled: None,
             preset: Some("turbulence".to_string()),
             sksl: None,
             uniforms: Some(uniforms),
@@ -167,7 +170,7 @@ mod tests {
 
     #[test]
     fn non_integer_and_non_finite_octaves_use_the_default() {
-        for value in [2.5, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+        for value in [2.5, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
             let mut uniforms = BTreeMap::new();
             uniforms.insert("numOctaves".to_string(), ShaderUniformValue::Float(value));
             let expanded = expand(&body_with_uniforms(uniforms)).expect("recognized preset");

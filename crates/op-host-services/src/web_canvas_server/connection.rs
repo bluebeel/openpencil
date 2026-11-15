@@ -6,19 +6,16 @@
 
 use super::*;
 
-/// Everything one request is served against.
-///
-/// The single-user daemon has exactly one `Mutex<WebCanvasState>` and one
-/// [`SseHub`], so this used to be two arguments. The online daemon has one of
-/// each per account and resolves them from the connection's verified identity
-/// before dispatch, so the pair travels together with the deployment mode that
-/// decides which routes exist at all.
-///
-/// `Local` and `Managed` build exactly the ctx the two arguments used to mean,
-/// and every mode predicate answers `true` for them — the non-online dispatch
-/// below is unchanged.
+#[path = "connection_metrics.rs"]
+mod metrics;
+
+/// One request's document authority and client-context store.
+/// Online resolves a verified tenant before dispatch; Local and Managed reuse
+/// their daemon's pair. Agent admission is separate from the document mutex,
+/// so busy agents can be rejected before waiting for a document writer.
 pub(super) struct ConnCtx<'a> {
     pub(super) state: &'a Mutex<WebCanvasState>,
+    pub(super) authority: &'a ConnAuthority,
     pub(super) hub: &'a SseHub,
     pub(super) mode: ServeMode,
     /// Which MCP tools this connection may see and call. `UNRESTRICTED` for
@@ -72,18 +69,33 @@ pub(super) fn serve_one<S: Read + Write>(
 /// caller then stops the accept loop so `op stop` never signals a pid. In
 /// managed mode only this lifecycle request, not ordinary traffic, uses the
 /// token emitted in the startup handshake.
+#[cfg(test)]
 pub(super) fn serve_one_in_mode<S: Read + Write>(
     stream: &mut S,
     state: &Mutex<WebCanvasState>,
     hub: &SseHub,
     mode: ServeMode,
 ) -> Result<bool> {
-    let req = crate::mcp_serve::read_http_request(stream)?;
-    dispatch(
+    let authority = ConnAuthority::new(&state.lock().unwrap_or_else(|p| p.into_inner()));
+    serve_one_with_authority(stream, state, hub, mode, &authority)
+}
+
+pub(super) fn serve_one_with_authority<S: Read + Write>(
+    stream: &mut S,
+    state: &Mutex<WebCanvasState>,
+    hub: &SseHub,
+    mode: ServeMode,
+    authority: &ConnAuthority,
+) -> Result<bool> {
+    let Some((req, _body_lease)) = crate::mcp_serve::read_admitted_http_request(stream)? else {
+        return Ok(false);
+    };
+    dispatch_owned(
         stream,
-        &req,
+        req,
         &ConnCtx {
             state,
+            authority,
             hub,
             mode,
             mcp_profile: crate::mcp_serve::tool_profile::McpAccessProfile::UNRESTRICTED,
@@ -93,22 +105,26 @@ pub(super) fn serve_one_in_mode<S: Read + Write>(
     )
 }
 
-/// Route one already-parsed request against `ctx`.
-///
-/// Split from the read so the online accept loop can resolve the identity —
-/// and therefore the tenant this ctx points at — from the request headers
-/// before anything is dispatched.
-pub(super) fn dispatch<S: Read + Write>(
+/// Dispatch parsed requests after the online loop has resolved their identity.
+#[path = "connection_conversion.rs"]
+mod conversion;
+#[path = "connection_files.rs"]
+mod files;
+pub(super) use conversion::dispatch_owned;
+
+fn dispatch_inner<S: Read + Write>(
     stream: &mut S,
     req: &crate::mcp_serve::HttpRequest,
     ctx: &ConnCtx<'_>,
+    conversion_body: Option<String>,
 ) -> Result<bool> {
+    let _raster_response = crate::mcp_serve::raster_response::RasterResponseScope::new();
+    let _export_stream = crate::mcp_serve::export_stream::Scope::new(&req.body);
+    let _http_export = crate::mcp_serve::http_export::Scope::new(&req.body);
     let state = ctx.state;
     let hub = ctx.hub;
-    let (managed_lifecycle_token, allow_origins) = {
-        let guard = state.lock().unwrap_or_else(|p| p.into_inner());
-        (guard.managed_token.clone(), guard.allow_origins.clone())
-    };
+    let managed_lifecycle_token = &ctx.authority.managed_lifecycle_token;
+    let allow_origins = &ctx.authority.allow_origins;
     // Online never emits `*`: its requests carry credentials, and a wildcard
     // plus credentials is what lets any page on the internet read another
     // account's document. Managed mode keeps its own allowlist echo, and the
@@ -121,6 +137,7 @@ pub(super) fn dispatch<S: Read + Write>(
         Some("*".to_string())
     };
     let cors_origin = cors_origin.as_deref();
+    super::async_completion::origin(cors_origin);
     if matches!(ctx.mode, ServeMode::Managed)
         && !managed_request_origin_allowed(
             &allow_origins,
@@ -227,6 +244,12 @@ pub(super) fn dispatch<S: Read + Write>(
             return Ok(false);
         }
     }
+    // This diagnostic reads bounded atomics only, before any document binding
+    // or writer lock. Monitoring must remain usable during a slow operation.
+    if req.method == "GET" && req.path == "/api/mcp/metrics" {
+        metrics::serve(stream, ctx, cors_origin)?;
+        return Ok(false);
+    }
     // Online account projection. The device-login proxy stays 404 (it drives
     // a process-wide device session), but the shell must be able to learn
     // which account it is showing — without this the identity epoch never
@@ -294,13 +317,30 @@ pub(super) fn dispatch<S: Read + Write>(
         )?;
         return Ok(false);
     }
+    // Authenticated same-authority since reads borrow encoded committed data;
+    // they never replay commands or retain a per-subscriber document snapshot.
+    if req.method == "GET" && req.path == "/api/mcp/changes" {
+        let binding = super::connection_binding::rest(ctx, req)?;
+        super::changefeed::http::serve_owned(stream, req, ctx, cors_origin, binding.as_ref())?;
+        return Ok(false);
+    }
+    if req.method == "GET" && req.path == "/api/mcp/document" {
+        let binding = super::connection_binding::rest(ctx, req)?;
+        super::document_snapshot::serve_owned(stream, ctx, cors_origin, binding.as_ref())?;
+        return Ok(false);
+    }
     // SSE live-update stream: the browser shell subscribes and re-syncs whenever
     // the document version advances. Subscribe BEFORE reading the current
     // version so no broadcast is missed (a duplicate is harmless — versions are
     // monotonic). The state lock is released before the long SSE wait.
     if req.method == "GET" && req.path == "/api/mcp/events" {
+        let binding = super::connection_binding::rest(ctx, req)?;
         let slot = hub.subscribe();
         let current = state.lock().unwrap_or_else(|p| p.into_inner()).sse_tick();
+        super::primary_scope::release(binding.as_ref());
+        if super::async_sse::capture(&slot, current, cors_origin) {
+            return Ok(false);
+        }
         return serve_sse(stream, &slot, current, cors_origin).map(|()| false);
     }
     // The AI / image routes, which parse under the lock and then run long
@@ -324,15 +364,7 @@ pub(super) fn dispatch<S: Read + Write>(
         return Ok(false);
     }
     if req.method == "POST" && req.path == "/api/figma/convert" {
-        let (status, body) = match crate::figma_convert::convert_fig_json(&req.body) {
-            Ok(body) => ("200 OK", body),
-            Err(error) => (
-                "400 Bad Request",
-                serde_json::json!({ "ok": false, "error": error.to_string() }).to_string(),
-            ),
-        };
-        crate::mcp_serve::write_mcp_http_response_with_origin(stream, status, &body, cors_origin)?;
-        return Ok(false);
+        return conversion::serve_conversion(stream, req, conversion_body, cors_origin);
     }
     // All `/api/mcp/*` REST paths go to the REST handler — including ones this
     // daemon doesn't implement yet, which it answers with 404 rather than
@@ -362,19 +394,46 @@ pub(super) fn dispatch<S: Read + Write>(
                 return Ok(false);
             }
         };
+        let binding = super::connection_binding::rest(ctx, req)?;
         let reply = {
             let mut guard = state.lock().unwrap_or_else(|p| p.into_inner());
+            if guard.recovery.required() && req.path != "/api/file/reload" {
+                let reply = super::managed_group_commit::recovery::refusal();
+                drop(guard);
+                super::primary_scope::release(binding.as_ref());
+                crate::mcp_serve::write_mcp_http_response_with_origin(
+                    stream,
+                    reply.status,
+                    &reply.body,
+                    cors_origin,
+                )?;
+                return Ok(false);
+            }
             let before = guard.version;
             let settings_before = crate::settings_io::fingerprint(&guard.editor);
             let credential_settings_before = (req.method == "POST"
                 && req.path == "/api/settings/credentials")
                 .then(|| guard.editor.editor_ui.agent_settings.clone());
-            let reply = match pending_push {
+            let mut reply = match pending_push {
                 // The pre-parsed push installs directly; the generic handler
                 // never sees this route's body twice.
                 Some(parsed) => document_push_reply(parsed, &mut guard),
                 None => handle_web_canvas_request(&req.method, &req.path, &req.body, &mut guard),
             };
+            if req.method == "GET" && req.path == "/api/mcp/server" {
+                if let Ok(mut body) = serde_json::from_str::<serde_json::Value>(&reply.body) {
+                    body["durableGroups"] = ctx.authority.managed_groups.metrics.snapshot();
+                    if !ctx.mode.is_online() {
+                        body["incrementalSaves"] = crate::doc_io::incremental::snapshot_stats();
+                        body["residentDurableGroups"] =
+                            crate::mcp_serve::resident_groups::snapshot();
+                    }
+                    reply.body = body.to_string();
+                }
+            }
+            if req.path == "/api/file/reload" && !guard.recovery.required() {
+                state.clear_poison();
+            }
             let reply = persist_api_settings(
                 &req.method,
                 &req.path,
@@ -392,10 +451,12 @@ pub(super) fn dispatch<S: Read + Write>(
             if guard.version != before {
                 hub.broadcast(guard.sse_tick());
             }
+            ctx.authority.refresh_route(&guard);
             reply
         };
         // Released only after the commit is visible in the shared state.
         drop(write_pass);
+        super::primary_scope::release(binding.as_ref());
         crate::mcp_serve::write_mcp_http_response_with_origin(
             stream,
             reply.status,
@@ -477,11 +538,92 @@ pub(super) fn dispatch<S: Read + Write>(
         crate::mcp_serve::tool_catalog::McpToolCatalog::for_http_path(&req.path)
             .unwrap_or(crate::mcp_serve::tool_catalog::McpToolCatalog::Full),
     );
+    let agent_contexts = &ctx.authority.agent_contexts;
+    let _agent_admission = match agent_contexts.try_admit(&req.body, mcp_profile) {
+        Ok(admission) => admission,
+        Err(error) => {
+            let response = op_mcp::parse_tool_call(&req.body)
+                .map(|call| crate::mcp_serve::file_path::error_response(&call, error.to_string()))
+                .unwrap_or_default();
+            crate::mcp_serve::write_mcp_http_response_with_origin(
+                stream,
+                "200 OK",
+                &response,
+                cors_origin,
+            )?;
+            return Ok(false);
+        }
+    };
+    let binding = super::connection_binding::mcp(ctx, &req.body, mcp_profile)?;
+    // Recovery stays ahead of both the primary fence and alternate-file
+    // routing. It cannot supply a path or replay any failed operation.
+    if let Some(response) = super::connection_recovery::dispatch(ctx, &req.body, mcp_profile) {
+        let response = response?;
+        let status = if response.is_empty() {
+            "202 Accepted"
+        } else {
+            "200 OK"
+        };
+        super::primary_scope::release(binding.as_ref());
+        crate::mcp_serve::write_mcp_http_response_with_origin(
+            stream,
+            status,
+            &response,
+            cors_origin,
+        )?;
+        return Ok(false);
+    }
+    // Eligible writes rendezvous before any document mutex wait. Otherwise
+    // each arriving writer would queue behind the previous whole-file save.
+    if let Some(response) =
+        super::managed_group_commit::dispatch_early(ctx, &req.body, mcp_profile, &_agent_admission)
+    {
+        let response = response?;
+        super::primary_scope::release(binding.as_ref());
+        crate::mcp_serve::write_mcp_http_response_with_origin(
+            stream,
+            "200 OK",
+            &response,
+            cors_origin,
+        )?;
+        return Ok(false);
+    }
+    let (current_path, document_key) = ctx.authority.primary_files.route();
+    let routing_epoch = ctx.authority.recovery.epoch();
+    // Alternate local files have their own bounded, per-file writer authority.
+    // Binding identity is independent of its document/save mutex. Dispatching
+    // another file does not wait for primary serialization. Online paths
+    // remain account-scoped and never reach the local filesystem router.
+    if let Some(response) = files::route(
+        ctx,
+        &req.body,
+        current_path.as_deref(),
+        &document_key,
+        mcp_profile,
+        &_agent_admission,
+        routing_epoch,
+    )? {
+        super::primary_scope::release(binding.as_ref());
+        crate::mcp_serve::write_mcp_http_response_with_origin(
+            stream,
+            "200 OK",
+            &response,
+            cors_origin,
+        )?;
+        return Ok(false);
+    }
+    {
+        let guard = state.lock().unwrap_or_else(|p| p.into_inner());
+        guard.ensure_document_available()?;
+    }
     #[cfg(feature = "mcp-debug-tools")]
     if let Some(response) = (mcp_profile.catalog
         == crate::mcp_serve::tool_catalog::McpToolCatalog::Full)
         .then(|| {
             let guard = state.lock().unwrap_or_else(|p| p.into_inner());
+            if guard.recovery.required() {
+                return None;
+            }
             crate::mcp_live::screenshot::maybe_serve(
                 &req.body,
                 op_mcp::debug_tools_enabled(),
@@ -493,6 +635,7 @@ pub(super) fn dispatch<S: Read + Write>(
         })
         .flatten()
     {
+        super::primary_scope::release(binding.as_ref());
         crate::mcp_serve::write_mcp_http_response_with_origin(
             stream,
             "200 OK",
@@ -506,8 +649,9 @@ pub(super) fn dispatch<S: Read + Write>(
     // write, so the decision is made BEFORE dispatch — the alternative is
     // discovering it from an `EditorCommand` the tool has already produced,
     // which is after the point where refusing is still honest.
-    let mcp_write = op_mcp::parse_tool_call(&req.body)
-        .is_some_and(|call| crate::mcp_serve::tool_profile::tool_writes(&call.tool));
+    let mcp_write = op_mcp::parse_tool_call(&req.body).is_some_and(|call| {
+        crate::mcp_serve::tool_profile::call_writes(&call.tool, &call.arguments)
+    });
     let mcp_write_pass = match admit_mutation(ctx, mcp_write) {
         MutationAdmission::NotAWrite => None,
         MutationAdmission::Admitted(pass) => pass,
@@ -522,6 +666,7 @@ pub(super) fn dispatch<S: Read + Write>(
                         .to_string(),
                 })
             });
+            super::primary_scope::release(binding.as_ref());
             crate::mcp_serve::write_mcp_http_response_with_origin(
                 stream,
                 "200 OK",
@@ -531,67 +676,25 @@ pub(super) fn dispatch<S: Read + Write>(
             return Ok(false);
         }
     };
-    // JSON-RPC `/mcp` dispatch against the in-memory document. A mutating apply
-    // bumps the sync version, broadcast to SSE subscribers so the browser shell
-    // sees JSON-RPC-driven changes too.
-    let response = {
-        let mut guard = state.lock().unwrap_or_else(|p| p.into_inner());
-        let before = guard.version;
-        let mut applied_any = false;
-        // The gateway. Snapshotted before dispatch because the applier only
-        // borrows the editor, and `Copy` + the held state lock make the
-        // snapshot exact for the whole message. Desktop refuses MCP document
-        // mutations during a live session (`mcp_live.rs`); the daemon has to
-        // give the same answer or an MCP client would fork the shared document
-        // out from under the peers.
-        let policy = guard.collab_policy();
-        let mut refused: Option<op_editor_core::CollabGateReason> = None;
-        // Mechanical passthrough only — this daemon (`--serve-web`/`op
-        // start`) is a SEPARATE request loop from `mcp_live.rs`'s
-        // `McpLiveServer` (desktop `--live-mcp`), not the same struct;
-        // wiring canvas-generation indicators here (so a `batch_design`
-        // call against a headless `op start` daemon also relays the
-        // radar-scan to the browser shell) is tracked as follow-up
-        // scope, not part of this pass.
-        let response = crate::mcp_serve::process_message_with_applier_profiled(
-            &mut guard.editor,
+    let response = match super::managed_group_commit::dispatch(
+        ctx,
+        &req.body,
+        mcp_profile,
+        current_path.as_deref(),
+        &document_key,
+        &_agent_admission,
+        mcp_write,
+    ) {
+        Some(response) => response?,
+        None => super::managed_commit::dispatch(
+            ctx,
             &req.body,
             mcp_profile,
-            |_tool_name, editor, cmd| {
-                if let Err(reason) =
-                    policy.check_command(cmd, op_editor_core::CollabEditSource::Mcp)
-                {
-                    refused = Some(reason);
-                    return false;
-                }
-                let ok = editor.apply(cmd.clone());
-                if ok {
-                    crate::mcp_serve::run_write_repairs_after_apply(editor);
-                }
-                applied_any |= ok;
-                ok
-            },
-        )?
-        .unwrap_or_default();
-        if let Some(reason) = refused {
-            // Same surfacing as the desktop live-MCP path: the tool acks
-            // "not applied" and the panel explains why, so a refusal is never
-            // a silent no-op.
-            guard.editor.editor_ui.collab.set_notice(
-                reason.notice_kind(),
-                crate::design_agent_tools::reveal_now_millis(),
-            );
-            guard.collab.bump_seq();
-        }
-        if applied_any {
-            guard.version += 1;
-        }
-        // Atomic bump+broadcast under the state lock (see the REST path) so SSE
-        // version events stay monotonic across concurrent mutations.
-        if guard.version != before || refused.is_some() {
-            hub.broadcast(guard.sse_tick());
-        }
-        response
+            current_path.as_deref(),
+            &document_key,
+            _agent_admission.is_active(),
+            mcp_write,
+        )?,
     };
     // Released only once the commit is visible in the shared state.
     drop(mcp_write_pass);
@@ -600,6 +703,7 @@ pub(super) fn dispatch<S: Read + Write>(
     } else {
         "200 OK"
     };
+    super::primary_scope::release(binding.as_ref());
     crate::mcp_serve::write_mcp_http_response_with_origin(stream, status, &response, cors_origin)?;
     Ok(false)
 }
@@ -649,16 +753,7 @@ pub(super) fn serve_sse<S: Write>(
     current: SseTick,
     cors_origin: Option<&str>,
 ) -> Result<()> {
-    let cors_line = cors_origin
-        .map(|origin| format!("Access-Control-Allow-Origin: {origin}\r\n"))
-        .unwrap_or_default();
-    let headers = format!(
-        "HTTP/1.1 200 OK\r\n\
-         Content-Type: text/event-stream\r\n\
-         Cache-Control: no-cache\r\n\
-         Connection: keep-alive\r\n\
-         {cors_line}\r\n"
-    );
+    let headers = super::sse_wire::headers(cors_origin);
     stream
         .write_all(headers.as_bytes())
         .map_err(|e| WebCanvasError::Transport(format!("sse headers: {e}")))?;
@@ -689,10 +784,7 @@ pub(super) fn serve_sse<S: Write>(
 /// `version` stays the first field and keeps its exact spelling, so a client
 /// written against the original payload keeps parsing this one.
 pub(super) fn write_sse_event<S: Write>(stream: &mut S, tick: SseTick) -> Result<()> {
-    let event = format!(
-        "data: {{\"version\":{},\"collabSeq\":{}}}\n\n",
-        tick.version, tick.collab_seq
-    );
+    let event = super::sse_wire::event(tick);
     stream
         .write_all(event.as_bytes())
         .map_err(|e| WebCanvasError::Transport(format!("sse write: {e}")))?;

@@ -2,10 +2,12 @@ use crate::cli_error::CliError;
 use op_process_io::{spawn_null, wait_for_child_or, wait_until_false, WaitOutcome};
 use serde_json::json;
 use std::env;
-use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
+#[cfg(windows)]
+use std::process::Stdio;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::{fs, io::Write};
 
 const PID_FILE_NAME: &str = "openpencil-mcp-server.pid";
 const PORT_FILE_NAME: &str = "openpencil-mcp-server.port";
@@ -482,21 +484,43 @@ pub(crate) fn token_for_port(port: u16) -> String {
 }
 
 pub(crate) fn ensure_document_file(path: &Path) -> Result<(), CliError> {
-    if path.exists() {
-        if path.is_file() {
-            return Ok(());
+    match fs::metadata(path) {
+        Ok(metadata) if metadata.is_file() => return Ok(()),
+        Ok(_) => {
+            return Err(CliError::Io(format!(
+                "{} exists but is not a file",
+                path.display()
+            )))
         }
-        return Err(CliError::Io(format!(
-            "{} exists but is not a file",
-            path.display()
-        )));
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(CliError::Io(format!("read {}: {error}", path.display()))),
     }
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
-            .map_err(|e| CliError::Io(format!("create {}: {e}", parent.display())))?;
+            .map_err(|error| CliError::Io(format!("create {}: {error}", parent.display())))?;
     }
-    fs::write(path, MINIMAL_DOCUMENT)
-        .map_err(|e| CliError::Io(format!("write {}: {e}", path.display())))
+    // Concurrent starters may both observe a missing document. Never truncate
+    // one created by another process between the metadata query and this open.
+    match fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+    {
+        Ok(mut file) => file
+            .write_all(MINIMAL_DOCUMENT.as_bytes())
+            .map_err(|error| CliError::Io(format!("write {}: {error}", path.display()))),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            if path.is_file() {
+                Ok(())
+            } else {
+                Err(CliError::Io(format!(
+                    "{} exists but is not a file",
+                    path.display()
+                )))
+            }
+        }
+        Err(error) => Err(CliError::Io(format!("write {}: {error}", path.display()))),
+    }
 }
 
 /// Verify `path` holds a document the headless MCP server can actually load,
@@ -729,14 +753,7 @@ fn collect_app_images(dir: &Path, candidates: &mut Vec<PathBuf>) {
 
 #[cfg(unix)]
 fn is_pid_alive(pid: u32) -> bool {
-    Command::new("kill")
-        .arg("-0")
-        .arg(pid.to_string())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|status| status.success())
-        .unwrap_or(false)
+    op_process_io::process_exists(pid)
 }
 
 #[cfg(windows)]

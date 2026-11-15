@@ -14,11 +14,18 @@
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
+mod canonical_stream;
 mod compatibility;
+#[cfg(test)]
 mod fast_load;
 mod legacy_normalize;
 mod paint_payloads;
 mod video_alias;
+
+#[cfg(not(target_arch = "wasm32"))]
+pub use canonical_stream::{
+    load_canonical_file_with_compatibility, CanonicalFileLoad, CanonicalFileLoadError,
+};
 
 // Re-exported so every `crate::payload::…` import path stays stable across
 // the split.
@@ -78,6 +85,10 @@ pub struct NodePayload {
     pub h: f32,
     #[serde(default)]
     pub fill: Option<[f32; 4]>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub fill_disabled: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub stroke_disabled: bool,
     /// Canonical fill stack in paint order (first entry is topmost).
     /// The legacy single-fill fields below remain populated so older
     /// payload readers keep working; an absent stack means the payload
@@ -177,6 +188,8 @@ pub struct NodePayload {
     /// are local doc-px relative to the node origin.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub svg_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub svg_view_box: Option<Box<[f64; 4]>>,
     /// Text size in doc-px. 0 = use the renderer's default 13 px.
     /// Text-only.
     #[serde(default)]
@@ -184,6 +197,10 @@ pub struct NodePayload {
     /// CSS-style font weight (100-900). 0 = default 400. Text-only.
     #[serde(default)]
     pub font_weight: u16,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub font_kerning: Option<bool>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub font_features: std::collections::BTreeMap<String, u32>,
     /// Node-level `fontStyle: italic`. Text-only.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub italic: bool,
@@ -193,6 +210,8 @@ pub struct NodePayload {
     /// Node-level strikethrough decoration. Text-only.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub strikethrough: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text_decoration_skip_ink: Option<bool>,
     /// Per-segment style runs when the canonical text content is
     /// `TextContent::Styled`. Each run covers `text.len()` bytes of
     /// the flattened `text` in order; empty for plain text.
@@ -232,6 +251,17 @@ pub struct NodePayload {
     /// string).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image_src: Option<jian_ops_schema::node::ImageSrc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_thumbnail_src: Option<jian_ops_schema::node::ImageSrc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_nearest_sampling: Option<bool>,
+    /// Authored image-paint rotation in degrees (including full turns).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_rotation_degrees: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_geometry: Option<Box<jian_ops_schema::style::ImageFieldGeometry>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_paint: Option<Box<jian_ops_schema::style::ImageFillBody>>,
     /// Video playback metadata carried by an image poster. The video source
     /// is never externalized into the image table.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -368,12 +398,15 @@ pub fn load_canonical(
 pub fn load_canonical_with_compatibility(
     src: &str,
 ) -> Result<CanonicalLoad, jian_ops_schema::OpsSchemaError> {
-    if let Some(loaded) = fast_load::try_load_preserve(src) {
-        return Ok(CanonicalLoad {
-            loaded,
-            compatibility: CompatibilityReport::default(),
-        });
+    if let Some(loaded) = canonical_stream::try_load_source(src) {
+        return Ok(loaded);
     }
+    load_canonical_dom_with_compatibility(src)
+}
+
+fn load_canonical_dom_with_compatibility(
+    src: &str,
+) -> Result<CanonicalLoad, jian_ops_schema::OpsSchemaError> {
     if looks_deeply_nested(src) {
         return load_canonical_deep(src);
     }

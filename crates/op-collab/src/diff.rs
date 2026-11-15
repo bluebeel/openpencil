@@ -4,8 +4,8 @@ use jian_ops_schema::PenDocument;
 use serde_json::{Map, Value};
 
 use crate::{
-    apply::validate_document_with_limits,
-    apply_txn, apply_txn_tracked, canonical_document_hash, canonical_node_hash,
+    apply::{apply_txn_owned, validate_document_with_limits},
+    apply_txn_tracked, canonical_document_hash, canonical_node_hash,
     diff_fields::{collect_property_changes, replacement_with_changes},
     diff_index::TreeIndex,
     diff_structure::plan_structure,
@@ -93,8 +93,13 @@ pub fn diff_supported(
     } else if property_changes.is_empty() {
         return Err(DiffError::NoDocumentChange);
     } else {
-        let (planned, operations) =
-            plan_property_changes(before, &after_index, &property_changes, context)?;
+        let (planned, operations) = plan_property_changes(
+            before,
+            &before_index,
+            &after_index,
+            &property_changes,
+            context,
+        )?;
         (planned, operations, EditChanges::Property(property_changes))
     };
 
@@ -121,6 +126,7 @@ pub fn diff_supported(
 
 fn plan_property_changes(
     before: &PenDocument,
+    before_index: &TreeIndex<'_>,
     after_index: &TreeIndex<'_>,
     changes: &[NodeFieldChange],
     context: &DiffContext,
@@ -139,8 +145,10 @@ fn plan_property_changes(
         let Some(node_changes) = by_node.remove(id.as_str()) else {
             continue;
         };
-        let current_index = TreeIndex::build(&working)?;
-        let current = current_index
+        // This branch has identical topology and visits parents before their
+        // descendants. Prior header-only writes cannot change this original
+        // target's current subtree, so its original route/hash remains exact.
+        let current = before_index
             .entry(id)
             .ok_or(DiffError::StructuralPlanningMismatch)?;
         let operation = CollabOp::ReplaceExact {
@@ -151,13 +159,9 @@ fn plan_property_changes(
         };
         let mut apply_context = ApplyContext::standalone_trusted();
         apply_context.limits = context.limits;
-        working = apply_txn(
-            &working,
-            &CollabTxn::new(vec![operation.clone()]),
-            &apply_context,
-        )
-        .map_err(DiffError::Replay)?;
-        operations.push(operation);
+        let step = CollabTxn::new(vec![operation]);
+        working = apply_txn_owned(working, &step, &apply_context).map_err(DiffError::Replay)?;
+        operations.extend(step.ops);
     }
     if !by_node.is_empty() {
         return Err(DiffError::StructuralPlanningMismatch);
@@ -226,12 +230,15 @@ fn pages_without_children(document: &Map<String, Value>) -> Option<Vec<Value>> {
             .map(|pages| {
                 pages
                     .iter()
-                    .map(|page| {
-                        let mut page = page.clone();
-                        if let Some(object) = page.as_object_mut() {
-                            object.remove("children");
-                        }
-                        page
+                    .map(|page| match page {
+                        Value::Object(fields) => Value::Object(
+                            fields
+                                .iter()
+                                .filter(|(key, _)| key.as_str() != "children")
+                                .map(|(key, value)| (key.clone(), value.clone()))
+                                .collect(),
+                        ),
+                        value => value.clone(),
                     })
                     .collect()
             })

@@ -4,7 +4,7 @@
 //! Ported off shell-core's `Document` onto `op_editor_core::
 //! EditorState` (canonical `PenDocument`).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use jian_ops_schema::node::PenNode;
 use jian_scene::layout_scene::{NodeKind, SceneNode};
@@ -17,6 +17,14 @@ use super::tools::kind_label;
 use super::{McpTool, ToolErrorCode, ToolOutcome};
 
 type ToolCallError = (ToolErrorCode, String);
+#[path = "layout_json.rs"]
+mod layout_json;
+#[path = "layout_queries.rs"]
+mod layout_queries;
+pub use layout_queries::{
+    find_empty_space_snapshot_cached_for_call, find_empty_space_snapshot_for_call,
+    snapshot_layout_snapshot_cached_for_call, snapshot_layout_snapshot_for_call,
+};
 
 // --- snapshot_layout -------------------------------------------------
 
@@ -24,7 +32,8 @@ type ToolCallError = (ToolErrorCode, String);
 /// node on the active page, optionally filtered by page / parent /
 /// depth for TS CLI compatibility.
 pub struct SnapshotLayout {
-    state: EditorState,
+    state: Option<EditorState>,
+    prepared: Option<ToolOutcome>,
 }
 
 #[derive(Clone)]
@@ -58,62 +67,80 @@ impl McpTool for SnapshotLayout {
     fn name(&self) -> &str {
         "snapshot_layout"
     }
+    fn call_once(mut self: Box<Self>, args: &BTreeMap<String, String>) -> ToolOutcome {
+        match self.prepared.take() {
+            Some(outcome) => outcome,
+            None => self.call(args),
+        }
+    }
+
     fn call(&self, args: &BTreeMap<String, String>) -> ToolOutcome {
-        let (pages, active_page_id) = page_layout_snapshots(&self.state);
+        if let Some(outcome) = &self.prepared {
+            return outcome.clone();
+        }
+        let (pages, active_page_id) =
+            page_layout_snapshots(self.state.as_ref().expect("legacy snapshot"));
         let page = match page_layout(&pages, &active_page_id, args) {
             Ok(page) => page,
             Err((code, msg)) => return ToolOutcome::Err(code, msg),
         };
-        let max_depth = match arg_alias(args, &["maxDepth", "depth"]) {
-            Some(raw) => match raw.parse::<u32>() {
-                Ok(v) => v,
-                Err(_) => {
-                    return ToolOutcome::Err(
-                        ToolErrorCode::InvalidArgument,
-                        format!("maxDepth must be a u32, got {raw:?}"),
-                    );
-                }
-            },
-            None => 1,
-        };
-        let parent_id = arg_alias(args, &["parentId", "parent_id", "parent"]);
-        // TS calls `computeLayoutTree(parent.children, …)` with the default
-        // `parentX/parentY = 0`, so a `parentId` query returns coords RELATIVE
-        // to that parent (not document-absolute). Our records are page-rooted
-        // absolute, so subtract the parent's absolute origin to match.
-        let (parent_depth, parent_offset) = match parent_id {
-            Some(id) => match page.records.iter().find(|r| r.id == id) {
-                Some(parent) => (Some(parent.depth), (parent.x, parent.y)),
-                None => {
-                    // TS snapshot-layout.ts:33 throws `Node not found: ${id}`.
-                    return ToolOutcome::Err(
-                        ToolErrorCode::ToolFailed,
-                        format!("Node not found: {id}"),
-                    );
-                }
-            },
-            None => (None, (0.0, 0.0)),
-        };
-        let selected: Vec<&LayoutRecord> = page
-            .records
-            .iter()
-            .filter(|record| match (parent_id, parent_depth) {
-                (Some(parent), Some(depth)) => {
-                    record.ancestors.iter().any(|id| id == parent)
-                        && record.depth <= depth + max_depth + 1
-                }
-                _ => record.depth <= max_depth,
-            })
-            .collect();
-        // TS `snapshot_layout` returns `{ layout: LayoutEntry[] }` — a nested
-        // tree of {id,name?,type,x,y,width,height,children?} with absolute
-        // coords. Roots are the page's top-level nodes (or `parentId`'s direct
-        // children); children nest up to maxDepth. The flat `selected` set is
-        // already depth-bounded, so we just re-nest it by parent.
-        let root_key = parent_id.unwrap_or("");
-        let layout = layout_children_values(&selected, root_key, parent_offset);
-        ToolOutcome::OkJson(json!({ "layout": layout }).to_string())
+        snapshot_layout_outcome(page, args)
     }
+}
+
+fn snapshot_layout_outcome(page: &PageLayout, args: &BTreeMap<String, String>) -> ToolOutcome {
+    let max_depth = match arg_alias(args, &["maxDepth", "depth"]) {
+        Some(raw) => match raw.parse::<u32>() {
+            Ok(v) => v,
+            Err(_) => {
+                return ToolOutcome::Err(
+                    ToolErrorCode::InvalidArgument,
+                    format!("maxDepth must be a u32, got {raw:?}"),
+                );
+            }
+        },
+        None => 1,
+    };
+    let parent_id = arg_alias(args, &["parentId", "parent_id", "parent"]);
+    // TS calls `computeLayoutTree(parent.children, …)` with the default
+    // `parentX/parentY = 0`, so a `parentId` query returns coords RELATIVE
+    // to that parent (not document-absolute). Our records are page-rooted
+    // absolute, so subtract the parent's absolute origin to match.
+    let (parent_depth, parent_offset) = match parent_id {
+        Some(id) => match page.records.iter().find(|r| r.id == id) {
+            Some(parent) => (Some(parent.depth), (parent.x, parent.y)),
+            None => {
+                // TS snapshot-layout.ts:33 throws `Node not found: ${id}`.
+                return ToolOutcome::Err(
+                    ToolErrorCode::ToolFailed,
+                    format!("Node not found: {id}"),
+                );
+            }
+        },
+        None => (None, (0.0, 0.0)),
+    };
+    let selected: Vec<&LayoutRecord> = page
+        .records
+        .iter()
+        .filter(|record| match (parent_id, parent_depth) {
+            (Some(parent), Some(depth)) => {
+                record.ancestors.iter().any(|id| id == parent)
+                    && record.depth <= depth.saturating_add(max_depth).saturating_add(1)
+            }
+            _ => record.depth <= max_depth,
+        })
+        .collect();
+    // TS `snapshot_layout` returns `{ layout: LayoutEntry[] }` — a nested
+    // tree of {id,name?,type,x,y,width,height,children?} with absolute
+    // coords. Roots are the page's top-level nodes (or `parentId`'s direct
+    // children); children nest up to maxDepth. The flat `selected` set is
+    // already depth-bounded, so we just re-nest it by parent.
+    let root_key = parent_id.unwrap_or("");
+    ToolOutcome::OkJson(layout_json::serialize_layout(
+        &selected,
+        root_key,
+        parent_offset,
+    ))
 }
 
 /// Build the ordered list of `LayoutEntry` JSON objects whose immediate
@@ -127,11 +154,14 @@ fn layout_children_values(
     parent_key: &str,
     offset: (f64, f64),
 ) -> Vec<Value> {
-    selected
-        .iter()
-        .filter(|record| record.ancestors.last().map(String::as_str).unwrap_or("") == parent_key)
-        .map(|record| layout_entry_value(record, selected, offset))
-        .collect()
+    let mut by_parent: HashMap<&str, Vec<&LayoutRecord>> = HashMap::new();
+    for &record in selected {
+        by_parent
+            .entry(record.ancestors.last().map(String::as_str).unwrap_or(""))
+            .or_default()
+            .push(record);
+    }
+    layout_index_children(&by_parent, parent_key, offset)
 }
 
 /// Serialize a document coordinate the way JS `JSON.stringify` does: a
@@ -145,9 +175,22 @@ fn js_number(v: f64) -> Value {
     }
 }
 
+fn layout_index_children(
+    by_parent: &HashMap<&str, Vec<&LayoutRecord>>,
+    parent_key: &str,
+    offset: (f64, f64),
+) -> Vec<Value> {
+    by_parent
+        .get(parent_key)
+        .into_iter()
+        .flatten()
+        .map(|record| layout_entry_value(record, by_parent, offset))
+        .collect()
+}
+
 fn layout_entry_value(
     record: &LayoutRecord,
-    selected: &[&LayoutRecord],
+    by_parent: &HashMap<&str, Vec<&LayoutRecord>>,
     offset: (f64, f64),
 ) -> Value {
     let mut obj = Map::new();
@@ -162,7 +205,7 @@ fn layout_entry_value(
     obj.insert("y".into(), js_number(record.y - offset.1));
     obj.insert("width".into(), js_number(record.w));
     obj.insert("height".into(), js_number(record.h));
-    let children = layout_children_values(selected, &record.id, offset);
+    let children = layout_index_children(by_parent, &record.id, offset);
     if !children.is_empty() {
         obj.insert("children".into(), Value::Array(children));
     }
@@ -171,7 +214,8 @@ fn layout_entry_value(
 
 pub fn snapshot_layout_snapshot(state: &EditorState) -> SnapshotLayout {
     SnapshotLayout {
-        state: state.clone(),
+        state: Some(state.clone()),
+        prepared: None,
     }
 }
 
@@ -197,6 +241,7 @@ fn page_layout<'a>(
 pub struct FindEmptySpace {
     pages: Vec<PageSpace>,
     active_page_id: String,
+    prepared: Option<ToolOutcome>,
 }
 
 #[derive(Clone)]
@@ -219,7 +264,17 @@ impl McpTool for FindEmptySpace {
     fn name(&self) -> &str {
         "find_empty_space"
     }
+    fn call_once(mut self: Box<Self>, args: &BTreeMap<String, String>) -> ToolOutcome {
+        match self.prepared.take() {
+            Some(outcome) => outcome,
+            None => self.call(args),
+        }
+    }
+
     fn call(&self, args: &BTreeMap<String, String>) -> ToolOutcome {
+        if let Some(outcome) = &self.prepared {
+            return outcome.clone();
+        }
         let width = match required_i32_arg(args, "width") {
             Ok(v) => v,
             Err((code, msg)) => return ToolOutcome::Err(code, msg),
@@ -271,6 +326,7 @@ pub fn find_empty_space_snapshot(state: &EditorState) -> FindEmptySpace {
     FindEmptySpace {
         pages,
         active_page_id,
+        prepared: None,
     }
 }
 
@@ -369,6 +425,13 @@ fn page_space_snapshots(state: &EditorState) -> (Vec<PageSpace>, String) {
 /// width adopts the referenced node's dimensions (looked up in `all_nodes`),
 /// exactly as TS does.
 fn node_bounds(n: &PenNode, all_nodes: &[PenNode]) -> (f64, f64, f64, f64) {
+    node_bounds_with(n, |id| find_node(all_nodes, id))
+}
+
+fn node_bounds_with<'a>(
+    n: &PenNode,
+    lookup: impl FnOnce(&NodeId) -> Option<&'a PenNode>,
+) -> (f64, f64, f64, f64) {
     let base = n.base();
     let numeric = |px: Option<f64>| px.filter(|&v| v != 0.0);
     let mut w = numeric(n.width_px());
@@ -378,7 +441,7 @@ fn node_bounds(n: &PenNode, all_nodes: &[PenNode]) -> (f64, f64, f64, f64) {
     if w.is_none() {
         if let PenNode::Ref(r) = n {
             if let Some(target) = NodeId::new_opt(r.target.clone()) {
-                if let Some(comp) = find_node(all_nodes, &target) {
+                if let Some(comp) = lookup(&target) {
                     w = numeric(comp.width_px());
                     h = numeric(comp.height_px());
                 }
@@ -474,13 +537,49 @@ pub(crate) fn subtree_layout_value(
     Value::Array(layout_children_values(&selected, "", (0.0, 0.0)))
 }
 
+/// Borrow the unchanged page trees while looking up dimensions against the
+/// post-refine top-level root. This is exactly the former `all_after` forest,
+/// but does not clone every unrelated root or clone the refined subtree twice.
+pub(crate) fn subtree_layout_value_refined(
+    refined: &PenNode,
+    all_nodes: &[PenNode],
+    max_depth: u32,
+) -> Value {
+    let roots = std::slice::from_ref(refined);
+    if !all_nodes
+        .iter()
+        .any(|node| node.id_str() == refined.id_str())
+    {
+        return subtree_layout_value(roots, all_nodes, max_depth);
+    }
+    let records = layout_records_with(roots, |id| {
+        all_nodes.iter().find_map(|node| {
+            let node = if node.id_str() == refined.id_str() {
+                refined
+            } else {
+                node
+            };
+            find_node(std::slice::from_ref(node), id)
+        })
+    });
+    let selected: Vec<&LayoutRecord> = records.iter().filter(|r| r.depth <= max_depth).collect();
+    Value::Array(layout_children_values(&selected, "", (0.0, 0.0)))
+}
+
 /// Like [`layout_records`] but with a distinct `all_nodes` scope for ref-node
 /// dim lookup (mirrors TS `computeLayoutTree(roots, allChildren, …)`), so a
 /// subtree can be laid out against the whole page's ref targets.
 fn layout_records_in(roots: &[PenNode], all_nodes: &[PenNode]) -> Vec<LayoutRecord> {
-    fn walk(
+    layout_records_with(roots, |id| find_node(all_nodes, id))
+}
+
+fn layout_records_with<'a>(
+    roots: &[PenNode],
+    lookup: impl Fn(&NodeId) -> Option<&'a PenNode>,
+) -> Vec<LayoutRecord> {
+    fn walk<'a>(
         nodes: &[PenNode],
-        all_nodes: &[PenNode],
+        lookup: &impl Fn(&NodeId) -> Option<&'a PenNode>,
         ancestors: &[String],
         depth: u32,
         parent_x: f64,
@@ -494,7 +593,7 @@ fn layout_records_in(roots: &[PenNode], all_nodes: &[PenNode]) -> Vec<LayoutReco
             // parent's absolute position for document-absolute x/y, exactly as
             // TS `computeLayoutTree`'s `absX = parentX + bounds.x`. (kept f64:
             // TS returns raw numbers, never i32-truncated.)
-            let b = node_bounds(n, all_nodes);
+            let b = node_bounds_with(n, lookup);
             let x = parent_x + b.0;
             let y = parent_y + b.1;
             let id = n.id_str().to_string();
@@ -512,12 +611,12 @@ fn layout_records_in(roots: &[PenNode], all_nodes: &[PenNode]) -> Vec<LayoutReco
             if let Some(children) = n.children() {
                 let mut child_ancestors = ancestors.to_vec();
                 child_ancestors.push(id.clone());
-                walk(children, all_nodes, &child_ancestors, depth + 1, x, y, out);
+                walk(children, lookup, &child_ancestors, depth + 1, x, y, out);
             }
         }
     }
     let mut out = Vec::new();
-    walk(roots, all_nodes, &[], 0, 0.0, 0.0, &mut out);
+    walk(roots, &lookup, &[], 0, 0.0, 0.0, &mut out);
     out
 }
 

@@ -44,6 +44,8 @@ fn make_frame(id: &str, children: Option<Vec<PenNode>>) -> PenNode {
 
 fn make_text(id: &str, content: &str) -> PenNode {
     PenNode::Text(TextNode {
+        font_features: None,
+        font_kerning: None,
         base: PenNodeBase {
             id: id.to_string(),
             ..Default::default()
@@ -62,6 +64,7 @@ fn make_text(id: &str, content: &str) -> PenNode {
         text_growth: None,
         underline: None,
         strikethrough: None,
+        text_decoration_skip_ink: None,
         fill: None,
         effects: None,
         state: None,
@@ -308,6 +311,7 @@ fn dump_fill_color() {
         },
         container: ContainerProps {
             fill: Some(vec![PenFill::Solid(SolidFillBody {
+                enabled: None,
                 color: "#FF0000".to_string(),
                 explain: None,
                 opacity: None,
@@ -343,7 +347,7 @@ fn dump_stroke() {
             ..Default::default()
         },
         container: ContainerProps {
-            stroke: Some(PenStroke {
+            stroke: Some(PenStroke::from(jian_ops_schema::style::PenStrokeBody {
                 thickness: StrokeThickness::Uniform(2.0),
                 align: None,
                 join: None,
@@ -351,12 +355,13 @@ fn dump_stroke() {
                 dash_pattern: None,
                 dash_offset: None,
                 fill: Some(vec![PenFill::Solid(SolidFillBody {
+                    enabled: None,
                     color: "#0000FF".to_string(),
                     explain: None,
                     opacity: None,
                     blend_mode: None,
                 })]),
-            }),
+            })),
             ..Default::default()
         },
         children: None,
@@ -386,6 +391,8 @@ fn dump_text_fields() {
     use jian_ops_schema::node::{FontWeight, TextAlign, TextGrowth};
     let mut state = state_with_nodes(vec![]);
     state.doc.children = vec![PenNode::Text(TextNode {
+        font_features: None,
+        font_kerning: None,
         base: PenNodeBase {
             id: "t1".to_string(),
             ..Default::default()
@@ -394,7 +401,7 @@ fn dump_text_fields() {
         height: None,
         content: TextContent::Plain("Hello World".to_string()),
         font_family: None,
-        font_size: Some(24.0),
+        font_size: Some(24.0.into()),
         font_weight: Some(FontWeight::Number(700)),
         font_style: None,
         letter_spacing: None,
@@ -404,6 +411,7 @@ fn dump_text_fields() {
         text_growth: Some(TextGrowth::FixedWidth),
         underline: None,
         strikethrough: None,
+        text_decoration_skip_ink: None,
         fill: None,
         effects: None,
         state: None,

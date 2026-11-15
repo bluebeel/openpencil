@@ -1,0 +1,131 @@
+# Engine performance and Figma fidelity goal
+
+Status: active. The user explicitly expanded the existing “every engine
+operation” goal to include every area below. This checklist is part of the
+goal’s acceptance scope, not a statement that the features are complete.
+
+Build a fully headless, agent-driven renderer/editor whose operations remain
+fast with 10, 100 and 1,000 logical agents editing one or multiple open files.
+Prioritize correct, complete operations and low latency/CPU. As clarified by
+the user on November 14, exceeding 1 GB must not stop implementation,
+diagnostics or releases: use a 5 GB working ceiling and record memory alongside
+performance. Reducing combined service/renderer memory below 1 GB remains an
+optimization objective. External AI model/agent processes are outside that
+engine memory measurement. Preserve exact `.fig` feature and rendering
+fidelity; target SSIM 1.0 and exact RGBA identity, not rounded similarity.
+
+## Explicit operation coverage
+
+- Drawing and editing: create, move, resize, rotate, flip, duplicate, group,
+  ungroup, reparent, reorder and bulk edits.
+- Picking and interaction: hover/hit testing, overlapping/deep selection,
+  marquee/multiselection, snapping, smart guides, measurements and rulers.
+- Layout: nested auto-layout, hug/fill sizing, min/max constraints, grids,
+  constraints, alignment/distribution and incremental reflow.
+- Vector geometry: pen/path editing, boolean union/subtraction/intersection,
+  winding rules, stroke outlines, caps, joins and dashes.
+- Compositing: nested clipping, masks, blend modes, group opacity, gradients,
+  shadows, layer/background blur and color/alpha correctness.
+- Typography: editing, caret/range placement, wrapping, styled runs, lists,
+  variable fonts, OpenType features, ligatures, RTL/bidi, emoji, CJK, fallback
+  and exact font/resource readiness.
+- Components and dependencies: nested instances, overrides, variants, swaps,
+  detachment, variables/modes, styles and propagation to dependent nodes.
+- Document queries: node IDs, tree traversal, search, bounds, spatial indexes
+  and dependency lookup without repeated full-document copies or scans.
+- View/render runtime: pan/zoom, partial redraw, visibility culling, incremental
+  scene updates, GPU/raster asset work, cache reuse/eviction and bounded workers.
+- Assets and interchange: image decode/crop/tile/fit, SVG import and vector
+  serialization, PNG/JPEG/WebP/PDF export, clipboard and cross-file copy/paste.
+- Persistence: autosave, durable batch/group commits, atomic saves, crash
+  recovery, external-change detection and lazy page/asset loading.
+- Collaboration: per-agent selection/clipboard/camera/tool state, atomic
+  multi-operation transactions, cancellation, idempotent/safe retries,
+  ordering/conflict handling, per-agent undo/redo and cross-file consistency.
+
+## Required evidence
+
+1. Inventory existing support and implement missing behavior required by the
+   goal. Distinguish missing features from slow implementations.
+2. Benchmark cold/warm operations in an optimized build; record median/tail
+   latency, CPU, throughput, queue delay, RSS and physical footprint. Report
+   logical client count separately from active request concurrency.
+   The real-file matrix must include the complete OpenBridge and MUI documents
+   at 1, 10, 100 and 1,000 agents. Record logical clients and active in-flight
+   requests independently; a 32-request window does not prove 1,000 simultaneous
+   operations. Inventory every operation family above and mark implemented,
+   benchmarked, missing transport, unsupported, rejected or unmeasured cases.
+   Report CPU/RAM and correctness per operation, including cold/warm behavior;
+   synthetic workloads and selected-frame exports cannot replace this evidence.
+3. Exercise single/multiple files, large/deep documents, sustained edits,
+   resource pressure, cancellation and failure/recovery. Retain no-loss, ID,
+   transaction, clipboard and persisted-state invariants.
+4. Compare immutable native Figma references with authored bounds and exact
+   fonts/images. Track feature coverage, raw RGB/alpha errors and SSIM.
+5. Keep resource queues/caches/contexts bounded, maintain durability before
+   acknowledging writes, and avoid document-wide work for small changes.
+
+Current reports and entry points: [shared headless workloads](headless-agent-performance.md),
+[agent context semantics](agent-contexts.md),
+[shared-file benchmark](../../scripts/bench/headless-agents.py),
+[operation matrix](../../scripts/bench/operation-matrix.py), and
+[multiple-file benchmark](../../scripts/bench/multi-file-agents.py).
+
+Initial priorities: agent isolation and multi-file authority; optimized
+operation measurements; incremental layout/redraw and node indexing; durable
+batch writes; remaining cold-import memory and exact Figma pixel differences.
+
+## Iteration cadence
+
+Batch several independent fixes across parallel agents before rebuilding the
+shared optimized binaries. Check production types, then build the product once
+for the combined batch. Run focused checks and benchmarks against that pin;
+do not compile broad unit-test binaries before every product build. Record
+independent failures and continue other lanes. Complete diagnostic operations
+above 1 GB, within the 5 GB working ceiling, instead of stopping at the memory
+optimization target. Run the full reference gate once per coherent renderer
+batch. Repeat earlier checks only for changed code or unresolved failures.
+
+
+## Checkpoint 13 continuation
+
+[Checkpoint 13](engine-checkpoint-13.md) records 122 focused passes and one
+consolidated optimized product build. Full MUI 1/100/1,000 logical-client cases
+retain exact final fields and numeric bits under the strict guard, with 64 global
+mutation requests and at most 32 active. MUI 10 reveals 3 unrelated empty children
+arrays. Full OpenBridge now opens but its first edit exceeds the RSS target.
+All 12 selected reference PNGs/raw RGBA remain exactly checkpoint 12.
+
+Next priorities are an exact bounded history transaction for ordinary edits,
+the unrelated empty-child mutation, durable-write throughput and remaining
+renderer mismatches. All remaining operation/large-file/concurrency/fidelity
+acceptance requirements above remain active; no goal completion is claimed.
+
+## Checkpoint 14 continuation
+
+[Checkpoint 14](engine-checkpoint-14.md) records 207 focused passes and one
+consolidated product build. All four MUI logical-client counts retain exact final
+fields/bits; one-client service RSS falls to 154.6 MB and matched service CPU
+falls 47–56%. The matrix still caps active requests at 32 and global mutations
+at 64. Five additional hierarchy/alignment workflows pass at one client only.
+
+OpenBridge's additional service-plus-renderer control completes 20 acknowledged
+mutations within 940.4 MB RSS, but fails canonical preservation. Numeric source
+precision, unrelated repair heuristics and explicit-null presence are the next
+correctness fixes. The strict aggregate case remains a failed resource stop.
+All eight selected text-heavy reference comparisons improve; their cold render
+wall duration increases. Repeated text work and remaining exact pixel errors
+remain active, alongside every unfinished acceptance requirement above.
+
+## Checkpoint 15 continuation
+
+[Checkpoint 15](engine-checkpoint-15.md) fixes full OpenBridge saved-data
+preservation and measures all 23 implemented workflows at one client on both
+complete files. Repeated MUI export CPU falls 51% with unchanged pixels; four
+history/copy workloads also use less CPU against their checkpoint-13 baseline.
+
+OpenBridge's larger-client runs still exceed the 1 GB engine target, including
+leaf moves and bounded layout reads on large pages. Target-only edit capture,
+focused layout work and durable-write throughput are the next operation fixes.
+The 32-family catalog, global-64-write matrix and selected reference frames do
+not narrow or complete the full acceptance scope above.

@@ -133,6 +133,7 @@ pub(super) fn node_stroke_slot(node: &mut PenNode) -> Option<&mut Option<PenStro
 }
 
 pub(super) fn set_stroke_width_preserving_sides(stroke: &mut PenStroke, width: f32) {
+    let width = f64::from(width);
     stroke.thickness = match &stroke.thickness {
         StrokeThickness::Uniform(_) => StrokeThickness::Uniform(width),
         StrokeThickness::PerSide(sides) => {
@@ -147,7 +148,7 @@ pub(super) fn set_stroke_width_preserving_sides(stroke: &mut PenStroke, width: f
     };
 }
 
-fn scaled_side_width(side: Option<f32>, width: f32) -> Option<f32> {
+fn scaled_side_width(side: Option<f64>, width: f64) -> Option<f64> {
     side.map(|value| if value > 0.0 { width } else { 0.0 })
 }
 
@@ -160,7 +161,7 @@ pub(super) fn stroke_side_index(side: StrokeSide) -> usize {
     }
 }
 
-pub(super) fn stroke_side_widths(thickness: &StrokeThickness) -> [f32; 4] {
+pub(super) fn stroke_side_widths(thickness: &StrokeThickness) -> [f64; 4] {
     match thickness {
         StrokeThickness::Uniform(width) => [*width; 4],
         StrokeThickness::PerSide(sides) => *sides,
@@ -173,11 +174,11 @@ pub(super) fn stroke_side_widths(thickness: &StrokeThickness) -> [f32; 4] {
     }
 }
 
-fn stroke_side_value(width: f32) -> Option<f32> {
+fn stroke_side_value(width: f64) -> Option<f64> {
     (width > 0.0).then_some(width)
 }
 
-pub(super) fn sided_stroke_thickness(widths: [f32; 4]) -> StrokeThickness {
+pub(super) fn sided_stroke_thickness(widths: [f64; 4]) -> StrokeThickness {
     StrokeThickness::Sided(SidedThickness {
         top: stroke_side_value(widths[0]),
         right: stroke_side_value(widths[1]),
@@ -186,7 +187,7 @@ pub(super) fn sided_stroke_thickness(widths: [f32; 4]) -> StrokeThickness {
     })
 }
 
-pub(super) fn set_stroke_side_width(stroke: &mut PenStroke, side: StrokeSide, width: f32) {
+pub(super) fn set_stroke_side_width(stroke: &mut PenStroke, side: StrokeSide, width: f64) {
     let mut widths = stroke_side_widths(&stroke.thickness);
     widths[stroke_side_index(side)] = width;
     stroke.thickness = sided_stroke_thickness(widths);

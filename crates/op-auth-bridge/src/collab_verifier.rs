@@ -1,6 +1,9 @@
 //! Compact-JWS parser and typed collaboration-ticket verifier.
 
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::{
+    sync::Mutex,
+    time::{Instant, SystemTime, UNIX_EPOCH},
+};
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
@@ -24,6 +27,7 @@ const MAX_COLLAB_JWS_SIGNATURE_BYTES: usize = 64;
 pub struct CollabTicketVerifier<F> {
     config: CollabVerifierConfig,
     cache: CollabJwksCache<F>,
+    parsed_keys: Mutex<Vec<([u8; 32], VerifyingKey)>>,
 }
 
 impl<F: CollabJwksFetcher> CollabTicketVerifier<F> {
@@ -51,7 +55,11 @@ impl<F: CollabJwksFetcher> CollabTicketVerifier<F> {
                 CollabJwksCache::new(config.keyset_endpoint(), fetcher, cache_limits)?
             }
         };
-        Ok(Self { config, cache })
+        Ok(Self {
+            config,
+            cache,
+            parsed_keys: Mutex::new(Vec::new()),
+        })
     }
 
     pub fn config(&self) -> &CollabVerifierConfig {
@@ -118,16 +126,40 @@ impl<F: CollabJwksFetcher> CollabTicketVerifier<F> {
         if parsed.header.typ != COLLAB_JWS_TYPE {
             return Err(CollabVerifyError::WrongType);
         }
-        self.verify_parsed_signature(
+        self.verify_ticket_parsed(
             &parsed,
+            expected_dh_pub_x25519,
+            now_unix_seconds,
+            cache_now,
+            cancelled,
+            cancellation_enabled,
+        )
+    }
+
+    /// Reuse a discriminated compact header without skipping any signature,
+    /// claims, binding, timing, issuer or cancellation validation.
+    pub(crate) fn verify_ticket_parsed(
+        &self,
+        parsed: &ParsedCompactJws<'_>,
+        expected_dh_pub_x25519: &[u8; 32],
+        now_unix_seconds: u64,
+        cache_now: Instant,
+        cancelled: &dyn Fn() -> bool,
+        cancellation_enabled: bool,
+    ) -> Result<VerifiedCollabClaims, CollabVerifyError> {
+        self.verify_parsed_signature(
+            parsed,
             now_unix_seconds,
             cache_now,
             cancelled,
             cancellation_enabled,
         )?;
 
-        let claims_bytes =
-            decode_segment(parsed.claims_segment, "claims", MAX_COLLAB_JWS_CLAIMS_BYTES)?;
+        let claims_bytes = zeroize::Zeroizing::new(decode_segment(
+            parsed.claims_segment,
+            "claims",
+            MAX_COLLAB_JWS_CLAIMS_BYTES,
+        )?);
         let claims: UnverifiedCollabClaims = serde_json::from_slice(&claims_bytes)
             .map_err(|_| CollabVerifyError::MalformedJson { part: "claims" })?;
         let decoded_dh_pub_x25519 = decode_channel_binding(&claims.dh_pub_x25519)?;
@@ -181,13 +213,31 @@ impl<F: CollabJwksFetcher> CollabTicketVerifier<F> {
         }
         .map_err(map_jwks_error)?;
         ensure_not_cancelled(cancelled)?;
-        let verifying_key = VerifyingKey::from_bytes(&key_bytes)
-            .map_err(|_| CollabVerifyError::InvalidSignature)?;
+        let verifying_key = self.parsed_key(key_bytes)?;
         let signature = Signature::from_bytes(&parsed.signature);
         verifying_key
             .verify_strict(parsed.signing_input, &signature)
             .map_err(|_| CollabVerifyError::InvalidSignature)?;
         ensure_not_cancelled(cancelled)
+    }
+
+    fn parsed_key(&self, bytes: [u8; 32]) -> Result<VerifyingKey, CollabVerifyError> {
+        // This is a bounded representation cache, never an authority cache:
+        // every call resolves bytes through current policy/expiry/rotation first.
+        let mut keys = self
+            .parsed_keys
+            .lock()
+            .map_err(|_| CollabVerifyError::Jwks(CollabJwksError::CacheUnavailable))?;
+        if let Some((_, key)) = keys.iter().find(|(cached, _)| cached == &bytes) {
+            return Ok(key.clone());
+        }
+        let key =
+            VerifyingKey::from_bytes(&bytes).map_err(|_| CollabVerifyError::InvalidSignature)?;
+        if keys.len() >= crate::HARD_MAX_COLLAB_JWKS_KEYS {
+            keys.clear();
+        }
+        keys.push((bytes, key.clone()));
+        Ok(key)
     }
 
     /// Verify using the process wall and monotonic clocks.
@@ -297,12 +347,15 @@ pub(crate) fn parse_compact_jws(ticket: &[u8]) -> Result<ParsedCompactJws<'_>, C
     if !valid_key_id(&header.kid) {
         return Err(CollabVerifyError::InvalidKeyId);
     }
-    let signature_bytes = decode_segment(
+    validate_segment_length(
         signature_segment,
         "signature",
         MAX_COLLAB_JWS_SIGNATURE_BYTES,
     )?;
+    let signature_bytes = crate::collab_base64::decode_small(signature_segment)
+        .ok_or(CollabVerifyError::InvalidBase64 { part: "signature" })?;
     let signature = signature_bytes
+        .as_slice()
         .try_into()
         .map_err(|_| CollabVerifyError::InvalidSignature)?;
     Ok(ParsedCompactJws {
@@ -318,6 +371,24 @@ pub(crate) fn decode_segment(
     part: &'static str,
     maximum_decoded_bytes: usize,
 ) -> Result<Vec<u8>, CollabVerifyError> {
+    validate_segment_length(segment, part, maximum_decoded_bytes)?;
+    if segment.contains('=') {
+        return Err(CollabVerifyError::InvalidBase64 { part });
+    }
+    let decoded = URL_SAFE_NO_PAD
+        .decode(segment)
+        .map_err(|_| CollabVerifyError::InvalidBase64 { part })?;
+    if decoded.len() > maximum_decoded_bytes || URL_SAFE_NO_PAD.encode(&decoded) != segment {
+        return Err(CollabVerifyError::InvalidBase64 { part });
+    }
+    Ok(decoded)
+}
+
+fn validate_segment_length(
+    segment: &str,
+    part: &'static str,
+    maximum_decoded_bytes: usize,
+) -> Result<(), CollabVerifyError> {
     let full_groups = maximum_decoded_bytes
         .checked_div(3)
         .and_then(|value| value.checked_mul(4))
@@ -343,29 +414,17 @@ pub(crate) fn decode_segment(
             maximum: maximum_decoded_bytes,
         });
     }
-    if segment.contains('=') {
-        return Err(CollabVerifyError::InvalidBase64 { part });
-    }
-    let decoded = URL_SAFE_NO_PAD
-        .decode(segment)
-        .map_err(|_| CollabVerifyError::InvalidBase64 { part })?;
-    if decoded.len() > maximum_decoded_bytes || URL_SAFE_NO_PAD.encode(&decoded) != segment {
-        return Err(CollabVerifyError::InvalidBase64 { part });
-    }
-    Ok(decoded)
+    Ok(())
 }
 
 pub(crate) fn decode_channel_binding(value: &str) -> Result<[u8; 32], CollabVerifyError> {
     if value.len() > 64 || value.contains('=') {
         return Err(CollabVerifyError::InvalidChannelBinding);
     }
-    let decoded = URL_SAFE_NO_PAD
-        .decode(value)
-        .map_err(|_| CollabVerifyError::InvalidChannelBinding)?;
-    if URL_SAFE_NO_PAD.encode(&decoded) != value {
-        return Err(CollabVerifyError::InvalidChannelBinding);
-    }
+    let decoded = crate::collab_base64::decode_small(value)
+        .ok_or(CollabVerifyError::InvalidChannelBinding)?;
     let binding: [u8; 32] = decoded
+        .as_slice()
         .try_into()
         .map_err(|_| CollabVerifyError::InvalidChannelBinding)?;
     if binding.iter().all(|byte| *byte == 0) {

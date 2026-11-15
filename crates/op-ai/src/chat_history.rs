@@ -42,8 +42,14 @@ pub fn trim_chat_history(
     max_chars: usize,
 ) -> Vec<(ChatHistoryRole, String)> {
     if messages.len() <= max_messages {
-        let total: usize = messages.iter().map(|(_, c)| c.chars().count()).sum();
-        if total <= max_chars {
+        let fits = messages
+            .iter()
+            .try_fold(max_chars, |remaining, (_, content)| {
+                let count = content.chars().take(remaining.saturating_add(1)).count();
+                remaining.checked_sub(count)
+            })
+            .is_some();
+        if fits {
             return messages.to_vec();
         }
     }
@@ -66,14 +72,16 @@ pub fn trim_chat_history(
     }
 
     for (role, content) in &messages[recent_start..] {
-        let msg_chars = content.chars().count();
-        if char_count + msg_chars > max_chars {
+        let remaining = max_chars.saturating_sub(char_count);
+        let msg_chars = content.chars().take(remaining.saturating_add(1)).count();
+        if char_count > max_chars || msg_chars > remaining {
             // Truncate this message to fit (TS: only when >200 chars
             // of budget remain, else stop).
             let remaining = max_chars.saturating_sub(char_count);
             if remaining > 200 {
-                let clipped: String = content.chars().take(remaining).collect();
-                window.push((*role, format!("{clipped}\n[...truncated...]")));
+                let mut clipped: String = content.chars().take(remaining).collect();
+                clipped.push_str("\n[...truncated...]");
+                window.push((*role, clipped));
             }
             break;
         }
@@ -104,24 +112,30 @@ pub fn history_digest(history: &[(ChatHistoryRole, String)], max_chars: usize) -
         if body.is_empty() {
             continue;
         }
-        let clipped: String = if body.chars().count() > DIGEST_PER_MESSAGE_CHARS {
-            let mut c: String = body.chars().take(DIGEST_PER_MESSAGE_CHARS).collect();
-            c.push('…');
-            c
-        } else {
-            body.to_string()
+        let cut = body
+            .char_indices()
+            .nth(DIGEST_PER_MESSAGE_CHARS)
+            .map(|(index, _)| index);
+        let (body, body_chars, clipped) = match cut {
+            Some(index) => (&body[..index], DIGEST_PER_MESSAGE_CHARS + 1, true),
+            None => (body, body.chars().count(), false),
         };
-        let line = format!("\n{label}: {clipped}");
-        let line_chars = line.chars().count();
-        if used + line_chars > max_chars {
+        let line_chars = 1 + label.len() + 2 + body_chars;
+        if line_chars > max_chars.saturating_sub(used) {
             break;
         }
-        out.push_str(&line);
+        out.push('\n');
+        out.push_str(label);
+        out.push_str(": ");
+        out.push_str(body);
+        if clipped {
+            out.push('…');
+        }
         used += line_chars;
     }
     // Header-only digest means every message was empty / over budget —
     // nothing useful to prepend.
-    if out.chars().count() <= 70 && !out.contains('\n') {
+    if !out.contains('\n') {
         return String::new();
     }
     out

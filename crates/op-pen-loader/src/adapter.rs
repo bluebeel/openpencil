@@ -45,7 +45,6 @@ use shapes::*;
 
 use std::{collections::BTreeMap, rc::Rc};
 
-use jian_core::document::NodeTree;
 use jian_core::layout::{measure::MeasureBackend, LayoutEngine};
 use jian_ops_schema::{
     node::base::PenNodeBase,

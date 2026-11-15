@@ -178,8 +178,8 @@ impl McpLiveServer {
             .map_err(|e| McpLiveError::Startup(format!("read bound MCP port: {e}")))?
             .port();
         listener
-            .set_nonblocking(true)
-            .map_err(|e| McpLiveError::Startup(format!("set nonblocking: {e}")))?;
+            .set_nonblocking(false)
+            .map_err(|e| McpLiveError::Startup(format!("set blocking: {e}")))?;
         let (req_tx, req_rx) = mpsc::channel();
         let (stop_tx, stop_rx) = mpsc::channel();
         let token = make_live_token();
@@ -281,13 +281,17 @@ impl McpLiveServer {
                     // is a targeted property tweak, not a "generation").
                     let ids_before = (tool_name == "batch_design")
                         .then(|| crate::design_agent_tools::collect_active_node_ids(state));
-                    let applied = state.apply(cmd);
+                    let result = crate::mcp_serve::apply_command_with_undo_report(
+                        state,
+                        cmd,
+                        crate::mcp_serve::write_repairs::generated_tool(&tool_name),
+                    );
+                    let applied = result.applied;
                     if applied {
-                        let write_repairs = crate::mcp_serve::run_write_repairs_after_apply(state);
                         if let Some(ids_before) = ids_before {
                             self.register_mcp_generation(&ids_before, state);
                         }
-                        outcome.layout_dirty |= write_repairs;
+                        outcome.layout_dirty |= result.layout_repaired;
                     }
                     let _ = ack.send(ApplyAck { applied });
                     if applied {
@@ -351,7 +355,12 @@ impl McpLiveServer {
     }
 
     pub fn stop(&mut self) {
-        let _ = self.stop_tx.send(());
+        if self.stop_tx.send(()).is_ok() {
+            // Wake blocking accept without polling the listener while idle.
+            // A bounded connect keeps shutdown responsive under saturation.
+            let address = std::net::SocketAddr::from(([127, 0, 0, 1], self.port));
+            let _ = std::net::TcpStream::connect_timeout(&address, Duration::from_millis(100));
+        }
     }
 
     /// Tag a JUST-APPLIED `batch_design` write's genuinely new content

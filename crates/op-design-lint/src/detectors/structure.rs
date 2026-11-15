@@ -83,7 +83,7 @@ fn walk_unexpected_rotation(node: &PenNode, issues: &mut Vec<Issue>) {
 
 /// Largest "typical UI" shadow blur. Threshold is strictly-greater: a
 /// production modal-shell scrim legitimately uses `blur = 40`.
-const TYPICAL_BLUR_MAX: f32 = 40.0;
+const TYPICAL_BLUR_MAX: f64 = 40.0;
 
 /// Port of `detectExcessiveFrameEffects` (`detectors.ts:642-696`). Flags a
 /// `frame` whose `effects` array has 3+ entries, or carries a shadow with an
@@ -267,20 +267,15 @@ fn is_slender_chart_mark(node: &PenNode) -> bool {
 }
 
 fn numeric_node_prop(node: &PenNode, key: &str) -> Option<f64> {
-    serde_json::to_value(node).ok()?.get(key)?.as_f64()
+    match key {
+        "width" => crate::node_util::numeric_wire_size(node, true),
+        "height" => crate::node_util::numeric_wire_size(node, false),
+        _ => None,
+    }
 }
 
 fn node_identity_label(node: &PenNode) -> String {
-    let mut label = node_id(node).to_ascii_lowercase();
-    if let Ok(value) = serde_json::to_value(node) {
-        for key in ["role", "name"] {
-            if let Some(text) = value.get(key).and_then(Value::as_str) {
-                label.push(' ');
-                label.push_str(&text.to_ascii_lowercase());
-            }
-        }
-    }
-    label
+    crate::node_util::identity_label(node)
 }
 
 /// Port of `getBorderStroke` (`detectors.ts:27-34`). Prefers the

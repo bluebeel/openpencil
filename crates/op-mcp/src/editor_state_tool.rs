@@ -1,21 +1,13 @@
-//! Consolidated `get_editor_state` read tool — the recommended FIRST call
-//! when starting a design task. Composes from the existing per-domain
-//! snapshot helpers so no field computation is duplicated:
-//!
-//! - active page + page count (`document_info_snapshot` / `list_pages_snapshot`)
-//! - selection ids + count (`get_selection_set_snapshot`)
-//! - top-level node records (walk `active_children` via `kind_label`, mirrors `list_node_kinds`)
-//! - registered components (`list_components_snapshot`)
+//! Consolidated editor-state read, borrowing only fields present in the result.
+//! Snapshot ownership is detached before host mutation; unrelated descendants
+//! and unused domain fields are never materialized for this summary.
 
 use std::collections::BTreeMap;
 
 use op_editor_core::EditorState;
 
 use super::{McpTool, ToolOutcome};
-use crate::tools::{
-    active_children, document_info_snapshot, escape_record_field, get_selection_set_snapshot,
-    kind_label, list_components_snapshot, list_pages_snapshot,
-};
+use crate::tools::{active_children, kind_label};
 
 // --- GetEditorState --------------------------------------------------
 
@@ -57,65 +49,62 @@ impl McpTool for GetEditorState {
     }
 }
 
-/// Build a consolidated `GetEditorState` from the live `EditorState`.
-/// Composes from the sibling snapshots — does NOT recompute what they
-/// already compute.
+/// Build the exact detached summary from borrowed current fields. No global
+/// node census, per-page names or intermediate selection/catalog snapshots.
 pub fn get_editor_state_snapshot(state: &EditorState) -> GetEditorState {
-    // --- page info (via list_pages_snapshot + document_info_snapshot) ---
-    let pages_snap = list_pages_snapshot(state);
-    let doc_snap = document_info_snapshot(state);
-
-    let active_page_id = pages_snap
+    let active_page_id = state
+        .doc
         .pages
-        .get(pages_snap.active_page_index)
-        .map(|(id, _)| id.clone())
-        .unwrap_or_else(|| "0".to_string());
-
-    // --- selection (via get_selection_set_snapshot) ---
-    let sel_snap = get_selection_set_snapshot(state);
-    // Filter to real ids only (mirrors selection_snapshot's filter).
-    let real_ids: Vec<String> = sel_snap
-        .ids
-        .iter()
-        .filter(|id| {
-            // NodeId::NONE is represented as "0" in the snapshot string.
-            id.as_str() != "0" && !id.is_empty()
-        })
-        .cloned()
-        .collect();
-    let selection_ids = real_ids.join(",");
-    let selection_count = real_ids.len();
+        .as_ref()
+        .and_then(|pages| pages.get(state.ui.active_page_index))
+        .map(|page| page.id.clone())
+        .unwrap_or_else(|| "0".into());
+    let mut selection_ids = String::new();
+    let mut selection_count = 0;
+    for id in &state.selection.set {
+        let id = id.as_str();
+        if id == "0" || id.is_empty() {
+            continue;
+        }
+        if selection_count != 0 {
+            selection_ids.push(',');
+        }
+        selection_ids.push_str(id);
+        selection_count += 1;
+    }
 
     // --- top-level nodes: id|name|kind per active page direct child ---
     // Mirror how `list_node_kinds` / `batch_get` walk active_children.
     let top_level_nodes = {
-        let children = active_children(state);
-        let records: Vec<String> = children
-            .iter()
-            .map(|n| {
-                use op_editor_core::pen_node_ext::PenNodeExt;
-                let id = n.id_str().to_string();
-                let name = escape_record_field(n.base().name.as_deref().unwrap_or(""));
-                let kind = kind_label(n);
-                format!("{id}|{name}|{kind}")
-            })
-            .collect();
-        records.join(";")
+        let mut out = String::new();
+        for node in active_children(state) {
+            use op_editor_core::PenNodeExt;
+            if !out.is_empty() {
+                out.push(';');
+            }
+            out.push_str(node.id_str());
+            out.push('|');
+            crate::tools::component_reads::append_record_field(
+                &mut out,
+                node.base().name.as_deref().unwrap_or(""),
+            );
+            out.push('|');
+            out.push_str(kind_label(node));
+        }
+        out
     };
-
-    // --- components (via list_components_snapshot) ---
-    let comp_snap = list_components_snapshot(state);
-    let components = comp_snap
-        .items
-        .iter()
-        .map(|(name, id)| format!("{}|{}", escape_record_field(name), id))
-        .collect::<Vec<_>>()
-        .join(";");
+    let components = crate::tools::component_reads::catalog_records(
+        state
+            .components
+            .components
+            .iter()
+            .map(|c| (c.name.as_str(), c.id.as_str())),
+    );
 
     GetEditorState {
-        active_page_index: doc_snap.active_page_index,
+        active_page_index: state.ui.active_page_index,
         active_page_id,
-        page_count: doc_snap.page_count,
+        page_count: state.page_count(),
         selection_ids,
         selection_count,
         top_level_nodes,

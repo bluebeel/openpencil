@@ -27,6 +27,9 @@ pub(super) fn finished_run_report(
 ) -> Option<QualityReport> {
     let report = folded.filter(|report| !report.audited)?;
     let guard = state.lock().unwrap_or_else(|p| p.into_inner());
+    if guard.recovery.required() {
+        return None;
+    }
     let report = crate::run_quality::audit_run_report(report, &guard.editor, summary, brief);
     (!report.is_empty()).then_some(report)
 }

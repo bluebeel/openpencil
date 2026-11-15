@@ -1,9 +1,11 @@
 use std::collections::BTreeSet;
 
 use jian_ops_schema::node::PenNode;
+use serde::Serialize;
 use serde_json::{Map, Value};
 
 use crate::{
+    apply_tree::{child_slot, child_slot_mut},
     diff_index::{is_m1_basic_kind, node_kind, TreeIndex},
     serde_context::{inline_node, to_isolated_value},
     DiffError, FieldValue, NodeFieldChange, SupportedNodeField,
@@ -136,14 +138,18 @@ pub(crate) fn replacement_with_changes(
     current: &PenNode,
     changes: &[NodeFieldChange],
 ) -> Result<PenNode, DiffError> {
-    let mut value = node_value(current)?;
+    let mut value = metadata_value(current)?;
     let object = value
         .as_object_mut()
         .expect("typed PenNode always serializes as an object");
     for change in changes {
         set_field(object, change.field, &change.desired);
     }
-    serde_json::from_value(value).map_err(DiffError::from)
+    let mut replacement: PenNode = serde_json::from_value(value)?;
+    if let (Some(target), Some(source)) = (child_slot_mut(&mut replacement), child_slot(current)) {
+        *target = source.clone();
+    }
+    Ok(replacement)
 }
 
 pub(crate) fn apply_changes_to_node(
@@ -282,16 +288,29 @@ fn field_value(value: Option<&Value>) -> FieldValue {
     })
 }
 
-fn node_map(node: &PenNode) -> Result<Map<String, Value>, DiffError> {
-    let value = node_value(node)?;
-    Ok(value
-        .as_object()
-        .expect("typed PenNode always serializes as an object")
-        .clone())
+pub(crate) fn node_map(node: &PenNode) -> Result<Map<String, Value>, DiffError> {
+    match metadata_value(node)? {
+        Value::Object(map) => Ok(map),
+        _ => unreachable!("typed PenNode always serializes as an object"),
+    }
 }
 
-fn node_value(node: &PenNode) -> Result<Value, DiffError> {
-    let mut isolated = to_isolated_value(node)?;
+pub(crate) fn node_shell(node: &PenNode) -> Result<PenNode, DiffError> {
+    serde_json::from_value(metadata_value(node)?).map_err(DiffError::from)
+}
+
+fn metadata_value(node: &PenNode) -> Result<Value, DiffError> {
+    struct Metadata<'a>(&'a PenNode);
+    impl serde::Serialize for Metadata<'_> {
+        fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            self.0
+                .serialize(jian_ops_schema::serde_children::ReplaceChildren::new(
+                    serializer,
+                    Some(&[] as &[PenNode]),
+                ))
+        }
+    }
+    let mut isolated = to_isolated_value(&Metadata(node))?;
     inline_node(&mut isolated.value, &isolated.images);
     Ok(isolated.value)
 }

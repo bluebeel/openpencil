@@ -74,8 +74,8 @@ pub(super) fn strip_first_guid(entry: &FigValue) -> Option<FigValue> {
     }
     let mut copy = entry.clone();
     let rest: Vec<FigValue> = guids[1..].to_vec();
-    let mut path = FigValue::Object(Vec::new());
-    path.set("guids", FigValue::Array(rest));
+    let mut path = FigValue::Object(Vec::new().into());
+    path.set("guids", FigValue::Array(rest.into()));
     copy.set("guidPath", path);
     Some(copy)
 }
@@ -264,8 +264,15 @@ pub(super) fn apply_to_node(
         ) {
             if let Some(sw) = figma.get_f64("strokeWeight") {
                 if nsize.x != 0.0 && nsize.y != 0.0 {
-                    let scale = (dsize.x / nsize.x).min(dsize.y / nsize.y);
-                    if scale < 0.99 {
+                    let sx = dsize.x / nsize.x;
+                    let sy = dsize.y / nsize.y;
+                    // Changing an auto-layout box's aspect ratio resizes its
+                    // available space, not the border's painted thickness.
+                    let layout_resize =
+                        matches!(figma.get_str("stackMode"), Some("HORIZONTAL" | "VERTICAL"))
+                            && (sx - sy).abs() > 1e-6;
+                    let scale = sx.min(sy);
+                    if scale < 0.99 && !layout_resize {
                         figma.set("strokeWeight", FigValue::Float(round2(sw * scale) as f32));
                     }
                 }
@@ -329,8 +336,8 @@ pub(super) fn apply_to_node(
             let mut symbol_data = figma
                 .get("symbolData")
                 .cloned()
-                .unwrap_or(FigValue::Object(Vec::new()));
-            symbol_data.set("symbolOverrides", FigValue::Array(merged));
+                .unwrap_or(FigValue::Object(Vec::new().into()));
+            symbol_data.set("symbolOverrides", FigValue::Array(merged.into()));
             figma.set("symbolData", symbol_data);
         }
         if let Some(nested) = nested_d {
@@ -339,7 +346,7 @@ pub(super) fn apply_to_node(
                 .map(|a| a.to_vec())
                 .unwrap_or_default();
             let merged = merge_entry_lists(existing, nested, true);
-            figma.set("derivedSymbolData", FigValue::Array(merged));
+            figma.set("derivedSymbolData", FigValue::Array(merged.into()));
         }
     }
 
@@ -364,6 +371,8 @@ pub(super) fn apply_to_node(
 
 /// Mark geometry-derived nodes and their ancestors so the outer instance
 /// ratio is not applied a second time to an already-resolved branch.
+/// Only caches on derived instance entries establish resolved geometry;
+/// authored master-node caches still require ordinary instance scaling.
 pub(super) fn mark_derived_branches(
     node: &TreeNode,
     node_derived: &HashMap<String, FigValue>,
@@ -373,7 +382,15 @@ pub(super) fn mark_derived_branches(
     let mut has = key
         .as_ref()
         .and_then(|key| node_derived.get(key.as_str()))
-        .is_some_and(|derived| derived.get("size").is_some() || derived.get("transform").is_some());
+        .is_some_and(|derived| {
+            derived.get("size").is_some()
+                || derived.get("transform").is_some()
+                || ["fillGeometry", "strokeGeometry"].iter().any(|field| {
+                    derived.get_array(field).is_some_and(|paths| {
+                        paths.iter().any(|path| path.get("commandsBlob").is_some())
+                    })
+                })
+        });
     for child in &node.children {
         has |= mark_derived_branches(child, node_derived, out);
     }

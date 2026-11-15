@@ -3,7 +3,7 @@
 //! arc / donut tessellation, `clipContent` child clips and SVG-path
 //! nodes. Pure code motion — behaviour is unchanged.
 
-use super::MIN_VISIBLE_EFFECT_DEVICE_PX;
+use super::rounded_shadow::paint_round_shadow;
 use crate::layout_scene::{Effect, NodeKind, SceneNode};
 use crate::widgets::canvas_viewport_fill_layers::{
     fill_layer_fallback_color, paint_clipped_fill_layers_with, paint_clipped_shape_rich_fill_layer,
@@ -16,20 +16,26 @@ use crate::{Point2D, Rect};
 /// behind its fill. The shadow corner radius matches the node
 /// kind — `corner_radius` for Frame / Rect, min-half for an
 /// ellipse silhouette. Offset + blur scale by `zoom` so the
-/// shadow tracks the node across viewport zoom. A shadow whose
-/// blur AND offset are both sub-pixel on screen skips entirely.
+/// shadow tracks the node across viewport zoom. Spread changes the silhouette
+/// before blur. Every outer shadow participates in a full-quality paint.
 pub(super) fn paint_drop_shadows(
     cx: &mut PaintCx<'_>,
     node: &SceneNode,
     world_rect: Rect,
     zoom: f32,
-    dpi_scale: f32,
 ) {
     let radius = if node.kind == NodeKind::Ellipse {
         world_rect.size.x.min(world_rect.size.y) / 2.0
     } else {
         node.corner_radius * zoom
     };
+    let cover_radius = node.corner_radii.map_or(radius, |radii| {
+        radii.into_iter().fold(0.0_f32, f32::max) * zoom
+    });
+    let exclude = opaque_fill_covers_shadow(node)
+        && cx
+            .backend
+            .push_opaque_shadow_exclusion(world_rect, cover_radius);
     for effect in &node.effects {
         let Effect::DropShadow(s) = effect else {
             continue;
@@ -39,19 +45,53 @@ pub(super) fn paint_drop_shadows(
         if s.inner {
             continue;
         }
-        let footprint = s.blur.max(s.offset_x.abs()).max(s.offset_y.abs());
-        if footprint * zoom * dpi_scale < MIN_VISIBLE_EFFECT_DEVICE_PX {
-            continue;
-        }
-        let shadow_rect = Rect {
-            origin: Point2D::new(
-                world_rect.origin.x + s.offset_x * zoom,
-                world_rect.origin.y + s.offset_y * zoom,
-            ),
-            size: world_rect.size,
-        };
-        cx.backend
-            .fill_drop_shadow(shadow_rect, radius, s.blur * zoom, s.color);
+        let corners = scaled_non_uniform_corner_radii(node, zoom).map(|r| {
+            r.map(|v| {
+                v.max(0.0)
+                    .min(world_rect.size.x.min(world_rect.size.y) * 0.5)
+            })
+        });
+        paint_round_shadow(cx, s, world_rect, radius, corners, zoom);
+    }
+    if exclude {
+        cx.backend.restore();
+    }
+}
+
+fn opaque_fill_covers_shadow(node: &SceneNode) -> bool {
+    use crate::layout_scene::{SceneFillLayer, SceneFillType};
+    use crate::ImageBlendMode;
+    let opaque = |color: crate::Color| {
+        color.a == 1.0 && [color.r, color.g, color.b].into_iter().all(f32::is_finite)
+    };
+    if !matches!(node.kind, NodeKind::Frame | NodeKind::Rect)
+        || node.opacity != 1.0
+        || node.blend_mode != ImageBlendMode::Normal
+        || node
+            .effects
+            .iter()
+            .any(|e| !matches!(e, Effect::DropShadow(_)))
+        || !node
+            .effects
+            .iter()
+            .any(|e| matches!(e, Effect::DropShadow(s) if !s.inner))
+    {
+        return false;
+    }
+    if node.fill_layers.is_empty() {
+        node.fill_type == SceneFillType::Solid
+            && node.image_src.is_none()
+            && node.gradient.is_none()
+            && node.shader.is_none()
+            && node.fill.is_some_and(opaque)
+    } else {
+        node.fill_layers
+            .iter()
+            .all(|layer| layer.blend_mode() == ImageBlendMode::Normal)
+            && node.fill_layers.iter().any(|layer| {
+                matches!(layer,
+                SceneFillLayer::Solid { color, .. } if opaque(*color))
+            })
     }
 }
 
@@ -138,10 +178,12 @@ pub(super) fn paint_ellipse(cx: &mut PaintCx<'_>, node: &SceneNode, world_rect: 
                 cx.backend.fill_oval(world_rect, fill);
             }
         }
-        if let Some(stroke) = node.stroke {
-            let w = stroke.width * zoom;
-            let (rect, _) = align_stroke_rect(world_rect, 0.0, w, stroke.align);
-            cx.backend.stroke_oval(rect, stroke.color, w);
+        if !crate::widgets::canvas_viewport_stroke_paint::paint(cx, node, world_rect, zoom) {
+            if let Some(stroke) = node.stroke {
+                let w = stroke.width * zoom;
+                let (rect, _) = align_stroke_rect(world_rect, 0.0, w, stroke.align);
+                cx.backend.stroke_oval(rect, stroke.color, w);
+            }
         }
         return;
     }
@@ -150,6 +192,9 @@ pub(super) fn paint_ellipse(cx: &mut PaintCx<'_>, node: &SceneNode, world_rect: 
         if let Some(fill) = node.fill {
             cx.backend.fill_polygon(poly, fill);
         }
+    }
+    if crate::widgets::canvas_viewport_stroke_paint::paint(cx, node, world_rect, zoom) {
+        return;
     }
     if let Some(stroke) = node.stroke {
         let w = stroke.width * zoom;
@@ -219,6 +264,7 @@ pub(crate) fn paint_svg_path_node(
     zoom: f32,
     d: &str,
 ) {
+    let _coordinates = crate::svg_path_coordinates::Scope::new(node.svg_view_box.as_deref());
     let layered = paint_svg_path_fill_layers(cx, node, world_rect, zoom, d);
     if !layered {
         // Gradient-filled paths paint through the dedicated gradient method
@@ -245,16 +291,22 @@ pub(crate) fn paint_svg_path_node(
             continue;
         };
         if s.inner {
+            let offset = cx
+                .backend
+                .shadow_offset_in_local_space(Point2D::new(s.offset_x * zoom, s.offset_y * zoom));
             cx.backend.fill_inner_shadow_svg_path_with_fill_rule(
                 d,
                 world_rect,
-                s.offset_x * zoom,
-                s.offset_y * zoom,
+                offset.x,
+                offset.y,
                 s.blur * zoom,
                 s.color,
                 node.even_odd_fill,
             );
         }
+    }
+    if crate::widgets::canvas_viewport_stroke_paint::paint(cx, node, world_rect, zoom) {
+        return;
     }
     if let Some(stroke) = node.stroke {
         cx.backend

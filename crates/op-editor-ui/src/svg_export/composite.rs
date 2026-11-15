@@ -3,7 +3,7 @@
 //! Their scene kinds are degraded rectangles/text for layout. Serializing
 //! those kinds directly leaks select values and turns icon glyphs into boxes.
 
-use super::{color_to_rgb, normalize_rect, stroke_attrs, svg_id, xml_escape};
+use super::{color_to_rgb, node_id, normalize_rect, stroke_attrs, svg_id, xml_escape};
 use crate::layout_scene::{NodeKind, SceneNode};
 use crate::{Color, Point2D, Rect, RenderBackend, TextLayout};
 use std::fmt::Write as _;
@@ -32,7 +32,13 @@ pub(super) fn emit_visual(out: &mut String, node: &SceneNode) -> bool {
     if !is_icon && !has_widget_visual(node) {
         return false;
     }
+    if is_icon && node.fill_disabled {
+        return true;
+    }
     let mut backend = VisualBackend::new(&node.id);
+    backend.rich_stroke = node.stroke_paint.clone();
+    backend.stroke = node.stroke;
+    backend.opacity = node.opacity;
     let painted = if is_icon {
         crate::widgets::icons::paint_icon_font_node(
             &mut backend,
@@ -57,7 +63,7 @@ pub(super) fn emit_visual(out: &mut String, node: &SceneNode) -> bool {
         let _ = write!(
             out,
             r#"<g id="{}">{}</g>"#,
-            xml_escape(&node.id),
+            xml_escape(&node_id(&node.id)),
             backend.markup
         );
     }
@@ -70,6 +76,10 @@ struct VisualBackend {
     clip_index: usize,
     groups: usize,
     saved: Vec<usize>,
+    rich_stroke: Option<std::sync::Arc<jian_scene::SceneStrokePaint>>,
+    stroke: Option<crate::layout_scene::SceneStroke>,
+    opacity: f32,
+    stroke_index: usize,
 }
 
 impl VisualBackend {
@@ -80,6 +90,10 @@ impl VisualBackend {
             clip_index: 0,
             groups: 0,
             saved: Vec::new(),
+            rich_stroke: None,
+            stroke: None,
+            opacity: 1.0,
+            stroke_index: 0,
         }
     }
 
@@ -134,6 +148,20 @@ impl RenderBackend for VisualBackend {
         self.rect(r, radius, &fill(color));
     }
     fn stroke_round_rect(&mut self, r: Rect, radius: f32, color: Color, width: f32) {
+        if let (Some(paint), Some(stroke)) = (&self.rich_stroke, self.stroke) {
+            let mut node = SceneNode::leaf("", NodeKind::Rect);
+            node.bounds = r;
+            node.corner_radius = radius;
+            node.stroke = Some(crate::layout_scene::SceneStroke { width, ..stroke });
+            node.stroke_paint = Some(paint.clone());
+            node.opacity = self.opacity;
+            let key = format!("widget-{}-{}", self.id, self.stroke_index);
+            self.stroke_index += 1;
+            super::stroke_paint::emit_defs_with_key(&mut self.markup, &node, &key);
+            super::stroke_paint::emit_with_key(&mut self.markup, &node, &key);
+            return;
+        }
+
         self.rect(
             r,
             radius,

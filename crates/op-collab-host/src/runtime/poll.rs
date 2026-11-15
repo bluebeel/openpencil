@@ -76,7 +76,7 @@ impl CollabRuntime {
             drop(bridge_reservation);
         }
         let now = self.now_ms();
-        if host.editor_state_mut().editor_ui.collab.flush_presence(now) {
+        if host.collaboration_ui_mut().flush_presence(now) {
             host.mark_editor_state_dirty();
             changed = true;
         }

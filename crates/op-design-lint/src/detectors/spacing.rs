@@ -183,15 +183,11 @@ fn is_full_bleed_media(child: &PenNode, root_width: f64, look_into_stack: bool) 
                 "hero" | "banner" | "cover" | "media" | "image-placeholder"
             );
             let image_like = matches!(node_kind(child), NodeKind::Image)
-                || serde_json::to_value(child)
-                    .ok()
-                    .and_then(|value| value.get("fill").cloned())
-                    .and_then(|fill| fill.as_array().cloned())
-                    .is_some_and(|fills| {
-                        fills
-                            .iter()
-                            .any(|fill| fill.get("type").and_then(Value::as_str) == Some("image"))
-                    });
+                || node_fills(child).is_some_and(|fills| {
+                    fills
+                        .iter()
+                        .any(|fill| matches!(fill, jian_ops_schema::style::PenFill::Image(_)))
+                });
             let coloured_media = is_coloured_media(child);
             (role_is_media || image_like || coloured_media) && node_spans_width(child, root_width)
         }
@@ -207,18 +203,15 @@ fn layout_is_none(node: &PenNode) -> bool {
 
 fn is_coloured_media(node: &PenNode) -> bool {
     matches!(node_kind(node), NodeKind::Frame | NodeKind::Rectangle)
-        && serde_json::to_value(node).ok().is_some_and(|value| {
-            value
-                .get("fill")
-                .and_then(Value::as_array)
-                .is_some_and(|fills| {
-                    fills.iter().any(|fill| {
-                        matches!(
-                            fill.get("type").and_then(Value::as_str),
-                            Some("solid" | "linear_gradient" | "radial_gradient")
-                        )
-                    })
-                })
+        && node_fills(node).is_some_and(|fills| {
+            fills.iter().any(|fill| {
+                matches!(
+                    fill,
+                    jian_ops_schema::style::PenFill::Solid(_)
+                        | jian_ops_schema::style::PenFill::LinearGradient(_)
+                        | jian_ops_schema::style::PenFill::RadialGradient(_)
+                )
+            })
         })
         && !children(node)
             .iter()
@@ -293,17 +286,19 @@ fn is_transparent_container(node: &PenNode) -> bool {
     {
         return false;
     }
-    serde_json::to_value(node).ok().is_some_and(|value| {
-        let has_effects = value
-            .get("effects")
-            .and_then(Value::as_array)
-            .is_some_and(|effects| !effects.is_empty());
-        let has_radius = value
-            .get("cornerRadius")
-            .and_then(Value::as_f64)
-            .is_some_and(|radius| radius > 0.0);
-        !has_effects && !has_radius
-    })
+    let container = match node {
+        PenNode::Frame(node) => &node.container,
+        PenNode::Group(node) => &node.container,
+        PenNode::Rectangle(node) => &node.container,
+        _ => return false,
+    };
+    let has_effects = container
+        .effects
+        .as_ref()
+        .is_some_and(|effects| !effects.is_empty());
+    let has_radius = matches!(container.corner_radius.as_ref(),
+        Some(jian_ops_schema::node::CornerRadius::Uniform(radius)) if radius.is_finite() && *radius > 0.0);
+    !has_effects && !has_radius
 }
 
 fn infer_mobile_section_rail(kids: &[PenNode], root_width: f64) -> f64 {

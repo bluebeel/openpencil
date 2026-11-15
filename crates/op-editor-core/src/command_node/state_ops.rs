@@ -10,12 +10,11 @@
 
 use super::builders::{build_leaf_node, kind_is_valid};
 use super::tree_ops::{
-    apply_copy_overrides, insert_into_parent_or_root, remap_subtree_ids_mapping_with_allocator,
-    remap_subtree_ids_with_allocator, replace_node_in_children,
+    apply_copy_overrides, insert_into_parent_or_root, remap_subtree_ids_with_allocator,
 };
 use crate::command::BatchInsertItem;
 use crate::fills::set_primary_fill_hex;
-use crate::id_allocator::{IdAllocError, IdAllocator, SequentialIdAllocator};
+use crate::id_allocator::{IdAllocError, IdAllocator};
 use crate::node_id::NodeId;
 use crate::pen_node_ext::PenNodeExt;
 use crate::state::EditorState;
@@ -24,12 +23,12 @@ use jian_ops_schema::node::PenNode;
 use std::collections::HashSet;
 
 impl EditorState {
-    /// Compute the numeric seed for the next editor-minted `n{N}` id —
-    /// `max_node_id() + 1`. `None` on `u64` exhaustion. Pub so the
+    /// Seed the next editor-minted `n{N}` above live IDs and the runtime
+    /// allocation floor retained across undo. None on exhaustion. Pub so the
     /// `batch_design` MCP tool can predict (off a doc snapshot) the ids the
     /// host will allocate at apply, mirroring `cmd_insert_subtree`'s seed.
     pub fn next_node_id_seed(&self) -> Option<u64> {
-        self.max_node_id().checked_add(1).map(|n| n.max(1))
+        self.standalone_next_id_seed().ok()
     }
 
     /// `InsertNode` — build + append a fresh leaf on the active page.
@@ -57,13 +56,11 @@ impl EditorState {
                 return Ok(false);
             }
         }
-        if target_parent.is_real() {
-            match walkers::find_node(self.active_children(), target_parent) {
-                Some(parent) if parent.is_container() => {}
-                _ => return Ok(false),
-            }
-        }
-        let mut taken = self.collect_node_ids();
+        let scope = self.command_lookup_active_scope();
+        let Some(destination) = super::insertion::path(self, &scope, target_parent) else {
+            return Ok(false);
+        };
+        let mut taken = allocator.document_collision_ids(&self.doc);
         let new_id = allocator.allocate(&mut taken)?;
         let Some(mut node) = build_leaf_node(kind, new_id.as_str(), name, x, y, width, height)
         else {
@@ -72,19 +69,7 @@ impl EditorState {
         if let Some(hex) = fill_hex {
             set_primary_fill_hex(&mut node, hex);
         }
-        if target_parent.is_real() {
-            let root = self.active_children_mut();
-            let Some(parent) = walkers::find_node_mut(root, target_parent) else {
-                return Ok(false);
-            };
-            let Some(children) = parent.children_mut() else {
-                return Ok(false);
-            };
-            children.push(node);
-        } else {
-            self.active_children_mut().push(node);
-        }
-        Ok(true)
+        Ok(self.command_append_at(&scope, &destination, node).is_ok())
     }
 
     /// `UpdateNode` — patch optional fields on an existing node.
@@ -103,45 +88,11 @@ impl EditorState {
         if !node_id.is_real() {
             return false;
         }
-        // Pre-validate EVERY field before the mutable borrow + writes.
-        if let Some(w) = width {
-            if w < 0 {
-                return false;
-            }
-        }
-        if let Some(h) = height {
-            if h < 0 {
-                return false;
-            }
-        }
-        if let Some(hex) = fill_hex {
-            if crate::color_picker::parse_hex_rgb(hex).is_none() {
-                return false;
-            }
-        }
-        let Some(node) = walkers::find_node_mut(self.active_children_mut(), node_id) else {
+        let scope = self.command_lookup_active_scope();
+        let Some(node) = self.command_find_node_mut(&scope, node_id) else {
             return false;
         };
-        // All validation passed — every field applies atomically.
-        if let Some(nx) = x {
-            node.base_mut().x = Some(nx as f64);
-        }
-        if let Some(ny) = y {
-            node.base_mut().y = Some(ny as f64);
-        }
-        if let Some(nw) = width {
-            node.set_width_px(nw as f64);
-        }
-        if let Some(nh) = height {
-            node.set_height_px(nh as f64);
-        }
-        if let Some(new_name) = name {
-            node.base_mut().name = Some(new_name.clone());
-        }
-        if let Some(hex) = fill_hex {
-            set_primary_fill_hex(node, hex);
-        }
-        true
+        super::borrowed_geometry::update_node(node, node_id, x, y, width, height, name, fill_hex)
     }
 
     /// `PatchNodeData` — TS-style shallow merge on a canonical PenNode.
@@ -149,37 +100,69 @@ impl EditorState {
         if !node_id.is_real() {
             return false;
         }
-        let Ok(serde_json::Value::Object(patch)) =
+        let Ok(serde_json::Value::Object(mut patch)) =
             serde_json::from_str::<serde_json::Value>(patch_json)
         else {
             return false;
         };
-        let Some(current) = walkers::find_node(self.active_children(), node_id) else {
-            return false;
-        };
-        let Ok(mut value) = serde_json::to_value(current) else {
-            return false;
-        };
-        let Some(obj) = value.as_object_mut() else {
-            return false;
-        };
-        for (key, value) in patch {
-            obj.insert(key, value);
+        // Explicit authored layout owns ordinary child flow even when their
+        // old coordinates were saved. Persist that local override in the
+        // same canonical node so existing undo/redo and save/reopen retain it.
+        if !patch.contains_key("preserveGeometry")
+            && ["layout", "gap", "padding", "justifyContent", "alignItems"]
+                .iter()
+                .any(|key| patch.contains_key(*key))
+        {
+            patch.insert("preserveGeometry".into(), serde_json::Value::Bool(false));
         }
-        let Ok(replacement) = serde_json::from_value::<PenNode>(value) else {
+        let scope = self.command_lookup_active_scope();
+        if !patch.contains_key("children") && !patch.contains_key("type") {
+            let Some(current) = self.command_find_node_mut(&scope, node_id) else {
+                return false;
+            };
+            return super::borrowed_geometry::patch_header(current, &patch);
+        }
+        let Some(current) = self.command_find_node(&scope, node_id) else {
+            return false;
+        };
+        let merge = |value: &mut serde_json::Value, root: bool| {
+            if root {
+                if let Some(object) = value.as_object_mut() {
+                    for (key, value) in &patch {
+                        object.insert(key.clone(), value.clone());
+                    }
+                }
+            }
+        };
+        let result = if patch.contains_key("children") {
+            serde_json::to_value(current).and_then(|mut value| {
+                merge(&mut value, true);
+                serde_json::from_value::<PenNode>(value)
+            })
+        } else {
+            crate::map_subtree_json(current, merge)
+        };
+        let Ok(replacement) = result else {
             return false;
         };
         if replacement.id_str().is_empty() {
             return false;
         }
-        let mut slot = Some(replacement);
-        replace_node_in_children(self.active_children_mut(), node_id, &mut slot)
+        self.command_replace_node(&scope, node_id, replacement)
     }
 
     /// `DeleteNode` — remove a node + descendants from the active page.
     pub(crate) fn cmd_delete_node(&mut self, node_id: &NodeId) -> bool {
         if !node_id.is_real() {
             return false;
+        }
+        let scope = self.command_lookup_active_scope();
+        if let Some(path) = self.command_lookup_path(
+            &scope,
+            node_id,
+            crate::command_id_scope::sequence::LookupOrder::SiblingFirst,
+        ) {
+            return path.is_some_and(|path| self.command_remove_at(&scope, &path).is_some());
         }
         walkers::remove_from_children(self.active_children_mut(), node_id)
     }
@@ -193,6 +176,11 @@ impl EditorState {
         target_parent: &NodeId,
         index: Option<usize>,
     ) -> bool {
+        if let Some(result) =
+            crate::structural_moves::move_to(self, node_id, target_parent, index, false)
+        {
+            return result;
+        }
         if !node_id.is_real() || target_parent == node_id {
             return false;
         }
@@ -239,14 +227,26 @@ impl EditorState {
         if !node_id.is_real() {
             return Ok(false);
         }
-        // Validate source + target up front.
-        {
-            let children = self.active_children();
-            if walkers::find_node(children, node_id).is_none() {
+        let scope = self.command_lookup_active_scope();
+        let destination = target_parent
+            .is_real()
+            .then(|| {
+                self.command_lookup_path(
+                    &scope,
+                    target_parent,
+                    crate::command_id_scope::sequence::LookupOrder::SiblingFirst,
+                )
+            })
+            .flatten()
+            .flatten();
+        // Validate and retain the borrowed source until clone preparation is
+        // complete, avoiding a second whole-page search for the same node.
+        let mut clone = {
+            let Some(src) = self.command_find_node(&scope, node_id) else {
                 return Ok(false);
-            }
+            };
             if target_parent.is_real() {
-                let Some(target) = walkers::find_node(children, target_parent) else {
+                let Some(target) = self.command_find_node(&scope, target_parent) else {
                     return Ok(false);
                 };
                 // Same rule as MoveNode: childless container, still a container.
@@ -254,16 +254,17 @@ impl EditorState {
                     return Ok(false);
                 }
             }
-        }
-        let mut taken = self.collect_node_ids();
-        // Clone the owned subtree before re-borrowing the tree mutably.
-        let mut clone = {
-            let children = self.active_children();
-            let src = walkers::find_node(children, node_id).expect("validated");
+            let mut taken = allocator.document_collision_ids(&self.doc);
             walkers::deep_clone_with_allocator(src, allocator, &mut taken)?
         };
         if !apply_copy_overrides(&mut clone, overrides_json) {
             return Ok(false);
+        }
+        if let Some(path) = destination {
+            clone = match self.command_append_at(&scope, &path, clone) {
+                Ok(()) => return Ok(true),
+                Err(node) => node,
+            };
         }
         let children = self.active_children_mut();
         Ok(insert_into_parent_or_root(children, target_parent, clone, None).is_ok())
@@ -295,11 +296,11 @@ impl EditorState {
                 return Ok(false);
             }
         }
+        let scope = self.command_lookup_active_scope();
         // Resolve target + check the destructive-swap guard BEFORE
         // minting an id. A target WITH children needs explicit consent.
         {
-            let children = self.active_children();
-            let Some(target) = walkers::find_node(children, node_id) else {
+            let Some(target) = self.command_find_node(&scope, node_id) else {
                 return Ok(false);
             };
             let has_children = target.children().map(|c| !c.is_empty()).unwrap_or(false);
@@ -307,7 +308,7 @@ impl EditorState {
                 return Ok(false);
             }
         }
-        let mut taken = self.collect_node_ids();
+        let mut taken = allocator.document_collision_ids(&self.doc);
         let new_id = allocator.allocate(&mut taken)?;
         let Some(mut replacement) =
             build_leaf_node(kind, new_id.as_str(), name, x, y, width, height)
@@ -317,12 +318,7 @@ impl EditorState {
         if let Some(hex) = fill_hex {
             set_primary_fill_hex(&mut replacement, hex);
         }
-        let mut slot = Some(replacement);
-        Ok(replace_node_in_children(
-            self.active_children_mut(),
-            node_id,
-            &mut slot,
-        ))
+        Ok(self.command_replace_node(&scope, node_id, replacement))
     }
 
     /// `ReplaceSubtree` — swap an existing node for a fully-authored
@@ -339,9 +335,9 @@ impl EditorState {
         if !node_id.is_real() {
             return Ok(false);
         }
+        let scope = self.command_lookup_active_scope();
         {
-            let children = self.active_children();
-            let Some(target) = walkers::find_node(children, node_id) else {
+            let Some(target) = self.command_find_node(&scope, node_id) else {
                 return Ok(false);
             };
             let has_children = target.children().map(|c| !c.is_empty()).unwrap_or(false);
@@ -349,15 +345,13 @@ impl EditorState {
                 return Ok(false);
             }
         }
-        let mut taken = self.collect_node_ids();
+        let mut taken = allocator.document_collision_ids(&self.doc);
         let mut nodes = vec![node];
         remap_subtree_ids_with_allocator(&mut nodes, allocator, &mut taken)?;
-        let mut slot = nodes.pop();
-        Ok(replace_node_in_children(
-            self.active_children_mut(),
-            node_id,
-            &mut slot,
-        ))
+        let Some(replacement) = nodes.pop() else {
+            return Ok(false);
+        };
+        Ok(self.command_replace_node(&scope, node_id, replacement))
     }
 
     /// `BatchInsert` — insert N leaf nodes on the active page in one
@@ -383,7 +377,7 @@ impl EditorState {
             }
         }
         // Allocate every fresh id up front; bail on id-space exhaustion.
-        let mut live: HashSet<NodeId> = self.collect_node_ids();
+        let mut live: HashSet<NodeId> = allocator.document_collision_ids(&self.doc);
         let mut ids: Vec<NodeId> = Vec::with_capacity(items.len());
         for _ in 0..items.len() {
             ids.push(allocator.allocate(&mut live)?);
@@ -432,14 +426,12 @@ impl EditorState {
             return Ok(false);
         }
         // Validate the parent up front (when not the page root).
-        if parent_id.is_real() {
-            match walkers::find_node(self.active_children(), parent_id) {
-                Some(p) if p.is_container() => {}
-                _ => return Ok(false), // missing or non-container
-            }
-        }
+        let scope = self.command_lookup_active_scope();
+        let Some(destination) = super::insertion::path(self, &scope, parent_id) else {
+            return Ok(false);
+        };
         // Allocate fresh ids for the whole incoming forest.
-        let mut taken: HashSet<NodeId> = self.collect_node_ids();
+        let mut taken: HashSet<NodeId> = allocator.document_collision_ids(&self.doc);
         let mut nodes = nodes;
         let replacement = crate::command_root_replace::prepare_root_frame_replacement(
             self.active_children(),
@@ -447,26 +439,19 @@ impl EditorState {
             parent_id,
         );
         remap_subtree_ids_with_allocator(&mut nodes, allocator, &mut taken)?;
-        // All validation + allocation passed — now mutate.
-        if parent_id.is_real() {
-            let root = self.active_children_mut();
-            let Some(parent) = walkers::find_node_mut(root, parent_id) else {
-                return Ok(false);
-            };
-            let Some(slot) = parent.children_mut() else {
-                return Ok(false);
-            };
-            slot.extend(nodes);
-        } else {
-            let roots = self.active_children_mut();
+        // All validation + allocation passed — now mutate. A page-root
+        // placeholder is removed before recording the real final append slot.
+        if !parent_id.is_real() {
             if let Some(replacement) = replacement.as_ref() {
-                if !crate::command_root_replace::remove_root_frame_replacement(roots, replacement) {
+                if !crate::command_root_replace::remove_root_frame_replacement(
+                    self.active_children_mut(),
+                    replacement,
+                ) {
                     return Ok(false);
                 }
             }
-            roots.extend(nodes);
         }
-        Ok(true)
+        Ok(self.command_extend_at(&scope, &destination, nodes).is_ok())
     }
 
     /// Same mutation as [`cmd_insert_subtree`] but returns the
@@ -480,14 +465,14 @@ impl EditorState {
         nodes: Vec<PenNode>,
         parent_id: &NodeId,
     ) -> Option<Vec<String>> {
-        let mut allocator = SequentialIdAllocator::for_document(&self.doc, 1).ok()?;
+        let mut allocator = self.sequential_id_allocator(1).ok()?;
         self.insert_subtree_returning_root_ids_with_allocator(nodes, parent_id, &mut allocator)
             .ok()
             .flatten()
     }
 
     /// Allocator-aware form of [`Self::insert_subtree_returning_root_ids`].
-    pub fn insert_subtree_returning_root_ids_with_allocator(
+    pub(crate) fn insert_subtree_returning_root_ids_with_allocator_unobserved(
         &mut self,
         nodes: Vec<PenNode>,
         parent_id: &NodeId,
@@ -511,10 +496,14 @@ impl EditorState {
         nodes: Vec<PenNode>,
         parent_id: &NodeId,
     ) -> Option<Vec<String>> {
-        let mut allocator = SequentialIdAllocator::for_document(&self.doc, 1).ok()?;
-        self.insert_subtree_roots(nodes, parent_id, &mut allocator, false)
-            .ok()
-            .flatten()
+        let mut allocator = self.sequential_id_allocator(1).ok()?;
+        self.observe_runtime_allocations(
+            &mut allocator,
+            |state, observed| state.insert_subtree_roots(nodes, parent_id, observed, false),
+            |result| result.is_some(),
+        )
+        .ok()
+        .flatten()
     }
 
     fn insert_subtree_roots(
@@ -527,14 +516,11 @@ impl EditorState {
         if nodes.is_empty() {
             return Ok(None);
         }
-        // Validate the parent up front (when not the page root).
-        if parent_id.is_real() {
-            match walkers::find_node(self.active_children(), parent_id) {
-                Some(p) if p.is_container() => {}
-                _ => return Ok(None),
-            }
-        }
-        let mut taken: HashSet<NodeId> = self.collect_node_ids();
+        let scope = self.command_lookup_active_scope();
+        let Some(destination) = super::insertion::path(self, &scope, parent_id) else {
+            return Ok(None);
+        };
+        let mut taken: HashSet<NodeId> = allocator.document_collision_ids(&self.doc);
         let mut nodes = nodes;
         let replacement = replace_empty_root
             .then(|| {
@@ -545,32 +531,22 @@ impl EditorState {
                 )
             })
             .flatten();
-        // remap_subtree_ids_mapping mutates every node id IN PLACE (DFS order).
-        // Reading root ids from the mapping by index is incorrect: for a
-        // forest where root0 has children, mapping[0..root_count] would yield
-        // [root0, child0a, ...] instead of [root0, root1, ...]. Instead, read
-        // the root ids directly from the top-level nodes after remap — they
-        // are already updated in place and ordering is exact.
-        remap_subtree_ids_mapping_with_allocator(&mut nodes, allocator, &mut taken)?;
+        // No all-descendant old/new map is needed: only actual remapped
+        // top-level root IDs are returned, in their real canonical order.
+        remap_subtree_ids_with_allocator(&mut nodes, allocator, &mut taken)?;
         let root_ids: Vec<String> = nodes.iter().map(|n| n.id_str().to_string()).collect();
-        // All validation + allocation passed — now mutate.
-        if parent_id.is_real() {
-            let root = self.active_children_mut();
-            let Some(parent) = walkers::find_node_mut(root, parent_id) else {
-                return Ok(None);
-            };
-            let Some(slot) = parent.children_mut() else {
-                return Ok(None);
-            };
-            slot.extend(nodes);
-        } else {
-            let roots = self.active_children_mut();
+        if !parent_id.is_real() {
             if let Some(replacement) = replacement.as_ref() {
-                if !crate::command_root_replace::remove_root_frame_replacement(roots, replacement) {
+                if !crate::command_root_replace::remove_root_frame_replacement(
+                    self.active_children_mut(),
+                    replacement,
+                ) {
                     return Ok(None);
                 }
             }
-            roots.extend(nodes);
+        }
+        if self.command_extend_at(&scope, &destination, nodes).is_err() {
+            return Ok(None);
         }
         Ok(Some(root_ids))
     }

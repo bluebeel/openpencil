@@ -33,6 +33,23 @@ impl std::error::Error for IdAllocError {}
 
 /// A document id source that reserves fresh ids in the caller's live set.
 pub trait IdAllocator {
+    /// Supply the collision domain used by leaf insertion. The default keeps
+    /// every live node/page id. An allocator may omit existing ids only when
+    /// it guarantees that every emitted candidate is already above that exact
+    /// document's complete high-water and no intervening edit can introduce ids.
+    fn document_collision_ids(&self, document: &PenDocument) -> HashSet<NodeId> {
+        collect_document_ids(document)
+    }
+
+    /// Conservative numeric floor for authored-id validation. A scoped adapter
+    /// may reuse this proof only while it exclusively controls document edits.
+    fn authored_id_floor(&mut self, document: &PenDocument) -> Option<u64> {
+        next_sequential_counter(document).ok()
+    }
+
+    /// Account for a successfully inserted authored subtree's numeric ids.
+    fn authored_ids_inserted(&mut self, _largest_numeric: Option<u64>) {}
+
     /// Allocate and reserve one id.
     ///
     /// Existing candidates are skipped. No fallback id is produced when the
@@ -182,39 +199,63 @@ fn allocate_with(
 /// Page ids and nodes share one collision domain. The walk is iterative so a
 /// validated but deeply nested imported tree does not consume the call stack.
 pub fn collect_document_ids(doc: &PenDocument) -> HashSet<NodeId> {
-    let mut ids = HashSet::new();
-    let mut stack: Vec<_> = doc.children.iter().collect();
-    if let Some(pages) = doc.pages.as_ref() {
-        for page in pages {
-            if let Some(id) = NodeId::new_opt(page.id.as_str()) {
-                ids.insert(id);
-            }
-            stack.extend(page.children.iter());
+    // Canvas and generated-document workloads often have many roots. Reserve
+    // their known count without a separate tree walk; nested content can grow
+    // this normally. Avoid rehashing the same wide forest on every edit.
+    let root_count = doc
+        .children
+        .len()
+        .saturating_add(doc.pages.as_ref().map_or(0, |pages| {
+            pages.iter().fold(pages.len(), |count, page| {
+                count.saturating_add(page.children.len())
+            })
+        }));
+    let mut ids = HashSet::with_capacity(root_count);
+    visit_document_ids(doc, |id| {
+        if !id.is_empty() {
+            ids.insert(NodeId::new(id));
         }
-    }
-    while let Some(node) = stack.pop() {
-        if let Some(id) = NodeId::new_opt(node.id_str()) {
-            ids.insert(id);
-        }
-        if let Some(children) = node.children() {
-            stack.extend(children.iter());
-        }
-    }
+    });
     ids
 }
 
-/// First standalone counter above every canonical `n{counter}` id.
-pub fn next_sequential_counter(doc: &PenDocument) -> Result<u64, IdAllocError> {
-    let mut max = None;
-    for id in collect_document_ids(doc) {
-        if let Some(counter) = crate::walkers::parse_n_id(id.as_str()) {
-            max = Some(max.map_or(counter, |current: u64| current.max(counter)));
+/// Borrow identities for high-water queries. Allocating commands separately
+/// collect their collision set; building another owned set here made every
+/// command clone and hash the whole document before it could even dispatch.
+fn visit_document_ids(doc: &PenDocument, mut visit: impl FnMut(&str)) {
+    let mut stack = vec![doc.children.iter()];
+    if let Some(pages) = doc.pages.as_ref() {
+        for page in pages {
+            visit(&page.id);
+            stack.push(page.children.iter());
         }
     }
-    match max {
-        Some(max) => max.checked_add(1).ok_or(IdAllocError::CounterExhausted),
-        None => Ok(1),
+    while let Some(siblings) = stack.last_mut() {
+        if let Some(node) = siblings.next() {
+            visit(node.id_str());
+            if let Some(children) = node.children() {
+                stack.push(children.iter());
+            }
+        } else {
+            stack.pop();
+        }
     }
+}
+
+/// First standalone counter above every canonical `n{counter}` id.
+pub(crate) fn numeric_high_water(doc: &PenDocument) -> u64 {
+    let mut maximum = 0;
+    visit_document_ids(doc, |id| {
+        if let Some(number) = crate::walkers::parse_n_id(id) {
+            maximum = maximum.max(number);
+        }
+    });
+    maximum
+}
+pub fn next_sequential_counter(doc: &PenDocument) -> Result<u64, IdAllocError> {
+    numeric_high_water(doc)
+        .checked_add(1)
+        .ok_or(IdAllocError::CounterExhausted)
 }
 
 /// First counter above every canonical id in `namespace`.
@@ -223,15 +264,15 @@ pub fn next_namespaced_counter(
     namespace: &PeerNamespace,
 ) -> Result<u64, IdAllocError> {
     let mut max = None;
-    for id in collect_document_ids(doc) {
-        let Ok(parsed) = NamespacedId::parse(id.as_str()) else {
-            continue;
+    visit_document_ids(doc, |id| {
+        let Ok(parsed) = NamespacedId::parse(id) else {
+            return;
         };
         if parsed.namespace() == namespace {
             let counter = parsed.counter();
             max = Some(max.map_or(counter, |current: u64| current.max(counter)));
         }
-    }
+    });
     match max {
         Some(max) => max.checked_add(1).ok_or(IdAllocError::CounterExhausted),
         None => Ok(0),

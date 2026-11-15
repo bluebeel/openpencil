@@ -4,6 +4,9 @@
 //! (decoded [`FigValue`] objects) into canonical `jian_ops_schema`
 //! style values.
 
+mod gradient_geometry;
+use gradient_geometry::map_gradient_geometry;
+
 use crate::color::figma_color_to_hex;
 use crate::figma_types::{FigColor, FigMatrix};
 use crate::kiwi::FigValue;
@@ -20,19 +23,14 @@ const IMAGE_TRANSFORM_EPSILON: f64 = 1e-6;
 
 // ── Fills ─────────────────────────────────────────────────────────
 
-/// Map a Figma paint array to `PenFill[]`. Invisible paints
-/// (`visible == false`) and unmappable types are dropped; an empty
-/// result is `None`.
+/// Map every represented Figma paint, retaining disabled layers in order.
+/// An authored empty stack stays empty; absent/unrepresentable data is `None`.
 pub fn map_figma_fills(paints: Option<&[FigValue]>) -> Option<Vec<PenFill>> {
     let paints = paints?;
     if paints.is_empty() {
-        return None;
+        return Some(Vec::new());
     }
-    let fills: Vec<PenFill> = paints
-        .iter()
-        .filter(|p| p.get_bool("visible") != Some(false))
-        .filter_map(map_single_fill)
-        .collect();
+    let fills: Vec<PenFill> = paints.iter().filter_map(map_single_fill).collect();
     if fills.is_empty() {
         None
     } else {
@@ -67,7 +65,7 @@ fn gradient_stops(paint: &FigValue) -> Vec<GradientStop> {
             stops
                 .iter()
                 .map(|s| GradientStop {
-                    offset: s.get_f64("position").unwrap_or(0.0) as f32,
+                    offset: s.get_f64("position").unwrap_or(0.0),
                     color: fill_color_hex(s),
                 })
                 .collect()
@@ -75,13 +73,33 @@ fn gradient_stops(paint: &FigValue) -> Vec<GradientStop> {
         .unwrap_or_default()
 }
 
+fn precise_gradient_stops(paint: &FigValue) -> Vec<GradientStop> {
+    paint
+        .get_array("stops")
+        .map(|stops| {
+            stops
+                .iter()
+                .map(|stop| GradientStop {
+                    offset: stop.get_f64("position").unwrap_or(0.0),
+                    color: stop
+                        .get("color")
+                        .and_then(FigColor::from_value)
+                        .map(shadow_color_css)
+                        .unwrap_or_else(|| "#000000".into()),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 fn map_single_fill(paint: &FigValue) -> Option<PenFill> {
-    let opacity = paint.get_f64("opacity").map(|o| o as f32);
+    let opacity = paint.get_f64("opacity");
     let blend_mode = map_blend_mode(paint.get_str("blendMode"));
     match paint.get_str("type")? {
         "SOLID" => {
             paint.get("color")?;
             Some(PenFill::Solid(SolidFillBody {
+                enabled: paint.get_bool("visible"),
                 color: fill_color_hex(paint),
                 explain: None,
                 opacity,
@@ -90,14 +108,22 @@ fn map_single_fill(paint: &FigValue) -> Option<PenFill> {
         }
         "GRADIENT_LINEAR" => {
             paint.get("stops")?;
+            let geometry = map_gradient_geometry(paint, false);
+            let precise = geometry.is_some();
             let angle = paint
                 .get("transform")
                 .and_then(FigMatrix::from_value)
                 .map(|m| gradient_angle_from_transform(&m))
                 .unwrap_or(0);
             Some(PenFill::LinearGradient(LinearGradientBody {
-                angle: Some(angle as f32),
-                stops: gradient_stops(paint),
+                enabled: paint.get_bool("visible"),
+                geometry,
+                angle: Some(angle as f64),
+                stops: if precise {
+                    precise_gradient_stops(paint)
+                } else {
+                    gradient_stops(paint)
+                },
                 explain: None,
                 opacity,
                 blend_mode,
@@ -105,11 +131,23 @@ fn map_single_fill(paint: &FigValue) -> Option<PenFill> {
         }
         "GRADIENT_RADIAL" | "GRADIENT_ANGULAR" | "GRADIENT_DIAMOND" => {
             paint.get("stops")?;
+            let geometry = if paint.get_str("type") == Some("GRADIENT_RADIAL") {
+                map_gradient_geometry(paint, true)
+            } else {
+                None
+            };
+            let precise = geometry.is_some();
             Some(PenFill::RadialGradient(RadialGradientBody {
+                enabled: paint.get_bool("visible"),
+                geometry,
                 cx: Some(0.5),
                 cy: Some(0.5),
                 radius: Some(0.5),
-                stops: gradient_stops(paint),
+                stops: if precise {
+                    precise_gradient_stops(paint)
+                } else {
+                    gradient_stops(paint)
+                },
                 explain: None,
                 opacity,
                 blend_mode,
@@ -130,26 +168,14 @@ fn map_single_fill(paint: &FigValue) -> Option<PenFill> {
                 (ImageFillMode::Stretch, Some(_)) => ImageFillMode::Crop,
                 (mode, _) => mode,
             };
-            let image = paint.get("image");
-            let url = image
-                .and_then(|i| i.get("hash"))
-                .and_then(|h| h.as_bytes())
-                .filter(|b| !b.is_empty())
-                .map(|bytes| {
-                    let mut s = String::from("__hash:");
-                    for b in bytes {
-                        s.push_str(&format!("{b:02x}"));
-                    }
-                    s
-                })
-                .or_else(|| {
-                    image
-                        .and_then(|i| i.get_f64("dataBlob"))
-                        .map(|n| format!("__blob:{}", n as i64))
-                })
-                .unwrap_or_default();
-            Some(PenFill::Image(ImageFillBody {
+            let url = image_reference_url(paint.get("image")).unwrap_or_default();
+            Some(PenFill::Image(Box::new(ImageFillBody {
+                enabled: paint.get_bool("visible"),
+                geometry: None,
                 url: url.into(),
+                thumbnail_url: image_reference_url(paint.get("imageThumbnail")).map(Into::into),
+                nearest_sampling: Some(true),
+                rotation: paint.get_f64("rotation").filter(|value| value.is_finite()),
                 mode: Some(mode.clone()),
                 original_size: normalize_original_size(
                     paint.get_f64("originalImageWidth"),
@@ -159,8 +185,7 @@ fn map_single_fill(paint: &FigValue) -> Option<PenFill> {
                 tile_scale: (mode == ImageFillMode::Tile)
                     .then(|| paint.get_f64("scale"))
                     .flatten()
-                    .filter(|scale| scale.is_finite() && *scale > 0.0)
-                    .map(|scale| scale as f32),
+                    .filter(|scale| scale.is_finite() && *scale > 0.0),
                 explain: None,
                 opacity,
                 blend_mode,
@@ -173,7 +198,7 @@ fn map_single_fill(paint: &FigValue) -> Option<PenFill> {
                 tint: image_adjustment(paint, &["tint"]),
                 highlights: image_adjustment(paint, &["highlights"]),
                 shadows: image_adjustment(paint, &["shadows"]),
-            }))
+            })))
         }
         _ => None,
     }
@@ -208,7 +233,26 @@ pub(crate) fn map_blend_mode(value: Option<&str>) -> Option<BlendMode> {
 /// use the UI slider range `[-100, 100]`. Prefer the current sparse
 /// `paintFilter` message and fill missing channels from the legacy
 /// `filterColorAdjust` struct. Neutral values remain absent on the wire.
-fn image_adjustment(paint: &FigValue, keys: &[&str]) -> Option<f32> {
+fn image_reference_url(image: Option<&FigValue>) -> Option<String> {
+    image
+        .and_then(|image| image.get("hash"))
+        .and_then(FigValue::as_bytes)
+        .filter(|bytes| !bytes.is_empty())
+        .map(|bytes| {
+            let mut source = String::from("__hash:");
+            for byte in bytes {
+                source.push_str(&format!("{byte:02x}"));
+            }
+            source
+        })
+        .or_else(|| {
+            image
+                .and_then(|image| image.get_f64("dataBlob"))
+                .map(|index| format!("__blob:{}", index as i64))
+        })
+}
+
+fn image_adjustment(paint: &FigValue, keys: &[&str]) -> Option<f64> {
     let value = ["paintFilter", "filterColorAdjust"]
         .into_iter()
         .filter_map(|field| paint.get(field))
@@ -216,7 +260,7 @@ fn image_adjustment(paint: &FigValue, keys: &[&str]) -> Option<f32> {
     if !value.is_finite() {
         return None;
     }
-    let scaled = (value * 100.0).clamp(-100.0, 100.0) as f32;
+    let scaled = (value * 100.0).clamp(-100.0, 100.0);
     (scaled != 0.0).then_some(scaled)
 }
 
@@ -233,8 +277,8 @@ fn normalize_original_size(w: Option<f64>, h: Option<f64>) -> Option<ImageOrigin
         return None;
     }
     Some(ImageOriginalSize {
-        width: w as f32,
-        height: h as f32,
+        width: w,
+        height: h,
     })
 }
 
@@ -250,12 +294,12 @@ fn normalize_image_transform(m: FigMatrix) -> Option<ImageTransform> {
         return None;
     }
     Some(ImageTransform {
-        m00: m.m00 as f32,
-        m01: m.m01 as f32,
-        m02: m.m02 as f32,
-        m10: m.m10 as f32,
-        m11: m.m11 as f32,
-        m12: m.m12 as f32,
+        m00: m.m00,
+        m01: m.m01,
+        m02: m.m02,
+        m10: m.m10,
+        m11: m.m11,
+        m12: m.m12,
     })
 }
 
@@ -272,47 +316,37 @@ fn map_scale_mode(mode: Option<&str>) -> ImageFillMode {
 // ── Stroke ────────────────────────────────────────────────────────
 
 /// Map a Figma node's stroke properties to a `PenStroke`. `None` when
-/// the node has no visible stroke paint.
+/// the node has no stroke paint.
 pub fn map_figma_stroke(node: &FigValue) -> Option<PenStroke> {
-    let stroke_paints = node.get_array("strokePaints").filter(|p| !p.is_empty())?;
-    let has_visible = stroke_paints
-        .iter()
-        .any(|s| s.get_bool("visible") != Some(false));
-    if !has_visible {
+    let stroke_paints = node.get_array("strokePaints")?;
+    if stroke_paints.is_empty() && node.get_str("type") != Some("LINE") {
         return None;
     }
-
     let thickness = if node.get_bool("borderStrokeWeightsIndependent") == Some(true) {
         StrokeThickness::PerSide([
-            node.get_f64("borderTopWeight").unwrap_or(0.0) as f32,
-            node.get_f64("borderRightWeight").unwrap_or(0.0) as f32,
-            node.get_f64("borderBottomWeight").unwrap_or(0.0) as f32,
-            node.get_f64("borderLeftWeight").unwrap_or(0.0) as f32,
+            node.get_f64("borderTopWeight").unwrap_or(0.0),
+            node.get_f64("borderRightWeight").unwrap_or(0.0),
+            node.get_f64("borderBottomWeight").unwrap_or(0.0),
+            node.get_f64("borderLeftWeight").unwrap_or(0.0),
         ])
     } else {
-        StrokeThickness::Uniform(node.get_f64("strokeWeight").unwrap_or(1.0) as f32)
+        StrokeThickness::Uniform(node.get_f64("strokeWeight").unwrap_or(1.0))
     };
 
     let dash_pattern = node
         .get_array("dashPattern")
         .filter(|d| !d.is_empty())
-        .map(|d| {
-            d.iter()
-                .filter_map(|v| v.as_f64())
-                .map(|v| v as f32)
-                .collect()
-        });
+        .map(|d| d.iter().filter_map(|v| v.as_f64()).collect());
 
-    Some(PenStroke {
+    Some(PenStroke::from(jian_ops_schema::style::PenStrokeBody {
         thickness,
         align: map_stroke_align(node.get_str("strokeAlign")),
         join: map_stroke_join(node.get_str("strokeJoin")),
         cap: map_stroke_cap(node.get_str("strokeCap")),
         dash_pattern,
-        dash_offset: None,
-        // `mapFigmaFills` re-applies the visible filter — harmless.
+        dash_offset: node.get_f64("dashOffset"),
         fill: map_figma_fills(Some(stroke_paints)),
-    })
+    }))
 }
 
 fn map_stroke_align(v: Option<&str>) -> Option<StrokeAlign> {
@@ -345,16 +379,50 @@ fn map_stroke_cap(v: Option<&str>) -> Option<StrokeCap> {
 // ── Effects ───────────────────────────────────────────────────────
 
 /// Map a Figma effect array to `PenEffect[]`.
+/// Preserve the measured compact-support profile only for known uniform
+/// rounded-rectangle silhouettes. Generic vector effects retain the legacy
+/// profile until their rasterized-mask blur contract is established.
+pub fn map_figma_node_effects(node: &FigValue) -> Option<Vec<PenEffect>> {
+    let mut effects = map_figma_effects(node.get_array("effects"))?;
+    let rounded = matches!(
+        node.get_str("type"),
+        Some("FRAME" | "RECTANGLE" | "COMPONENT" | "SYMBOL" | "INSTANCE")
+    );
+    let uniform = !node
+        .get_bool("rectangleCornerRadiiIndependent")
+        .unwrap_or(false)
+        || [
+            "rectangleTopLeftCornerRadius",
+            "rectangleTopRightCornerRadius",
+            "rectangleBottomLeftCornerRadius",
+            "rectangleBottomRightCornerRadius",
+        ]
+        .map(|key| node.get_f64(key).unwrap_or(0.0))
+        .windows(2)
+        .all(|pair| pair[0] == pair[1]);
+    if rounded
+        && uniform
+        && node
+            .get_f64("rectangleCornerSmoothing")
+            .or_else(|| node.get_f64("cornerSmoothing"))
+            .unwrap_or(0.0)
+            == 0.0
+    {
+        for effect in &mut effects {
+            if let PenEffect::Shadow(shadow) = effect {
+                shadow.blur_kernel = Some(jian_ops_schema::style::ShadowBlurKernel::Triangular);
+            }
+        }
+    }
+    Some(effects)
+}
+
 pub fn map_figma_effects(effects: Option<&[FigValue]>) -> Option<Vec<PenEffect>> {
     let effects = effects?;
     if effects.is_empty() {
         return None;
     }
-    let mapped: Vec<PenEffect> = effects
-        .iter()
-        .filter(|e| e.get_bool("visible") != Some(false))
-        .filter_map(map_single_effect)
-        .collect();
+    let mapped: Vec<PenEffect> = effects.iter().filter_map(map_single_effect).collect();
     if mapped.is_empty() {
         None
     } else {
@@ -364,34 +432,55 @@ pub fn map_figma_effects(effects: Option<&[FigValue]>) -> Option<Vec<PenEffect>>
 
 fn map_single_effect(effect: &FigValue) -> Option<PenEffect> {
     let ty = effect.get_str("type")?;
-    let radius = effect.get_f64("radius").unwrap_or(0.0) as f32;
+    let radius = effect.get_f64("radius").unwrap_or(0.0);
     match ty {
         "DROP_SHADOW" | "INNER_SHADOW" => {
             let offset = effect.get("offset");
             Some(PenEffect::Shadow(ShadowBody {
+                blur_kernel: None,
                 inner: Some(ty == "INNER_SHADOW"),
-                visible: None,
-                offset_x: offset.and_then(|o| o.get_f64("x")).unwrap_or(0.0) as f32,
-                offset_y: offset.and_then(|o| o.get_f64("y")).unwrap_or(0.0) as f32,
+                visible: effect.get_bool("visible"),
+                offset_x: offset.and_then(|o| o.get_f64("x")).unwrap_or(0.0),
+                offset_y: offset.and_then(|o| o.get_f64("y")).unwrap_or(0.0),
                 blur: radius,
-                spread: effect.get_f64("spread").unwrap_or(0.0) as f32,
+                spread: effect.get_f64("spread").unwrap_or(0.0),
                 color: effect
                     .get("color")
                     .and_then(FigColor::from_value)
-                    .map(|c| figma_color_to_hex(&c))
+                    .map(shadow_color_css)
                     .unwrap_or_else(|| "#00000040".to_string()),
             }))
         }
         "FOREGROUND_BLUR" => Some(PenEffect::Blur(BlurBody {
             radius,
-            visible: None,
+            visible: effect.get_bool("visible"),
         })),
         "BACKGROUND_BLUR" => Some(PenEffect::BackgroundBlur(BlurBody {
             radius,
-            visible: None,
+            visible: effect.get_bool("visible"),
         })),
         _ => None,
     }
+}
+
+/// Shadows compose their float color through a coverage mask. Packing alpha
+/// into hex first changes e.g.0.05 to13/255 before the mask is applied.
+/// Functional RGB components stay f64 until normalization by the color codec.
+fn shadow_color_css(color: FigColor) -> String {
+    let alpha = color.a.unwrap_or(1.0);
+    if ![color.r, color.g, color.b, alpha]
+        .iter()
+        .all(|channel| channel.is_finite())
+    {
+        return figma_color_to_hex(&color);
+    }
+    format!(
+        "rgba({},{},{},{})",
+        color.r.clamp(0.0, 1.0) * 255.0,
+        color.g.clamp(0.0, 1.0) * 255.0,
+        color.b.clamp(0.0, 1.0) * 255.0,
+        alpha.clamp(0.0, 1.0),
+    )
 }
 
 // ── Auto-layout ───────────────────────────────────────────────────

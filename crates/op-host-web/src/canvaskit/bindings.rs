@@ -11,7 +11,12 @@ extern "C" {
     /// Async init: load CanvasKit, make a WebGL surface on `canvas_id`, build
     /// the bridge object. Text uses browser/system fonts via the JS bridge.
     #[wasm_bindgen(js_name = opCkInit, catch)]
-    pub(super) fn op_ck_init(canvas_id: &str) -> Result<js_sys::Promise, JsValue>;
+    pub(super) fn op_ck_init(
+        canvas_id: &str,
+        dpr: f32,
+        logical_w: u32,
+        logical_h: u32,
+    ) -> Result<js_sys::Promise, JsValue>;
     #[wasm_bindgen(js_name = setImageCacheFactory)]
     pub(super) fn set_image_cache_factory(factory: &js_sys::Function);
 
@@ -23,8 +28,61 @@ extern "C" {
     /// a handle rather than borrow the host's.
     #[derive(Clone)]
     pub type OpCk;
+    #[wasm_bindgen(method, catch)]
+    pub(super) fn dispose(this: &OpCk) -> Result<(), JsValue>;
+    #[wasm_bindgen(method, js_name = setSvgPathViewBox)]
+    pub(super) fn set_svg_path_view_box(this: &OpCk, view_box: &JsValue) -> JsValue;
+
+    #[wasm_bindgen(method,js_name=drawExplicitImageField)]
+    pub(super) fn draw_explicit_image_field(
+        this: &OpCk,
+        image_id_lo: u32,
+        image_id_hi: u32,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        geometry: &[f64],
+        adjustments: &[f32],
+        opacity: f32,
+        radius: f32,
+        blend: u8,
+        nearest: bool,
+        source_shader: &str,
+        pattern_shader: &str,
+    );
+
+    #[wasm_bindgen(method,js_name=pushPaintSpace)]
+    pub(super) fn push_paint_space(this: &OpCk, x: f32, y: f32, w: f32, h: f32);
+    #[wasm_bindgen(method,js_name=popPaintSpace)]
+    pub(super) fn pop_paint_space(this: &OpCk);
+    #[wasm_bindgen(method, js_name = paintFieldBounds)]
+    pub(super) fn paint_field_bounds(this: &OpCk) -> Vec<f32>;
+    #[wasm_bindgen(method, js_name = textMaskCapture)]
+    pub(super) fn text_mask_capture(this: &OpCk, action: u32) -> Vec<f32>;
+    #[wasm_bindgen(method,js_name=strokeGeometry)]
+    pub(super) fn stroke_geometry(
+        this: &OpCk,
+        kind: u8,
+        data: &str,
+        values: &[f32],
+        even_odd: bool,
+        width: f32,
+        sides: &[f32],
+        placement: u8,
+        cap: u8,
+        join: u8,
+        dashes: &[f32],
+        phase: f32,
+        color: &[f32],
+    );
+
     #[wasm_bindgen(method, js_name = beginFrame)]
     pub(super) fn begin_frame(this: &OpCk);
+    #[wasm_bindgen(method, js_name = captureShadowBasis)]
+    pub(super) fn capture_shadow_basis(this: &OpCk);
+    #[wasm_bindgen(method, js_name = shadowOffsetInLocalSpace)]
+    pub(super) fn shadow_offset_in_local_space(this: &OpCk, x: f32, y: f32) -> Vec<f32>;
     #[wasm_bindgen(method, js_name = endFrame)]
     pub(super) fn end_frame(this: &OpCk);
     #[wasm_bindgen(method)]
@@ -54,6 +112,51 @@ extern "C" {
         a: f32,
         sw: f32,
     );
+    #[wasm_bindgen(method, js_name = setShadowKernelSource)]
+    pub(super) fn set_shadow_kernel_source(this: &OpCk, source: &str);
+    #[wasm_bindgen(method, js_name = setCornerShadowKernelSource)]
+    pub(super) fn set_corner_shadow_kernel_source(this: &OpCk, source: &str);
+    #[wasm_bindgen(method, js_name = fillRoundRectShadowPerCorner)]
+    pub(super) fn fill_round_rect_shadow_per_corner(
+        this: &OpCk,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        tl: f32,
+        tr: f32,
+        br: f32,
+        bl: f32,
+        dx: f32,
+        dy: f32,
+        blur: f32,
+        spread: f32,
+        r: f32,
+        g: f32,
+        b: f32,
+        a: f32,
+        inner: bool,
+        kernel: u32,
+    ) -> bool;
+    #[wasm_bindgen(method, js_name = fillRoundRectShadow)]
+    pub(super) fn fill_round_rect_shadow(
+        this: &OpCk,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        radius: f32,
+        dx: f32,
+        dy: f32,
+        blur: f32,
+        spread: f32,
+        r: f32,
+        g: f32,
+        b: f32,
+        a: f32,
+        inner: bool,
+        kernel: u32,
+    ) -> bool;
     #[wasm_bindgen(method, js_name = fillRoundRect)]
     pub(super) fn fill_round_rect(
         this: &OpCk,
@@ -532,11 +635,29 @@ extern "C" {
     /// failure.
     #[wasm_bindgen(method, js_name = registerImportedFont)]
     pub(super) fn register_imported_font(this: &OpCk, family: &str, bytes: &[u8]) -> bool;
+    #[wasm_bindgen(method, js_name = registerImportedFont)]
+    pub(super) fn register_imported_font_styled(
+        this: &OpCk,
+        family: &str,
+        bytes: &[u8],
+        style: &str,
+        weight: &str,
+        variations: &str,
+    ) -> bool;
     /// Register an app-bundled design face. Ranked below imported and system
     /// faces of the same name; otherwise identical to
     /// `registerImportedFont`. Returns `false` on parse failure.
     #[wasm_bindgen(method, js_name = registerBundledFont)]
     pub(super) fn register_bundled_font(this: &OpCk, family: &str, bytes: &[u8]) -> bool;
+    #[wasm_bindgen(method, js_name = registerBundledFont)]
+    pub(super) fn register_bundled_font_styled(
+        this: &OpCk,
+        family: &str,
+        bytes: &[u8],
+        style: &str,
+        weight: &str,
+        variations: &str,
+    ) -> bool;
     /// Display names of every registered imported family — mirrors the JS
     /// registry into the Rust snapshot after add / remove and at mount.
     #[wasm_bindgen(method, js_name = importedFamilyList)]
@@ -588,6 +709,12 @@ extern "C" {
     );
     #[wasm_bindgen(method, js_name = pushMaskSourceLayer)]
     pub(super) fn push_mask_source_layer(this: &OpCk, luminance: bool);
+    #[wasm_bindgen(method, js_name = pushMaskSourceLayerWithColorSpace)]
+    pub(super) fn push_mask_source_layer_with_color_space(
+        this: &OpCk,
+        luminance: bool,
+        linear_rgb: bool,
+    );
     #[wasm_bindgen(method, js_name = pushBlendLayer)]
     pub(super) fn push_blend_layer(this: &OpCk, blend_mode: u8);
     #[wasm_bindgen(method, js_name = pushBackdropBlurLayer)]

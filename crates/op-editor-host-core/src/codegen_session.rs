@@ -318,7 +318,7 @@ fn run_pipeline_with_model_and_cancel_token(
                     let system = codegen_system_prompt(&req.skills);
                     let chat_req = ChatRequest {
                         system_prompt: system,
-                        user_message: req.user_message.clone(),
+                        user_message: req.user_message,
                         history: Vec::new(),
                         max_output_tokens: req.max_output_tokens,
                         thinking: req.thinking,
@@ -543,10 +543,10 @@ fn response_byte_limit(max_output_tokens: u32) -> usize {
 fn bounded_message(message: &str) -> String {
     const MAX_CHARS: usize = 500;
     let trimmed = message.trim();
-    if trimmed.chars().count() <= MAX_CHARS {
+    let Some((end, _)) = trimmed.char_indices().nth(MAX_CHARS) else {
         return trimmed.to_string();
-    }
-    let mut out: String = trimmed.chars().take(MAX_CHARS).collect();
+    };
+    let mut out = trimmed[..end].to_string();
     out.push('…');
     out
 }
@@ -571,13 +571,22 @@ fn with_diagnostics(
     // Put the actionable request failure first: the property panel has
     // limited width and ellipsizes this line. Provider/model identity remains
     // available at the end for logs and support diagnostics.
-    let mut details = diagnostics.to_vec();
-    details.push(format!(
-        "provider={}; model={}",
-        bounded_message(provider_label),
-        bounded_message(model_label)
-    ));
-    format!("{message}\nDetails: {}", details.join(" | "))
+    let mut message = message;
+    message.push_str("\nDetails: ");
+    for (index, detail) in diagnostics.iter().enumerate() {
+        if index != 0 {
+            message.push_str(" | ");
+        }
+        message.push_str(detail);
+    }
+    if !diagnostics.is_empty() {
+        message.push_str(" | ");
+    }
+    message.push_str("provider=");
+    message.push_str(&bounded_message(provider_label));
+    message.push_str("; model=");
+    message.push_str(&bounded_message(model_label));
+    message
 }
 
 #[cfg(test)]

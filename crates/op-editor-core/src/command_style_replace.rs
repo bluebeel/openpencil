@@ -9,6 +9,10 @@ use jian_ops_schema::node::container::{ContainerProps, CornerRadius, Padding};
 use jian_ops_schema::node::{FontWeight, PenNode};
 use jian_ops_schema::style::{PenFill, PenStroke, StrokeThickness};
 
+#[path = "command_style_replace_plan.rs"]
+mod plan;
+pub use plan::preview_matching_properties_in_roots;
+
 /// A rejected style-property replacement request.
 ///
 /// `Display` reproduces the previous ad-hoc `String` messages byte for byte,
@@ -98,12 +102,24 @@ pub fn replace_matching_properties_in_roots(
     replacements: &[StylePropertyReplacement],
 ) -> Result<usize, StyleReplaceError> {
     validate_replacements(replacements)?;
+    if replacements.is_empty() {
+        return Ok(0);
+    }
     let mut count = 0;
+    // Style replacements never change IDs or topology. Resolve many parents
+    // once, retaining original caller order and duplicate/overlapping passes.
+    let routes = (parent_ids.len() > 1).then(|| plan::parent_routes(roots, parent_ids));
     for parent_id in parent_ids {
         if !parent_id.is_real() {
             continue;
         }
-        if let Some(node) = find_node_mut(roots, parent_id) {
+        let node = match &routes {
+            Some(routes) => routes
+                .get(parent_id.as_str())
+                .and_then(|path| plan::node_mut(roots, path)),
+            None => find_node_mut(roots, parent_id),
+        };
+        if let Some(node) = node {
             replace_descendants(node, replacements, &mut count);
         }
     }
@@ -153,8 +169,8 @@ fn validate_replacements(
                 number_or_expression_from_value(&replacement.to)?;
             }
             "fontSize" => {
-                number_from_value(&replacement.from, "fontSize")?;
-                number_from_value(&replacement.to, "fontSize")?;
+                number_or_expression_from_value(&replacement.from)?;
+                number_or_expression_from_value(&replacement.to)?;
             }
             "fontWeight" => {
                 font_weight_from_value(&replacement.to)?;
@@ -358,18 +374,21 @@ fn replace_gap(node: &mut PenNode, replacement: &StylePropertyReplacement) -> bo
 fn replace_text_number(
     node: &mut PenNode,
     replacement: &StylePropertyReplacement,
-    property: &str,
+    _property: &str,
 ) -> bool {
     let PenNode::Text(text) = node else {
         return false;
     };
-    let Some(current) = text.font_size.and_then(|v| finite_number_value(v).ok()) else {
+    let Some(current) = text.font_size.as_ref().and_then(|value| match value {
+        NumberOrExpression::Number(number) if !number.is_finite() => None,
+        _ => Some(number_or_expression_value(value)),
+    }) else {
         return false;
     };
     if !style_value_equal(&current, &replacement.from) {
         return false;
     }
-    let Ok(to) = number_from_value(&replacement.to, property) else {
+    let Ok(to) = number_or_expression_from_value(&replacement.to) else {
         return false;
     };
     text.font_size = Some(to);
@@ -482,15 +501,13 @@ fn existing_children_mut(node: &mut PenNode) -> Option<&mut Vec<PenNode>> {
 
 fn stroke_thickness_value(thickness: &StrokeThickness) -> StylePropValue {
     match thickness {
-        StrokeThickness::Uniform(v) => StylePropValue::Number(*v as f64),
-        StrokeThickness::PerSide(v) => {
-            StylePropValue::NumberArray(v.iter().map(|n| *n as f64).collect())
-        }
+        StrokeThickness::Uniform(v) => StylePropValue::Number(*v),
+        StrokeThickness::PerSide(v) => StylePropValue::NumberArray(v.iter().map(|n| *n).collect()),
         StrokeThickness::Sided(v) => StylePropValue::NumberArray(vec![
-            v.top.unwrap_or(0.0) as f64,
-            v.right.unwrap_or(0.0) as f64,
-            v.bottom.unwrap_or(0.0) as f64,
-            v.left.unwrap_or(0.0) as f64,
+            v.top.unwrap_or(0.0),
+            v.right.unwrap_or(0.0),
+            v.bottom.unwrap_or(0.0),
+            v.left.unwrap_or(0.0),
         ]),
     }
 }
@@ -559,17 +576,12 @@ fn number_or_expression_from_value(
 
 fn thickness_from_value(value: &StylePropValue) -> Result<StrokeThickness, StyleReplaceError> {
     match value {
-        StylePropValue::Number(v) if v.is_finite() => Ok(StrokeThickness::Uniform(*v as f32)),
+        StylePropValue::Number(v) if v.is_finite() => Ok(StrokeThickness::Uniform(*v)),
         StylePropValue::NumberArray(v) if v.len() == 4 && v.iter().all(|n| n.is_finite()) => {
-            Ok(StrokeThickness::PerSide([
-                v[0] as f32,
-                v[1] as f32,
-                v[2] as f32,
-                v[3] as f32,
-            ]))
+            Ok(StrokeThickness::PerSide([v[0], v[1], v[2], v[3]]))
         }
         StylePropValue::NumberArray(v) if v.len() == 1 && v[0].is_finite() => {
-            Ok(StrokeThickness::Uniform(v[0] as f32))
+            Ok(StrokeThickness::Uniform(v[0]))
         }
         _ => Err(StyleReplaceError::InvalidStrokeThickness),
     }

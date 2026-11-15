@@ -82,12 +82,17 @@ pub fn apply_result(state: &mut EditorState, node_id: &NodeId, url: &str) -> boo
                     body.url = url.into();
                 }
                 _ => {
-                    frame.container.fill = Some(vec![PenFill::Image(ImageFillBody {
+                    frame.container.fill = Some(vec![PenFill::Image(Box::new(ImageFillBody {
+                        enabled: None,
+                        geometry: None,
                         url: url.into(),
+                        thumbnail_url: None,
+                        nearest_sampling: None,
                         mode: Some(ImageFillMode::Crop),
                         original_size: None,
                         transform: None,
                         tile_scale: None,
+                        rotation: None,
                         explain: None,
                         opacity: None,
                         blend_mode: None,
@@ -98,7 +103,7 @@ pub fn apply_result(state: &mut EditorState, node_id: &NodeId, url: &str) -> boo
                         tint: None,
                         highlights: None,
                         shadows: None,
-                    })]);
+                    }))]);
                     frame.children = Some(Vec::new());
                 }
             }
@@ -112,12 +117,17 @@ pub fn apply_result(state: &mut EditorState, node_id: &NodeId, url: &str) -> boo
                     body.url = url.into();
                 }
                 _ => {
-                    rect.container.fill = Some(vec![PenFill::Image(ImageFillBody {
+                    rect.container.fill = Some(vec![PenFill::Image(Box::new(ImageFillBody {
+                        enabled: None,
+                        geometry: None,
                         url: url.into(),
+                        thumbnail_url: None,
+                        nearest_sampling: None,
                         mode: Some(ImageFillMode::Crop),
                         original_size: None,
                         transform: None,
                         tile_scale: None,
+                        rotation: None,
                         explain: None,
                         opacity: None,
                         blend_mode: None,
@@ -128,7 +138,7 @@ pub fn apply_result(state: &mut EditorState, node_id: &NodeId, url: &str) -> boo
                         tint: None,
                         highlights: None,
                         shadows: None,
-                    })]);
+                    }))]);
                     rect.children = Some(Vec::new());
                 }
             }

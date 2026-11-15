@@ -77,14 +77,23 @@ pub struct EditorState {
     /// undo/restore, so an edit made after undoing past the save point
     /// can never reuse the saved revision value (false-clean guard).
     pub(crate) revision_counter: u64,
+    /// Process-local numeric allocation ownership; deliberately not persisted.
+    pub(crate) runtime_node_high_water: u64,
+    pub(crate) runtime_allocator_depth: u32,
+    pub(crate) command_id_seed: crate::command_id_scope::sequence::SeedOverride,
     /// Monotonic document identity. Bumped by every `replace_document*`
     /// (open / revert / sync replace), so `(generation, revision)` uniquely
     /// names a state; a save-ack from a previous generation must be dropped.
     pub(crate) document_generation: u64,
+    /// Ephemeral derived-cache owner, fresh for every state clone/construction.
+    pub(crate) derived_cache_identity: crate::derived_cache_identity::DerivedCacheIdentity,
     /// Monotonic count of snapshots pushed onto `history.past`.
     /// Instance-write scopes use the delta to identify newly pushed
     /// snapshots even when the 100-entry deque evicts from the front.
     pub(crate) history_push_count: u64,
+    /// Atomic batches retain one outer undo checkpoint. Intermediate writes
+    /// still advance revisions but must not capture or evict undo entries.
+    pub(crate) undo_capture_suspended: bool,
     /// Cross-action clipboard buffer. Copy / cut fill it; paste
     /// drains it (clones, so repeated paste works). Not part of the
     /// `.op` file — transient editor state.
@@ -143,6 +152,7 @@ impl EditorState {
     /// loaded document always opens with an empty selection, the
     /// Select tool, the identity viewport and page 0 active.
     pub fn from_document(doc: jian_ops_schema::PenDocument) -> Self {
+        let numeric_high_water = crate::id_allocator::numeric_high_water(&doc);
         let components = ComponentLibrary::from_document(&doc);
         jian_ops_schema::image_thumbs::activate_for_document(&doc);
         Self {
@@ -154,8 +164,13 @@ impl EditorState {
             revision: 0,
             saved_revision: 0,
             revision_counter: 0,
+            runtime_node_high_water: numeric_high_water,
+            runtime_allocator_depth: 0,
+            command_id_seed: Default::default(),
             document_generation: 0,
+            derived_cache_identity: Default::default(),
             history_push_count: 0,
+            undo_capture_suspended: false,
             clipboard: Vec::new(),
             ui: UiDraftState::new(),
             editor_ui: EditorUiState::new(),
@@ -202,6 +217,7 @@ impl EditorState {
     /// layers/guides/in-progress property edits, all keyed by old node ids) are
     /// cleared via [`EditorUiState::clear_document_derived`].
     pub fn replace_document(&mut self, doc: jian_ops_schema::PenDocument) {
+        self.invalidate_command_id_sequence();
         self.components = ComponentLibrary::from_document(&doc);
         let old_doc = std::mem::replace(&mut self.doc, doc);
         jian_ops_schema::image_thumbs::activate_for_document(&self.doc);
@@ -210,6 +226,7 @@ impl EditorState {
         self.revision = 0;
         self.saved_revision = 0;
         self.revision_counter = 0;
+        self.runtime_node_high_water = crate::id_allocator::numeric_high_water(&self.doc);
         self.document_generation = self.document_generation.saturating_add(1);
         self.history_push_count = 0;
         self.ui = UiDraftState::new();
@@ -238,6 +255,7 @@ impl EditorState {
         let old_doc = std::mem::replace(&mut self.doc, doc);
         jian_ops_schema::image_thumbs::activate_for_document(&self.doc);
         self.selection = SelectionState::empty();
+        self.record_runtime_id_high_water(crate::id_allocator::numeric_high_water(&self.doc));
         self.history_push_past(snap);
         self.document_generation = self.document_generation.saturating_add(1);
         self.ui = UiDraftState::new();
@@ -263,6 +281,12 @@ impl EditorState {
     /// Generation of the live document.
     pub fn document_generation(&self) -> u64 {
         self.document_generation
+    }
+
+    /// Weak in-memory owner for trusted revision-keyed derived caches.
+    /// Never persisted; cloning a state creates a distinct identity.
+    pub fn derived_cache_owner(&self) -> std::sync::Weak<()> {
+        self.derived_cache_identity.downgrade()
     }
 
     /// True when document content changed since the last saved baseline.
@@ -605,6 +629,7 @@ mod tests {
         let mut pre_sync = empty_document();
         pre_sync.name = Some("PRE-SYNC".to_string());
         s.ui.pending_pen_history = Some(crate::history::EditorSnapshot {
+            history_tag: crate::history::HistoryTag::default(),
             doc: crate::history_snapshot::SharedDoc::capture(&pre_sync, None),
             selection: SelectionState::empty(),
             active_page_index: 0,

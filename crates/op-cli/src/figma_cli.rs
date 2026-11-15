@@ -29,16 +29,11 @@ pub(super) fn run_import_figma(fig_path: &str, out_path: &str) -> Result<String,
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("Figma Import");
-    let import = op_figma::parse_fig_binary(&bytes, file_name, op_figma::FigLayoutMode::OpenPencil)
-        .map_err(|e| CliError::Document(format!("import {fig_path:?}: {e}")))?;
-    // Dedup shared image payloads into the `images` table — an
-    // image-heavy `.fig` references the same bitmap from many fills,
-    // and the inline form writes one full copy per reference.
-    let mut value = serde_json::to_value(&import.document)
-        .map_err(|e| CliError::Payload(format!("serialize {out_path:?}: {e}")))?;
-    jian_ops_schema::image_table::externalize_images(&mut value);
-    let raw = value.to_string();
-    std::fs::write(out_path, raw).map_err(|e| CliError::Io(format!("write {out_path:?}: {e}")))?;
+    let import =
+        op_figma::prepare_fig_binary_owned(bytes, file_name, op_figma::FigLayoutMode::OpenPencil)
+            .and_then(|prepared| prepared.into_all_pages_with_images(None))
+            .map_err(|e| CliError::Document(format!("import {fig_path:?}: {e}")))?;
+    crate::atomic_save::write_document(out_path, &import.document)?;
     let page_count = import.document.pages.as_ref().map_or(1, Vec::len);
     let node_count = import
         .document

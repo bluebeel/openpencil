@@ -37,7 +37,8 @@ use jian_ops_schema::conversion::{ConversionEntry, ConversionKind};
 use jian_ops_schema::variable::{VariableKind, VariableScalar};
 
 mod app_state;
-mod helpers;
+mod boolean;
+pub(crate) mod helpers;
 
 pub(crate) use helpers::command_marks_document_dirty;
 use helpers::{
@@ -52,10 +53,11 @@ impl EditorState {
     /// Collaboration hosts pass their session-owned namespaced allocator.
     /// Validation failures remain `Ok(false)`; allocator exhaustion is typed
     /// so the host can roll back the surrounding local edit transaction.
-    pub fn apply_with_allocator(
+    pub(crate) fn apply_with_allocator_checkpoint_inner(
         &mut self,
         cmd: EditorCommand,
         allocator: &mut dyn IdAllocator,
+        checkpoint: Option<&crate::EditorSnapshot>,
     ) -> Result<bool, IdAllocError> {
         let marks_document_dirty = command_marks_document_dirty(&cmd);
         let revision_before = self.revision;
@@ -280,28 +282,22 @@ impl EditorState {
                 if page_id.is_some() {
                     self.ui.active_page_index = target_page_index;
                 }
-                let snap = self.snapshot_for_history();
+                let snap = self.snapshot_for_undo();
                 let inserted = self.cmd_insert_subtree_with_allocator(nodes, &parent_id, allocator);
                 if page_id.is_some() && target_page_index != original_page_index {
                     self.ui.active_page_index = original_page_index;
                 }
                 if inserted? {
-                    self.history_push_past(snap);
+                    self.push_undo(snap);
                     true
                 } else {
                     false
                 }
             }
-            EditorCommand::InsertAuthoredSubtree {
-                nodes,
-                parent_id,
-                page_id,
-            } => apply_authored_subtree_on_page(self, nodes, &parent_id, page_id.as_deref(), false),
-            EditorCommand::InsertAuthoredSubtreePreservingRoots {
-                nodes,
-                parent_id,
-                page_id,
-            } => apply_authored_subtree_on_page(self, nodes, &parent_id, page_id.as_deref(), true),
+            command @ (EditorCommand::InsertAuthoredSubtree { .. }
+            | EditorCommand::InsertAuthoredSubtreePreservingRoots { .. }) => {
+                apply_authored_subtree_on_page(self, command, allocator)
+            }
             EditorCommand::AdoptSceneTemplate { template_id } => {
                 // A missing document is a corrupt or renamed asset rather
                 // than a user error, and on wasm it can simply not be
@@ -334,7 +330,7 @@ impl EditorState {
                 if page_id.is_some() {
                     self.ui.active_page_index = target_page_index;
                 }
-                let snap = self.snapshot_for_history();
+                let snap = self.snapshot_for_undo();
                 let refined =
                     self.cmd_refine_design_with_allocator(&root_id, canvas_width, allocator);
                 if page_id.is_some() && target_page_index != original_page_index {
@@ -343,7 +339,7 @@ impl EditorState {
                 match refined? {
                     Some(changed) => {
                         if changed {
-                            self.history_push_past(snap);
+                            self.push_undo(snap);
                         }
                         true
                     }
@@ -549,23 +545,7 @@ impl EditorState {
                 true
             }
             EditorCommand::SetSelectionSet { node_ids } => {
-                // Resolve every id against the active page; unknown /
-                // off-page ids are dropped silently.
-                let resolved: Vec<NodeId> = node_ids
-                    .into_iter()
-                    .filter(|id| id.is_real() && find_node(self.active_children(), id).is_some())
-                    .collect();
-                if resolved.is_empty() {
-                    self.clear_selection();
-                } else {
-                    let anchor = resolved.last().cloned().unwrap();
-                    if self.selection.anchor != anchor || self.selection.set != resolved {
-                        self.editor_ui.image_panel.close_popovers();
-                    }
-                    self.selection.anchor = anchor;
-                    self.selection.set = resolved;
-                }
-                true
+                crate::mutators::selection_nodes::set(self, node_ids)
             }
             EditorCommand::ToggleNodeSelection { node_id } => {
                 if !node_id.is_real() || find_node(self.active_children(), &node_id).is_none() {
@@ -583,9 +563,9 @@ impl EditorState {
                 if self.selection.set.is_empty() {
                     return Ok(false);
                 }
-                let snap = self.snapshot_for_history();
+                let snap = self.snapshot_for_undo();
                 if self.delete_selected() {
-                    self.history_push_past(snap);
+                    self.push_undo(snap);
                     true
                 } else {
                     false
@@ -595,27 +575,28 @@ impl EditorState {
                 if self.selection.set.is_empty() || (dx == 0 && dy == 0) {
                     return Ok(false);
                 }
-                let snap = self.snapshot_for_history();
+                let snap = self.snapshot_for_undo();
                 if self.translate_selected(dx as f64, dy as f64) {
-                    self.history_push_past(snap);
+                    self.push_undo(snap);
                     true
                 } else {
                     false
                 }
             }
             EditorCommand::GroupSelected => {
-                let snap = self.snapshot_for_history();
+                let snap = self.snapshot_for_undo();
                 if self.group_selected_with_allocator(allocator)?.is_some() {
-                    self.history_push_past(snap);
+                    self.push_undo(snap);
                     true
                 } else {
                     false
                 }
             }
+            EditorCommand::ReplacePathsWithSvg(value) => self.cmd_boolean(*value, allocator)?,
             EditorCommand::UngroupSelected => {
-                let snap = self.snapshot_for_history();
+                let snap = self.snapshot_for_undo();
                 if self.ungroup_selected() {
-                    self.history_push_past(snap);
+                    self.push_undo(snap);
                     true
                 } else {
                     false
@@ -625,9 +606,9 @@ impl EditorState {
                 if !self.selection.anchor.is_real() {
                     return Ok(false);
                 }
-                let snap = self.snapshot_for_history();
+                let snap = self.snapshot_for_undo();
                 if self.reorder_selected(direction) {
-                    self.history_push_past(snap);
+                    self.push_undo(snap);
                     true
                 } else {
                     false
@@ -645,21 +626,21 @@ impl EditorState {
             // --- Clipboard -----------------------------------------
             EditorCommand::CopySelected => self.copy_selected(),
             EditorCommand::CutSelected => {
-                let snap = self.snapshot_for_history();
+                let snap = self.snapshot_for_undo();
                 if self.cut_selected() {
-                    self.history_push_past(snap);
+                    self.push_undo(snap);
                     true
                 } else {
                     false
                 }
             }
             EditorCommand::PasteClipboard { offset_px } => {
-                let snap = self.snapshot_for_history();
+                let snap = self.snapshot_for_undo();
                 let new_ids = self.paste_clipboard_with_allocator(allocator, offset_px as f64)?;
                 if new_ids.is_empty() {
                     return Ok(false);
                 }
-                self.history_push_past(snap);
+                self.push_undo(snap);
                 true
             }
             EditorCommand::ImportSvg {
@@ -684,7 +665,12 @@ impl EditorState {
                     self.ui.active_page_index = original_page_index;
                     self.selection = original_selection.clone();
                     if matches!(&changed, Ok(true)) {
-                        if let Some(snapshot) = self.history.past.back_mut() {
+                        if let Some(snapshot) = self
+                            .history
+                            .past
+                            .back_mut()
+                            .and_then(crate::HistoryEntry::full_snapshot_mut)
+                        {
                             snapshot.active_page_index = original_page_index;
                             snapshot.selection = original_selection;
                         }
@@ -729,6 +715,13 @@ impl EditorState {
             EditorCommand::InstantiateComponent { component_id } => self
                 .instantiate_component_with_allocator(&component_id, allocator)?
                 .is_some(),
+            EditorCommand::DetachComponent { node_id } => self
+                .detach_component_with_allocator(&node_id, allocator)?
+                .is_some(),
+            EditorCommand::SetInstanceComponent {
+                node_id,
+                component_id,
+            } => self.set_instance_component(&node_id, &component_id),
             EditorCommand::CreateComponent { node_id, name } => {
                 self.create_component_from_node(&node_id, &name)
             }
@@ -773,7 +766,7 @@ impl EditorState {
                 replacements,
             } => self.cmd_replace_all_matching_properties(&page_id, &parent_ids, &replacements),
             EditorCommand::Batch { commands } => {
-                self.cmd_batch_with_allocator(commands, allocator)?
+                self.cmd_batch_with_checkpoint(commands, allocator, checkpoint)?
             }
             EditorCommand::MergeAppState { plan_idx, state } => {
                 self.merge_app_state(plan_idx, state)

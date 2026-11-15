@@ -43,6 +43,10 @@ mod dependencies;
 #[path = "codegen_plan_store_error.rs"]
 mod error;
 
+#[path = "codegen_plan_capture.rs"]
+mod capture;
+pub(crate) use capture::{create_plan_for_roots, create_plan_for_state};
+
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{LazyLock, Mutex};
@@ -284,24 +288,6 @@ fn detect_warnings(chunks: &[Value]) -> Vec<String> {
         .collect()
 }
 
-// --- Node indexing (TS indexNodes, codegen-plan-store.ts:129-141) --------
-
-fn index_nodes(nodes: &[Value]) -> HashMap<String, Value> {
-    let mut map = HashMap::new();
-    fn walk(list: &[Value], map: &mut HashMap<String, Value>) {
-        for node in list {
-            if let Some(id) = node.get("id").and_then(Value::as_str) {
-                map.insert(id.to_string(), node.clone());
-            }
-            if let Some(children) = node.get("children").and_then(Value::as_array) {
-                walk(children, map);
-            }
-        }
-    }
-    walk(nodes, &mut map);
-    map
-}
-
 // --- Topological sort (TS topoSort, codegen-plan-store.ts:145-171) -------
 
 fn topo_sort(chunks: &[Value]) -> Vec<&Value> {
@@ -438,10 +424,12 @@ pub(crate) fn validate_contract(result: &Value) -> Result<Value, PlanStoreError>
 
 // --- Public API ------------------------------------------------------------
 
-/// TS `createPlan(plan, allNodes)` → `{planId, executionPlan, warnings}`.
-/// `Err` carries the validation errors joined with `"; "` (the message the
-/// TS route 400s with).
-pub(crate) fn create_plan(plan: &Value, all_nodes: &[Value]) -> Result<Value, PlanStoreError> {
+/// Validate before capturing node payloads, then retain only the immutable
+/// chunk-index entries needed by this plan's later hydration.
+fn create_plan_with_index(
+    plan: &Value,
+    index: impl FnOnce() -> HashMap<String, Value>,
+) -> Result<Value, PlanStoreError> {
     {
         let mut plans = lock_plans();
         clean_expired(&mut plans, now_ms());
@@ -461,7 +449,7 @@ pub(crate) fn create_plan(plan: &Value, all_nodes: &[Value]) -> Result<Value, Pl
         chunk_dependencies(chunk)?;
     }
 
-    let node_index = index_nodes(all_nodes);
+    let node_index = index();
     let errors = validate_plan(chunks, &node_index);
     if !errors.is_empty() {
         return Err(PlanStoreError::Validation(errors));

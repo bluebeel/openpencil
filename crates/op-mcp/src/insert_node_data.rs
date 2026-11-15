@@ -26,9 +26,8 @@ fn prepare_ts_data_node(value: &mut Value, add_text_defaults: bool) {
     } else {
         super::batch_design_normalize::normalize_replacement_node_shape(value);
     }
-    normalize_ts_data_node_type_aliases(value);
     let mut next_id = 1usize;
-    ensure_ts_data_node_ids(value, &mut next_id);
+    normalize_ts_data_node_type_aliases(value, &mut next_id);
 }
 
 #[allow(clippy::result_large_err)]
@@ -89,6 +88,9 @@ fn ts_data_node_with_defaults(
     let mut nodes = vec![node];
     let mut _notes = Vec::new();
     super::batch_design::promote_in_slice(&mut nodes, &mut _notes);
+    for node in &mut nodes {
+        super::batch_program_node_parse::mark_new_authored_layout(node);
+    }
     match nodes.into_iter().next() {
         Some(node) => Ok(Some(node)),
         None => Err(ToolOutcome::Err(
@@ -105,8 +107,8 @@ fn should_preserve_ts_data_node(obj: &serde_json::Map<String, Value>) -> bool {
     let Some(kind) = ts_data_kind(obj) else {
         return false;
     };
-    let flat_kind = flat_node_kind(&kind);
-    if !FLAT_INSERT_NODE_KINDS.contains(&flat_kind.as_str()) {
+    let flat_kind = flat_node_kind(kind);
+    if !FLAT_INSERT_NODE_KINDS.contains(&flat_kind) {
         return true;
     }
     if flat_kind == "text" && obj.contains_key("content") {
@@ -115,11 +117,10 @@ fn should_preserve_ts_data_node(obj: &serde_json::Map<String, Value>) -> bool {
     obj.keys().any(|key| !is_flat_insert_node_data_key(key))
 }
 
-fn ts_data_kind(obj: &serde_json::Map<String, Value>) -> Option<String> {
+fn ts_data_kind(obj: &serde_json::Map<String, Value>) -> Option<&str> {
     obj.get("kind")
         .or_else(|| obj.get("type"))
         .and_then(Value::as_str)
-        .map(str::to_string)
 }
 
 fn is_flat_insert_node_data_key(key: &str) -> bool {
@@ -129,7 +130,7 @@ fn is_flat_insert_node_data_key(key: &str) -> bool {
     )
 }
 
-fn normalize_ts_data_node_type_aliases(value: &mut Value) {
+fn normalize_ts_data_node_type_aliases(value: &mut Value, next: &mut usize) {
     let Value::Object(obj) = value else {
         return;
     };
@@ -147,32 +148,21 @@ fn normalize_ts_data_node_type_aliases(value: &mut Value) {
             *type_name = "rectangle".into();
         }
     }
-    if let Some(Value::Array(children)) = obj.get_mut("children") {
-        for child in children {
-            normalize_ts_data_node_type_aliases(child);
-        }
-    }
-}
-
-fn ensure_ts_data_node_ids(value: &mut Value, next: &mut usize) {
-    let Value::Object(obj) = value else {
-        return;
-    };
     if obj.contains_key("type") && !obj.contains_key("id") {
         obj.insert("id".into(), Value::String(format!("__op_tmp_data_{next}")));
         *next += 1;
     }
     if let Some(Value::Array(children)) = obj.get_mut("children") {
         for child in children {
-            ensure_ts_data_node_ids(child, next);
+            normalize_ts_data_node_type_aliases(child, next);
         }
     }
 }
 
-fn flat_node_kind(kind: &str) -> String {
+fn flat_node_kind(kind: &str) -> &str {
     match kind {
-        "rectangle" => "rect".into(),
-        other => other.into(),
+        "rectangle" => "rect",
+        other => other,
     }
 }
 

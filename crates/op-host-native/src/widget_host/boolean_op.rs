@@ -35,7 +35,7 @@ impl WidgetHostNative {
             .iter()
             .map(|id| id.as_str().to_string())
             .collect();
-        let outcome = crate::boolean_ops::compute_boolean_op(&self.layout_scene, &selected, op);
+        let outcome = crate::boolean_ops::compute_boolean_svg(&self.layout_scene, &selected, op);
         let Some(result) = outcome else {
             return false;
         };
@@ -48,16 +48,17 @@ impl WidgetHostNative {
             .collect();
         let pre = self.editor_state.snapshot_for_history();
         let new_id = if let Some(allocator) = self.collab_id_allocator.as_mut() {
-            self.editor_state
-                .replace_paths_with_polyline_with_allocator(
-                    &source_ids,
-                    &result.contours,
-                    allocator,
-                )
-        } else {
-            Ok(self.editor_state.replace_paths_with_polyline(
+            self.editor_state.replace_paths_with_svg_with_allocator(
                 &source_ids,
-                &result.contours,
+                result.d,
+                result.bounds,
+                allocator,
+            )
+        } else {
+            Ok(self.editor_state.replace_paths_with_svg(
+                &source_ids,
+                result.d,
+                result.bounds,
                 &mut self.next_node_id,
             ))
         };

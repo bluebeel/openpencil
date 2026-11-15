@@ -25,6 +25,10 @@ use jian_ops_schema::style::{PenFill, StrokeThickness};
 use jian_ops_schema::variable::{VariableDefinition, VariableScalar, VariableValue};
 use serde_json::Value;
 
+#[path = "node_util_borrowed.rs"]
+mod borrowed;
+pub use borrowed::{identity_label, numeric_wire_size};
+
 /// The 17 jian `PenNode` kinds, as a flat `Copy` enum. jian models kind via
 /// the `PenNode` enum variant + the `"type"` tag; detectors need a cheap
 /// kind discriminant for skip-sets and grouping keys, so this mirrors it.
@@ -155,16 +159,7 @@ pub fn numeric_height(node: &PenNode) -> Option<f64> {
 }
 
 fn width_sizing(node: &PenNode) -> Option<&SizingBehavior> {
-    match node {
-        PenNode::Frame(n) => n.container.width.as_ref(),
-        PenNode::Group(n) => n.container.width.as_ref(),
-        PenNode::Rectangle(n) => n.container.width.as_ref(),
-        PenNode::Ellipse(n) => n.width.as_ref(),
-        PenNode::Polygon(n) => n.width.as_ref(),
-        PenNode::Path(n) => n.width.as_ref(),
-        PenNode::Image(n) => n.width.as_ref(),
-        _ => None,
-    }
+    borrowed::sizing(node, true)
 }
 
 fn numeric_sizing(sizing: Option<&SizingBehavior>) -> Option<f64> {
@@ -199,19 +194,17 @@ pub fn role(node: &PenNode) -> Option<&str> {
 /// mobile-page shape filter and the slop detectors' chrome exemption (a tab
 /// bar legitimately IS an icon+label row and must not read as slop).
 pub fn is_mobile_screen_chrome(node: &PenNode) -> bool {
-    matches!(
-        role(node)
-            .unwrap_or("")
-            .trim()
-            .to_ascii_lowercase()
-            .as_str(),
-        "status-bar"
-            | "bottom-tab-bar"
-            | "bottom-nav"
-            | "bottom-navigation-bar"
-            | "tab-bar"
-            | "tabbar"
-    )
+    let role = role(node).unwrap_or("").trim();
+    [
+        "status-bar",
+        "bottom-tab-bar",
+        "bottom-nav",
+        "bottom-navigation-bar",
+        "tab-bar",
+        "tabbar",
+    ]
+    .iter()
+    .any(|expected| role.eq_ignore_ascii_case(expected))
 }
 
 /// A node's `rotation` in degrees. jian `rotation` is `Option<f64>`; a
@@ -262,11 +255,15 @@ pub fn has_stroke(node: &PenNode) -> bool {
 /// present sides (a missing side is `0.0`).
 pub fn stroke_thickness_max(thickness: &StrokeThickness) -> f32 {
     match thickness {
-        StrokeThickness::Uniform(v) => *v,
-        StrokeThickness::PerSide(sides) => sides.iter().copied().fold(0.0_f32, f32::max),
+        StrokeThickness::Uniform(v) => *v as f32,
+        StrokeThickness::PerSide(sides) => sides
+            .iter()
+            .map(|side| *side as f32)
+            .fold(0.0_f32, f32::max),
         StrokeThickness::Sided(s) => [s.top, s.right, s.bottom, s.left]
             .into_iter()
             .flatten()
+            .map(|side| side as f32)
             .fold(0.0_f32, f32::max),
     }
 }
@@ -317,11 +314,22 @@ pub fn default_theme(themes: Option<&BTreeMap<String, Vec<String>>>) -> Theme {
 /// ref therefore yields `None` here where the TS oracle may yield a
 /// fallback hex — the golden-parity harness must account for this.
 pub fn resolve_color_ref(raw: &str, variables: &Variables, theme: &Theme) -> Option<String> {
+    resolve_color_ref_borrowed(raw, variables, theme).map(str::to_owned)
+}
+
+/// Borrow the exact accepted color from the input or canonical variable map.
+/// Callers emitting owned reports can defer their only clone until an issue
+/// actually exists; rejected/non-string/circular values allocate nothing.
+pub fn resolve_color_ref_borrowed<'a>(
+    raw: &'a str,
+    variables: &'a Variables,
+    theme: &Theme,
+) -> Option<&'a str> {
     if !is_variable_ref(raw) {
-        return Some(raw.to_string());
+        return Some(raw);
     }
     match resolve_variable_ref(raw, variables, theme)? {
-        VariableScalar::Str(s) => Some(s),
+        VariableScalar::Str(value) => Some(value.as_str()),
         VariableScalar::Bool(_) | VariableScalar::Num(_) => None,
     }
 }
@@ -336,19 +344,19 @@ fn is_variable_ref(value: &str) -> bool {
 /// scalar path of TS `resolveVariableRef` (minus the palette fallback — see
 /// [`resolve_color_ref`]). Returns `None` for an unknown variable or a
 /// value that is itself a `$ref` (circular guard).
-fn resolve_variable_ref(
+fn resolve_variable_ref<'a>(
     reference: &str,
-    variables: &Variables,
+    variables: &'a Variables,
     theme: &Theme,
-) -> Option<VariableScalar> {
+) -> Option<&'a VariableScalar> {
     let name = reference.strip_prefix('$')?;
     let def = variables.get(name)?;
     let resolved = match &def.value {
-        VariableValue::Scalar(scalar) => scalar.clone(),
+        VariableValue::Scalar(scalar) => scalar,
         VariableValue::Themed(values) => resolve_themed_value(values, theme)?,
     };
     // Circular guard — a resolved value that is itself a ref stops here.
-    if let VariableScalar::Str(s) = &resolved {
+    if let VariableScalar::Str(s) = resolved {
         if is_variable_ref(s) {
             return None;
         }
@@ -359,10 +367,10 @@ fn resolve_variable_ref(
 /// Pick the concrete scalar from a themed-value list for `theme`. Mirrors TS
 /// `resolveThemedValue`: a value whose `theme` map is a subset-match of the
 /// active theme wins; otherwise the first entry is used.
-fn resolve_themed_value(
-    values: &[jian_ops_schema::variable::ThemedValue],
+fn resolve_themed_value<'a>(
+    values: &'a [jian_ops_schema::variable::ThemedValue],
     theme: &Theme,
-) -> Option<VariableScalar> {
+) -> Option<&'a VariableScalar> {
     if !theme.is_empty() {
         let matched = values.iter().find(|v| {
             v.theme.as_ref().is_some_and(|vt| {
@@ -372,10 +380,10 @@ fn resolve_themed_value(
             })
         });
         if let Some(m) = matched {
-            return Some(m.value.clone());
+            return Some(&m.value);
         }
     }
-    values.first().map(|v| v.value.clone())
+    values.first().map(|v| &v.value)
 }
 
 /// Borrow the flattened `PenNodeBase` of any node kind.
@@ -465,7 +473,11 @@ fn stroke(node: &PenNode) -> Option<&jian_ops_schema::style::PenStroke> {
 /// (e.g. `rotation: 12` not `12.0`). Shared by the structure / text / siblings
 /// detectors, all of which emit numeric `current_value` / `suggested_value`.
 pub fn json_number(value: f64) -> Value {
-    if value.fract() == 0.0 && value.is_finite() {
+    if value.fract() == 0.0
+        && value.is_finite()
+        && value >= i64::MIN as f64
+        && value < i64::MAX as f64
+    {
         Value::from(value as i64)
     } else {
         serde_json::Number::from_f64(value)
@@ -493,23 +505,20 @@ pub fn node_property_value(node: &PenNode, property: &str) -> Option<Value> {
         "height" => sizing_value(height_sizing(node)?),
         "cornerRadius" => corner_radius_value(node),
         "fontSize" => match node {
-            PenNode::Text(t) => t.font_size.map(json_number),
+            PenNode::Text(t) => t.font_size.as_ref().map(|size| match size {
+                NumberOrExpression::Number(value) => json_number(*value),
+                NumberOrExpression::Expression(value) => Value::String(value.clone()),
+            }),
             _ => None,
         },
         _ => None,
     }
 }
 
-/// Borrow a node's `height` as a `SizingBehavior` — Frame/Group/Rectangle via
-/// `ContainerProps`, `Text` via its own field. Other kinds have no height.
+/// Borrow any canonical kind's authored height, retaining keyword/expression
+/// values for sibling-property comparisons as well as numeric dimensions.
 fn height_sizing(node: &PenNode) -> Option<&SizingBehavior> {
-    match node {
-        PenNode::Frame(n) => n.container.height.as_ref(),
-        PenNode::Group(n) => n.container.height.as_ref(),
-        PenNode::Rectangle(n) => n.container.height.as_ref(),
-        PenNode::Text(n) => n.height.as_ref(),
-        _ => None,
-    }
+    borrowed::sizing(node, false)
 }
 
 /// Encode a `SizingBehavior` to its wire `Value`. A `Number` re-encodes
@@ -571,8 +580,7 @@ pub fn corner_radius_numeric(node: &PenNode) -> f64 {
 
 /// Fully rounded geometry is an authored shape, not a sibling-style outlier.
 pub fn has_fully_round_shape(node: &PenNode) -> bool {
-    let value = serde_json::to_value(node).unwrap_or_default();
-    matches!((value["width"].as_f64(), value["height"].as_f64()),
+    matches!((numeric_wire_size(node, true), numeric_wire_size(node, false)),
         (Some(w), Some(h)) if w > 0.0 && h > 0.0 && corner_radius_numeric(node) >= w.min(h) / 2.0)
 }
 
@@ -607,7 +615,11 @@ pub fn raw_padding_value(padding: Option<&Padding>) -> Value {
 /// Format an `f64` like the TS template-literal `${num}` — integral values
 /// without a trailing `.0`.
 pub fn fmt_num(value: f64) -> String {
-    if value.fract() == 0.0 && value.is_finite() {
+    if value.fract() == 0.0
+        && value.is_finite()
+        && value >= i64::MIN as f64
+        && value < i64::MAX as f64
+    {
         format!("{}", value as i64)
     } else {
         format!("{value}")

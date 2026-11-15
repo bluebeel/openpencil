@@ -1,11 +1,13 @@
-use std::path::Path;
+use std::{
+    io::{Read, Write},
+    path::Path,
+};
 
-use base64::Engine as _;
-use serde_json::Value;
+use serde_json::{value::RawValue, Value};
 
 use crate::cli_error::CliError;
 use crate::command_helpers::flag_value;
-use crate::mcp_http_cli::{post, tool_call_body};
+use crate::mcp_http_cli::{post, raw_object, raw_text, tool_call_body};
 use crate::{Command, Flags};
 
 pub(crate) fn map_export(flags: &Flags) -> Result<Command, CliError> {
@@ -121,30 +123,51 @@ pub(crate) fn run_export_deck(
 }
 
 pub(crate) fn write_export_response(response: &str, output: &Path) -> Result<String, CliError> {
-    let value: Value = serde_json::from_str(response).map_err(|error| {
+    let value: &RawValue = serde_json::from_str(response).map_err(|error| {
         CliError::Payload(format!("export_item returned invalid JSON: {error}"))
     })?;
-    let encoded = value
-        .get("bytes_base64")
-        .and_then(Value::as_str)
+    let fields = raw_object(value.get())
         .ok_or_else(|| CliError::Payload("export_item response is missing bytes_base64".into()))?;
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(encoded)
-        .map_err(|error| {
-            CliError::Payload(format!("export_item returned invalid Base64: {error}"))
-        })?;
-    std::fs::write(output, bytes).map_err(|error| {
-        CliError::Io(format!(
-            "cannot write export to {}: {error}",
-            output.display()
-        ))
+    let encoded = fields
+        .get("bytes_base64")
+        .and_then(|raw| raw_text(raw))
+        .ok_or_else(|| CliError::Payload("export_item response is missing bytes_base64".into()))?;
+    // Decode directly into a sibling output with bounded scratch storage. A
+    // corrupt tail, I/O failure or failed rename leaves the old output intact.
+    crate::atomic_save::write_path_atomically(output, |writer| {
+        let mut decoder = base64::read::DecoderReader::new(
+            encoded.as_bytes(),
+            &base64::engine::general_purpose::STANDARD,
+        );
+        let mut decoded = [0_u8; 48 * 1024];
+        loop {
+            let count = decoder.read(&mut decoded).map_err(|error| {
+                CliError::Payload(format!("export_item returned invalid Base64: {error}"))
+            })?;
+            if count == 0 {
+                break;
+            }
+            writer.write_all(&decoded[..count]).map_err(|error| {
+                CliError::Io(format!(
+                    "cannot write export to {}: {error}",
+                    output.display()
+                ))
+            })?;
+        }
+        Ok(())
     })?;
 
+    let text_field = |name| {
+        fields
+            .get(name)
+            .and_then(|raw| raw_text(raw))
+            .unwrap_or_default()
+    };
     Ok(serde_json::json!({
         "output": output.to_string_lossy(),
-        "itemId": value.get("itemId").and_then(Value::as_str).unwrap_or(""),
-        "itemType": value.get("itemType").and_then(Value::as_str).unwrap_or(""),
-        "format": value.get("format").and_then(Value::as_str).unwrap_or(""),
+        "itemId": text_field("itemId"),
+        "itemType": text_field("itemType"),
+        "format": text_field("format"),
     })
     .to_string())
 }

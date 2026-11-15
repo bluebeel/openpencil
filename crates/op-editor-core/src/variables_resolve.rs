@@ -25,7 +25,11 @@
 //! - `replace` — [`replace_variable_refs_in_tree`] and its walk
 
 mod palette;
+mod reference_fields;
+pub(crate) mod reference_index;
 mod replace;
+pub(crate) use reference_fields::visit_reference_fields;
+pub(crate) use replace::replace_variable_refs_in_node_header;
 #[cfg(test)]
 mod tests;
 
@@ -33,7 +37,10 @@ pub(crate) use palette::{FallbackValue, DEFAULT_PALETTE_FALLBACK, LEGACY_PALETTE
 use replace::node_container_mut;
 pub use replace::replace_variable_refs_in_tree;
 
-use std::collections::BTreeMap;
+use std::{
+    collections::{BTreeMap, HashMap},
+    sync::OnceLock,
+};
 
 use jian_ops_schema::node::base::NumberOrExpression;
 use jian_ops_schema::node::container::Padding;
@@ -115,13 +122,24 @@ pub fn has_palette_fallback(name: &str) -> bool {
 /// Look a token up in the fallback tables: the shadcn dictionary
 /// first, then the legacy `color-*` compat table.
 fn palette_fallback(name: &str) -> Option<&'static FallbackValue> {
-    let find = |table: &'static [(&'static str, FallbackValue)]| {
-        table
-            .iter()
-            .find(|(token, _)| *token == name)
-            .map(|(_, value)| value)
-    };
-    find(DEFAULT_PALETTE_FALLBACK).or_else(|| find(LEGACY_PALETTE_FALLBACK))
+    // Fixed shipped keys only: never intern unbounded document/user strings.
+    // First table/entry wins exactly as the former two linear searches did.
+    static INDEX: OnceLock<HashMap<&'static str, &'static FallbackValue>> = OnceLock::new();
+    INDEX
+        .get_or_init(|| {
+            let mut index = HashMap::with_capacity(
+                DEFAULT_PALETTE_FALLBACK.len() + LEGACY_PALETTE_FALLBACK.len(),
+            );
+            for (key, value) in DEFAULT_PALETTE_FALLBACK
+                .iter()
+                .chain(LEGACY_PALETTE_FALLBACK.iter())
+            {
+                index.entry(*key).or_insert(value);
+            }
+            index
+        })
+        .get(name)
+        .copied()
 }
 
 /// Materialize a fallback entry for the active theme (Light/Dark pair

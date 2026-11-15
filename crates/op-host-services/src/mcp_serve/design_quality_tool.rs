@@ -1,6 +1,8 @@
 //! Read-only MCP exposure for the design loop's detect-only quality scans.
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::Arc};
+#[path = "design_quality_cache.rs"]
+mod cache;
 
 use op_editor_core::EditorState;
 use op_mcp::{McpTool, ToolOutcome};
@@ -21,14 +23,53 @@ impl McpTool for GetDesignQuality {
     }
 
     fn call(&self, _args: &BTreeMap<String, String>) -> ToolOutcome {
-        let report = op_chat_agent::design_agent_tools::collect_design_quality(&self.state);
-        match serde_json::to_string(&report) {
-            Ok(json) => ToolOutcome::OkJson(json),
-            Err(error) => ToolOutcome::Err(
-                op_mcp::ToolErrorCode::Internal,
-                format!("serialize design quality failed: {error}"),
+        collect(&self.state)
+    }
+}
+
+/// Request-local pure diagnostics borrow the locked editor while preparing;
+/// the returned tool owns only its result, never an extra document forest.
+pub(crate) struct PreparedQuality(Arc<cache::ResultValue>);
+pub(crate) fn get_design_quality_for_call(state: &EditorState) -> PreparedQuality {
+    // This private factory is selected only by the trusted bound-request
+    // registry. Reusable/public snapshots retain fresh layout construction.
+    let scene = op_pen_loader::active_query_scene_cached(state);
+    PreparedQuality(cache::result(state, &scene, || {
+        format_report(
+            op_chat_agent::design_agent_tools::collect_design_quality_with_scene(
+                state,
+                scene.as_ref(),
             ),
+        )
+    }))
+}
+impl McpTool for PreparedQuality {
+    fn name(&self) -> &str {
+        "get_design_quality"
+    }
+    fn call(&self, _args: &BTreeMap<String, String>) -> ToolOutcome {
+        self.0.outcome()
+    }
+    fn call_once(self: Box<Self>, _args: &BTreeMap<String, String>) -> ToolOutcome {
+        match Arc::try_unwrap(self.0) {
+            Ok(value) => value.into_outcome(),
+            Err(value) => value.outcome(),
         }
+    }
+}
+fn collect(state: &EditorState) -> ToolOutcome {
+    let report = op_chat_agent::design_agent_tools::collect_design_quality(state);
+    format_report(report)
+}
+fn format_report(
+    report: op_chat_agent::design_agent_tools::DesignQualityDiagnostics,
+) -> ToolOutcome {
+    match serde_json::to_string(&report) {
+        Ok(json) => ToolOutcome::OkJson(json),
+        Err(error) => ToolOutcome::Err(
+            op_mcp::ToolErrorCode::Internal,
+            format!("serialize design quality failed: {error}"),
+        ),
     }
 }
 

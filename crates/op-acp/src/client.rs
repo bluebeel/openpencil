@@ -11,7 +11,7 @@ use std::time::Duration;
 use agent_client_protocol::schema::ProtocolVersion;
 use op_util::cli_output::BoundedTail;
 use serde_json::Value;
-use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, BufReader};
+use tokio::io::{AsyncRead, AsyncWrite, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -23,9 +23,11 @@ use crate::protocol::{
     SetSessionConfigOptionResponse, METHOD_INITIALIZE, METHOD_SESSION_CANCEL, METHOD_SESSION_NEW,
     METHOD_SESSION_PROMPT, METHOD_SESSION_SET_CONFIG_OPTION, PROTOCOL_VERSION,
 };
+#[cfg(test)]
+use crate::transport::write_frame;
 #[cfg(feature = "remote")]
 use crate::transport::MAX_INBOUND_FRAME_BYTES;
-use crate::transport::{read_frame, write_frame};
+use crate::transport::{read_frame, write_frame_buffered};
 use crate::types::{AcpAgentConfig, AcpAgentInfo, AcpError, ConnectionType};
 
 /// Per-request timeout for the handshake calls.
@@ -119,15 +121,19 @@ impl AcpConnection {
         let pending = engine.pending();
         let reply_tx = engine.out_tx();
         let reader_engine = engine.clone();
+        let writer_engine = engine.clone();
 
         // Writer task — drain outbound frames onto the byte stream.
         let mut write = write;
         let writer = tokio::spawn(async move {
+            let mut scratch = Vec::new();
             while let Some(frame) = out_rx.recv().await {
-                if write_frame(&mut write, &frame).await.is_err() {
-                    break;
+                if let Err(error) = write_frame_buffered(&mut write, &frame, &mut scratch).await {
+                    writer_engine.fail(error);
+                    return;
                 }
             }
+            writer_engine.fail(AcpError::Closed);
         });
 
         // Reader task — classify + dispatch every inbound frame until
@@ -299,12 +305,15 @@ impl AcpConnection {
         });
         let encoded = serde_json::to_value(value)
             .map_err(|e| AcpError::Protocol(format!("invalid session config value: {e}")))?;
-        let object = encoded.as_object().ok_or_else(|| {
-            AcpError::Protocol("session config value did not serialize as an object".into())
-        })?;
-        for (key, value) in object {
-            params[key] = value.clone();
-        }
+        let Value::Object(object) = encoded else {
+            return Err(AcpError::Protocol(
+                "session config value did not serialize as an object".into(),
+            ));
+        };
+        params
+            .as_object_mut()
+            .expect("params is an object")
+            .extend(object);
         let result = self
             .engine
             .call(METHOD_SESSION_SET_CONFIG_OPTION, params, HANDSHAKE_TIMEOUT)
@@ -393,8 +402,9 @@ async fn connect_local(config: &AcpAgentConfig) -> Result<AcpConnection, AcpErro
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
-    let mut child =
-        spawn::spawn_with_etxtbsy_retry(&mut cmd).map_err(|e| AcpError::Spawn(e.to_string()))?;
+    let mut child = spawn::spawn_with_etxtbsy_retry(&mut cmd)
+        .await
+        .map_err(|e| AcpError::Spawn(e.to_string()))?;
     let stdin = child
         .stdin
         .take()
@@ -415,14 +425,7 @@ async fn connect_local(config: &AcpAgentConfig) -> Result<AcpConnection, AcpErro
     )));
     let stderr_drain = child.stderr.take().map(|stderr| {
         let capture = Arc::clone(&stderr_tail);
-        tokio::spawn(async move {
-            let mut lines = BufReader::new(stderr).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                if let Ok(mut buf) = capture.lock() {
-                    buf.push_line(&line);
-                }
-            }
-        })
+        tokio::spawn(stderr::drain(BufReader::new(stderr), capture))
     });
 
     let mut conn = AcpConnection::new(stdout, stdin, Some(child));
@@ -557,15 +560,16 @@ fn command_candidates(command: &str, path: &str) -> Vec<PathBuf> {
 }
 
 fn is_executable_candidate(candidate: &Path) -> bool {
-    if !candidate.is_file() {
+    let Ok(metadata) = candidate.metadata() else {
+        return false;
+    };
+    if !metadata.is_file() {
         return false;
     }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        candidate
-            .metadata()
-            .is_ok_and(|metadata| metadata.permissions().mode() & 0o111 != 0)
+        metadata.permissions().mode() & 0o111 != 0
     }
     #[cfg(not(unix))]
     {
@@ -707,17 +711,26 @@ async fn connect_remote(config: &AcpAgentConfig) -> Result<AcpConnection, AcpErr
     let pending = engine.pending();
     let reply_tx = engine.out_tx();
     let reader_engine = engine.clone();
+    let writer_engine = engine.clone();
 
     // Writer task — each outbound frame is one WebSocket text message.
     let writer = tokio::spawn(async move {
         while let Some(frame) = out_rx.recv().await {
-            let Ok(text) = serde_json::to_string(&frame) else {
-                continue;
+            let text = match serde_json::to_string(&frame) {
+                Ok(text) => text,
+                Err(error) => {
+                    writer_engine.fail(AcpError::Protocol(error.to_string()));
+                    return;
+                }
             };
-            if sink.send(Message::Text(text)).await.is_err() {
-                break;
+            if let Err(error) = sink.send(Message::Text(text)).await {
+                writer_engine.fail(AcpError::Transport(format!(
+                    "remote ACP WebSocket: {error}"
+                )));
+                return;
             }
         }
+        writer_engine.fail(AcpError::Closed);
     });
     // Reader task — each text message is one inbound frame.
     let reader = tokio::spawn(async move {
@@ -772,6 +785,11 @@ async fn connect_remote(config: &AcpAgentConfig) -> Result<AcpConnection, AcpErr
 
 #[path = "client_spawn.rs"]
 mod spawn;
+
+#[path = "client_reaper.rs"]
+mod reaper;
+#[path = "client_stderr.rs"]
+mod stderr;
 
 #[path = "client_lifecycle.rs"]
 mod lifecycle;

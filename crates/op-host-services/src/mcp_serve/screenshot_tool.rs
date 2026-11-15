@@ -19,14 +19,15 @@ use op_editor_core::EditorState;
 use op_editor_ui::layout_scene::LayoutScene;
 use op_mcp::{McpTool, ToolErrorCode, ToolOutcome};
 
-use crate::export::{render_node_raster_bytes, RasterFormat};
+use super::raster_snapshot::RasterSnapshot;
+use crate::export::RasterFormat;
 
 /// MCP tool struct — stores the layout-resolved scene (derived at
 /// registration time) and the first top-level node id on the active page
 /// for resolving the `"root"` alias at call time.
 pub struct GetScreenshot {
     /// Layout-resolved scene snapshot — same derive the live canvas uses.
-    scene: LayoutScene,
+    scene: RasterSnapshot,
     /// Id of the first top-level node on the active page, used to resolve
     /// the `"root"` alias. `None` when the active page is empty.
     root_node_id: Option<String>,
@@ -38,6 +39,9 @@ impl McpTool for GetScreenshot {
     }
 
     fn call(&self, args: &BTreeMap<String, String>) -> ToolOutcome {
+        if let Err(error) = self.scene.ready() {
+            return ToolOutcome::Err(ToolErrorCode::ToolFailed, error.to_string());
+        }
         // The browser loads the shipped simple-icons catalog from the daemon,
         // but this exact PNG is rendered server-side. Install the same catalog
         // before painting so brand icon_font nodes do not degrade to the
@@ -56,8 +60,15 @@ impl McpTool for GetScreenshot {
         };
 
         // Resolve "root" alias to the first top-level node on the active page.
+        let root_node_id = if raw_id == "root" {
+            self.root_node_id
+                .clone()
+                .or_else(|| scene_root_node_id(&self.scene))
+        } else {
+            None
+        };
         let node_id: &str = if raw_id == "root" {
-            match &self.root_node_id {
+            match &root_node_id {
                 Some(id) => id.as_str(),
                 None => {
                     return ToolOutcome::Err(
@@ -71,7 +82,10 @@ impl McpTool for GetScreenshot {
         };
 
         // Render to PNG bytes via the shared raster pipeline.
-        let bytes = match render_node_raster_bytes(&self.scene, node_id, RasterFormat::Png, 1.0) {
+        let bytes = match self
+            .scene
+            .render_active_node(node_id, RasterFormat::Png, 1.0)
+        {
             Ok(b) => b,
             Err(e) => return ToolOutcome::Err(ToolErrorCode::ToolFailed, e.to_string()),
         };
@@ -80,17 +94,11 @@ impl McpTool for GetScreenshot {
         // (see `export/screenshot.rs` and `export/tests.rs`).
         let image_base64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
 
-        let metadata = serde_json::json!({
-            "nodeId": node_id,
-            "format": "png",
-            // include image_base64 in metadata for the in-app chat agent path —
-            // the MCP path uses the `image` field on ToolResponse::Ok separately
-            "image_base64": image_base64,
-        });
+        let metadata = super::export_result::screenshot_metadata(node_id, &image_base64);
         ToolOutcome::OkImageContent {
             image_base64,
             mime_type: "image/png".into(),
-            metadata_json: Some(metadata.to_string()),
+            metadata_json: Some(metadata),
         }
     }
 }
@@ -107,7 +115,23 @@ pub fn get_screenshot_snapshot(state: &EditorState) -> GetScreenshot {
 /// same scene for another tool (the lean profile's export path) derives the
 /// layout once.
 pub(crate) fn get_screenshot_from_scene(scene: LayoutScene) -> GetScreenshot {
-    let root_node_id = scene_root_node_id(&scene);
+    get_screenshot_from_snapshot(RasterSnapshot::from_scene(scene))
+}
+
+pub(crate) fn get_screenshot_snapshot_admitted(state: &EditorState) -> GetScreenshot {
+    get_screenshot_from_snapshot(RasterSnapshot::capture_http(
+        state,
+        op_pen_loader::ExportScenePolicy::ActiveCanvas,
+        || op_pen_loader::editor_state_to_active_page_layout_scene(state),
+    ))
+}
+
+pub(super) fn get_screenshot_from_snapshot(scene: RasterSnapshot) -> GetScreenshot {
+    let root_node_id = if scene.is_http_deferred() {
+        None
+    } else {
+        scene_root_node_id(&scene)
+    };
     GetScreenshot {
         scene,
         root_node_id,
@@ -145,7 +169,7 @@ mod tests {
             .and_then(|p| p.children.first())
             .map(|n| n.id.clone());
         GetScreenshot {
-            scene,
+            scene: RasterSnapshot::from_scene(scene),
             root_node_id,
         }
     }

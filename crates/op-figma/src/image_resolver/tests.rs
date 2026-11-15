@@ -255,3 +255,50 @@ fn owned_resolver_retains_and_patches_image_stroke_payloads() {
     };
     assert!(image.url.starts_with("data:image/png;base64,"));
 }
+
+#[test]
+fn image_preview_retains_full_original_and_large_preview_sources() {
+    let mut doc: PenDocument = serde_json::from_value(json!({
+        "version": "1",
+        "children": [{
+            "type": "rectangle", "id": "preview",
+            "fill": [{"type": "image", "url": "__hash:original",
+                "thumbnailUrl": "__blob:7", "nearestSampling": true}]
+        }]
+    }))
+    .unwrap();
+    let mut preview = vec![0xAB; 143 * 1024];
+    preview[..8].copy_from_slice(&png_bytes()[..8]);
+    let mut blobs = HashMap::from([(7, preview.clone()), (8, vec![0xFF; 1024])]);
+    retain_referenced_image_blobs(&doc, &mut blobs);
+    assert_eq!(blobs.len(), 1, "a preview-only blob remains reachable");
+    let files = HashMap::from([
+        ("original".into(), png_bytes()),
+        ("unused".into(), vec![0xFF; 1024]),
+    ]);
+    let mut borrowed = doc.clone();
+    assert_eq!(
+        resolve_image_blobs_with(&mut borrowed, &blobs, &files, None),
+        2
+    );
+    assert_eq!(
+        resolve_image_blobs_owned_with(&mut doc, blobs, files, None),
+        2
+    );
+    assert_eq!(
+        doc, borrowed,
+        "owned and borrowed pools resolve the same two sources"
+    );
+    let PenNode::Rectangle(rectangle) = &doc.children[0] else {
+        panic!("rectangle")
+    };
+    let PenFill::Image(image) = &rectangle.container.fill.as_ref().unwrap()[0] else {
+        panic!("image")
+    };
+    assert_eq!(image.url, blob_to_data_url(&png_bytes()));
+    assert_eq!(
+        image.thumbnail_url.as_deref(),
+        Some(blob_to_data_url(&preview).as_str())
+    );
+    assert_eq!(image.nearest_sampling, Some(true));
+}

@@ -1,5 +1,6 @@
-use serde_json::Value;
+use serde_json::{value::RawValue, Value};
 use std::time::{SystemTime, UNIX_EPOCH};
+use std::{borrow::Cow, collections::BTreeMap};
 
 use crate::cli_error::CliError;
 use op_rpc_transport::{JsonRpcRequest, TcpJsonRpc, PING_TIMEOUT, POST_TIMEOUT, SHUTDOWN_TIMEOUT};
@@ -15,23 +16,28 @@ pub(crate) fn status_json(port: u16) -> String {
     // the port. Mirrors TS `op status`, which reports running only when the
     // OpenPencil endpoint actually responds. A stale/foreign listener now
     // correctly reports `running:false`.
-    let running = ping_result(port).is_some();
+    if ping_result(port).is_none() {
+        return status_json_from_running(port, false);
+    }
+    status_json_verified(port)
+}
+
+/// Reuse identity verification completed by this command's endpoint discovery.
+pub(crate) fn status_json_verified(port: u16) -> String {
     // TS `op status` returns {running, port, pid, url, uptime}. When the live
     // discovery file is present AND advertises this port, surface pid +
     // uptime (seconds since the host wrote `timestamp`). Otherwise fall back
     // to the discovery-free shape.
-    if running {
-        if let Some((file_port, pid, timestamp)) = crate::app_control_cli::live_status_fields() {
-            if file_port == port {
-                let uptime = now_millis().saturating_sub(timestamp) / 1000;
-                let url = op_editor_core::local_daemon_origin(port);
-                return format!(
-                    r#"{{"running":true,"port":{port},"pid":{pid},"url":"{url}","uptime":{uptime}}}"#
-                );
-            }
+    if let Some((file_port, pid, timestamp)) = crate::app_control_cli::live_status_fields() {
+        if file_port == port {
+            let uptime = now_millis().saturating_sub(timestamp) / 1000;
+            let url = op_editor_core::local_daemon_origin(port);
+            return format!(
+                r#"{{"running":true,"port":{port},"pid":{pid},"url":"{url}","uptime":{uptime}}}"#
+            );
         }
     }
-    status_json_from_running(port, running)
+    status_json_from_running(port, true)
 }
 
 pub(crate) fn status_json_from_running(port: u16, running: bool) -> String {
@@ -60,26 +66,32 @@ pub(crate) fn tools_list_body() -> String {
 /// JSON-RPC body for a `tools/call` of `tool` with the already-built
 /// `arguments` object JSON.
 pub(crate) fn tool_call_body(tool: &str, args_json: &str) -> String {
-    format!(
-        r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"{}","arguments":{}}}}}"#,
-        json_escape(tool),
-        args_json
-    )
+    let mut out = String::with_capacity(80 + tool.len() + args_json.len());
+    out.push_str(r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"#);
+    op_util::json_escape::push_json_quoted(&mut out, tool);
+    out.push_str(r#","arguments":"#);
+    out.push_str(args_json);
+    out.push_str("}}");
+    out
 }
 
 /// Build a JSON object from `key=value` pairs. MCP tool arguments are
 /// scalar string-typed, so every value is emitted as a JSON string.
 pub(crate) fn args_to_json(pairs: &[(String, String)]) -> String {
-    let mut out = String::from("{");
+    let capacity = pairs
+        .iter()
+        .map(|(k, v)| k.len() + v.len() + 6)
+        .sum::<usize>()
+        + 2;
+    let mut out = String::with_capacity(capacity);
+    out.push('{');
     for (i, (k, v)) in pairs.iter().enumerate() {
         if i > 0 {
             out.push(',');
         }
-        out.push('"');
-        out.push_str(&json_escape(k));
-        out.push_str("\":\"");
-        out.push_str(&json_escape(v));
-        out.push('"');
+        op_util::json_escape::push_json_quoted(&mut out, k);
+        out.push(':');
+        op_util::json_escape::push_json_quoted(&mut out, v);
     }
     out.push('}');
     out
@@ -129,7 +141,7 @@ pub(crate) fn post(port: u16, token: &str, body: &str) -> Result<String, CliErro
             "MCP server on 127.0.0.1:{port} returned HTTP {status}: {reply}"
         )));
     }
-    unwrap_mcp_reply(&reply)
+    unwrap_mcp_reply(reply)
 }
 
 /// Unwrap an MCP JSON-RPC reply for human/agent-facing output, matching the
@@ -138,32 +150,66 @@ pub(crate) fn post(port: u16, token: &str, body: &str) -> Result<String, CliErro
 ///   an `isError:true` result → `Err(text)`.
 /// - a JSON-RPC transport `error` → `Err(message)`.
 /// - anything else (e.g. a `tools/list` reply) → the raw reply unchanged.
-fn unwrap_mcp_reply(reply: &str) -> Result<String, CliError> {
-    let Ok(value) = serde_json::from_str::<Value>(reply) else {
-        return Ok(reply.to_string());
-    };
-    if let Some(message) = value
+fn unwrap_mcp_reply(reply: impl Into<String>) -> Result<String, CliError> {
+    let reply = reply.into();
+    // Keep unknown replies in their original allocation. Borrow raw nested JSON
+    // instead of constructing Values for images, schemas and other unused data.
+    match extract_mcp_text(&reply) {
+        Some(result) => result,
+        None => Ok(reply),
+    }
+}
+
+pub(crate) fn raw_object(raw: &str) -> Option<BTreeMap<String, &RawValue>> {
+    serde_json::from_str(raw).ok()
+}
+
+/// Borrow ordinary JSON strings (notably large Base64 exports); decode only
+/// when the wire string actually contains JSON escapes.
+pub(crate) fn raw_text(raw: &RawValue) -> Option<Cow<'_, str>> {
+    if !raw.get().starts_with('"') {
+        return None;
+    }
+    serde_json::from_str::<&str>(raw.get())
+        .map(Cow::Borrowed)
+        .or_else(|_| serde_json::from_str::<String>(raw.get()).map(Cow::Owned))
+        .ok()
+}
+
+fn extract_mcp_text(reply: &str) -> Option<Result<String, CliError>> {
+    let envelope = raw_object(reply)?;
+    if let Some(message) = envelope
         .get("error")
-        .and_then(|err| err.get("message"))
-        .and_then(Value::as_str)
+        .and_then(|error| raw_object(error.get()))
+        .and_then(|error| error.get("message").copied().and_then(raw_text))
     {
-        return Err(CliError::Tool(message.to_string()));
+        return Some(Err(CliError::Tool(message.into_owned())));
     }
-    let Some(result) = value.get("result") else {
-        return Ok(reply.to_string());
-    };
-    if let Some(content) = result.get("content").and_then(Value::as_array) {
-        let text = content
-            .iter()
-            .filter_map(|block| block.get("text").and_then(Value::as_str))
-            .collect::<Vec<_>>()
-            .join("\n");
-        if result.get("isError").and_then(Value::as_bool) == Some(true) {
-            return Err(CliError::Tool(text));
+    let result = raw_object(envelope.get("result")?.get())?;
+    let content: Vec<&RawValue> = serde_json::from_str(result.get("content")?.get()).ok()?;
+    let mut text: Option<String> = None;
+    for block in content {
+        let Some(part) =
+            raw_object(block.get()).and_then(|block| block.get("text").copied().and_then(raw_text))
+        else {
+            continue;
+        };
+        match &mut text {
+            Some(text) => {
+                text.push('\n');
+                text.push_str(&part);
+            }
+            None => text = Some(part.into_owned()),
         }
-        return Ok(text);
     }
-    Ok(reply.to_string())
+    let text = text.unwrap_or_default();
+    Some(
+        if result.get("isError").is_some_and(|raw| raw.get() == "true") {
+            Err(CliError::Tool(text))
+        } else {
+            Ok(text)
+        },
+    )
 }
 
 /// Plain HTTP `GET` against `127.0.0.1:port{path}` with the same deadline

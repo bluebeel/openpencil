@@ -5,37 +5,11 @@
 //! against the real Ref + component tree and resolves the effective
 //! child without teaching generic document walkers about virtual nodes.
 
-use crate::instance_override::resolve_instance_display_node;
 use crate::node_id::NodeId;
 use crate::pen_node_ext::PenNodeExt;
 use crate::walkers::find_node;
 use jian_ops_schema::node::PenNode;
 use jian_ops_schema::PenDocument;
-
-fn find_authored_node<'a>(doc: &'a PenDocument, id: &str) -> Option<&'a PenNode> {
-    fn walk<'a>(nodes: &'a [PenNode], id: &str) -> Option<&'a PenNode> {
-        for node in nodes {
-            if node.id_str() == id {
-                return Some(node);
-            }
-            if let Some(children) = node.children() {
-                if let Some(hit) = walk(children, id) {
-                    return Some(hit);
-                }
-            }
-        }
-        None
-    }
-
-    if let Some(pages) = doc.pages.as_ref() {
-        for page in pages {
-            if let Some(hit) = walk(&page.children, id) {
-                return Some(hit);
-            }
-        }
-    }
-    walk(&doc.children, id)
-}
 
 /// Split a canvas instance-child anchor into its authored Ref id and
 /// original component-child id. A delimiter match is not enough: the
@@ -46,6 +20,12 @@ fn find_authored_node<'a>(doc: &'a PenDocument, id: &str) -> Option<&'a PenNode>
 /// resolved yet. They have no single authored Ref node to receive the
 /// override; returning `None` keeps that unsupported case read-only.
 pub fn split_instance_child_anchor(anchor: &NodeId, doc: &PenDocument) -> Option<(NodeId, NodeId)> {
+    split_with_lookup(anchor, &crate::ref_resolve::NodeLookup::from_document(doc))
+}
+fn split_with_lookup(
+    anchor: &NodeId,
+    lookup: &crate::ref_resolve::NodeLookup<'_>,
+) -> Option<(NodeId, NodeId)> {
     fn contains_descendant(children: &[PenNode], child_id: &NodeId) -> bool {
         for child in children {
             if child.id_str() == child_id.as_str() {
@@ -62,7 +42,7 @@ pub fn split_instance_child_anchor(anchor: &NodeId, doc: &PenDocument) -> Option
     }
 
     let raw = anchor.as_str();
-    if !anchor.is_real() || !raw.contains("__") || find_authored_node(doc, raw).is_some() {
+    if !anchor.is_real() || !raw.contains("__") || lookup.find_authored(raw).is_some() {
         return None;
     }
     let mut found = None;
@@ -82,11 +62,10 @@ pub fn split_instance_child_anchor(anchor: &NodeId, doc: &PenDocument) -> Option
         else {
             continue;
         };
-        let Some(ref_node @ PenNode::Ref(reference)) = find_authored_node(doc, ref_id.as_str())
-        else {
+        let Some(ref_node @ PenNode::Ref(reference)) = lookup.find_authored(ref_id.as_str()) else {
             continue;
         };
-        let Some(component) = find_authored_node(doc, &reference.target) else {
+        let Some(component) = lookup.find(&reference.target) else {
             continue;
         };
         let component_children = component.children().filter(|children| !children.is_empty());
@@ -120,17 +99,111 @@ pub fn resolve_instance_display_node_for_anchor(
     doc: &PenDocument,
     anchor: &NodeId,
 ) -> Option<PenNode> {
-    if let Some(node) = find_authored_node(doc, anchor.as_str()) {
-        return matches!(node, PenNode::Ref(_))
-            .then(|| resolve_instance_display_node(doc, node))
-            .flatten();
+    resolve_with_lookup(
+        &crate::ref_resolve::NodeLookup::from_document(doc),
+        anchor,
+        false,
+    )
+}
+fn resolve_with_lookup(
+    lookup: &crate::ref_resolve::NodeLookup<'_>,
+    anchor: &NodeId,
+    header: bool,
+) -> Option<PenNode> {
+    if let Some(node @ PenNode::Ref(reference)) = lookup.find_authored(anchor.as_str()) {
+        return crate::ref_resolve::merge_instance(
+            node,
+            lookup.find(&reference.target)?,
+            true,
+            header,
+        );
     }
-    let (ref_id, child_id) = split_instance_child_anchor(anchor, doc)?;
-    let ref_node = find_authored_node(doc, ref_id.as_str())?;
-    let display = resolve_instance_display_node(doc, ref_node)?;
-    let mut child = find_node(display.children()?, &child_id)?.clone();
-    child.base_mut().id = anchor.as_str().to_string();
+    let (ref_id, child_id) = split_with_lookup(anchor, lookup)?;
+    let node @ PenNode::Ref(reference) = lookup.find_authored(ref_id.as_str())? else {
+        return None;
+    };
+    let display =
+        crate::ref_resolve::merge_instance(node, lookup.find(&reference.target)?, true, false)?;
+    let child = find_node(display.children()?, &child_id)?;
+    let mut child = if header {
+        crate::pen_node_ext::clone_without_children(child)
+    } else {
+        child.clone()
+    };
+    child.base_mut().id = anchor.as_str().to_owned();
     Some(child)
+}
+impl crate::EditorState {
+    /// Inspector metadata uses the same registry precedence as canvas Ref
+    /// expansion, including owned external prototypes absent from the Doc.
+    pub fn instance_display_header(&self, anchor: &NodeId) -> Option<PenNode> {
+        if find_node(self.active_children(), anchor)
+            .is_some_and(|node| !matches!(node, PenNode::Ref(_)))
+        {
+            return None;
+        }
+
+        let lookup = crate::ref_resolve::NodeLookup::from_components_with_document_fallback(
+            &self.components,
+            &self.doc,
+        );
+        if let Some(node @ PenNode::Ref(reference)) = find_node(self.active_children(), anchor) {
+            return crate::ref_resolve::merge_instance(
+                node,
+                lookup.find(&reference.target)?,
+                true,
+                true,
+            );
+        }
+        resolve_with_lookup(&lookup, anchor, true)
+    }
+    pub(crate) fn split_instance_anchor(&self, anchor: &NodeId) -> Option<(NodeId, NodeId)> {
+        if !anchor.as_str().contains("__") {
+            return None;
+        }
+        let lookup = crate::ref_resolve::NodeLookup::from_components_with_document_fallback(
+            &self.components,
+            &self.doc,
+        );
+        split_with_lookup(anchor, &lookup)
+    }
+}
+pub(crate) fn prepare_instance_write(
+    state: &crate::EditorState,
+    anchor: &NodeId,
+) -> Option<(NodeId, String, PenNode, bool)> {
+    let lookup = crate::ref_resolve::NodeLookup::from_components_with_document_fallback(
+        &state.components,
+        &state.doc,
+    );
+    if let Some(node @ PenNode::Ref(reference)) = find_node(state.active_children(), anchor) {
+        let base = node.base();
+        if !base.visible.unwrap_or(true) || base.locked.unwrap_or(false) {
+            return None;
+        }
+        return Some((
+            anchor.clone(),
+            reference.target.clone(),
+            crate::ref_resolve::merge_instance(node, lookup.find(&reference.target)?, true, true)?,
+            true,
+        ));
+    }
+    let (ref_id, child_id) = split_with_lookup(anchor, &lookup)?;
+    let node = find_node(state.active_children(), &ref_id)?;
+    // A virtual anchor must not bind a different same-id Ref on another page.
+    if !std::ptr::eq(node, lookup.find_authored(ref_id.as_str())?) {
+        return None;
+    }
+    let base = node.base();
+    if !base.visible.unwrap_or(true) || base.locked.unwrap_or(false) {
+        return None;
+    }
+    Some((
+        ref_id,
+        child_id.as_str().to_owned(),
+        resolve_with_lookup(&lookup, anchor, true)?,
+        false,
+    ))
 }
 
 #[cfg(test)]
@@ -308,9 +381,18 @@ mod tests {
         state.finish_instance_write(scope);
 
         assert_eq!(state.history.past.len(), crate::HISTORY_CAP);
-        let newest = state.history.past.back().expect("newest history snapshot");
+        let newest = state
+            .history
+            .past
+            .back()
+            .expect("newest history snapshot")
+            .full_snapshot()
+            .unwrap();
         assert!(matches!(
-            newest.doc.snapshot_find_node(0, &NodeId::new("inst")),
+            newest
+                .doc
+                .snapshot_find_node(0, &NodeId::new("inst"))
+                .map(crate::SharedNode::metadata),
             Some(PenNode::Ref(_))
         ));
         assert!(newest.doc.snapshot_find_node(0, &child).is_none());

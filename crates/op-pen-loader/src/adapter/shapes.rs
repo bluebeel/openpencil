@@ -107,7 +107,7 @@ pub(super) fn ellipse_to_payload(n: &EllipseNode) -> NodePayload {
     p.w = sizing_to_f32(&n.width);
     p.h = sizing_to_f32(&n.height);
     assign_first_fill(&mut p, n.fill.as_deref());
-    p.stroke = stroke_to_payload(n.stroke.as_ref());
+    crate::style_payload::assign_stroke(&mut p, n.stroke.as_ref());
     p.corner_radius = n.corner_radius.unwrap_or(0.0) as f32;
     // Arc geometry — only carried when authored, so a plain ellipse
     // still paints as a full oval.
@@ -143,9 +143,10 @@ pub(super) fn line_to_payload(n: &LineNode) -> NodePayload {
     if p.w == 0.0 && p.h == 0.0 {
         p.w = 1.0;
     }
-    p.stroke = stroke_to_payload(n.stroke.as_ref());
-    if p.stroke.is_none() {
+    crate::style_payload::assign_stroke(&mut p, n.stroke.as_ref());
+    if p.stroke.is_none() && !p.stroke_disabled {
         p.stroke = Some(StrokePayload {
+            detail: None,
             color: Some([0.0, 0.0, 0.0, 1.0]),
             width: 1.0,
             sides: None,
@@ -162,7 +163,7 @@ pub(super) fn polygon_to_payload(n: &PolygonNode) -> NodePayload {
     p.w = sizing_to_f32(&n.width);
     p.h = sizing_to_f32(&n.height);
     assign_first_fill(&mut p, n.fill.as_deref());
-    p.stroke = stroke_to_payload(n.stroke.as_ref());
+    crate::style_payload::assign_stroke(&mut p, n.stroke.as_ref());
     p.corner_radius = n.corner_radius.unwrap_or(0.0) as f32;
     p.polygon_sides = n.polygon_count.clamp(3, 100);
     p
@@ -184,8 +185,9 @@ pub(super) fn path_to_payload(n: &PathNode) -> NodePayload {
     p.w = sizing_to_f32(&n.width);
     p.h = sizing_to_f32(&n.height);
     assign_first_fill(&mut p, n.fill.as_deref());
-    p.stroke = stroke_to_payload(n.stroke.as_ref());
+    crate::style_payload::assign_stroke(&mut p, n.stroke.as_ref());
     p.svg_path = n.d.clone();
+    p.svg_view_box = n.view_box.clone();
     if let Some(anchors) = &n.anchors {
         // `points` is the path's anchor polyline — kept 1:1 with the
         // schema anchors so the pen-tool anchor hit-test (which maps a
@@ -213,8 +215,10 @@ pub(super) fn text_to_payload(n: &TextNode) -> NodePayload {
     crate::text_style::apply_text_content(&mut p, n);
     assign_first_fill(&mut p, n.fill.as_deref());
     p.font_family = n.font_family.clone().unwrap_or_default();
-    p.font_size = n.font_size.unwrap_or(0.0) as f32;
+    p.font_size = n.font_size_px().unwrap_or(0.0) as f32;
     p.font_weight = resolve_font_weight(n.font_weight.as_ref());
+    p.font_kerning = n.font_kerning;
+    p.font_features = n.font_features.clone().unwrap_or_default();
     // Keep paint on the same canonical multiplier used by layout measurement.
     // In particular, text carrying a pixel-like lineHeight must not measure
     // with the default and then paint with hundreds of pixels of leading.
@@ -298,6 +302,35 @@ fn text_vertical_align_keyword(value: &jian_ops_schema::node::TextAlignVertical)
 
 pub(super) fn image_to_payload(n: &ImageNode) -> NodePayload {
     let mut p = base_payload(&n.base, "rect");
+    p.image_geometry = n.geometry.clone();
+    p.image_nearest_sampling = n.nearest_sampling;
+    p.image_paint = Some(Box::new(jian_ops_schema::style::ImageFillBody {
+        url: n.src.clone(),
+        geometry: n.geometry.clone(),
+        nearest_sampling: n.nearest_sampling,
+        mode: n.object_fit.as_ref().map(|f| match f {
+            jian_ops_schema::node::image::ImageFitMode::Fill => {
+                jian_ops_schema::style::ImageFillMode::Fill
+            }
+            jian_ops_schema::node::image::ImageFitMode::Fit => {
+                jian_ops_schema::style::ImageFillMode::Fit
+            }
+            jian_ops_schema::node::image::ImageFitMode::Crop => {
+                jian_ops_schema::style::ImageFillMode::Crop
+            }
+            jian_ops_schema::node::image::ImageFitMode::Tile => {
+                jian_ops_schema::style::ImageFillMode::Tile
+            }
+        }),
+        exposure: n.exposure,
+        contrast: n.contrast,
+        saturation: n.saturation,
+        temperature: n.temperature,
+        tint: n.tint,
+        highlights: n.highlights,
+        shadows: n.shadows,
+        ..Default::default()
+    }));
     if let Some(CornerRadius::Uniform(r)) = &n.corner_radius {
         p.corner_radius = *r as f32;
     } else if let Some(CornerRadius::PerCorner(corners)) = &n.corner_radius {

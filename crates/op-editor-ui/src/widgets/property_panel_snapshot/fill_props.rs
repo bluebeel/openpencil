@@ -16,7 +16,7 @@ use jian_ops_schema::node::PenNode;
 pub(super) fn gradient_angle_of(node: &PenNode) -> Option<f32> {
     use jian_ops_schema::style::PenFill;
     match op_editor_core::fills::node_fills(node).and_then(|f| f.first())? {
-        PenFill::LinearGradient(body) => Some(body.angle.unwrap_or(0.0)),
+        PenFill::LinearGradient(body) => Some(body.angle.unwrap_or(0.0) as f32),
         _ => None,
     }
 }
@@ -35,7 +35,7 @@ pub(super) fn gradient_stops_of(node: &PenNode) -> Vec<GradientStopSummary> {
     };
     raw.iter()
         .map(|s| GradientStopSummary {
-            offset: s.offset.clamp(0.0, 1.0),
+            offset: (s.offset as f32).clamp(0.0, 1.0),
             hex: s.color.clone(),
             color: color_from_hex(&s.color).unwrap_or(Color::BLACK),
         })
@@ -90,7 +90,7 @@ pub(super) fn fills_of(node: &PenNode) -> Vec<FillSummary> {
             FillSummary {
                 fill_type,
                 color: hex.and_then(color_from_hex).unwrap_or(Color::WHITE),
-                opacity,
+                opacity: opacity as f32,
                 blend_mode: op_editor_core::fill_blend_mode_at(node, index),
                 variable_ref: None,
             }

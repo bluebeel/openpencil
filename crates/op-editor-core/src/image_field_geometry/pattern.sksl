@@ -1,0 +1,42 @@
+
+uniform shader image;
+uniform float4 toTile;
+uniform float2 tileOffset;
+uniform float4 toDocument;
+uniform float2 documentOffset;
+uniform float4 sourceBounds;
+uniform float2 extension;
+uniform float clipTile;
+float axis(float x,float policy){
+    if(policy==1.0)return clamp(x,0.0,1.0);
+    float n=floor(x);float f=x-n;
+    return policy==3.0&&mod(n,2.0)!=0.0?1.0-f:f;
+}
+float2 document(float2 p){return float2(dot(toDocument.xy,p),dot(toDocument.zw,p))+documentOffset;}
+half4 main(float2 p){
+    float2 q=float2(dot(toTile.xy,p),dot(toTile.zw,p))+tileOffset;
+    if(clipTile!=0.0){
+        if((extension.x==0.0&&(q.x<0.0||q.x>=1.0))||(extension.y==0.0&&(q.y<0.0||q.y>=1.0)))return half4(0);
+        float2 uv=float2(axis(q.x,extension.x),axis(q.y,extension.y));
+        return image.eval(document(uv));
+    }
+    // Only finite-support image sources enter an overflowing tile field.
+    // Reflect has two mirrored support intervals; the union is conservative.
+    float4 support=sourceBounds;
+    if(extension.x==3.0){support.x=min(support.x,1.0-sourceBounds.z);support.z=max(support.z,1.0-sourceBounds.x);}
+    if(extension.y==3.0){support.y=min(support.y,1.0-sourceBounds.w);support.w=max(support.w,1.0-sourceBounds.y);}
+    if(extension.x==1.0)q.x=clamp(q.x,0.0,1.0);
+    if(extension.y==1.0)q.y=clamp(q.y,0.0,1.0);
+    float2 first=ceil(q-support.zw),last=floor(q-support.xy);
+    if(extension.x<2.0)first.x=last.x=0.0;
+    if(extension.y<2.0)first.y=last.y=0.0;
+    float4 color=float4(0);
+    for(float y=first.y;y<=last.y;y+=1.0)for(float x=first.x;x<=last.x;x+=1.0){
+        float2 uv=q-float2(x,y);
+        if(extension.x==3.0&&mod(x,2.0)!=0.0)uv.x=1.0-uv.x;
+        if(extension.y==3.0&&mod(y,2.0)!=0.0)uv.y=1.0-uv.y;
+        float4 next=float4(image.eval(document(uv)));
+        color=next+color*(1.0-next.a);
+    }
+    return half4(color);
+}

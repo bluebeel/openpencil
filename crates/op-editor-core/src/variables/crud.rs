@@ -82,7 +82,45 @@ impl EditorState {
     /// (rename) or its resolved concrete value (`None`, delete).
     /// Walks pages AND the single-page fallback children.
     fn replace_refs_in_doc(&mut self, old: &str, new: Option<&str>) {
-        let vars_snapshot = self.doc.variables.clone();
+        if let Some(routes) = self.trusted_variable_reference_routes(old) {
+            // Resolve every route before the first mutation. Token rewrites
+            // preserve identity/children, so validated routes remain stable.
+            if routes.iter().all(|route| route.node(&self.doc).is_some()) {
+                let token = format!("${old}");
+                let theme = crate::variables_resolve::effective_theme(
+                    &self.doc,
+                    &self.ui.variables.active_theme,
+                );
+                let vars = self.doc.variables.as_ref();
+                let pages = &mut self.doc.pages;
+                let children = &mut self.doc.children;
+                for route in &routes {
+                    let roots = match &route.scope {
+                        crate::history::Scope::Root => children.as_mut_slice(),
+                        crate::history::Scope::Page { index, id } => {
+                            let page = pages
+                                .as_mut()
+                                .and_then(|pages| pages.get_mut(*index))
+                                .filter(|page| page.id == *id)
+                                .expect("validated variable rewrite page");
+                            page.children.as_mut_slice()
+                        }
+                    };
+                    let node = route
+                        .node_in_mut(roots)
+                        .expect("validated metadata-only variable rewrite route");
+                    crate::variables_resolve::replace_variable_refs_in_node_header(
+                        node, &token, new, vars, &theme,
+                    );
+                }
+                self.refresh_variable_reference_index(&routes);
+                return;
+            }
+        }
+        self.clear_variable_reference_index();
+        // References are read while only the disjoint node forests are
+        // rewritten. Deletion removes the definition after this walk returns.
+        let vars = self.doc.variables.as_ref();
         let theme =
             crate::variables_resolve::effective_theme(&self.doc, &self.ui.variables.active_theme);
         if let Some(pages) = self.doc.pages.as_mut() {
@@ -91,7 +129,7 @@ impl EditorState {
                     &mut page.children,
                     old,
                     new,
-                    vars_snapshot.as_ref(),
+                    vars,
                     &theme,
                 );
             }
@@ -100,7 +138,7 @@ impl EditorState {
             &mut self.doc.children,
             old,
             new,
-            vars_snapshot.as_ref(),
+            vars,
             &theme,
         );
     }
@@ -182,10 +220,10 @@ impl EditorState {
                 .get_or_insert_with(BTreeMap::new)
                 .extend(themes);
         }
-        let declared = self.doc.themes.clone().unwrap_or_default();
+        let declared = self.doc.themes.as_ref();
         self.ui.variables.active_theme.retain(|axis, value| {
             declared
-                .get(axis)
+                .and_then(|themes| themes.get(axis))
                 .is_some_and(|values| values.iter().any(|v| v == value))
         });
         true
@@ -205,6 +243,15 @@ impl EditorState {
         };
         if !values.iter().any(|v| v == value) {
             return false;
+        }
+        if self
+            .ui
+            .variables
+            .active_theme
+            .get(axis)
+            .is_some_and(|current| current == value)
+        {
+            return true;
         }
         self.ui
             .variables

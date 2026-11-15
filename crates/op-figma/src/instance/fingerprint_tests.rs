@@ -32,7 +32,7 @@ fn fingerprint_routes_fill_entry_to_filled_frame() {
     pill.figma.set("type", FigValue::Str("FRAME".into()));
     pill.figma.set(
         "fillPaints",
-        FigValue::Array(vec![obj(vec![("type", FigValue::Str("SOLID".into()))])]),
+        FigValue::Array(vec![obj(vec![("type", FigValue::Str("SOLID".into()))])].into()),
     );
     let sym = symbol_root(vec![right, pill]);
     // Walk order would map 9:50→right and 9:51→pill, but the TRUE
@@ -48,10 +48,9 @@ fn fingerprint_routes_fill_entry_to_filled_frame() {
         vec![guid(9, 50)],
         vec![(
             "fillPaints",
-            FigValue::Array(vec![obj(vec![(
-                "type",
-                FigValue::Str("GRADIENT_LINEAR".into()),
-            )])]),
+            FigValue::Array(
+                vec![obj(vec![("type", FigValue::Str("GRADIENT_LINEAR".into()))])].into(),
+            ),
         )],
     )];
     let out = apply_instance_overrides(&sym, Some(&over), Some(&derived), None);
@@ -226,10 +225,9 @@ fn fill_only_override_falls_back_to_walk_order() {
         vec![guid(9, 51)],
         vec![(
             "fillPaints",
-            FigValue::Array(vec![obj(vec![(
-                "type",
-                FigValue::Str("GRADIENT_LINEAR".into()),
-            )])]),
+            FigValue::Array(
+                vec![obj(vec![("type", FigValue::Str("GRADIENT_LINEAR".into()))])].into(),
+            ),
         )],
     )];
     let out = apply_instance_overrides(&sym, Some(&over), Some(&derived), None);
@@ -248,7 +246,7 @@ fn image_paint(hash_byte: u8) -> FigValue {
         ("type", FigValue::Str("IMAGE".into())),
         (
             "image",
-            obj(vec![("hash", FigValue::Bytes(vec![hash_byte; 4]))]),
+            obj(vec![("hash", FigValue::Bytes(vec![hash_byte; 4].into()))]),
         ),
     ])
 }
@@ -276,8 +274,10 @@ fn solid_paint(opacity: f32) -> FigValue {
 #[test]
 fn image_fill_override_routes_to_image_filled_node() {
     let mut img = sized_leaf("thumb", 12, 49.0, 49.0, 0.0);
-    img.figma
-        .set("fillPaints", FigValue::Array(vec![image_paint(0x11)]));
+    img.figma.set(
+        "fillPaints",
+        FigValue::Array(vec![image_paint(0x11)].into()),
+    );
     let sym = symbol_root(vec![
         sized_leaf("a", 10, 100.0, 100.0, 0.0),
         sized_leaf("b", 11, 100.0, 100.0, 0.0),
@@ -291,7 +291,10 @@ fn image_fill_override_routes_to_image_filled_node() {
     // Walk order would map 9:50 → "a"; the IMAGE evidence must win.
     let over = vec![ov_with(
         vec![guid(9, 50)],
-        vec![("fillPaints", FigValue::Array(vec![image_paint(0x22)]))],
+        vec![(
+            "fillPaints",
+            FigValue::Array(vec![image_paint(0x22)].into()),
+        )],
     )];
     let out = apply_instance_overrides(&sym, Some(&over), Some(&derived), None);
     let hash_of = |name: &str| -> Vec<u8> {
@@ -304,6 +307,7 @@ fn image_fill_override_routes_to_image_filled_node() {
                 _ => None,
             })
             .unwrap_or_default()
+            .to_vec()
     };
     assert_eq!(
         hash_of("thumb"),
@@ -326,10 +330,12 @@ fn low_opacity_fill_override_routes_by_opacity_match() {
     let mut plain = sized_leaf("plain", 10, 100.0, 100.0, 0.0);
     plain
         .figma
-        .set("fillPaints", FigValue::Array(vec![solid_paint(1.0)]));
+        .set("fillPaints", FigValue::Array(vec![solid_paint(1.0)].into()));
     let mut chip = sized_leaf("chip", 11, 100.0, 100.0, 0.0);
-    chip.figma
-        .set("fillPaints", FigValue::Array(vec![solid_paint(0.12)]));
+    chip.figma.set(
+        "fillPaints",
+        FigValue::Array(vec![solid_paint(0.12)].into()),
+    );
     let sym = symbol_root(vec![plain, chip, sized_leaf("c", 12, 100.0, 100.0, 0.0)]);
     let derived = vec![
         guid_path(vec![guid(9, 50)]),
@@ -353,7 +359,7 @@ fn low_opacity_fill_override_routes_by_opacity_match() {
     ]);
     let over = vec![ov_with(
         vec![guid(9, 50)],
-        vec![("fillPaints", FigValue::Array(vec![green]))],
+        vec![("fillPaints", FigValue::Array(vec![green].into()))],
     )];
     let out = apply_instance_overrides(&sym, Some(&over), Some(&derived), None);
     let g_of = |name: &str| -> f64 {
@@ -398,7 +404,10 @@ fn unmatched_low_opacity_fill_falls_back_to_walk_order() {
     // Walk order maps 9:51 -> "b".
     let over = vec![ov_with(
         vec![guid(9, 51)],
-        vec![("fillPaints", FigValue::Array(vec![solid_paint(0.12)]))],
+        vec![(
+            "fillPaints",
+            FigValue::Array(vec![solid_paint(0.12)].into()),
+        )],
     )];
     let out = apply_instance_overrides(&sym, Some(&over), Some(&derived), None);
     let b_opacity = out
@@ -457,7 +466,8 @@ fn near_exact_geometry_beats_stale_walk_order_prior() {
     // Production also forwards strokePaints overrides on the two
     // Graph strokes (13628/13629) — include them so the scoring
     // matches the real path.
-    let stroke_paint = || FigValue::Array(vec![obj(vec![("type", FigValue::Str("SOLID".into()))])]);
+    let stroke_paint =
+        || FigValue::Array(vec![obj(vec![("type", FigValue::Str("SOLID".into()))])].into());
     let over = vec![
         ov_with(vec![guid(2, 13628)], vec![("strokePaints", stroke_paint())]),
         ov_with(vec![guid(2, 13629)], vec![("strokePaints", stroke_paint())]),
@@ -627,8 +637,10 @@ fn single_axis_transform_drift_routes_to_matching_node() {
 #[test]
 fn conflicted_image_fill_reject_stays_dropped() {
     let mut img = sized_leaf("thumb", 11, 49.0, 49.0, 0.0);
-    img.figma
-        .set("fillPaints", FigValue::Array(vec![image_paint(0x11)]));
+    img.figma.set(
+        "fillPaints",
+        FigValue::Array(vec![image_paint(0x11)].into()),
+    );
     let sym = symbol_root(vec![
         sized_leaf("a", 10, 100.0, 100.0, 0.0),
         img,
@@ -644,11 +656,17 @@ fn conflicted_image_fill_reject_stays_dropped() {
     let over = vec![
         ov_with(
             vec![guid(9, 51)],
-            vec![("fillPaints", FigValue::Array(vec![image_paint(0x22)]))],
+            vec![(
+                "fillPaints",
+                FigValue::Array(vec![image_paint(0x22)].into()),
+            )],
         ),
         ov_with(
             vec![guid(9, 52)],
-            vec![("fillPaints", FigValue::Array(vec![image_paint(0x33)]))],
+            vec![(
+                "fillPaints",
+                FigValue::Array(vec![image_paint(0x33)].into()),
+            )],
         ),
     ];
     let out = apply_instance_overrides(&sym, Some(&over), Some(&derived), None);

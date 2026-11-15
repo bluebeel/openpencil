@@ -20,7 +20,10 @@ use op_editor_core::{EditorState, NodeId};
 use serde_json::{json, Map, Value};
 
 use super::{McpTool, ToolErrorCode, ToolOutcome};
-use crate::read_nodes::node_snapshot_value;
+use crate::read_nodes::encode_node_fields;
+
+#[path = "read_walk.rs"]
+pub(crate) mod read_walk;
 
 // --- Shared helpers --------------------------------------------------
 
@@ -93,15 +96,19 @@ impl McpTool for GetDocumentInfo {
 }
 
 fn count_subtree(n: &PenNode) -> usize {
-    1 + n
-        .children()
-        .map(|c| c.iter().map(count_subtree).sum::<usize>())
-        .unwrap_or(0)
+    read_walk::nodes(std::slice::from_ref(n)).count()
 }
 
 /// Snapshot the document into a `GetDocumentInfo` tool. Counts all
 /// nodes recursively across every page (or the single-page root).
 pub fn document_info_snapshot(state: &EditorState) -> GetDocumentInfo {
+    if let Some(counts) = state.trusted_document_node_counts() {
+        return GetDocumentInfo {
+            page_count: state.page_count(),
+            active_page_index: state.ui.active_page_index,
+            total_nodes: counts.canonical_total(),
+        };
+    }
     let total_nodes: usize = match state.doc.pages.as_ref() {
         Some(pages) => pages
             .iter()
@@ -141,24 +148,14 @@ impl McpTool for GetSelection {
             Ok(depth) => depth,
             Err((code, msg)) => return ToolOutcome::Err(code, msg),
         };
-        let nodes: Vec<_> = self
-            .selected_nodes
-            .iter()
-            .map(|node| node_snapshot_value(node, depth))
-            .collect();
-        // Emit EXACTLY TS get-selection's shape — { selectedIds, activePageId,
-        // nodes } — with NATIVE JSON values. The old BTreeMap<String,String>
-        // path stringified every value (selectedIds became "[\"n10\"]", nodes
-        // a stringified array) and leaked Rust-only selected_id/kind/x/y/w/h
-        // keys; OkJson embeds the object verbatim so it matches the TS handler.
-        let selected_ids: serde_json::Value =
-            serde_json::from_str(&self.selected_ids_json).unwrap_or_else(|_| serde_json::json!([]));
-        let out = serde_json::json!({
-            "selectedIds": selected_ids,
-            "activePageId": self.active_page_id,
-            "nodes": nodes,
-        });
-        ToolOutcome::OkJson(out.to_string())
+        let selected_ids: Value =
+            serde_json::from_str(&self.selected_ids_json).unwrap_or_else(|_| json!([]));
+        selection_reply(
+            &self.selected_nodes,
+            depth,
+            selected_ids,
+            &self.active_page_id,
+        )
     }
 }
 
@@ -220,6 +217,68 @@ pub fn selection_snapshot(state: &EditorState) -> GetSelection {
             active_page_id,
             selected_nodes,
         },
+    }
+}
+
+/// Prepared per-call selection JSON. Keeps the public GetSelection literal
+/// fields/legacy constructor intact and never clones selected subtrees.
+pub struct PreparedSelection {
+    outcome: ToolOutcome,
+}
+
+impl McpTool for PreparedSelection {
+    fn name(&self) -> &str {
+        "get_selection"
+    }
+    fn call_once(self: Box<Self>, _: &BTreeMap<String, String>) -> ToolOutcome {
+        self.outcome
+    }
+    fn call(&self, _args: &BTreeMap<String, String>) -> ToolOutcome {
+        self.outcome.clone()
+    }
+}
+
+pub fn selection_snapshot_for_call(
+    state: &EditorState,
+    args: &BTreeMap<String, String>,
+) -> PreparedSelection {
+    let outcome = match parse_selection_depth(args) {
+        Err((code, message)) => ToolOutcome::Err(code, message),
+        Ok(depth) => {
+            let selected_ids: Vec<_> = state
+                .selection
+                .set
+                .iter()
+                .filter(|id| id.is_real())
+                .map(|id| id.as_str())
+                .collect();
+            let nodes = super::requested_nodes::find_for_state(
+                state,
+                state.active_children(),
+                &selected_ids,
+            );
+            selection_reply(nodes, depth, json!(selected_ids), &active_page_id(state))
+        }
+    };
+    PreparedSelection { outcome }
+}
+
+fn selection_reply<'a>(
+    nodes: impl IntoIterator<Item = &'a PenNode>,
+    depth: i32,
+    selected_ids: Value,
+    page_id: &str,
+) -> ToolOutcome {
+    let mut fields = Map::new();
+    fields.insert("selectedIds".into(), selected_ids);
+    fields.insert("activePageId".into(), Value::String(page_id.into()));
+    fields.insert("nodes".into(), Value::Null);
+    match encode_node_fields(nodes, depth, fields) {
+        Ok(json) => ToolOutcome::OkJson(json),
+        Err(error) => ToolOutcome::Err(
+            ToolErrorCode::Internal,
+            format!("serialize selection failed: {error}"),
+        ),
     }
 }
 
@@ -372,6 +431,95 @@ pub fn get_node_snapshot(state: &EditorState) -> GetNode {
     GetNode { nodes }
 }
 
+/// Request-specific record lookup. Global DFS keeps the legacy last-ID-wins
+/// rule without allocating records for unrelated nodes or changing raw IDs.
+pub fn get_node_snapshot_for_call(state: &EditorState, args: &BTreeMap<String, String>) -> GetNode {
+    fn last<'a>(
+        nodes: &'a [PenNode],
+        id: &str,
+        parent: &'a str,
+        found: &mut Option<(&'a PenNode, &'a str)>,
+    ) {
+        for entry in read_walk::nodes(nodes) {
+            if entry.node.id_str() == id {
+                *found = Some((
+                    entry.node,
+                    if entry.depth == 0 {
+                        parent
+                    } else {
+                        entry.parent
+                    },
+                ));
+            }
+        }
+    }
+    let mut nodes = BTreeMap::new();
+    if let Some(id) = args.get("node_id") {
+        if let Some(found) = super::trusted_reads::global_last(state, id) {
+            if let Some(found) = found {
+                nodes.insert(
+                    id.clone(),
+                    node_record(
+                        found.node,
+                        found.parent.map_or("", PenNodeExt::id_str),
+                        &state.ui.variables.fill_refs,
+                        &state.ui.variables.stroke_refs,
+                    ),
+                );
+            }
+            return GetNode { nodes };
+        }
+        let mut found = None;
+        match &state.doc.pages {
+            Some(pages) => {
+                for page in pages {
+                    last(&page.children, id, "", &mut found);
+                }
+            }
+            None => last(&state.doc.children, id, "", &mut found),
+        }
+        if let Some((node, parent)) = found {
+            nodes.insert(
+                id.clone(),
+                node_record(
+                    node,
+                    parent,
+                    &state.ui.variables.fill_refs,
+                    &state.ui.variables.stroke_refs,
+                ),
+            );
+        }
+    }
+    GetNode { nodes }
+}
+
+fn node_record(
+    node: &PenNode,
+    parent_id: &str,
+    fill_refs: &std::collections::HashMap<NodeId, String>,
+    stroke_refs: &std::collections::HashMap<NodeId, String>,
+) -> NodeRecord {
+    let (x, y, width, height) = rect_i32(aggregate_bounds(node));
+    let (fill_ref, stroke_ref) = match NodeId::new_opt(node.id_str()) {
+        Some(id) => (
+            fill_refs.get(&id).cloned().unwrap_or_default(),
+            stroke_refs.get(&id).cloned().unwrap_or_default(),
+        ),
+        None => (String::new(), String::new()),
+    };
+    NodeRecord {
+        kind: kind_label(node).into(),
+        name: node.base().name.clone().unwrap_or_default(),
+        x,
+        y,
+        width,
+        height,
+        parent_id: parent_id.into(),
+        fill_ref,
+        stroke_ref,
+    }
+}
+
 fn walk_node(
     node: &PenNode,
     parent_id: &str,
@@ -379,33 +527,20 @@ fn walk_node(
     stroke_refs: &std::collections::HashMap<NodeId, String>,
     out: &mut BTreeMap<String, NodeRecord>,
 ) {
-    let (x, y, w, h) = rect_i32(aggregate_bounds(node));
-    let id = node.id_str().to_string();
-    let (fill_ref, stroke_ref) = match NodeId::new_opt(id.as_str()) {
-        Some(nid) => (
-            fill_refs.get(&nid).cloned().unwrap_or_default(),
-            stroke_refs.get(&nid).cloned().unwrap_or_default(),
-        ),
-        None => (String::new(), String::new()),
-    };
-    out.insert(
-        id.clone(),
-        NodeRecord {
-            kind: kind_label(node).into(),
-            name: node.base().name.clone().unwrap_or_default(),
-            x,
-            y,
-            width: w,
-            height: h,
-            parent_id: parent_id.to_string(),
-            fill_ref,
-            stroke_ref,
-        },
-    );
-    if let Some(children) = node.children() {
-        for child in children {
-            walk_node(child, &id, fill_refs, stroke_refs, out);
-        }
+    for entry in read_walk::nodes(std::slice::from_ref(node)) {
+        out.insert(
+            entry.node.id_str().to_string(),
+            node_record(
+                entry.node,
+                if entry.depth == 0 {
+                    parent_id
+                } else {
+                    entry.parent
+                },
+                fill_refs,
+                stroke_refs,
+            ),
+        );
     }
 }
 
@@ -559,102 +694,23 @@ pub fn get_active_theme_snapshot(state: &EditorState) -> GetActiveTheme {
     GetActiveTheme { active, options }
 }
 
-// --- list_components / get_component ---------------------------------
-
-/// First-party `list_components` tool.
-pub struct ListComponents {
-    pub items: Vec<(String, String)>,
-}
-
-impl McpTool for ListComponents {
-    fn name(&self) -> &str {
-        "list_components"
-    }
-    fn call(&self, _args: &BTreeMap<String, String>) -> ToolOutcome {
-        let encoded: Vec<String> = self
-            .items
-            .iter()
-            .map(|(name, id)| format!("{}|{}", escape_record_field(name), id))
-            .collect();
-        let mut out = BTreeMap::new();
-        out.insert("count".into(), self.items.len().to_string());
-        out.insert("components".into(), encoded.join(";"));
-        ToolOutcome::Ok(out)
-    }
-}
-
-pub fn list_components_snapshot(state: &EditorState) -> ListComponents {
-    ListComponents {
-        items: state
-            .components
-            .components
-            .iter()
-            .map(|c| (c.name.clone(), c.id.as_str().to_string()))
-            .collect(),
-    }
-}
-
-/// First-party `get_component` tool.
-pub struct GetComponent {
-    pub snapshot: Vec<(String, String, String, usize)>,
-}
-
-impl McpTool for GetComponent {
-    fn name(&self) -> &str {
-        "get_component"
-    }
-    fn call(&self, args: &BTreeMap<String, String>) -> ToolOutcome {
-        let Some(raw) = args.get("component_id") else {
-            return ToolOutcome::Err(
-                ToolErrorCode::MissingArgument,
-                "component_id is required".into(),
-            );
-        };
-        let component_id: &str = raw.as_str();
-        let Some((_, name, kind, leaf_count)) = self
-            .snapshot
-            .iter()
-            .find(|(id, _, _, _)| id == component_id)
-        else {
-            return ToolOutcome::Err(
-                ToolErrorCode::ToolFailed,
-                format!("component {component_id} not found"),
-            );
-        };
-        let mut out = BTreeMap::new();
-        out.insert("name".into(), name.clone());
-        out.insert("kind".into(), kind.clone());
-        out.insert("leaf_count".into(), leaf_count.to_string());
-        ToolOutcome::Ok(out)
-    }
-}
-
-pub fn get_component_snapshot(state: &EditorState) -> GetComponent {
-    GetComponent {
-        snapshot: state
-            .components
-            .components
-            .iter()
-            .filter_map(|c| {
-                let root = state.components.resolved_root(&state.doc, &c.id)?;
-                Some((
-                    c.id.as_str().to_string(),
-                    c.name.clone(),
-                    kind_label(root).to_string(),
-                    count_subtree(root),
-                ))
-            })
-            .collect(),
-    }
-}
-
+#[path = "component_read_tools.rs"]
+pub(crate) mod component_reads;
+pub use component_reads::{
+    get_component_snapshot, get_component_snapshot_cached_for_call,
+    get_component_snapshot_for_call, list_components_snapshot, GetComponent, ListComponents,
+};
 // The remaining read tools live in `read_tools.rs` (800-line cap).
 pub use super::read_tools::{
-    find_empty_space_snapshot, snapshot_layout_snapshot, FindEmptySpace, SnapshotLayout,
+    find_empty_space_snapshot, find_empty_space_snapshot_cached_for_call,
+    find_empty_space_snapshot_for_call, snapshot_layout_snapshot,
+    snapshot_layout_snapshot_cached_for_call, snapshot_layout_snapshot_for_call, FindEmptySpace,
+    SnapshotLayout,
 };
 pub use super::read_tools_extra::{
-    count_nodes_snapshot, find_node_by_name_snapshot, get_canvas_bounds_snapshot,
-    get_history_depth_snapshot, get_node_parent_snapshot, get_selection_set_snapshot,
+    count_nodes_snapshot, find_node_by_name_snapshot, find_node_by_name_snapshot_for_call,
+    get_canvas_bounds_snapshot, get_canvas_bounds_snapshot_cached, get_history_depth_snapshot,
+    get_node_parent_snapshot, get_node_parent_snapshot_for_call, get_selection_set_snapshot,
     get_viewport_snapshot, list_node_kinds_snapshot, CountNodes, FindNodeByName, GetCanvasBounds,
     GetHistoryDepth, GetNodeParent, GetSelectionSet, GetViewport, ListNodeKinds,
 };

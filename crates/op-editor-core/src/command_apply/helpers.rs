@@ -3,7 +3,6 @@
 //! active-page insert shims.
 
 use super::*;
-use jian_ops_schema::node::PenNode;
 
 /// Resolve an `align` action string into an [`AlignAction`].
 pub(super) fn parse_align_action(s: &str) -> Option<AlignAction> {
@@ -61,7 +60,7 @@ pub(super) fn parse_variable_kind(s: &str) -> Option<VariableKind> {
     }
 }
 
-pub(super) fn command_page_index(state: &EditorState, page_id: Option<&str>) -> Option<usize> {
+pub(crate) fn command_page_index(state: &EditorState, page_id: Option<&str>) -> Option<usize> {
     let Some(raw) = page_id.map(str::trim).filter(|s| !s.is_empty()) else {
         return Some(
             state
@@ -81,11 +80,27 @@ pub(super) fn command_page_index(state: &EditorState, page_id: Option<&str>) -> 
 
 pub(super) fn apply_authored_subtree_on_page(
     state: &mut EditorState,
-    nodes: Vec<PenNode>,
-    parent_id: &NodeId,
-    page_id: Option<&str>,
-    preserve_roots: bool,
+    command: EditorCommand,
+    allocator: &mut dyn crate::IdAllocator,
 ) -> bool {
+    let preserve_roots = matches!(
+        command,
+        EditorCommand::InsertAuthoredSubtreePreservingRoots { .. }
+    );
+    let (nodes, parent_id, page_id) = match command {
+        EditorCommand::InsertAuthoredSubtree {
+            nodes,
+            parent_id,
+            page_id,
+        }
+        | EditorCommand::InsertAuthoredSubtreePreservingRoots {
+            nodes,
+            parent_id,
+            page_id,
+        } => (nodes, parent_id, page_id),
+        _ => unreachable!("authored subtree command"),
+    };
+    let page_id = page_id.as_deref();
     let Some(target_page_index) = command_page_index(state, page_id) else {
         return false;
     };
@@ -93,14 +108,15 @@ pub(super) fn apply_authored_subtree_on_page(
     if page_id.is_some() {
         state.ui.active_page_index = target_page_index;
     }
-    let snap = state.snapshot_for_history();
-    let changed = if preserve_roots {
-        state.cmd_insert_authored_subtree_preserving_roots(nodes, parent_id)
-    } else {
-        state.cmd_insert_authored_subtree(nodes, parent_id)
-    };
+    let snap = state.snapshot_for_undo();
+    let changed = state.cmd_insert_authored_subtree_with_root_policy(
+        nodes,
+        &parent_id,
+        !preserve_roots,
+        allocator,
+    );
     if changed {
-        state.history_push_past(snap);
+        state.push_undo(snap);
     }
     if page_id.is_some() && target_page_index != original_page_index {
         state.ui.active_page_index = original_page_index;
@@ -226,7 +242,12 @@ pub(super) fn apply_kit_component_on_page(
         state.ui.active_page_index = original_page_index;
         state.selection = original_selection.clone();
         if matches!(&changed, Ok(true)) {
-            if let Some(snapshot) = state.history.past.back_mut() {
+            if let Some(snapshot) = state
+                .history
+                .past
+                .back_mut()
+                .and_then(crate::HistoryEntry::full_snapshot_mut)
+            {
                 snapshot.active_page_index = original_page_index;
                 snapshot.selection = original_selection;
             }

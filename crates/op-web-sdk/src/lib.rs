@@ -31,7 +31,10 @@ pub struct Viewer {
     preserve_authored_geometry: bool,
     /// Paint-only layout scene built from the loaded document.
     /// `None` until a document is loaded and `rebuild_scene` runs.
-    scene: Option<op_editor_ui::layout_scene::LayoutScene>,
+    scene: Option<std::sync::Arc<op_editor_ui::layout_scene::LayoutScene>>,
+    /// Only this Viewer owns its canvas session and async attachment token.
+    #[cfg(feature = "canvaskit")]
+    render: render::RenderSlot,
     /// Current pan/zoom state. Defaults to identity (origin pan, 100% zoom).
     /// Mutated by `set_viewport`, `zoom_to_fit`, and `forward_wheel`.
     viewport: DocViewport,
@@ -47,6 +50,8 @@ impl Viewer {
             active_page: 0,
             preserve_authored_geometry: false,
             scene: None,
+            #[cfg(feature = "canvaskit")]
+            render: render::RenderSlot::default(),
             viewport: DocViewport::IDENTITY,
         }
     }

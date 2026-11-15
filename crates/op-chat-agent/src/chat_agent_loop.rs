@@ -66,12 +66,12 @@ pub struct AgentLoopConfig {
 }
 
 impl AgentLoopConfig {
-    fn level_for(&self, tool: &str) -> String {
+    fn level_for(&self, tool: &str) -> &str {
         self.tools
             .iter()
             .find(|t| t.name == tool)
-            .map(|t| t.level.clone())
-            .unwrap_or_else(|| "read".to_string())
+            .map(|t| t.level.as_str())
+            .unwrap_or("read")
     }
 }
 
@@ -174,7 +174,11 @@ fn eligible_for_fill_round(unfilled: &[String], attempts: &HashMap<String, usize
 /// Record that a dedicated fill round was just spent on each of `names`.
 fn spend_fill_round(attempts: &mut HashMap<String, usize>, names: &[String]) {
     for name in names {
-        *attempts.entry(name.clone()).or_insert(0) += 1;
+        if let Some(count) = attempts.get_mut(name.as_str()) {
+            *count += 1;
+        } else {
+            attempts.insert(name.clone(), 1);
+        }
     }
 }
 
@@ -397,8 +401,9 @@ async fn pump_sse<C: SseCollector>(
     tx: &mpsc::Sender<ChatDelta>,
     collector: &mut C,
 ) -> Result<(), BuiltinHttpError> {
+    const MAX_EVENT_BYTES: usize = 16 * 1024 * 1024;
     let mut stream = resp.bytes_stream();
-    let mut buf: Vec<u8> = Vec::new();
+    let mut pending: Vec<u8> = Vec::new();
     let mut event_data = String::new();
 
     while let Some(chunk) = stream.next().await {
@@ -408,35 +413,72 @@ async fn pump_sse<C: SseCollector>(
         let bytes = chunk.map_err(|e| BuiltinHttpError::SseStream {
             message: e.to_string(),
         })?;
-        buf.extend_from_slice(&bytes);
-        while let Some(nl_pos) = buf.iter().position(|&b| b == b'\n') {
-            let line: Vec<u8> = buf.drain(..=nl_pos).collect();
-            let line = String::from_utf8_lossy(&line);
-            let line = line.trim_end_matches('\n').trim_end_matches('\r');
-            if line.is_empty() {
-                dispatch_event(&mut event_data, tx, collector).await;
-                continue;
+        let mut rest = bytes.as_ref();
+        while let Some(newline) = rest.iter().position(|byte| *byte == b'\n') {
+            if pending.len().saturating_add(newline) > MAX_EVENT_BYTES {
+                return Err(sse_limit());
             }
-            if let Some(data) = line.strip_prefix("data:") {
-                if !event_data.is_empty() {
-                    event_data.push('\n');
-                }
-                event_data.push_str(data.trim_start());
+            if pending.is_empty() {
+                collect_line(
+                    &rest[..newline],
+                    &mut event_data,
+                    tx,
+                    collector,
+                    MAX_EVENT_BYTES,
+                )
+                .await?;
+            } else {
+                pending.extend_from_slice(&rest[..newline]);
+                collect_line(&pending, &mut event_data, tx, collector, MAX_EVENT_BYTES).await?;
+                pending.clear();
             }
+            rest = &rest[newline + 1..];
         }
+        if pending.len().saturating_add(rest.len()) > MAX_EVENT_BYTES {
+            return Err(sse_limit());
+        }
+        pending.extend_from_slice(rest);
     }
-
-    if !buf.is_empty() {
-        let line = String::from_utf8_lossy(&buf);
-        let line = line.trim_end_matches('\n').trim_end_matches('\r');
-        if let Some(data) = line.strip_prefix("data:") {
-            if !event_data.is_empty() {
-                event_data.push('\n');
-            }
-            event_data.push_str(data.trim_start());
-        }
+    if !pending.is_empty() {
+        collect_line(&pending, &mut event_data, tx, collector, MAX_EVENT_BYTES).await?;
     }
     dispatch_event(&mut event_data, tx, collector).await;
+    Ok(())
+}
+
+fn sse_limit() -> BuiltinHttpError {
+    BuiltinHttpError::SseStream {
+        message: "SSE line or event exceeds 16777216 bytes".into(),
+    }
+}
+
+async fn collect_line<C: SseCollector>(
+    line: &[u8],
+    event_data: &mut String,
+    tx: &mpsc::Sender<ChatDelta>,
+    collector: &mut C,
+    limit: usize,
+) -> Result<(), BuiltinHttpError> {
+    let line = String::from_utf8_lossy(line);
+    let line = line.trim_end_matches('\r');
+    if line.is_empty() {
+        dispatch_event(event_data, tx, collector).await;
+    } else if let Some(data) = line.strip_prefix("data:") {
+        let data = data.trim_start();
+        let separator = usize::from(!event_data.is_empty());
+        if event_data
+            .len()
+            .saturating_add(separator)
+            .saturating_add(data.len())
+            > limit
+        {
+            return Err(sse_limit());
+        }
+        if separator != 0 {
+            event_data.push('\n');
+        }
+        event_data.push_str(data);
+    }
     Ok(())
 }
 
@@ -461,6 +503,8 @@ async fn dispatch_event<C: SseCollector>(
 
 mod anthropic;
 mod openai;
+mod request;
+use request::{tool_definitions, AgentRequest};
 
 pub use anthropic::*;
 pub use openai::*;

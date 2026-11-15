@@ -31,15 +31,33 @@ impl Viewer {
 
 #[wasm_bindgen]
 impl Viewer {
-    /// Set the pan/zoom state and push the update into the live render state.
+    /// Set a finite pan and positive zoom. Invalid or identical values are a
+    /// no-op, so redundant navigation cannot wake an idle render session.
     pub fn set_viewport(&mut self, pan_x: f32, pan_y: f32, zoom: f32) {
-        self.viewport = DocViewport { pan_x, pan_y, zoom };
+        if !pan_x.is_finite() || !pan_y.is_finite() || !zoom.is_finite() || zoom <= 0.0 {
+            return;
+        }
+        let viewport = DocViewport { pan_x, pan_y, zoom };
+        if self.viewport == viewport {
+            return;
+        }
+        self.viewport = viewport;
         // Push to the RAF pump so it repaints with the new viewport.
         // push_viewport already marks + arms exactly once; a second
         // mark_dirty here would advance the content generation again and
         // reset the failure breaker, granting a duplicate retry budget
         // (and a second console.error) for the same update.
         self.push_viewport();
+    }
+
+    /// Change zoom without serializing the existing viewport through JS.
+    pub fn set_zoom(&mut self, zoom: f32) {
+        self.set_viewport(self.viewport.pan_x, self.viewport.pan_y, zoom);
+    }
+
+    /// Change pan while retaining the current zoom inside the same viewer.
+    pub fn pan_to(&mut self, pan_x: f32, pan_y: f32) {
+        self.set_viewport(pan_x, pan_y, self.viewport.zoom);
     }
 
     /// Fit the active page's content into a `w × h` canvas (in CSS px).
@@ -52,6 +70,9 @@ impl Viewer {
     /// A no-op when no scene is loaded or the page has no nodes with
     /// positive size.
     pub fn zoom_to_fit(&mut self, w: f32, h: f32) {
+        if !w.is_finite() || !h.is_finite() || w <= 0.0 || h <= 0.0 {
+            return;
+        }
         let Some(scene) = self.scene.as_ref() else {
             return;
         };
@@ -62,7 +83,8 @@ impl Viewer {
         if bounds.size.x <= 0.0 || bounds.size.y <= 0.0 {
             return;
         }
-        self.viewport.fit_to(
+        let mut viewport = self.viewport;
+        viewport.fit_to(
             Rect {
                 origin: Point2D::new(bounds.origin.x, bounds.origin.y),
                 size: Point2D::new(bounds.size.x, bounds.size.y),
@@ -74,7 +96,7 @@ impl Viewer {
         // Push to the RAF pump so it repaints with the fitted viewport.
         // (One mark only — see set_viewport for why a second mark_dirty
         // would double the breaker budget.)
-        self.push_viewport();
+        self.set_viewport(viewport.pan_x, viewport.pan_y, viewport.zoom);
     }
 }
 
@@ -111,14 +133,22 @@ impl Viewer {
         cursor_x: f32,
         cursor_y: f32,
     ) {
+        if !dx.is_finite()
+            || !dy.is_finite()
+            || (dx == 0.0 && dy == 0.0)
+            || (ctrl_or_meta && (!cursor_x.is_finite() || !cursor_y.is_finite()))
+        {
+            return;
+        }
+        let mut viewport = self.viewport;
         if ctrl_or_meta {
             // Zoom about cursor. Negate dy so scroll-up zooms in.
-            self.viewport.zoom_at(Point2D::new(cursor_x, cursor_y), -dy);
+            viewport.zoom_at(Point2D::new(cursor_x, cursor_y), -dy);
         } else {
             // Pan in the scroll direction.
-            self.viewport.pan(-dx, -dy);
+            viewport.pan(-dx, -dy);
         }
-        self.push_viewport();
+        self.set_viewport(viewport.pan_x, viewport.pan_y, viewport.zoom);
     }
 }
 
@@ -130,7 +160,7 @@ impl Viewer {
     /// RAF pump reads the updated value on the next frame.
     pub(crate) fn push_viewport(&self) {
         use crate::render::push_viewport_to_render;
-        push_viewport_to_render(self.viewport);
+        push_viewport_to_render(self, self.viewport);
     }
 }
 

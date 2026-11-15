@@ -44,6 +44,8 @@ pub struct TextEditLayout {
     pub family: String,
     /// Node-level italic, measured alongside the family.
     pub italic: bool,
+    pub font_kerning: Option<bool>,
+    pub font_features: std::collections::BTreeMap<String, u32>,
     pub text_align: SceneTextAlign,
 }
 
@@ -69,12 +71,9 @@ pub fn text_edit_layout(backend: &mut dyn RenderBackend, node: &SceneNode) -> Te
         1.2
     };
     let wrap_width_doc = if node.text_wrap {
-        // Same tolerance as the painter (TS renderer parity): without
-        // it CJK strings that exactly fit can wrap differently here
-        // than on the painted canvas.
-        let doc_width = node.bounds.size.x;
-        let tolerance = (doc_width * 0.05).ceil().min((font_size * 0.5).ceil());
-        Some(doc_width + tolerance)
+        // The authored box is the wrap budget. Enlarging it can pull a word
+        // from the next saved line into this one, shifting the paragraph.
+        Some(node.bounds.size.x)
     } else {
         None
     };
@@ -94,20 +93,26 @@ pub fn text_edit_layout(backend: &mut dyn RenderBackend, node: &SceneNode) -> Te
                 letter_spacing,
                 family,
                 italic: node.italic,
+                kerning: node.font_kerning,
+                font_features: &node.font_features,
             },
             doc_wrap_width,
         )
     } else {
         text.split('\n').map(str::to_string).collect()
     };
-    // Shrink-to-fit for auto-width text: an auto-width (`text_wrap ==
+    // Explicit font-layout metadata preserves the authored point size. Box
+    // width controls wrapping/clipping; a rounding epsilon or fallback font
+    // width must not silently scale an explicitly authored font.
+    // Legacy shrink-to-fit for auto-width text: an auto-width (`text_wrap ==
     // false`) node's box was sized by the authoring app to hug the
     // text in ITS font. A wider fallback font overflows that box (and
     // gets clipped by the parent frame). Scale the font down so the
     // widest line fits, preserving the imported layout. Wrapping text
     // breaks lines instead, so it is left untouched.
     let box_w = node.bounds.size.x;
-    if !node.text_wrap && box_w > 0.0 {
+    let authored_metrics = node.font_kerning.is_some() || !node.font_features.is_empty();
+    if !authored_metrics && !node.text_wrap && box_w > 0.0 {
         let widest = lines
             .iter()
             .map(|l| {
@@ -117,7 +122,7 @@ pub fn text_edit_layout(backend: &mut dyn RenderBackend, node: &SceneNode) -> Te
                     font_size,
                     weight,
                     letter_spacing,
-                    (family, node.italic),
+                    (family, node.italic, node.font_kerning, &node.font_features),
                 )
             })
             .fold(0.0_f32, f32::max);
@@ -140,6 +145,8 @@ pub fn text_edit_layout(backend: &mut dyn RenderBackend, node: &SceneNode) -> Te
         text_align: node.text_align,
         family: family.to_string(),
         italic: node.italic,
+        font_kerning: node.font_kerning,
+        font_features: node.font_features.clone(),
         lines,
     }
 }
@@ -168,11 +175,23 @@ pub fn measure_line_width(
     font_size: f32,
     weight: u16,
     letter_spacing: f32,
-    (family, italic): (&str, bool),
+    (family, italic, kerning, font_features): (
+        &str,
+        bool,
+        Option<bool>,
+        &std::collections::BTreeMap<String, u32>,
+    ),
 ) -> f32 {
-    let base = backend.measure_text_family_styled(line, font_size, family, weight, italic);
-    let extra = line.chars().count().saturating_sub(1) as f32 * letter_spacing;
-    base + extra
+    backend.measure_text_family_kerned(
+        line,
+        font_size,
+        family,
+        weight,
+        italic,
+        kerning,
+        letter_spacing,
+        font_features,
+    )
 }
 
 impl TextEditLayout {
@@ -213,7 +232,12 @@ impl TextEditLayout {
                     self.font_size,
                     self.weight,
                     self.letter_spacing,
-                    (&self.family, self.italic),
+                    (
+                        &self.family,
+                        self.italic,
+                        self.font_kerning,
+                        &self.font_features,
+                    ),
                 );
                 self.origin.x + (self.align_width - line_w).max(0.0) / 2.0
             }
@@ -224,7 +248,12 @@ impl TextEditLayout {
                     self.font_size,
                     self.weight,
                     self.letter_spacing,
-                    (&self.family, self.italic),
+                    (
+                        &self.family,
+                        self.italic,
+                        self.font_kerning,
+                        &self.font_features,
+                    ),
                 );
                 self.origin.x + (self.align_width - line_w).max(0.0)
             }
@@ -234,32 +263,47 @@ impl TextEditLayout {
     /// Horizontal advance of `line`'s first `byte_offset` bytes —
     /// the caret x relative to the line's left edge. Mirrors the
     /// painter's two advance models: substring measure when there is
-    /// no letter spacing (whole-line draw), per-char measure plus
-    /// spacing AFTER every char when there is (per-char draw).
+    /// no letter spacing or explicit font options (whole-run draw), legacy
+    /// per-char measure plus spacing after each char otherwise.
     fn prefix_width(&self, backend: &mut dyn RenderBackend, line: &str, byte_offset: usize) -> f32 {
         let offset = prev_char_boundary(line, byte_offset.min(line.len()));
         if offset == 0 {
             return 0.0;
         }
         let prefix = &line[..offset];
-        if self.letter_spacing.abs() < f32::EPSILON {
-            backend.measure_text_family_styled(
+        if self.letter_spacing.abs() < f32::EPSILON
+            || self.font_kerning.is_some()
+            || !self.font_features.is_empty()
+        {
+            let advance = backend.measure_text_family_kerned(
                 prefix,
                 self.font_size,
                 &self.family,
                 self.weight,
                 self.italic,
-            )
+                self.font_kerning,
+                self.letter_spacing,
+                &self.font_features,
+            );
+            advance
+                + if offset < line.len() {
+                    self.letter_spacing
+                } else {
+                    0.0
+                }
         } else {
             let mut w = 0.0;
             for ch in prefix.chars() {
                 let mut buf = [0u8; 4];
-                w += backend.measure_text_family_styled(
+                w += backend.measure_text_family_kerned(
                     ch.encode_utf8(&mut buf),
                     self.font_size,
                     &self.family,
                     self.weight,
                     self.italic,
+                    self.font_kerning,
+                    0.0,
+                    &self.font_features,
                 ) + self.letter_spacing;
             }
             // Tracking belongs between glyphs. Internal caret boundaries

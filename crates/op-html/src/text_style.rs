@@ -21,7 +21,7 @@ pub(super) fn segment_style(
         strike: decoration(style, "line-through").then_some(true),
         fill: crate::mapper::text_paint_color(style, fill_override),
         href,
-        font_size: Some(style.font_size as f32),
+        font_size: Some(style.font_size),
         font_family: style.get("font-family").map(str::to_string),
     }
 }
@@ -35,7 +35,7 @@ pub(super) fn sync_single_run_style(text: &mut TextNode, style: &SegStyle) {
         text.font_family = Some(family.clone());
     }
     if let Some(size) = style.font_size {
-        text.font_size = Some(f64::from(size));
+        text.font_size = Some(f64::from(size).into());
     }
     if let Some(weight) = style.weight {
         text.font_weight = Some(FontWeight::Number(weight));

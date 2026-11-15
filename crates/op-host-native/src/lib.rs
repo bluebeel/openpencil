@@ -57,7 +57,9 @@ pub mod context;
     target_os = "android"
 ))]
 pub mod backend;
-#[cfg(feature = "gl-host")]
+/// Registry epoch used by immutable raster-output consumers.
+pub use jian_skia::font_generation as render_font_generation;
+pub use jian_skia::raster_sampling;
 #[cfg(any(
     target_os = "macos",
     target_os = "linux",
@@ -199,3 +201,6 @@ pub(crate) mod agent_indicator_test_support {
 
 #[cfg(feature = "bundled-design-fonts")]
 pub mod bundled_design_fonts;
+
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+pub mod svg_image_source;

@@ -9,6 +9,7 @@
 mod boolean_fallback;
 mod clipboard;
 mod color;
+mod color_variables;
 mod common;
 mod component_props;
 mod container;
@@ -23,8 +24,10 @@ mod mappers;
 mod mask;
 mod node_build;
 mod node_mapper;
+mod packed_blob;
 mod page_mapper;
 mod prepared;
+mod progress;
 mod text_cache;
 mod text_mapper;
 mod tree;
@@ -48,7 +51,11 @@ pub use node_mapper::{
     figma_all_pages_to_pen_document, figma_node_changes_to_pen_nodes, figma_to_pen_document,
     get_figma_pages, FigmaClipboardResult, FigmaImportResult, FigmaPageInfo,
 };
-pub use prepared::{prepare_fig_binary, PreparedFig};
+pub use prepared::{
+    prepare_fig_binary, prepare_fig_binary_owned, prepare_fig_binary_owned_with_observer,
+    prepare_fig_binary_with_observer, PreparedFig,
+};
+pub use progress::FigImportPhase;
 
 use common::FigLayoutMode as LayoutMode;
 pub use image_resolver::ImageTransform;
@@ -475,6 +482,7 @@ fn build_node(variant: FigmaNodeVariant, base: PenNodeBase) -> PenNode {
             limits: Default::default(),
         }),
         FigmaNodeVariant::Path => PenNode::Path(PathNode {
+            view_box: None,
             base,
             icon_id: None,
             d: None,
@@ -499,6 +507,9 @@ fn build_node(variant: FigmaNodeVariant, base: PenNodeBase) -> PenNode {
             limits: Default::default(),
         }),
         FigmaNodeVariant::Text => PenNode::Text(TextNode {
+            font_features: None,
+            font_kerning: None,
+            text_decoration_skip_ink: Some(true),
             base,
             width: None,
             height: None,

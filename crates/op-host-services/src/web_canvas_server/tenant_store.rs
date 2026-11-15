@@ -157,8 +157,8 @@ impl TenantStore {
 
     /// Write a tenant's document and access list.
     ///
-    /// Called during eviction, while the registry lock is held and the tenant
-    /// has no leases — so nothing can be writing the document underneath it.
+    /// Called under that tenant's document/ACL guards and pinned owner identity.
+    /// The registry is not locked across IO; unrelated tenants remain available.
     pub fn save(
         &self,
         user_id: &str,

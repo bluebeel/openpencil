@@ -187,7 +187,7 @@ fn node_stroke_width_reads_max_sided_edge() {
     let PenNode::Rectangle(r) = &mut node else {
         panic!("rectangle");
     };
-    r.container.stroke = Some(PenStroke {
+    r.container.stroke = Some(PenStroke::from(jian_ops_schema::style::PenStrokeBody {
         thickness: StrokeThickness::Sided(SidedThickness {
             bottom: Some(3.0),
             ..Default::default()
@@ -198,7 +198,7 @@ fn node_stroke_width_reads_max_sided_edge() {
         dash_pattern: None,
         dash_offset: None,
         fill: None,
-    });
+    }));
 
     assert_eq!(node_stroke_width(&node), Some(3.0));
 }

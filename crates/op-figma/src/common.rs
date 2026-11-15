@@ -14,7 +14,7 @@ use jian_ops_schema::node::base::{NumberOrExpression, PenNodeBase};
 use jian_ops_schema::node::container::CornerRadius;
 use jian_ops_schema::sizing::SizingBehavior;
 use std::collections::HashMap;
-use std::sync::RwLock;
+use std::sync::{Arc, RwLock};
 
 /// Stroke vs fill rendering for a host-resolved icon.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,7 +36,7 @@ pub struct IconLookupResult {
 
 type IconLookupFn = dyn Fn(&str) -> Option<IconLookupResult> + Send + Sync;
 
-static ICON_LOOKUP: RwLock<Option<Box<IconLookupFn>>> = RwLock::new(None);
+static ICON_LOOKUP: RwLock<Option<Arc<IconLookupFn>>> = RwLock::new(None);
 
 /// Install (or replace) a host-provided icon-name resolver. The
 /// converter consults it on every VECTOR node — if a node's name maps
@@ -47,23 +47,32 @@ pub fn set_icon_lookup<F>(f: F)
 where
     F: Fn(&str) -> Option<IconLookupResult> + Send + Sync + 'static,
 {
-    if let Ok(mut slot) = ICON_LOOKUP.write() {
-        *slot = Some(Box::new(f));
-    }
+    let previous = if let Ok(mut slot) = ICON_LOOKUP.write() {
+        slot.replace(Arc::new(f) as Arc<IconLookupFn>)
+    } else {
+        None
+    };
+    // Captured user resources may reenter registration from Drop.
+    drop(previous);
 }
 
 /// Drop any previously-installed icon resolver.
 pub fn clear_icon_lookup() {
-    if let Ok(mut slot) = ICON_LOOKUP.write() {
-        *slot = None;
-    }
+    let previous = if let Ok(mut slot) = ICON_LOOKUP.write() {
+        slot.take()
+    } else {
+        None
+    };
+    drop(previous);
 }
 
 /// Resolve `name` through the installed lookup; `None` when no
 /// resolver is set or when the resolver itself returns `None`.
 pub fn lookup_icon_by_name(name: &str) -> Option<IconLookupResult> {
-    let slot = ICON_LOOKUP.read().ok()?;
-    let f = slot.as_ref()?;
+    // Snapshot one resolver, then release the registry before calling host
+    // code. Reentrant registration and unrelated converter readers cannot
+    // deadlock behind this callback; this Arc lives only for the active call.
+    let f = ICON_LOOKUP.read().ok()?.as_ref().cloned()?;
     f(name)
 }
 
@@ -105,6 +114,9 @@ pub struct ConversionContext<'tree> {
     pub warnings: Vec<String>,
     /// Sequential `fig_N` id allocator.
     pub id_counter: u32,
+    /// Branches that older imports omitted use an independent ID namespace,
+    /// keeping existing visible node IDs/ref targets stable as layers return.
+    pub retained_ids: RetainedIds,
     /// Geometry / image blob pool.
     pub blobs: Vec<BlobOrString>,
     pub layout_mode: FigLayoutMode,
@@ -115,12 +127,46 @@ pub struct ConversionContext<'tree> {
     pub instance_expansions: InstanceExpansionCache,
 }
 
+#[derive(Default)]
+pub struct RetainedIds {
+    active: bool,
+    next: u64,
+}
+
+struct RetainedIdScope<'scope, 'tree> {
+    context: &'scope mut ConversionContext<'tree>,
+    previous: bool,
+}
+impl Drop for RetainedIdScope<'_, '_> {
+    fn drop(&mut self) {
+        self.context.retained_ids.active = self.previous;
+    }
+}
+
 impl ConversionContext<'_> {
     /// Mint the next sequential `fig_N` id.
     pub fn generate_id(&mut self) -> String {
+        if self.retained_ids.active {
+            let id = format!("fig_hidden_{}", self.retained_ids.next);
+            self.retained_ids.next += 1;
+            return id;
+        }
         let id = format!("fig_{}", self.id_counter);
         self.id_counter += 1;
         id
+    }
+    pub(crate) fn retain_hidden_ids<R>(
+        &mut self,
+        omitted: bool,
+        convert: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        let previous = self.retained_ids.active;
+        self.retained_ids.active |= omitted;
+        let scope = RetainedIdScope {
+            context: self,
+            previous,
+        };
+        convert(&mut *scope.context)
     }
 }
 
@@ -156,6 +202,10 @@ pub fn extract_position(figma: &FigValue) -> (f64, f64) {
     let Some(m) = figma.get("transform").and_then(FigMatrix::from_value) else {
         return (0.0, 0.0);
     };
+    position_from_matrix(figma, &m)
+}
+
+fn position_from_matrix(figma: &FigValue, m: &FigMatrix) -> (f64, f64) {
     let has_rotation = m.m01.abs() > 0.001 || m.m10.abs() > 0.001;
     let has_flip = m.m00 < -0.001 || m.m11 < -0.001;
     if has_rotation || has_flip {
@@ -174,6 +224,10 @@ pub fn extract_position(figma: &FigValue) -> (f64, f64) {
 /// `None` when zero.
 pub fn extract_rotation(figma: &FigValue) -> Option<f64> {
     let m = figma.get("transform").and_then(FigMatrix::from_value)?;
+    rotation_from_matrix(&m)
+}
+
+fn rotation_from_matrix(m: &FigMatrix) -> Option<f64> {
     let angle = m.m10.atan2(m.m00.abs()) * (180.0 / std::f64::consts::PI);
     let rounded = round2(angle);
     if rounded != 0.0 {
@@ -189,6 +243,10 @@ pub fn extract_flip(figma: &FigValue) -> (Option<bool>, Option<bool>) {
     let Some(m) = figma.get("transform").and_then(FigMatrix::from_value) else {
         return (None, None);
     };
+    flip_from_matrix(&m)
+}
+
+fn flip_from_matrix(m: &FigMatrix) -> (Option<bool>, Option<bool>) {
     let det = m.m00 * m.m11 - m.m01 * m.m10;
     if det < -0.001 {
         if m.m00 < 0.0 {
@@ -242,10 +300,14 @@ pub fn map_corner_smoothing(figma: &FigValue) -> f64 {
 
 /// Assemble the shared base props spread into every PenNode.
 pub fn common_props(figma: &FigValue, id: String) -> PenNodeBase {
-    let (x, y) = extract_position(figma);
-    let (flip_x, flip_y) = extract_flip(figma);
+    let transform = figma.get("transform").and_then(FigMatrix::from_value);
+    let (x, y) = transform
+        .as_ref()
+        .map_or((0.0, 0.0), |m| position_from_matrix(figma, m));
+    let (flip_x, flip_y) = transform.as_ref().map_or((None, None), flip_from_matrix);
     PenNodeBase {
         id,
+        authored_geometry_nulls: 0,
         name: figma
             .get_str("name")
             .filter(|s| !s.is_empty())
@@ -254,13 +316,10 @@ pub fn common_props(figma: &FigValue, id: String) -> PenNodeBase {
         explain: None,
         x: Some(x),
         y: Some(y),
-        rotation: extract_rotation(figma),
-        opacity: figma
-            .get_f64("opacity")
-            .filter(|o| *o < 1.0)
-            .map(NumberOrExpression::Number),
+        rotation: transform.as_ref().and_then(rotation_from_matrix),
+        opacity: figma.get_f64("opacity").map(NumberOrExpression::Number),
         enabled: None,
-        visible: None,
+        visible: figma.get_bool("visible"),
         locked: if figma.get_bool("locked") == Some(true) {
             Some(true)
         } else {
@@ -337,12 +396,11 @@ fn has_command_geometry(figma: &FigValue) -> bool {
 /// instance's ratio the moment Figma hands it resolved geometry.
 pub(crate) fn scale_node_fields(figma: &mut FigValue, sx: f64, sy: f64) {
     let metric_scale = sx.abs().min(sy.abs());
-    if let Some(mut transform) = figma.get("transform").cloned() {
+    if let Some(transform) = figma.get_mut("transform") {
         let m02 = transform.get_f64("m02").unwrap_or(0.0) * sx;
         let m12 = transform.get_f64("m12").unwrap_or(0.0) * sy;
         transform.set("m02", FigValue::Float(m02 as f32));
         transform.set("m12", FigValue::Float(m12 as f32));
-        figma.set("transform", transform);
     }
     // An auto-growing text box is sized by its content at its authored
     // font size, not by the instance ratio — scaling it squeezes the
@@ -354,7 +412,7 @@ pub(crate) fn scale_node_fields(figma: &mut FigValue, sx: f64, sy: f64) {
         Some("HEIGHT") => (true, false),
         _ => (true, true),
     };
-    if let Some(mut size) = figma.get("size").cloned() {
+    if let Some(size) = figma.get_mut("size") {
         if scale_w {
             let x = size.get_f64("x").unwrap_or(0.0) * sx.abs();
             size.set("x", FigValue::Float(x as f32));
@@ -363,7 +421,6 @@ pub(crate) fn scale_node_fields(figma: &mut FigValue, sx: f64, sy: f64) {
             let y = size.get_f64("y").unwrap_or(0.0) * sy.abs();
             size.set("y", FigValue::Float(y as f32));
         }
-        figma.set("size", size);
     }
     // Stroke weights and corner radii follow the box: an icon symbol
     // authored at 120 px and instanced at 40 px reads as a 1/3-scale
@@ -401,7 +458,7 @@ pub(crate) fn scale_node_fields(figma: &mut FigValue, sx: f64, sy: f64) {
     }
 }
 
-fn scale_tree_node(mut child: TreeNode, sx: f64, sy: f64) -> TreeNode {
+fn scale_tree_node(child: &mut TreeNode, sx: f64, sy: f64) {
     scale_node_fields(&mut child.figma, sx, sy);
     // Stop at nested instances. Their own resolution pass rescales
     // their subtree against their (already-scaled) box, and their
@@ -412,9 +469,10 @@ fn scale_tree_node(mut child: TreeNode, sx: f64, sy: f64) -> TreeNode {
     let is_nested_instance =
         child.figma.get_str("type") == Some("INSTANCE") || child.figma.get("symbolData").is_some();
     if !is_nested_instance {
-        child.children = scale_tree_children_owned(child.children, sx, sy);
+        for descendant in &mut child.children {
+            scale_tree_node(descendant, sx, sy);
+        }
     }
-    child
 }
 
 /// Recursively rescale a SYMBOL subtree to fit a differently-sized
@@ -427,14 +485,14 @@ pub fn scale_tree_children(children: &[TreeNode], sx: f64, sy: f64) -> Vec<TreeN
 
 /// Owned variant used after derived data has already materialised a
 /// fresh subtree, avoiding a second deep clone for instance-heavy files.
-fn scale_tree_children_owned(children: Vec<TreeNode>, sx: f64, sy: f64) -> Vec<TreeNode> {
+fn scale_tree_children_owned(mut children: Vec<TreeNode>, sx: f64, sy: f64) -> Vec<TreeNode> {
     if (sx - 1.0).abs() < 0.001 && (sy - 1.0).abs() < 0.001 {
         return children;
     }
+    for child in &mut children {
+        scale_tree_node(child, sx, sy);
+    }
     children
-        .into_iter()
-        .map(|child| scale_tree_node(child, sx, sy))
-        .collect()
 }
 
 /// Detect which decoded blobs are images (by magic bytes), keyed by
@@ -442,21 +500,11 @@ fn scale_tree_children_owned(children: Vec<TreeNode>, sx: f64, sy: f64) -> Vec<T
 /// after geometry conversion instead of being cloned and retained in
 /// two full buffers throughout the import.
 pub fn collect_image_blobs(blobs: Vec<BlobOrString>) -> HashMap<u32, Vec<u8>> {
-    let mut map = HashMap::new();
-    for (i, blob) in blobs.into_iter().enumerate() {
-        if let BlobOrString::Bytes(b) = blob {
-            if b.len() > 8 {
-                let is_image = (b[0] == 0x89 && b[1] == 0x50)
-                    || (b[0] == 0xFF && b[1] == 0xD8)
-                    || (b[0] == 0x47 && b[1] == 0x49)
-                    || (b[0] == 0x52 && b[1] == 0x49);
-                if is_image {
-                    map.insert(i as u32, b);
-                }
-            }
-        }
-    }
-    map
+    blobs
+        .into_iter()
+        .enumerate()
+        .filter_map(|(i, b)| b.into_image().map(|b| (i as u32, b)))
+        .collect()
 }
 
 #[cfg(test)]

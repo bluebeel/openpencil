@@ -22,25 +22,23 @@ type Result<T> = std::result::Result<T, ProgramError>;
 pub(crate) fn parse_single_direct_operation(line: &str) -> Result<Option<EditorCommand>> {
     let line = line.trim().trim_end_matches(';').trim();
     let line = strip_bound_direct_operation(line);
-    for op in ["U", "D", "M", "C", "R", "G"] {
-        let prefix = format!("{op}(");
-        if line.starts_with(&prefix) && line.ends_with(')') {
-            let body = &line[prefix.len()..line.len() - 1];
-            return match op {
-                "U" => parse_update_operation(body).map(Some),
-                "D" => Ok(Some(EditorCommand::DeleteNode {
-                    node_id: NodeId::new(&parse_ref_token(body)?),
-                    page_id: None,
-                })),
-                "M" => parse_move_operation(body).map(Some),
-                "C" => parse_copy_operation(body).map(Some),
-                "R" => parse_replace_operation(body).map(Some),
-                "G" => parse_image_operation(body).map(Some),
-                _ => unreachable!(),
-            };
-        }
+    let bytes = line.as_bytes();
+    if bytes.len() < 3 || bytes[1] != b'(' || !line.ends_with(')') {
+        return Ok(None);
     }
-    Ok(None)
+    let body = &line[2..line.len() - 1];
+    match bytes[0] {
+        b'U' => parse_update_operation(body).map(Some),
+        b'D' => Ok(Some(EditorCommand::DeleteNode {
+            node_id: NodeId::new(parse_ref_token(body)?),
+            page_id: None,
+        })),
+        b'M' => parse_move_operation(body).map(Some),
+        b'C' => parse_copy_operation(body).map(Some),
+        b'R' => parse_replace_operation(body).map(Some),
+        b'G' => parse_image_operation(body).map(Some),
+        _ => Ok(None),
+    }
 }
 
 /// Whether a legacy single-line operations payload is a `G()` call, with or
@@ -81,7 +79,7 @@ fn parse_update_operation(body: &str) -> Result<EditorCommand> {
     let mut value: serde_json::Value = serde_json::from_str(body[comma + 1..].trim())
         .map_err(|e| ProgramError::Json(format!("invalid U JSON: {e}")))?;
     normalize_node_shape(&mut value);
-    update_command_from_value(node_id, &value)
+    update_command_from_owned_value(node_id, value)
 }
 
 /// Build the U() editor command from an already-parsed + normalized
@@ -147,6 +145,25 @@ pub(crate) fn update_command_from_value(
         fill_hex,
         page_id: None,
     })
+}
+
+/// Owned callers already parsed/repaired this patch. Transfer rich values into
+/// normalization rather than retaining and cloning a second complete JSON tree.
+pub(crate) fn update_command_from_owned_value(
+    node_id: NodeId,
+    value: serde_json::Value,
+) -> Result<EditorCommand> {
+    if super::update_node_data::update_patch_is_rich(&value) {
+        let patch_json = super::update_node_data::serialize_update_patch(value)
+            .map_err(|error| ProgramError::Json(error.to_string()))?;
+        Ok(EditorCommand::PatchNodeData {
+            node_id,
+            patch_json,
+            page_id: None,
+        })
+    } else {
+        update_command_from_value(node_id, &value)
+    }
 }
 
 fn parse_move_operation(body: &str) -> Result<EditorCommand> {

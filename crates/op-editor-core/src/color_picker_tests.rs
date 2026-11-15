@@ -334,6 +334,8 @@ fn gradient_stop_picker_preserves_alpha() {
     let mut node = rect("n1", "r", 0.0, 0.0, 40.0, 30.0);
     // Seed a 2-stop gradient where stop 1 is fully transparent.
     let body = PenFill::LinearGradient(LinearGradientBody {
+        enabled: None,
+        geometry: None,
         angle: Some(0.0),
         stops: vec![
             GradientStop {

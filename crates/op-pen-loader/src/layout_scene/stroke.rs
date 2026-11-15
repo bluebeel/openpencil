@@ -16,13 +16,20 @@ pub(super) fn scene_stroke(
     node_id: &op_editor_core::NodeId,
     var_table: &VariableTable,
 ) -> SceneStroke {
+    let variable_color = s
+        .detail
+        .as_deref()
+        .and_then(|body| body.fill.as_deref())
+        .and_then(|fills| fills.first())
+        .is_none_or(jian_ops_schema::style::PenFill::is_enabled)
+        .then(|| var_table.stroke_color_for(node_id))
+        .flatten();
     SceneStroke {
         // A stroke with no resolvable paint keeps painting the historical
         // opaque black for ordinary shapes; only widget nodes drop it (see
         // `is_unpainted_widget_stroke`), because for them the stroke carries
         // the *inactive track / border* role rather than a literal outline.
-        color: var_table
-            .stroke_color_for(node_id)
+        color: variable_color
             .unwrap_or_else(|| super::array_to_color(s.color.unwrap_or([0.0, 0.0, 0.0, 1.0]))),
         width: s.width,
         sides: s.sides,
@@ -67,9 +74,13 @@ pub(super) fn is_unpainted_widget_stroke(
     var_table: &VariableTable,
 ) -> bool {
     node.widget.is_some()
-        && node
-            .stroke
-            .as_ref()
-            .is_some_and(|stroke| stroke.color.is_none())
+        && node.stroke.as_ref().is_some_and(|stroke| {
+            stroke.color.is_none()
+                && stroke
+                    .detail
+                    .as_deref()
+                    .and_then(|s| s.fill.as_ref())
+                    .is_none_or(Vec::is_empty)
+        })
         && var_table.stroke_color_for(node_id).is_none()
 }

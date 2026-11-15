@@ -1,6 +1,6 @@
 //! TS-compatible `batch_get` document read/search tool.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use jian_ops_schema::node::PenNode;
 use jian_ops_schema::variable::VariableScalar;
@@ -10,7 +10,7 @@ use op_editor_core::{EditorState, NodeId};
 use regex::{Regex, RegexBuilder};
 use serde_json::{json, Value};
 
-use super::read_nodes::{node_snapshot_value, page_nodes_snapshots, PageNodes};
+use super::read_nodes::{encode_node_snapshots, page_nodes_snapshots, PageNodes};
 use super::{McpTool, ToolErrorCode, ToolOutcome};
 
 type ToolCallError = (ToolErrorCode, String);
@@ -22,6 +22,7 @@ pub struct BatchGet {
     /// active theme (name → value), for `resolveRefs=true`. Mirrors the
     /// inputs TS `resolveNodeForCanvas` resolves against.
     resolved_vars: BTreeMap<String, VariableScalar>,
+    prepared: Option<ToolOutcome>,
 }
 
 struct SearchPattern {
@@ -35,87 +36,146 @@ impl McpTool for BatchGet {
         "batch_get"
     }
 
+    fn call_once(mut self: Box<Self>, args: &BTreeMap<String, String>) -> ToolOutcome {
+        match self.prepared.take() {
+            Some(outcome) => outcome,
+            None => self.call(args),
+        }
+    }
+
     fn call(&self, args: &BTreeMap<String, String>) -> ToolOutcome {
-        let resolve_refs = matches!(
-            arg_alias(args, &["resolveRefs", "resolve_refs"]),
-            Some("true")
-        );
+        if let Some(outcome) = &self.prepared {
+            return outcome.clone();
+        }
         let page = match self.page_nodes(args) {
             Ok(page) => page,
             Err((code, msg)) => return ToolOutcome::Err(code, msg),
         };
-        let read_depth = match parse_i32_arg(args, &["readDepth", "read_depth", "depth"], 1) {
-            Ok(depth) => depth,
-            Err((code, msg)) => return ToolOutcome::Err(code, msg),
-        };
-        let search_depth = match parse_search_depth(args) {
-            Ok(depth) => depth,
-            Err((code, msg)) => return ToolOutcome::Err(code, msg),
-        };
-        let patterns = match parse_patterns(args) {
-            Ok(patterns) => patterns,
-            Err((code, msg)) => return ToolOutcome::Err(code, msg),
-        };
-        let node_ids = match parse_node_ids(args) {
-            Ok(ids) => ids,
-            Err((code, msg)) => return ToolOutcome::Err(code, msg),
-        };
-        let parent_id = arg_alias(args, &["parentId", "parent_id", "parent"]);
-        let search_roots = search_roots(&page.roots, parent_id);
-        let mut nodes: Vec<&PenNode> = Vec::new();
-        let mut seen = BTreeSet::new();
+        batch_get_result(&page.roots, args, &self.resolved_vars, None)
+    }
+}
 
-        if patterns.is_empty() && node_ids.is_empty() {
-            nodes.extend(search_roots.iter());
-        } else {
-            for pattern in &patterns {
-                match collect_matches(
-                    search_roots,
-                    pattern,
-                    search_depth,
-                    0,
-                    &mut seen,
-                    &mut nodes,
-                ) {
-                    Ok(()) => {}
-                    Err((code, msg)) => return ToolOutcome::Err(code, msg),
-                }
-            }
-            for id in &node_ids {
-                if seen.contains(id) {
-                    continue;
-                }
-                if let Some(nid) = NodeId::new_opt(id) {
-                    if let Some(node) = find_node(&page.roots, &nid) {
-                        seen.insert(id.clone());
-                        nodes.push(node);
-                    }
-                }
+fn batch_get_result(
+    roots: &[PenNode],
+    args: &BTreeMap<String, String>,
+    resolved_vars: &BTreeMap<String, VariableScalar>,
+    state: Option<&EditorState>,
+) -> ToolOutcome {
+    let resolve_refs = matches!(
+        arg_alias(args, &["resolveRefs", "resolve_refs"]),
+        Some("true")
+    );
+    let read_depth = match parse_i32_arg(args, &["readDepth", "read_depth", "depth"], 1) {
+        Ok(depth) => depth,
+        Err((code, msg)) => return ToolOutcome::Err(code, msg),
+    };
+    let search_depth = match parse_search_depth(args) {
+        Ok(depth) => depth,
+        Err((code, msg)) => return ToolOutcome::Err(code, msg),
+    };
+    let patterns = match parse_patterns(args) {
+        Ok(patterns) => patterns,
+        Err((code, msg)) => return ToolOutcome::Err(code, msg),
+    };
+    let node_ids = match parse_node_ids(args) {
+        Ok(ids) => ids,
+        Err((code, msg)) => return ToolOutcome::Err(code, msg),
+    };
+    let parent_id = arg_alias(args, &["parentId", "parent_id", "parent"]);
+    // Whole-page reads and name searches need no ID index. In particular,
+    // don't build the complete trusted index merely to return `roots`.
+    let search_roots = match parent_id {
+        None => roots,
+        Some("") => &[],
+        Some(parent) => {
+            if let Some(lookup) = state.and_then(|state| state.trusted_node_lookup(roots)) {
+                lookup
+                    .find(parent, op_editor_core::NodeReadOrder::First)
+                    .and_then(|found| found.node.children())
+                    .map_or(&[][..], Vec::as_slice)
+            } else {
+                search_roots(roots, Some(parent))
             }
         }
+    };
+    if patterns.is_empty() && node_ids.is_empty() {
+        return encode_batch_nodes(search_roots, read_depth, resolve_refs, resolved_vars);
+    }
+    let mut nodes: Vec<&PenNode> = Vec::new();
+    let mut seen = HashSet::new();
 
-        let mut values: Vec<Value> = nodes
-            .iter()
-            .map(|node| node_snapshot_value(node, read_depth))
-            .collect();
-        // resolveRefs=true: expand `$variable` refs to their concrete value
-        // under the active theme (mirrors TS resolveNodeForCanvas — fill /
-        // stroke colors + opacity / gap / padding numeric refs).
-        if resolve_refs {
-            for value in &mut values {
-                resolve_refs_in_node(value, &self.resolved_vars);
+    collect_pattern_matches(search_roots, &patterns, search_depth, &mut seen, &mut nodes);
+    let pending: Vec<_> = node_ids
+        .iter()
+        .filter(|id| !seen.contains(id.as_str()))
+        .collect();
+    let requested = match state {
+        Some(state) => super::requested_nodes::find_for_state(state, roots, &pending),
+        None => super::requested_nodes::find(roots, &pending),
+    };
+    for node in requested {
+        if seen.insert(node.id_str()) {
+            nodes.push(node);
+        }
+    }
+    encode_batch_nodes(nodes, read_depth, resolve_refs, resolved_vars)
+}
+
+fn encode_batch_nodes<'a>(
+    nodes: impl IntoIterator<Item = &'a PenNode>,
+    read_depth: i32,
+    resolve_refs: bool,
+    resolved_vars: &BTreeMap<String, VariableScalar>,
+) -> ToolOutcome {
+    // resolveRefs=true: expand `$variable` refs to their concrete value
+    // under the active theme (mirrors TS resolveNodeForCanvas — fill /
+    // stroke colors + opacity / gap / padding numeric refs).
+    // TS `batch_get` returns `{ nodes: [...] }` (nodes is a JSON ARRAY,
+    // no `count`). Emit the nested JSON verbatim via OkJson so the wire
+    // result matches byte-for-byte instead of a flat `{count, nodes:"<str>"}`.
+    match encode_node_snapshots(
+        nodes,
+        read_depth,
+        |value| {
+            if resolve_refs {
+                resolve_refs_in_node(value, resolved_vars);
             }
+        },
+        || None,
+    ) {
+        Ok(json) => ToolOutcome::OkJson(json),
+        Err(e) => ToolOutcome::Err(
+            ToolErrorCode::Internal,
+            format!("serialize nodes failed: {e}"),
+        ),
+    }
+}
+
+/// Request-specific read result, with unchanged filtering/search/error semantics.
+/// The returned tool must be called with the same arguments used here.
+pub fn batch_get_snapshot_for_call(
+    state: &EditorState,
+    args: &BTreeMap<String, String>,
+) -> BatchGet {
+    let outcome = match super::read_nodes::requested_page_roots(state, args) {
+        Ok(roots) => {
+            let variables = if matches!(
+                arg_alias(args, &["resolveRefs", "resolve_refs"]),
+                Some("true")
+            ) {
+                resolved_variables(state)
+            } else {
+                BTreeMap::new()
+            };
+            batch_get_result(roots, args, &variables, Some(state))
         }
-        // TS `batch_get` returns `{ nodes: [...] }` (nodes is a JSON ARRAY,
-        // no `count`). Emit the nested JSON verbatim via OkJson so the wire
-        // result matches byte-for-byte instead of a flat `{count, nodes:"<str>"}`.
-        match serde_json::to_string(&json!({ "nodes": values })) {
-            Ok(json) => ToolOutcome::OkJson(json),
-            Err(e) => ToolOutcome::Err(
-                ToolErrorCode::Internal,
-                format!("serialize nodes failed: {e}"),
-            ),
-        }
+        Err((code, message)) => ToolOutcome::Err(code, message),
+    };
+    BatchGet {
+        pages: Vec::new(),
+        active_page_id: String::new(),
+        resolved_vars: BTreeMap::new(),
+        prepared: Some(outcome),
     }
 }
 
@@ -214,7 +274,17 @@ pub fn batch_get_snapshot(state: &EditorState) -> BatchGet {
     let (pages, active_page_id) = page_nodes_snapshots(state);
     // Resolve every variable to its concrete scalar under the active theme
     // now, so `resolveRefs=true` reads stay `&self` (no live state needed).
-    let resolved_vars = state
+    let resolved_vars = resolved_variables(state);
+    BatchGet {
+        pages,
+        active_page_id,
+        resolved_vars,
+        prepared: None,
+    }
+}
+
+fn resolved_variables(state: &EditorState) -> BTreeMap<String, VariableScalar> {
+    state
         .doc
         .variables
         .as_ref()
@@ -227,12 +297,7 @@ pub fn batch_get_snapshot(state: &EditorState) -> BatchGet {
                 })
                 .collect()
         })
-        .unwrap_or_default();
-    BatchGet {
-        pages,
-        active_page_id,
-        resolved_vars,
-    }
+        .unwrap_or_default()
 }
 
 impl BatchGet {
@@ -262,29 +327,53 @@ fn search_roots<'a>(roots: &'a [PenNode], parent_id: Option<&str>) -> &'a [PenNo
         .unwrap_or(&[])
 }
 
-fn collect_matches<'a>(
+fn collect_pattern_matches<'a>(
     roots: &'a [PenNode],
-    pattern: &SearchPattern,
+    patterns: &[SearchPattern],
     max_depth: Option<usize>,
-    current_depth: usize,
-    seen: &mut BTreeSet<String>,
+    seen: &mut HashSet<&'a str>,
     out: &mut Vec<&'a PenNode>,
-) -> Result<(), ToolCallError> {
-    if max_depth.is_some_and(|max| current_depth > max) {
-        return Ok(());
+) {
+    if patterns.is_empty() {
+        return;
     }
-    for node in roots {
-        if matches_pattern(node, pattern) {
-            let id = node.id_str().to_string();
-            if seen.insert(id) {
+    let mut buckets = vec![Vec::new(); patterns.len()];
+    let mut selected: HashMap<&str, (usize, &PenNode)> = HashMap::new();
+    let mut stack = vec![(roots.iter(), 0usize)];
+    while let Some((siblings, depth)) = stack.last_mut() {
+        let depth = *depth;
+        let Some(node) = siblings.next() else {
+            stack.pop();
+            continue;
+        };
+        // A later duplicate can improve only its pattern priority, never the
+        // first DFS match within the same pattern. Keep the old pattern-major
+        // result order even when distinct nodes share an authored ID.
+        let bound = selected.get(node.id_str()).map_or(patterns.len(), |x| x.0);
+        if let Some(pattern) = patterns[..bound]
+            .iter()
+            .position(|p| matches_pattern(node, p))
+        {
+            selected.insert(node.id_str(), (pattern, node));
+            buckets[pattern].push(node);
+        }
+        if max_depth.is_none_or(|max| depth < max) {
+            if let Some(children) = node.children().filter(|children| !children.is_empty()) {
+                stack.push((children.iter(), depth + 1));
+            }
+        }
+    }
+    for (pattern, bucket) in buckets.into_iter().enumerate() {
+        for node in bucket {
+            if selected
+                .get(node.id_str())
+                .is_some_and(|(chosen, actual)| *chosen == pattern && std::ptr::eq(*actual, node))
+                && seen.insert(node.id_str())
+            {
                 out.push(node);
             }
         }
-        if let Some(children) = node.children() {
-            collect_matches(children, pattern, max_depth, current_depth + 1, seen, out)?;
-        }
     }
-    Ok(())
 }
 
 fn matches_pattern(node: &PenNode, pattern: &SearchPattern) -> bool {

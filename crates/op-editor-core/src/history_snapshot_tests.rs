@@ -313,8 +313,8 @@ fn undo_redo_transitions_share_arcs_with_the_destination() {
     let dest = state.history.past.back().unwrap().clone();
     assert!(state.undo());
     let redo_entry = state.history.future.back().unwrap();
-    let d = dest.doc.root_children();
-    let r = redo_entry.doc.root_children();
+    let d = dest.full_snapshot().unwrap().doc.root_children();
+    let r = redo_entry.full_snapshot().unwrap().doc.root_children();
     let shared = (0..d.len()).filter(|&i| Arc::ptr_eq(&d[i], &r[i])).count();
     assert!(
         shared >= d.len() - 1,
@@ -326,8 +326,8 @@ fn undo_redo_transitions_share_arcs_with_the_destination() {
     let dest2 = state.history.future.back().unwrap().clone();
     assert!(state.redo());
     let undo_entry = state.history.past.back().unwrap();
-    let d2 = dest2.doc.root_children();
-    let u = undo_entry.doc.root_children();
+    let d2 = dest2.full_snapshot().unwrap().doc.root_children();
+    let u = undo_entry.full_snapshot().unwrap().doc.root_children();
     let shared2 = (0..d2.len())
         .filter(|&i| Arc::ptr_eq(&d2[i], &u[i]))
         .count();
@@ -412,12 +412,12 @@ fn repair_swap_is_copy_on_write_and_does_not_contaminate_a_shared_sibling_snapsh
     // snap_b now holds the Ref; snap_a is untouched (still the rect).
     let b_inst = &snap_b.root_children()[1];
     assert!(
-        matches!(b_inst.as_ref(), PenNode::Ref(_)),
+        matches!(b_inst.metadata(), PenNode::Ref(_)),
         "snap_b repaired"
     );
     let a_inst = &snap_a.root_children()[1];
     assert!(
-        matches!(a_inst.as_ref(), PenNode::Rectangle(_)),
+        matches!(a_inst.metadata(), PenNode::Rectangle(_)),
         "sibling snapshot NOT contaminated by the COW repair"
     );
     assert!(
@@ -522,4 +522,40 @@ fn batch_collapse_resets_pre_batch_revision_before_the_bump() {
     assert!(state.undo());
     assert_eq!(state.document_revision(), saved);
     assert!(!state.is_dirty());
+}
+
+#[test]
+fn shared_save_preserves_motion_and_matches_canonical_wire_bytes() {
+    use jian_ops_schema::motion::MotionPreference;
+
+    for paged in [false, true] {
+        for motion in [
+            None,
+            Some(MotionPreference::Full),
+            Some(MotionPreference::Reduced),
+        ] {
+            let mut doc = empty();
+            doc.motion = motion;
+            doc.responsive = Some(false);
+            doc.name = Some("Authored behavior".into());
+            doc.format_version = Some("1.0".into());
+            doc.children = many_roots(2);
+            if paged {
+                doc.pages = Some(vec![PenPage {
+                    id: "p1".into(),
+                    name: "First".into(),
+                    children: many_roots(3),
+                    background_color: Some("#ffffff".into()),
+                    state: None,
+                    lifecycle: None,
+                }]);
+            }
+            let shared = SharedDoc::capture(&doc, None);
+            assert_eq!(shared.materialize(), doc);
+            assert_eq!(
+                serde_json::to_vec(&shared).unwrap(),
+                serde_json::to_vec(&doc).unwrap()
+            );
+        }
+    }
 }

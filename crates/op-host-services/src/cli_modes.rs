@@ -41,6 +41,9 @@ pub fn run_cli_mode(prog: &str, mode: &str, args: impl Iterator<Item = String>) 
                 eprintln!("{prog} {mode}: serving the lean MCP tool profile");
             }
             let args = args.into_iter();
+            if let Err(code) = initialize_fonts(prog, mode) {
+                return Some(code);
+            }
             if mode == "--mcp" {
                 run_mcp_stdio(prog, args, catalog)
             } else {
@@ -133,6 +136,9 @@ fn serve_web(prog: &str, args: impl Iterator<Item = String>) -> Option<i32> {
     // refuses user-template tools; local and managed daemons load the
     // standard native collection before accepting any request.
     if !options.online {
+        if let Err(code) = initialize_fonts(prog, "--serve-web") {
+            return Some(code);
+        }
         crate::user_scene_template_store::initialize_user_scene_templates_once();
     }
     if let Err(e) = crate::web_canvas_server::run_web_canvas(options) {
@@ -140,6 +146,20 @@ fn serve_web(prog: &str, args: impl Iterator<Item = String>) -> Option<i32> {
         return Some(1);
     }
     Some(0)
+}
+
+fn initialize_fonts(prog: &str, mode: &str) -> Result<(), i32> {
+    match crate::headless_fonts::register_configured_fonts() {
+        Ok(0) => Ok(()),
+        Ok(count) => {
+            eprintln!("{prog} {mode}: registered {count} configured font files");
+            Ok(())
+        }
+        Err(error) => {
+            eprintln!("{prog} {mode}: {error}");
+            Err(1)
+        }
+    }
 }
 
 #[cfg(test)]

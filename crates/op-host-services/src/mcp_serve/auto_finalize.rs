@@ -180,6 +180,7 @@ pub(super) fn run_stdio_session<R: BufRead, W: Write>(
             run_auto_finalize_and_save(auto_finalize, state, path, "stdin-eof")?;
             return Ok(());
         }
+        let _raster_response = super::raster_response::RasterResponseScope::new();
         if let Some(resp) = super::process_message_with_auto_finalize(
             state,
             path,
@@ -258,10 +259,15 @@ pub(super) fn serve_http_connection<S: std::io::Read + std::io::Write>(
     auto_finalize: Option<&mut AutoFinalize>,
     profile: McpAccessProfile,
 ) -> Result<bool, McpServeError> {
+    let _raster_response = super::raster_response::RasterResponseScope::new();
     let reply = |stream: &mut S, status: &str, body: &str| {
         super::write_mcp_http_response_with_origin(stream, status, body, Some("*"))
     };
-    let req = super::read_http_request(stream)?;
+    let Some((req, _body_lease)) = super::read_admitted_http_request(stream)? else {
+        return Ok(false);
+    };
+    let _export_stream = super::export_stream::Scope::new(&req.body);
+    let _http_export = super::http_export::Scope::new(&req.body);
     if req.method == "OPTIONS" {
         return reply(stream, "204 No Content", "").map(|()| false);
     }

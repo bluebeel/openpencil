@@ -19,3 +19,5 @@ pub use image_dimensions::{
     encoded_image_dimensions, encoded_svg_intrinsic_metadata, encoded_svg_view_box_ratio,
     SvgIntrinsicMetadata, MAX_INTRINSIC_IMAGE_EDGE,
 };
+
+pub mod bounded_debug;

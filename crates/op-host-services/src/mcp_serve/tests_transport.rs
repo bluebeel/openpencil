@@ -376,6 +376,7 @@ fn document_sync_metadata_overrides_nested_fields_independently() {
         pinned_style_guide: None,
         share_recipe: None,
         imported_from: None,
+        component_catalog: None,
     };
 
     let page_override = parse_document_sync_request(
@@ -392,6 +393,7 @@ fn document_sync_metadata_overrides_nested_fields_independently() {
             pinned_style_guide: None,
             share_recipe: None,
             imported_from: None,
+            component_catalog: None,
         }
     );
 
@@ -409,6 +411,7 @@ fn document_sync_metadata_overrides_nested_fields_independently() {
             pinned_style_guide: None,
             share_recipe: None,
             imported_from: None,
+            component_catalog: None,
         }
     );
 
@@ -435,6 +438,7 @@ fn document_sync_metadata_overrides_nested_fields_independently() {
             pinned_style_guide: None,
             share_recipe: None,
             imported_from: None,
+            component_catalog: None,
         }
     );
 }

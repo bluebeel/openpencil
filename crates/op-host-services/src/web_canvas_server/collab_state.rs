@@ -107,7 +107,7 @@ impl WebCollabState {
 /// Assembled per call so the editor can stay where the rest of the daemon
 /// already reads it. Every method matches `HeadlessCollabHost`.
 pub(crate) struct DaemonCollabHost<'a> {
-    editor: &'a mut EditorState,
+    editor: &'a mut crate::doc_io::incremental::TrackedEditor,
     id_allocator: &'a mut Option<DocumentIdAllocator>,
     next_node_id: &'a mut u64,
     dirty: &'a mut bool,
@@ -127,11 +127,19 @@ impl CollaborationEditorHost for DaemonCollabHost<'_> {
         document: PenDocument,
         origin: EditOrigin,
     ) -> Result<DocumentInstallReport, DocumentInstallError> {
-        CollaborationEditorHost::install_collaboration_document(self.editor, document, origin)
+        CollaborationEditorHost::install_collaboration_document(
+            &mut **self.editor,
+            document,
+            origin,
+        )
     }
 }
 
 impl CollabHost for DaemonCollabHost<'_> {
+    fn collaboration_ui_mut(&mut self) -> &mut op_editor_core::CollabUiState {
+        self.editor.collaboration_ui_mut()
+    }
+
     fn mark_editor_state_dirty(&mut self) {
         *self.dirty = true;
     }
@@ -225,6 +233,7 @@ impl Drop for LocalEditCapture<'_> {
 /// session. Every gateway rejection is now a typed reason the route can render.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DaemonMutationRefusal {
+    RecoveryRequired,
     /// The collaboration policy refused this source in this phase.
     Collab(CollabGateReason),
 }
@@ -233,6 +242,7 @@ impl DaemonMutationRefusal {
     /// Stable machine-readable code for a REST body or JSON-RPC error.
     pub const fn code(self) -> &'static str {
         match self {
+            Self::RecoveryRequired => "document-recovery-required",
             Self::Collab(reason) => match reason {
                 CollabGateReason::ReadOnly | CollabGateReason::OwnerOnlySave => "collab-readonly",
                 CollabGateReason::PendingEdit | CollabGateReason::SessionTransition => {
@@ -246,13 +256,17 @@ impl DaemonMutationRefusal {
     /// HTTP status the code maps to. Every refusal is a conflict with the live
     /// session rather than a malformed request.
     pub const fn http_status(self) -> &'static str {
-        "409 Conflict"
+        match self {
+            Self::RecoveryRequired => "503 Service Unavailable",
+            Self::Collab(_) => "409 Conflict",
+        }
     }
 }
 
 impl std::fmt::Display for DaemonMutationRefusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::RecoveryRequired => f.write_str(crate::document_recovery::REQUIRED),
             Self::Collab(reason) => write!(
                 f,
                 "refused by the live collaboration session ({})",
@@ -302,6 +316,9 @@ impl WebCanvasState {
         action: CollabGateAction,
         source: CollabEditSource,
     ) -> Result<(), DaemonMutationRefusal> {
+        if self.recovery.required() {
+            return Err(DaemonMutationRefusal::RecoveryRequired);
+        }
         self.collab_policy()
             .check(action, source)
             .map_err(DaemonMutationRefusal::Collab)
@@ -317,6 +334,9 @@ impl WebCanvasState {
         command: op_editor_core::EditorCommand,
         source: CollabEditSource,
     ) -> Result<bool, DaemonMutationRefusal> {
+        if self.recovery.required() {
+            return Err(DaemonMutationRefusal::RecoveryRequired);
+        }
         self.collab_policy()
             .check_command(&command, source)
             .map_err(DaemonMutationRefusal::Collab)?;

@@ -12,6 +12,9 @@ pub(super) struct RasterDownload {
 }
 
 pub(super) fn export_raster_download(body: &str, state: &WebCanvasState) -> WebReply {
+    if state.recovery.required() {
+        return managed_group_commit::recovery::refusal();
+    }
     match build_raster_download(body, &state.editor) {
         Ok(download) => WebReply {
             status: "200 OK",
@@ -139,6 +142,9 @@ fn boards_from_export_body(body: &str) -> Option<Vec<String>> {
 }
 
 pub(super) fn export_pdf_download(body: &str, state: &WebCanvasState) -> WebReply {
+    if state.recovery.required() {
+        return managed_group_commit::recovery::refusal();
+    }
     match build_pdf_download(body, &state.editor) {
         Ok(bytes) => WebReply {
             status: "200 OK",
@@ -259,6 +265,16 @@ pub(super) fn tmp_export_path(ext: &str) -> PathBuf {
 }
 
 pub(super) fn save_current_file(body: &str, state: &mut WebCanvasState) -> WebReply {
+    if state.recovery.required() {
+        return managed_group_commit::recovery::refusal();
+    }
+    let operation = state.recovery.watch();
+    let reply = save_current_file_inner(body, state);
+    operation.complete();
+    reply
+}
+
+fn save_current_file_inner(body: &str, state: &mut WebCanvasState) -> WebReply {
     let Some(path) = state.current_path.clone() else {
         return WebReply {
             status: "400 Bad Request",
@@ -267,7 +283,8 @@ pub(super) fn save_current_file(body: &str, state: &mut WebCanvasState) -> WebRe
     };
     match save_editor_from_body(body, &state.editor, &path) {
         Ok(next) => {
-            state.editor = next;
+            state.editor = next.into();
+            state.recovery.replaced();
             state.version += 1;
             let file_name = path
                 .file_name()

@@ -48,6 +48,9 @@ impl DocSink for WebDesignDocSink<'_> {
         };
         let (applied, tick, snapshot) = {
             let mut guard = self.state.lock().unwrap_or_else(|p| p.into_inner());
+            if guard.recovery.required() {
+                return false;
+            }
             let applied = guard
                 .apply_gated(cmd, op_editor_core::CollabEditSource::Ai)
                 .unwrap_or(false);

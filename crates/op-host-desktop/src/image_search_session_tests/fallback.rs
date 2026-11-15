@@ -68,6 +68,7 @@ fn busy_workbench() -> (String, Arc<Mutex<u32>>) {
 /// the shape `G(…, "generate")` emits.
 fn generate_node(id: &str, prompt: &str, name: &str) -> PenNode {
     PenNode::Image(ImageNode {
+        geometry: None,
         base: PenNodeBase {
             id: id.to_string(),
             name: Some(name.into()),

@@ -55,11 +55,10 @@ impl McpTool for GetNodeChildren {
             return ToolOutcome::Err(ToolErrorCode::ToolFailed, format!("node {id} not found"));
         }
         // Empty children + known id ⇒ count=0 (NOT an error).
-        let empty: Vec<ChildRecord> = Vec::new();
-        let records: &Vec<ChildRecord> = self.children.get(id).unwrap_or(&empty);
+        let records = self.children.get(id).map(Vec::as_slice).unwrap_or_default();
         let mut out = BTreeMap::new();
         out.insert("count".into(), records.len().to_string());
-        let ids: Vec<String> = records.iter().map(|r| r.id.to_string()).collect();
+        let ids: Vec<&str> = records.iter().map(|r| r.id.as_str()).collect();
         out.insert("ids".into(), ids.join(","));
         for (i, rec) in records.iter().enumerate() {
             let prefix = format!("child_{i}");
@@ -81,15 +80,87 @@ pub fn get_node_children_snapshot(state: &EditorState) -> GetNodeChildren {
     match state.doc.pages.as_ref() {
         Some(pages) => {
             for page in pages {
-                for node in &page.children {
-                    walk(node, &mut children, &mut known_ids);
-                }
+                walk(&page.children, &mut children, &mut known_ids);
             }
         }
-        None => {
-            for node in &state.doc.children {
-                walk(node, &mut children, &mut known_ids);
+        None => walk(&state.doc.children, &mut children, &mut known_ids),
+    }
+    GetNodeChildren {
+        children,
+        known_ids,
+    }
+}
+
+/// Capture only the requested immediate-child records. The original map is
+/// built postorder and only nonempty containers overwrite entries: later leaves
+/// or empty containers with the same ID must not erase an earlier child list.
+pub fn get_node_children_snapshot_for_call(
+    state: &EditorState,
+    args: &BTreeMap<String, String>,
+) -> GetNodeChildren {
+    fn last_children<'a>(
+        roots: &'a [PenNode],
+        id: &str,
+        known: &mut bool,
+        found: &mut Option<&'a [PenNode]>,
+    ) {
+        let mut nodes = roots.iter();
+        let mut ancestors = Vec::new();
+        loop {
+            let Some(node) = nodes.next() else {
+                let Some(parent) = ancestors.pop() else {
+                    return;
+                };
+                nodes = parent;
+                continue;
+            };
+            let children = node.children().filter(|children| !children.is_empty());
+            if node.id_str() == id {
+                *known = true;
+                if let Some(children) = children {
+                    *found = Some(children.as_slice());
+                }
+                // This matching parent's nonempty list overwrites all its
+                // descendants in the legacy postorder map. Skip that subtree;
+                // later siblings/pages must still be checked for duplicate IDs.
+                continue;
             }
+            if let Some(children) = children {
+                ancestors.push(nodes);
+                nodes = children.iter();
+            }
+        }
+    }
+    let mut children = BTreeMap::new();
+    let mut known_ids = std::collections::BTreeSet::new();
+    if let Some(id) = args.get("node_id") {
+        if let Some((known, found)) = super::trusted_reads::global_children(state, id) {
+            if known {
+                known_ids.insert(id.clone());
+            }
+            if let Some(found) = found {
+                children.insert(id.clone(), found.iter().map(child_record).collect());
+            }
+            return GetNodeChildren {
+                children,
+                known_ids,
+            };
+        }
+        let mut known = false;
+        let mut found = None;
+        match &state.doc.pages {
+            Some(pages) => {
+                for page in pages {
+                    last_children(&page.children, id, &mut known, &mut found);
+                }
+            }
+            None => last_children(&state.doc.children, id, &mut known, &mut found),
+        }
+        if known {
+            known_ids.insert(id.clone());
+        }
+        if let Some(found) = found {
+            children.insert(id.clone(), found.iter().map(child_record).collect());
         }
     }
     GetNodeChildren {
@@ -98,32 +169,49 @@ pub fn get_node_children_snapshot(state: &EditorState) -> GetNodeChildren {
     }
 }
 
+fn child_record(child: &PenNode) -> ChildRecord {
+    let b = aggregate_bounds(child);
+    ChildRecord {
+        id: child.id_str().into(),
+        kind: kind_label(child).into(),
+        name: child.base().name.clone().unwrap_or_default(),
+        x: b.x as i32,
+        y: b.y as i32,
+        width: b.w as i32,
+        height: b.h as i32,
+    }
+}
+
 fn walk(
-    node: &PenNode,
+    roots: &[PenNode],
     out: &mut BTreeMap<String, Vec<ChildRecord>>,
     known: &mut std::collections::BTreeSet<String>,
 ) {
-    known.insert(node.id_str().to_string());
-    let Some(node_children) = node.children() else {
-        return;
-    };
-    if node_children.is_empty() {
-        return;
+    let mut nodes = roots.iter();
+    let mut ancestors: Vec<(std::slice::Iter<'_, PenNode>, &PenNode)> = Vec::new();
+    loop {
+        let Some(node) = nodes.next() else {
+            let Some((siblings, parent)) = ancestors.pop() else {
+                return;
+            };
+            // Install only after the children, retaining the original last
+            // postorder nonempty-container winner for duplicate authored IDs.
+            out.insert(
+                parent.id_str().to_owned(),
+                parent
+                    .children()
+                    .expect("entered nonempty children")
+                    .iter()
+                    .map(child_record)
+                    .collect(),
+            );
+            nodes = siblings;
+            continue;
+        };
+        known.insert(node.id_str().to_owned());
+        if let Some(children) = node.children().filter(|children| !children.is_empty()) {
+            ancestors.push((nodes, node));
+            nodes = children.iter();
+        }
     }
-    let parent_id = node.id_str().to_string();
-    let mut records = Vec::with_capacity(node_children.len());
-    for child in node_children {
-        let b = aggregate_bounds(child);
-        records.push(ChildRecord {
-            id: child.id_str().to_string(),
-            kind: kind_label(child).into(),
-            name: child.base().name.clone().unwrap_or_default(),
-            x: b.x as i32,
-            y: b.y as i32,
-            width: b.w as i32,
-            height: b.h as i32,
-        });
-        walk(child, out, known);
-    }
-    out.insert(parent_id, records);
 }

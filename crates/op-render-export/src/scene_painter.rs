@@ -21,12 +21,16 @@
 //! `export_pdf.rs` paints through this bridge too — skia's PDF canvas
 //! is a `skia_safe::Canvas`, so it inherits the same parity.
 
+use canvas_viewport_paint::SceneSelection;
 use op_editor_ui::layout_scene::SceneNode;
 use op_editor_ui::widgets::{canvas_viewport_paint, PaintCx};
 use op_editor_ui::{Point2D, Rect};
 use op_host_native::{NativeBackend, NativeFrameBackend};
 use skia_safe::Canvas;
 use std::cell::RefCell;
+
+#[path = "image_preparation.rs"]
+mod image_preparation;
 
 thread_local! {
     /// Per-thread `NativeBackend` so repeated exports / screenshots
@@ -36,6 +40,29 @@ thread_local! {
     /// canvas), so reusing it across surfaces is safe.
     static EXPORT_BACKEND: RefCell<NativeBackend> =
         RefCell::new(NativeBackend::with_dpi(1.0));
+}
+
+/// Keep only bounded exact geometry preparation across an ordered export
+/// batch. This holds no canvas/backend borrow, surface, pixel or output buffer;
+/// nested per-target preparation reuses the existing 8 MiB scope and Drop is
+/// panic/cancellation safe. Admission and per-output ACK stay with the caller.
+pub fn with_batch_preparation<R>(action: impl FnOnce() -> R) -> R {
+    NativeBackend::with_export_text_reuse(action)
+}
+
+/// Private product jobs alone can prove scene/node immutability for resource
+/// plans. Public raw canvas callbacks retain complete fresh preparation.
+pub(crate) fn with_immutable_scene<R>(
+    scene: &std::sync::Arc<op_editor_ui::layout_scene::LayoutScene>,
+    action: impl FnOnce() -> R,
+) -> R {
+    image_preparation::with_scene(scene, action)
+}
+
+/// Called on the shared worker itself: the non-Send backend stays on this
+/// thread for every subsequent job, just like synchronous canvas painting.
+pub(crate) fn initialize_backend() {
+    EXPORT_BACKEND.with(|_| {});
 }
 
 /// Cull rect covering all finite doc-space geometry. Export never
@@ -52,26 +79,114 @@ fn no_cull() -> Rect {
 /// shared canvas painter (images, `clip_content`, styled text runs,
 /// gradients, effects — full live-canvas semantics).
 pub fn paint_node(canvas: &Canvas, node: &SceneNode) {
-    paint_nodes(canvas, std::slice::from_ref(node));
+    with_prepared_node(node, |paint| paint(canvas));
 }
 
 /// Paint top-level page nodes in live-canvas z-order. Scene children
 /// are ordered topmost-first (layer-panel order), so the painter walks
 /// them in reverse — same as `canvas_viewport.rs`'s paint loop.
 pub fn paint_nodes(canvas: &Canvas, nodes: &[SceneNode]) {
+    with_prepared_nodes(nodes, |paint| paint(canvas));
+}
+
+/// Discover/decode once, then repeat only the immutable ordered paint loop.
+/// The backend and its caches remain on this thread across every camera.
+pub(crate) fn with_prepared_nodes<R>(
+    nodes: &[SceneNode],
+    action: impl FnOnce(&mut dyn FnMut(&Canvas)) -> R,
+) -> R {
+    with_prepared_draw(
+        |backend| image_preparation::nodes_ready(backend, nodes),
+        |backend, canvas| draw_nodes(backend, canvas, nodes),
+        action,
+    )
+}
+
+/// An isolated mask node remains ordinary paint; only a real sibling list
+/// interprets it as a mask governing its front siblings.
+pub(crate) fn with_prepared_node<R>(
+    node: &SceneNode,
+    action: impl FnOnce(&mut dyn FnMut(&Canvas)) -> R,
+) -> R {
+    with_prepared_draw(
+        |backend| image_preparation::nodes_ready(backend, std::slice::from_ref(node)),
+        |backend, canvas| {
+            let mut frame = NativeFrameBackend::new(backend, canvas);
+            let mut cx = PaintCx {
+                backend: &mut frame,
+            };
+            canvas_viewport_paint::paint_node(&mut cx, node, Point2D::ZERO, 1.0, no_cull());
+        },
+        action,
+    )
+}
+
+pub fn paint_selection(canvas: &Canvas, selection: &SceneSelection<'_>, viewport: Rect) {
+    with_prepared_selection(selection, viewport, |paint| paint(canvas));
+}
+
+pub(crate) fn with_prepared_selection<R>(
+    selection: &SceneSelection<'_>,
+    viewport: Rect,
+    action: impl FnOnce(&mut dyn FnMut(&Canvas)) -> R,
+) -> R {
+    with_prepared_draw(
+        |backend| {
+            selection.all_paint_sources(|node| {
+                image_preparation::nodes_ready(backend, std::slice::from_ref(node))
+            })
+        },
+        |backend, canvas| {
+            let mut frame = NativeFrameBackend::new(backend, canvas);
+            let mut cx = PaintCx {
+                backend: &mut frame,
+            };
+            canvas_viewport_paint::paint_export_selection(&mut cx, selection, viewport);
+        },
+        action,
+    )
+}
+
+fn draw_nodes(backend: &mut NativeBackend, canvas: &Canvas, nodes: &[SceneNode]) {
+    let mut frame = NativeFrameBackend::new(backend, canvas);
+    let mut cx = PaintCx {
+        backend: &mut frame,
+    };
+    canvas_viewport_paint::paint_nodes(&mut cx, nodes, Point2D::ZERO, 1.0, no_cull());
+}
+
+struct OnDrop<F: FnOnce()>(Option<F>);
+impl<F: FnOnce()> Drop for OnDrop<F> {
+    fn drop(&mut self) {
+        if let Some(action) = self.0.take() {
+            action();
+        }
+    }
+}
+
+fn with_prepared_draw<R>(
+    mut images_ready: impl FnMut(&mut NativeBackend) -> bool,
+    mut draw: impl FnMut(&mut NativeBackend, &Canvas),
+    action: impl FnOnce(&mut dyn FnMut(&Canvas)) -> R,
+) -> R {
     EXPORT_BACKEND.with(|cell| {
         let mut backend = cell.borrow_mut();
-        ensure_images_decoded(&mut backend, nodes);
-        let mut frame = NativeFrameBackend::new(&mut backend, canvas);
-        let mut cx = PaintCx {
-            backend: &mut frame,
-        };
-        for node in nodes.iter().rev() {
-            // `paint_node` is the off-canvas public entry: base scene only,
-            // no editor overlays (reveal/hover/selection/pen).
-            canvas_viewport_paint::paint_node(&mut cx, node, Point2D::ZERO, 1.0, no_cull());
-        }
-    });
+        NativeBackend::with_export_text_reuse(|| {
+            // A no-image scene needs no resource-discovery paint. Warm images
+            // likewise need no throwaway text/vector/gradient traversal.
+            if !images_ready(&mut backend) {
+                ensure_images_decoded(&mut backend, &mut draw);
+            }
+            let mut paint = |canvas: &Canvas| {
+                let saved = canvas.save();
+                let _restore = OnDrop(Some(|| {
+                    canvas.restore_to_count(saved);
+                }));
+                op_host_native::raster_sampling::with_scene_export(|| draw(&mut backend, canvas));
+            };
+            action(&mut paint)
+        })
+    })
 }
 
 /// Serializes concurrent exports through the decode pump. The pending-decode
@@ -106,30 +221,33 @@ static DECODE_PUMP: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// suppressed from re-recording the released id — the export returned
 /// without the bitmap and shipped placeholder art (windows-x86_64 CI,
 /// 2026-08-29, the stolen-decode regression test).
-fn ensure_images_decoded(backend: &mut NativeBackend, nodes: &[SceneNode]) {
+fn ensure_images_decoded(
+    backend: &mut NativeBackend,
+    draw: &mut dyn FnMut(&mut NativeBackend, &Canvas),
+) {
     use op_editor_ui::widgets::canvas_viewport_image::{
         cached_bytes_for, has_in_flight_decodes, mark_decode_done, take_pending_decodes,
     };
     let _pump = DECODE_PUMP
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(mut surface) = skia_safe::surfaces::raster_n32_premul((1, 1)) else {
+        return;
+    };
     // The scene is static, but the pending queue is bounded (one discovery
     // pass may not capture every miss) and an external consumer can hold an
     // id in flight across passes — iterate, with a bounded budget.
     for _ in 0..64 {
         // Sampled BEFORE the paint — see "Exit discipline" above.
         let in_flight_before_paint = has_in_flight_decodes();
-        let Some(mut surface) = skia_safe::surfaces::raster_n32_premul((1, 1)) else {
-            return;
-        };
         {
-            let mut frame = NativeFrameBackend::new(backend, surface.canvas());
-            let mut cx = PaintCx {
-                backend: &mut frame,
-            };
-            for node in nodes.iter().rev() {
-                canvas_viewport_paint::paint_node(&mut cx, node, Point2D::ZERO, 1.0, no_cull());
-            }
+            let canvas = surface.canvas();
+            canvas.clear(skia_safe::Color::TRANSPARENT);
+            let saved = canvas.save();
+            let _restore = OnDrop(Some(|| {
+                canvas.restore_to_count(saved);
+            }));
+            draw(backend, canvas);
         }
         let pending = take_pending_decodes(usize::MAX);
         if pending.is_empty() {

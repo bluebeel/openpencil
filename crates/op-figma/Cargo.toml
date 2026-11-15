@@ -19,6 +19,7 @@ ruzstd = "0.9.1"
 base64 = "0.22"
 
 [dev-dependencies]
+jian-skia = { path = "../../vendor/jian/crates/jian-skia" }
 op-editor-core = { path = "../op-editor-core" }
 op-editor-ui = { path = "../op-editor-ui" }
 op-host-services = { path = "../op-host-services" }

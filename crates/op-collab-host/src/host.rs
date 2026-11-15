@@ -27,6 +27,13 @@ const FIRST_STANDALONE_NODE_ID: u64 = 100;
 pub type CollabWakeNotifier = Arc<dyn Fn() + Send + Sync>;
 
 pub trait CollabHost: CollaborationEditorHost {
+    /// Borrow only the transient collaboration projection. Hosts that track
+    /// canonical document mutation can keep this separate from unrestricted
+    /// editor_state_mut(); all document/session installs still use that API.
+    fn collaboration_ui_mut(&mut self) -> &mut op_editor_core::CollabUiState {
+        &mut self.editor_state_mut().editor_ui.collab
+    }
+
     /// Mark the paint snapshot stale after a mutation through
     /// `editor_state_mut()`.
     fn mark_editor_state_dirty(&mut self);

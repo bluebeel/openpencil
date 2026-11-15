@@ -49,6 +49,7 @@ pub use jian_scene::{layout_scene, layout_scene_hit};
 pub use op_editor_core::scene_vars;
 pub mod scene_bounds;
 pub mod svg_export;
+pub mod svg_path_coordinates;
 pub mod theme;
 pub mod util;
 pub mod widgets;
@@ -56,8 +57,9 @@ pub mod widgets;
 // Re-export the primary API for the hosts / widgets / tests.
 pub use layout_scene::{SceneTextAlign, SceneTextVerticalAlign};
 pub use op_editor_core::render_backend::{
-    Color, ImageAdjustments, ImageBlendMode, ImageDrawMode, Point2D, Rect, RenderBackend,
-    TextBaselineRequest, TextLayout,
+    Color, ImageAdjustments, ImageBlendMode, ImageDrawMode, ImagePaintOptions, ImagePaintThumbnail,
+    Point2D, Rect, RenderBackend, RoundRectShadowOptions, ShadowBlurKernel, TextBaselineRequest,
+    TextDecorationRequest, TextLayout, TextMaskAction, TextMaskResult,
 };
 pub use theme::Theme;
 // Brand-logo catalog registration, surfaced at the crate root so non-widget
@@ -86,3 +88,16 @@ pub(crate) mod agent_indicator_test_support {
         LOCK.lock().unwrap_or_else(|e| e.into_inner())
     }
 }
+
+/// Shared indexed edge/center snapping for native, web and headless hosts.
+pub use jian_scene::snapping;
+
+pub use jian_widgets::{
+    StrokeCurve, StrokeGeometry, StrokeMaskOptions, StrokePaintCap, StrokePaintJoin,
+    StrokePaintStyle, StrokePlacement,
+};
+
+pub use jian_scene::{
+    ImageExtend, ImageFieldGeometry, ImageFieldUnits, ImagePatternGeometry, ImageRepeat,
+    ImageViewportFit, ImageViewportGeometry,
+};

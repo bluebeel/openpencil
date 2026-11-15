@@ -7,7 +7,7 @@
 //! canonical `.op` schema's string ids (`NodeId`), not the old `u64`.
 //! `parse_node_id` accepts any non-empty string.
 
-use std::collections::BTreeMap;
+use std::{borrow::Cow, collections::BTreeMap};
 
 use jian_ops_schema::node::PenNode;
 use op_editor_core::NodeId;
@@ -16,7 +16,7 @@ use serde_json::Value;
 use super::{EditorCommand, McpTool, ToolErrorCode, ToolOutcome};
 use crate::insert_node_args::{insert_node_params, InsertNodeParams};
 use crate::insert_node_data::{ts_data_node, ts_replacement_data_node};
-use crate::update_node_data::ts_update_patch_json;
+use crate::update_node_data::{parse_update_data, serialize_update_patch, update_patch_is_rich};
 
 pub use crate::write_tools_import_svg::{import_svg_snapshot, ImportSvg};
 pub use crate::write_tools_variables::{
@@ -214,30 +214,32 @@ impl McpTool for UpdateNode {
             Ok(v) => v,
             Err(e) => return e,
         };
-        match ts_update_patch_json(args) {
-            Ok(Some(patch_json)) => {
-                let page_id = args
-                    .get("pageId")
-                    .or_else(|| args.get("page_id"))
-                    .or_else(|| args.get("page"))
-                    .map(|s| s.trim())
-                    .filter(|s| !s.is_empty())
-                    .map(str::to_string);
-                let mut out = BTreeMap::new();
-                out.insert("wrote".into(), "true".into());
-                return ToolOutcome::OkWithCommand(
-                    out,
-                    EditorCommand::PatchNodeData {
-                        node_id,
-                        patch_json,
-                        page_id,
-                    },
-                );
-            }
-            Ok(None) => {}
-            Err(e) => return e,
+        let data = match parse_update_data(args) {
+            Ok(data) => data,
+            Err(error) => return error,
+        };
+        if data.as_ref().is_some_and(update_patch_is_rich) {
+            let patch_json = match serialize_update_patch(data.expect("rich data exists")) {
+                Ok(patch) => patch,
+                Err(error) => {
+                    return ToolOutcome::Err(ToolErrorCode::InvalidArgument, error.to_string())
+                }
+            };
+            let page_id = super::batch_page::optional_page_id(args);
+            let mut out = BTreeMap::new();
+            out.insert("wrote".into(), "true".into());
+            return ToolOutcome::OkWithCommand(
+                out,
+                EditorCommand::PatchNodeData {
+                    node_id,
+                    patch_json,
+                    page_id,
+                },
+            );
         }
-        let patch_args = match update_patch_args(args) {
+        // The same parsed object drives the flat route; scalar callers borrow
+        // their original args instead of cloning every key and payload.
+        let mut patch_args = match update_patch_args(args, data) {
             Ok(v) => v,
             Err(e) => return e,
         };
@@ -253,16 +255,16 @@ impl McpTool for UpdateNode {
             }
         }
         let [x, y, width, height] = dims;
-        let name = patch_args.get("name").cloned();
-        let fill_hex = match patch_args.get("fill_hex") {
+        let name = take_patch_arg(&mut patch_args, "name");
+        let fill_hex = match take_patch_arg(&mut patch_args, "fill_hex") {
             None => None,
-            Some(s) if !validate_hex(s) => {
+            Some(s) if !validate_hex(&s) => {
                 return ToolOutcome::Err(
                     ToolErrorCode::InvalidArgument,
                     format!("fill_hex must be #rgb/#rrggbb/#rrggbbaa, got {s:?}"),
                 );
             }
-            Some(s) => Some(s.clone()),
+            Some(s) => Some(s),
         };
         let page_id = args
             .get("pageId")
@@ -329,31 +331,28 @@ fn parse_node_id_alias(
 }
 
 #[allow(clippy::result_large_err)]
-fn update_patch_args(
-    args: &BTreeMap<String, String>,
-) -> Result<BTreeMap<String, String>, ToolOutcome> {
-    let Some(raw) = args.get("data") else {
-        return Ok(args.clone());
+fn update_patch_args<'a>(
+    args: &'a BTreeMap<String, String>,
+    data: Option<Value>,
+) -> Result<Cow<'a, BTreeMap<String, String>>, ToolOutcome> {
+    let Some(value) = data else {
+        return Ok(Cow::Borrowed(args));
     };
-    let value: Value = serde_json::from_str(raw).map_err(|e| {
-        ToolOutcome::Err(
-            ToolErrorCode::InvalidArgument,
-            format!("data must be a JSON object: {e}"),
-        )
-    })?;
-    let Some(obj) = value.as_object() else {
+    let Value::Object(mut obj) = value else {
         return Err(ToolOutcome::Err(
             ToolErrorCode::InvalidArgument,
             "data must be a JSON object".into(),
         ));
     };
     let mut out = BTreeMap::new();
-    if let Some(name) = json_scalar_to_string(obj.get("name").or_else(|| obj.get("content"))) {
+    if let Some(name) =
+        json_scalar_into_string(obj.remove("name").or_else(|| obj.remove("content")))
+    {
         out.insert("name".into(), name);
     }
     for key in ["x", "y", "width", "height"] {
-        if let Some(value) = obj.get(key) {
-            let Some(raw) = json_scalar_to_string(Some(value)) else {
+        if let Some(value) = obj.remove(key) {
+            let Some(raw) = json_scalar_into_string(Some(value)) else {
                 return Err(ToolOutcome::Err(
                     ToolErrorCode::InvalidArgument,
                     format!("data.{key} must be a string or number"),
@@ -365,31 +364,38 @@ fn update_patch_args(
     if let Some(fill_hex) = json_fill_hex_field(obj)? {
         out.insert("fill_hex".into(), fill_hex);
     }
-    Ok(out)
+    Ok(Cow::Owned(out))
+}
+
+fn take_patch_arg(args: &mut Cow<'_, BTreeMap<String, String>>, key: &str) -> Option<String> {
+    match args {
+        Cow::Borrowed(args) => args.get(key).cloned(),
+        Cow::Owned(args) => args.remove(key),
+    }
 }
 
 #[allow(clippy::result_large_err)]
 fn json_fill_hex_field(
-    obj: &serde_json::Map<String, Value>,
+    mut obj: serde_json::Map<String, Value>,
 ) -> Result<Option<String>, ToolOutcome> {
-    if let Some(v) = obj.get("fill_hex").or_else(|| obj.get("fillHex")) {
-        return json_scalar_to_string(Some(v)).map(Some).ok_or_else(|| {
+    if let Some(v) = obj.remove("fill_hex").or_else(|| obj.remove("fillHex")) {
+        return json_scalar_into_string(Some(v)).map(Some).ok_or_else(|| {
             ToolOutcome::Err(
                 ToolErrorCode::InvalidArgument,
                 "data.fill_hex must be a string".into(),
             )
         });
     }
-    let Some(fill) = obj.get("fill") else {
+    let Some(fill) = obj.remove("fill") else {
         return Ok(None);
     };
     match fill {
-        Value::String(s) => Ok(Some(s.clone())),
-        Value::Object(fill_obj) => Ok(json_scalar_to_string(fill_obj.get("color"))),
+        Value::String(s) => Ok(Some(s)),
+        Value::Object(mut fill_obj) => Ok(json_scalar_into_string(fill_obj.remove("color"))),
         Value::Array(items) => {
             for item in items {
-                if let Value::Object(fill_obj) = item {
-                    if let Some(color) = json_scalar_to_string(fill_obj.get("color")) {
+                if let Value::Object(mut fill_obj) = item {
+                    if let Some(color) = json_scalar_into_string(fill_obj.remove("color")) {
                         return Ok(Some(color));
                     }
                 }
@@ -403,9 +409,9 @@ fn json_fill_hex_field(
     }
 }
 
-fn json_scalar_to_string(value: Option<&Value>) -> Option<String> {
+fn json_scalar_into_string(value: Option<Value>) -> Option<String> {
     match value? {
-        Value::String(s) => Some(s.clone()),
+        Value::String(s) => Some(s),
         Value::Number(n) => Some(n.to_string()),
         Value::Bool(v) => Some(v.to_string()),
         _ => None,

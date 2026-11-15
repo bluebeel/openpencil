@@ -25,7 +25,8 @@ pub use agent_client_protocol::schema::{
 };
 
 pub use op_rpc_transport::{
-    classify_inbound, Inbound, JsonRpcError, JsonRpcRequest, JsonRpcResponse,
+    classify_inbound, classify_inbound_owned, Inbound, JsonRpcError, JsonRpcRequest,
+    JsonRpcResponse,
 };
 
 /// ACP protocol version this client speaks (`PROTOCOL_VERSION` in the SDK).

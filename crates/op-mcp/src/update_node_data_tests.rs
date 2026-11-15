@@ -75,3 +75,84 @@ fn update_node_data_with_token_fill_emits_patch_command_and_preserves_token() {
     let value = serde_json::to_value(node).expect("updated node json");
     assert_eq!(value["fill"][0]["color"], "$--primary");
 }
+
+#[test]
+fn update_node_numeric_geometry_preserves_float_and_large_integer_bits() {
+    for key in ["x", "y", "width", "height"] {
+        for raw in ["11.899999618530273", "-0.0", "3.0", "2147483648", "1e30"] {
+            let mut state = sample();
+            let args = BTreeMap::from([
+                ("nodeId".into(), "n10".into()),
+                ("data".into(), format!(r#"{{"{key}":{raw}}}"#)),
+            ]);
+            let ToolOutcome::OkWithCommand(_, command @ EditorCommand::PatchNodeData { .. }) =
+                update_node_snapshot().call(&args)
+            else {
+                panic!("{key}:{raw} must retain canonical geometry");
+            };
+            assert!(state.apply(command), "{key}:{raw} must apply");
+            let node =
+                op_editor_core::walkers::find_node(state.active_children(), &NodeId::new("n10"))
+                    .unwrap();
+            let actual = serde_json::to_value(node).unwrap()[key].as_f64().unwrap();
+            assert_eq!(
+                actual.to_bits(),
+                raw.parse::<f64>().unwrap().to_bits(),
+                "{key}:{raw}"
+            );
+        }
+    }
+    for raw in ["-2147483649", "18446744073709551615"] {
+        let value: Value = serde_json::from_str(&format!(r#"{{"x":{raw}}}"#)).unwrap();
+        let patch = super::update_node_data::ts_update_patch_json_value(&value)
+            .unwrap()
+            .expect("out-of-i32 integer must use canonical data");
+        let actual: Value = serde_json::from_str(&patch).unwrap();
+        assert_eq!(actual["x"], value["x"]);
+    }
+}
+
+#[test]
+fn update_node_i32_integer_literals_keep_the_lightweight_command() {
+    for key in ["x", "y", "width", "height"] {
+        for value in [i32::MIN, -1, 0, 3, i32::MAX] {
+            let args = BTreeMap::from([
+                ("nodeId".into(), "n10".into()),
+                ("data".into(), format!(r#"{{"{key}":{value}}}"#)),
+            ]);
+            let outcome = update_node_snapshot().call(&args);
+            let ToolOutcome::OkWithCommand(
+                _,
+                EditorCommand::UpdateNode {
+                    x,
+                    y,
+                    width,
+                    height,
+                    ..
+                },
+            ) = outcome
+            else {
+                panic!("{key}:{value} must keep the lightweight command");
+            };
+            let fields = [("x", x), ("y", y), ("width", width), ("height", height)];
+            for (field, actual) in fields {
+                assert_eq!(actual, (field == key).then_some(value), "{key}:{value}");
+            }
+        }
+    }
+}
+
+#[test]
+fn update_node_legacy_numeric_strings_do_not_change_routes() {
+    for key in ["x", "y", "width", "height"] {
+        for raw in ["11.899999618530273", "-0.0", "3.0", "2147483648", "17"] {
+            let value = Value::Object(serde_json::Map::from_iter([(
+                key.to_owned(),
+                Value::String(raw.to_owned()),
+            )]));
+            assert!(super::update_node_data::ts_update_patch_json_value(&value)
+                .unwrap()
+                .is_none());
+        }
+    }
+}

@@ -7,7 +7,15 @@ let started: Promise<unknown> | null = null;
 /** Initialise the wasm module exactly once. `url` overrides the .wasm asset URL. */
 export async function ensureWasm(url?: string): Promise<void> {
   if (!started) started = init(url ? { module_or_path: url } : undefined);
-  await started;
+  const pending = started;
+  try {
+    await pending;
+  } catch (error) {
+    // A failed download must not permanently poison every later viewer.
+    // Another caller may already have started a fresh attempt.
+    if (started === pending) started = null;
+    throw error;
+  }
 }
 
 export { WasmViewer, _export };

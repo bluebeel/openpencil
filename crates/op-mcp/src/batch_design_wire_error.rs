@@ -59,8 +59,10 @@ pub(crate) enum WireParseError {
     ExpectedString,
     /// Input ran out immediately after a `\` escape marker.
     UnterminatedEscape,
-    /// An escape sequence outside the supported `"` `\` `n` `t` `r` `/` set.
+    /// An escape sequence outside the JSON string escape set.
     UnsupportedEscape(char),
+    /// A quoted JSON token has invalid Unicode/escape/control contents.
+    InvalidJsonString(String),
     /// A quoted string never closed.
     UnterminatedString,
     /// An integer was expected but no digits were present.
@@ -112,6 +114,7 @@ impl fmt::Display for WireParseError {
             WireParseError::UnsupportedEscape(escape) => {
                 write!(f, "unsupported escape \\{escape}")
             }
+            WireParseError::InvalidJsonString(detail) => write!(f, "invalid JSON string: {detail}"),
             WireParseError::UnterminatedString => f.write_str("unterminated string"),
             WireParseError::ExpectedInteger => f.write_str("expected integer"),
             WireParseError::NotAnI32(raw) => write!(f, "expected i32, got {raw:?}"),

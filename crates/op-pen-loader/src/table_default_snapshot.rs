@@ -81,8 +81,9 @@ pub(crate) fn roots(
             }
         }
     }
-    let original = json!({"children":roots});
-    let mut projected = original.clone();
+    // Only one whole typed-to-Value projection is live at a time. Paged
+    // snapshots never need an unchanged duplicate of the entire table tree.
+    let mut projected = json!({"children":roots});
     let mut expressions = BTreeMap::new();
     evaluate(&mut projected, &state, &mut expressions);
     op_editor_core::table_filter_contract::materialize(&mut projected);
@@ -99,9 +100,20 @@ pub(crate) fn roots(
             (warnings.is_empty() && copy.as_str().is_some()).then_some((id, copy.0))
         })
         .collect();
-    let mut result = if paged { projected } else { original };
+    let mut result = if paged {
+        projected
+    } else {
+        // Pagination/filter evaluation above is needed for counter state, but
+        // full-content callers keep all original rows. Release its projection
+        // before rebuilding the exact unchanged source representation.
+        drop(projected);
+        json!({"children":roots})
+    };
     update_counters(&mut result, &copies);
-    serde_json::from_value(result["children"].clone()).ok()
+    // Move the child array into typed deserialization rather than cloning a
+    // second document-sized Value tree just to discard the first one.
+    let children = result.as_object_mut()?.remove("children")?;
+    serde_json::from_value(children).ok()
 }
 
 #[cfg(test)]

@@ -24,12 +24,18 @@ op-ai = { path = "../op-ai" }
 # Canonical hex-color parsing (dependency-free + wasm32-clean).
 op-util = { path = "../op-util" }
 base64 = "0.22"
+# Pure-Rust source-image edge extraction for vector SVG Clamp composition.
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp", "gif", "tiff", "bmp", "ico", "pnm", "qoi", "tga", "hdr"] }
+# Existing workspace-resolved, pure-Rust SVG grammar and f64 arc geometry.
+svgtypes = "0.16.1"
+kurbo = "0.13.1"
 
 # render_backend.rs uses glam::Vec2 as Point2D (spec §5.2). Pinned to the
 # same version op-editor-ui uses so both crates resolve one glam.
 glam = { version = "0.29", default-features = false, features = ["std"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
+serde_stacker = { workspace = true }
 tracing = { workspace = true }
 
 # Test-only: the Home task wrappers must keep steering the orchestrator's

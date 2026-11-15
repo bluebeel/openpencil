@@ -130,6 +130,7 @@ fn parse_clipboard_html_styles_handles_background_color() {
 #[test]
 fn fix_unresolved_images_swaps_blob_image_for_placeholder_rect() {
     let mut nodes = vec![PenNode::Image(ImageNode {
+        geometry: None,
         base: base(),
         src: "__blob:5".into(),
         object_fit: None,
@@ -175,8 +176,13 @@ fn fix_unresolved_images_swaps_blob_image_fill_on_rect() {
     let mut nodes = vec![PenNode::Rectangle(RectangleNode {
         base: base(),
         container: ContainerProps {
-            fill: Some(vec![PenFill::Image(ImageFillBody {
+            fill: Some(vec![PenFill::Image(Box::new(ImageFillBody {
+                enabled: None,
+                geometry: None,
                 url: "__hash:abc".into(),
+                thumbnail_url: None,
+                nearest_sampling: None,
+                rotation: None,
                 mode: None,
                 original_size: None,
                 transform: None,
@@ -191,7 +197,7 @@ fn fix_unresolved_images_swaps_blob_image_fill_on_rect() {
                 tint: None,
                 highlights: None,
                 shadows: None,
-            })]),
+            }))]),
             ..ContainerProps::default()
         },
         children: None,
@@ -220,6 +226,7 @@ fn fix_unresolved_images_swaps_blob_image_fill_on_rect() {
 fn fix_unresolved_images_preserves_corner_radius_on_placeholder() {
     use jian_ops_schema::node::container::CornerRadius;
     let mut nodes = vec![PenNode::Image(ImageNode {
+        geometry: None,
         base: base(),
         src: "__blob:1".into(),
         object_fit: None,
@@ -262,6 +269,7 @@ fn fix_unresolved_images_preserves_corner_radius_on_placeholder() {
 #[test]
 fn fix_unresolved_images_recurses_into_frame_children() {
     let inner = PenNode::Image(ImageNode {
+        geometry: None,
         base: base(),
         src: "__blob:1".into(),
         object_fit: None,
@@ -328,6 +336,9 @@ fn enrich_nodes_from_html_hints_fills_missing_text_props() {
         },
     );
     let mut nodes = vec![PenNode::Text(TextNode {
+        font_features: None,
+        font_kerning: None,
+        text_decoration_skip_ink: None,
         base: base(),
         width: None,
         height: None,
@@ -357,7 +368,7 @@ fn enrich_nodes_from_html_hints_fills_missing_text_props() {
     enrich_nodes_from_html_hints(&mut nodes, &hints);
     if let PenNode::Text(t) = &nodes[0] {
         assert_eq!(t.font_family.as_deref(), Some("Inter"));
-        assert_eq!(t.font_size, Some(18.0));
+        assert_eq!(t.font_size_px(), Some(18.0));
         assert!(t.font_weight.is_some());
         let fill = t.fill.as_ref().unwrap();
         match &fill[0] {
@@ -380,6 +391,9 @@ fn enrich_does_not_overwrite_explicit_values() {
         },
     );
     let mut nodes = vec![PenNode::Text(TextNode {
+        font_features: None,
+        font_kerning: None,
+        text_decoration_skip_ink: None,
         base: base(),
         width: None,
         height: None,
@@ -396,6 +410,7 @@ fn enrich_does_not_overwrite_explicit_values() {
         underline: None,
         strikethrough: None,
         fill: Some(vec![PenFill::Solid(SolidFillBody {
+            enabled: None,
             color: "#00ff00".into(),
             explain: None,
             opacity: None,
@@ -467,8 +482,13 @@ fn ellipse_with_blob_fill_keeps_other_fill_replaced() {
         inner_radius: None,
         start_angle: None,
         sweep_angle: None,
-        fill: Some(vec![PenFill::Image(ImageFillBody {
+        fill: Some(vec![PenFill::Image(Box::new(ImageFillBody {
+            enabled: None,
+            geometry: None,
             url: "__blob:7".into(),
+            thumbnail_url: None,
+            nearest_sampling: None,
+            rotation: None,
             mode: None,
             original_size: None,
             transform: None,
@@ -483,7 +503,7 @@ fn ellipse_with_blob_fill_keeps_other_fill_replaced() {
             tint: None,
             highlights: None,
             shadows: None,
-        })]),
+        }))]),
         stroke: None,
         effects: None,
         state: None,

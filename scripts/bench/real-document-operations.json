@@ -1,0 +1,479 @@
+{
+  "version": 2,
+  "basis": "operation-matrix.py plus docs/testing/engine-goal-scope.md; live tools/list is the authoritative exposed catalog",
+  "requestedLogicalClients": [
+    1,
+    10,
+    100,
+    1000
+  ],
+  "baselineMaximumActive": 32,
+  "stressMode": "--requested-count-stress asks for the requested logical count concurrently; service refusals are measured, never retried",
+  "scope": "Full imported primary document. Original nodes across its actual pages are edited/read. New copies/SVG controls live inside that full authority and are removed; no empty replacement board.",
+  "limits": [
+    "A bounded write/render budget can yield partial coverage, never a 1000-client pass from fewer attempted clients.",
+    "Global shared-history undo/redo workflows are explicitly serialized; isolated per-agent undo is not claimed.",
+    "Use --managed-primary-save-before-ack only for a verified binary: bound Managed command acknowledgements include atomic save. live-final-save adds one final checkpoint; save-after-each-write adds a redundant explicit RPC. Neither flag changes server behavior or proves power-loss recovery.",
+    "No external network, stock-image, AI/provider or LLM subprocess tool is invoked.",
+    "Full-file alternate-path admission is recorded from fixture inventory; no source-cap increase or selected-page replacement is used.",
+    "Independent family write budgets do not guarantee completed1000writer workflows before deadline. Started/accepted/rejected/unconfirmed participants are reported; serialized variable/theme workflows explicitly use maxInflight1.",
+    "Variable/theme map restoration uses immediate shared undo under serialized family workflows, preserving None versus empty. No arbitrary canonical fields are dropped."
+  ],
+  "families": [
+    {
+      "family": "read",
+      "execution": "implemented",
+      "role": "leaf",
+      "tools": [
+        "read_nodes"
+      ]
+    },
+    {
+      "family": "document-summary",
+      "execution": "implemented",
+      "role": "leaf",
+      "tools": [
+        "set_active_page",
+        "get_document_info",
+        "count_nodes",
+        "list_node_kinds"
+      ],
+      "scope": "Pinned complete-file count, per-page sum and actor-active-page histogram consistency. Readonly; no save/undo or synthetic document."
+    },
+    {
+      "family": "search",
+      "execution": "implemented",
+      "role": "leaf",
+      "tools": [
+        "batch_get"
+      ]
+    },
+    {
+      "family": "selection-zoom",
+      "execution": "implemented",
+      "role": "leaf",
+      "tools": [
+        "set_active_page",
+        "set_selection",
+        "get_selection_set",
+        "set_viewport",
+        "get_viewport"
+      ]
+    },
+    {
+      "family": "move",
+      "execution": "implemented",
+      "role": "geometry",
+      "writes": 1,
+      "tools": [
+        "update_node",
+        "read_nodes"
+      ]
+    },
+    {
+      "family": "resize",
+      "execution": "implemented",
+      "role": "geometry",
+      "writes": 1,
+      "tools": [
+        "update_node",
+        "read_nodes"
+      ]
+    },
+    {
+      "family": "text",
+      "execution": "implemented",
+      "role": "text",
+      "writes": 1,
+      "tools": [
+        "set_active_page",
+        "set_node_text",
+        "read_nodes"
+      ]
+    },
+    {
+      "family": "fill",
+      "execution": "implemented",
+      "role": "geometry",
+      "writes": 1,
+      "tools": [
+        "update_node",
+        "read_nodes"
+      ]
+    },
+    {
+      "family": "duplicate",
+      "execution": "implemented",
+      "role": "leaf",
+      "writes": 2,
+      "tools": [
+        "copy_node",
+        "batch_get",
+        "delete_node"
+      ]
+    },
+    {
+      "family": "shadow",
+      "execution": "implemented",
+      "role": "effect",
+      "writes": 2,
+      "tools": [
+        "set_active_page",
+        "read_nodes",
+        "add_node_effect",
+        "remove_node_effect"
+      ]
+    },
+    {
+      "family": "clipboard",
+      "execution": "implemented",
+      "role": "leaf",
+      "writes": 2,
+      "tools": [
+        "set_active_page",
+        "set_selection",
+        "copy_selected",
+        "paste_clipboard",
+        "get_selection_set",
+        "read_nodes",
+        "delete_node"
+      ]
+    },
+    {
+      "family": "undo-redo",
+      "execution": "implemented",
+      "role": "leaf",
+      "writes": 4,
+      "serialized": true,
+      "tools": [
+        "set_active_page",
+        "read_nodes",
+        "update_node",
+        "undo",
+        "redo"
+      ]
+    },
+    {
+      "family": "component",
+      "execution": "implemented",
+      "role": "component",
+      "writes": 5,
+      "tools": [
+        "set_active_page",
+        "read_nodes",
+        "create_component",
+        "instantiate_component",
+        "get_selection_set",
+        "delete_node",
+        "delete_component"
+      ]
+    },
+    {
+      "family": "svg-import-export",
+      "execution": "implemented",
+      "role": "leaf",
+      "writes": 2,
+      "render": true,
+      "tools": [
+        "set_active_page",
+        "import_svg",
+        "get_selection_set",
+        "export_item",
+        "delete_node"
+      ]
+    },
+    {
+      "family": "layout",
+      "execution": "implemented",
+      "role": "container",
+      "tools": [
+        "snapshot_layout"
+      ]
+    },
+    {
+      "family": "image-export",
+      "execution": "implemented",
+      "role": "image",
+      "render": true,
+      "tools": [
+        "set_active_page",
+        "export_item"
+      ]
+    },
+    {
+      "family": "node-export",
+      "execution": "implemented",
+      "role": "geometry",
+      "render": true,
+      "tools": [
+        "set_active_page",
+        "export_item"
+      ]
+    },
+    {
+      "family": "hit-testing-snapping",
+      "execution": "not-exposed-driver",
+      "catalogTerms": [
+        "hit_test",
+        "snap",
+        "spatial"
+      ],
+      "reason": "Requires an actual engine/viewport interaction driver; do not substitute snapshot_layout for hit-testing or snapping."
+    },
+    {
+      "family": "vector-booleans-contours",
+      "execution": "not-exposed-driver",
+      "catalogTerms": [
+        "boolean",
+        "path_union",
+        "path_subtract",
+        "contour"
+      ],
+      "reason": "No boolean/contour operation is fabricated by this MCP harness. Matching live tools, if any, are listed as available-not-benchmarked."
+    },
+    {
+      "family": "masks-blends-clip-editing",
+      "execution": "not-yet-benchmarked",
+      "catalogTerms": [
+        "mask",
+        "blend",
+        "clip"
+      ],
+      "reason": "Rendering a masked original is not proof of edit-operation throughput or all blend modes."
+    },
+    {
+      "family": "auto-layout-edit-reflow",
+      "execution": "not-yet-benchmarked",
+      "catalogTerms": [
+        "layout",
+        "padding",
+        "gap",
+        "align",
+        "distribute"
+      ],
+      "reason": "Computed-layout read is measured; exhaustive constraints/reflow/align editing is a separate missing workload."
+    },
+    {
+      "family": "collaboration-conflict-crash-recovery",
+      "execution": "not-yet-benchmarked",
+      "catalogTerms": [
+        "collab",
+        "recover",
+        "conflict"
+      ],
+      "reason": "HTTP shared authority is exercised; network collaboration conflicts, crash recovery and agent-local undo are not."
+    },
+    {
+      "family": "cross-file-full-document",
+      "execution": "not-yet-benchmarked",
+      "catalogTerms": [
+        "open_document",
+        "save_document"
+      ],
+      "reason": "Both full corpus documents exceed the existing alternate-file16MiB source admission cap. Primary startup is measured; no partial document replaces it."
+    },
+    {
+      "family": "other-export-formats",
+      "execution": "not-yet-benchmarked",
+      "catalogTerms": [
+        "export"
+      ],
+      "reason": "PNG actual-node export is measured; JPEG/WebP/PDF, SVG export and all encoding/scaling combinations remain explicit gaps."
+    },
+    {
+      "family": "binary-fig-import",
+      "execution": "separate-runtime-gate",
+      "catalogTerms": [
+        "figma",
+        "import_fig"
+      ],
+      "reason": "This matrix opens the full converted canonical document. It does not substitute canonical startup for binary.fig decode/conversion; importer reports are separate."
+    },
+    {
+      "family": "external-provider-tools",
+      "execution": "outside-local-engine-load",
+      "catalogTerms": [
+        "enrich_images",
+        "generate_image",
+        "spawn_agents"
+      ],
+      "reason": "No external models, network image providers or outbound agent services are exercised; exposed tools are inventoried rather than called."
+    },
+    {
+      "family": "reparent",
+      "writes": 13,
+      "tools": [
+        "set_active_page",
+        "insert_node",
+        "copy_node",
+        "batch_get",
+        "move_node",
+        "read_nodes",
+        "delete_node"
+      ],
+      "execution": "implemented",
+      "role": "geometry"
+    },
+    {
+      "family": "reorder",
+      "writes": 10,
+      "tools": [
+        "set_active_page",
+        "insert_node",
+        "copy_node",
+        "batch_get",
+        "set_selection",
+        "reorder_selected",
+        "read_nodes",
+        "delete_node"
+      ],
+      "execution": "implemented",
+      "role": "geometry"
+    },
+    {
+      "family": "group-ungroup",
+      "writes": 8,
+      "tools": [
+        "set_active_page",
+        "copy_node",
+        "batch_get",
+        "set_selection_set",
+        "group_selected",
+        "get_selection_set",
+        "ungroup_selected",
+        "read_nodes",
+        "delete_node"
+      ],
+      "scope": "Page-root grouping/ungrouping actualimportedcopies; nested is a distinctcontrol below.",
+      "execution": "implemented",
+      "role": "geometry"
+    },
+    {
+      "family": "align",
+      "writes": 10,
+      "tools": [
+        "set_active_page",
+        "insert_node",
+        "copy_node",
+        "batch_get",
+        "set_selection_set",
+        "align_selected",
+        "read_nodes",
+        "delete_node"
+      ],
+      "scope": "Left/top alignment of real imported copies; other edge/center/distribute modes are not inferred.",
+      "execution": "implemented",
+      "role": "geometry"
+    },
+    {
+      "family": "variables",
+      "writes": 24,
+      "serialized": true,
+      "tools": [
+        "get_variables",
+        "create_variable",
+        "set_variable_number",
+        "set_variable_color",
+        "set_variable_boolean",
+        "set_variable_string",
+        "delete_variable",
+        "undo"
+      ],
+      "scope": "All4scalar kinds; immediateUndo cleanup to retain exact optional-map presence. No variable-ref binding or bulk replace claim.",
+      "execution": "implemented",
+      "role": "document-metadata"
+    },
+    {
+      "family": "themes",
+      "writes": 2,
+      "serialized": true,
+      "tools": [
+        "get_variables",
+        "set_themes",
+        "undo"
+      ],
+      "scope": "Own-axis merge plus immediateUndo cleanup; no axis switch/resolution/bulk replace claim.",
+      "execution": "implemented",
+      "role": "document-metadata"
+    },
+    {
+      "family": "group-ungroup-nested",
+      "execution": "implemented",
+      "role": "geometry",
+      "writes": 10,
+      "tools": [
+        "set_active_page",
+        "insert_node",
+        "copy_node",
+        "batch_get",
+        "set_selection_set",
+        "group_selected",
+        "get_selection_set",
+        "ungroup_selected",
+        "read_nodes",
+        "delete_node"
+      ],
+      "scope": "Same-parent nested sibling grouping/ungrouping of owned copies of actual imported nodes; arbitrary existing Group transform/effect flattening is not inferred."
+    },
+    {
+      "family": "agentic-batch",
+      "execution": "implemented",
+      "role": "geometry",
+      "render": true,
+      "writes": 16,
+      "tools": [
+        "set_active_page",
+        "insert_node",
+        "batch_get",
+        "batch_tools",
+        "read_nodes",
+        "get_history_depth",
+        "undo",
+        "redo",
+        "set_selection_set",
+        "align_selected",
+        "query_canvas",
+        "update_node",
+        "export_nodes",
+        "delete_node"
+      ],
+      "scope": "Integrated atomic writes/rich read references, exact f64 geometry, read-only no-history, copy/paste/duplicate, batch undo/redo, indexed distribution, eight resize handles and clipped/rotated PNG/SVG/separate+combined PDF output. Bounded by render_budget; actual imported source is preserved and completely verified. Encoding/context controls do not prove full pixel parity."
+    }
+  ],
+  "budgetModes": {
+    "default": "global",
+    "global": "--write-budget64 retains the earlier shared reservation cap; later families can be explicitly deferred.",
+    "family": "--write-budget-scope family independently reserves logicalClients \u00d7 each workflow mutation count; --family-write-budget optionally caps each family. Scheduling does not imply completion or all writers."
+  },
+  "historicalFamilyRemainders": [
+    {
+      "family": "variables-themes",
+      "execution": "not-yet-benchmarked",
+      "catalogTerms": [
+        "variable",
+        "theme"
+      ],
+      "reason": "Token/theme operations require dedicated semantic fixtures; no pass is inferred from reading nodes.",
+      "status": "partially-covered-by-explicit-workflows",
+      "remainingUnmeasured": [
+        "Variable-reference bindings, themed resolution, active-axis switching, bulk replacement and theme presets remain unmeasured."
+      ]
+    },
+    {
+      "family": "reparent-reorder-group-align",
+      "execution": "not-yet-benchmarked",
+      "catalogTerms": [
+        "move_node",
+        "reorder",
+        "group",
+        "align",
+        "distribute"
+      ],
+      "reason": "Coordinate move and resize are measured. Hierarchy/layer ordering/grouping/alignment operations require additional controls and are not inferred.",
+      "status": "partially-covered-by-explicit-workflows",
+      "remainingUnmeasured": [
+        "Arbitrary authored Group transform/effect flattening, every alignment/distribution mode and transformed rendered-pixel equivalence remain unmeasured."
+      ]
+    }
+  ]
+}

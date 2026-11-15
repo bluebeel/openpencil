@@ -25,19 +25,19 @@ pub(super) fn size(x: f32, y: f32) -> FigValue {
 pub(super) fn guid_path(guids: Vec<FigValue>) -> FigValue {
     obj(vec![(
         "guidPath",
-        obj(vec![("guids", FigValue::Array(guids))]),
+        obj(vec![("guids", FigValue::Array(guids.into()))]),
     )])
 }
 
 pub(super) fn ov_with(guids: Vec<FigValue>, extra: Vec<(&str, FigValue)>) -> FigValue {
     let mut pairs = vec![(
         "guidPath".into(),
-        obj(vec![("guids", FigValue::Array(guids))]),
+        obj(vec![("guids", FigValue::Array(guids.into()))]),
     )];
     for (k, v) in extra {
         pairs.push((k.into(), v));
     }
-    FigValue::Object(pairs)
+    FigValue::Object(pairs.into())
 }
 
 pub(super) fn leaf(name: &str, sid: u32, lid: u32) -> TreeNode {
@@ -345,11 +345,17 @@ fn nested_overrides_forwarded_into_instance_subtree() {
 fn nested_override_forwarding_prefers_forwarded_fields_on_pk_collision() {
     let old_image = obj(vec![
         ("type", FigValue::Str("IMAGE".into())),
-        ("image", obj(vec![("hash", FigValue::Bytes(vec![0x11; 4]))])),
+        (
+            "image",
+            obj(vec![("hash", FigValue::Bytes(vec![0x11; 4].into()))]),
+        ),
     ]);
     let new_image = obj(vec![
         ("type", FigValue::Str("IMAGE".into())),
-        ("image", obj(vec![("hash", FigValue::Bytes(vec![0x22; 4]))])),
+        (
+            "image",
+            obj(vec![("hash", FigValue::Bytes(vec![0x22; 4].into()))]),
+        ),
     ]);
     let authored = ov_with(
         vec![guid(2, 30)],
@@ -362,7 +368,7 @@ fn nested_override_forwarding_prefers_forwarded_fields_on_pk_collision() {
                 )]),
             ),
             ("fontSize", FigValue::Float(14.0)),
-            ("fillPaints", FigValue::Array(vec![old_image])),
+            ("fillPaints", FigValue::Array(vec![old_image].into())),
         ],
     );
     let inst = TreeNode {
@@ -371,7 +377,10 @@ fn nested_override_forwarding_prefers_forwarded_fields_on_pk_collision() {
             ("guid", guid(1, 20)),
             (
                 "symbolData",
-                obj(vec![("symbolOverrides", FigValue::Array(vec![authored]))]),
+                obj(vec![(
+                    "symbolOverrides",
+                    FigValue::Array(vec![authored].into()),
+                )]),
             ),
         ]),
         children: vec![],
@@ -382,18 +391,21 @@ fn nested_override_forwarding_prefers_forwarded_fields_on_pk_collision() {
         vec![guid(1, 20)],
         vec![(
             "componentPropAssignments",
-            FigValue::Array(vec![obj(vec![(
-                "value",
-                obj(vec![(
-                    "textValue",
-                    obj(vec![("characters", FigValue::Str("Alex Tijero".into()))]),
-                )]),
-            )])]),
+            FigValue::Array(
+                vec![obj(vec![(
+                    "value",
+                    obj(vec![(
+                        "textValue",
+                        obj(vec![("characters", FigValue::Str("Alex Tijero".into()))]),
+                    )]),
+                )])]
+                .into(),
+            ),
         )],
     );
     let forwarded = ov_with(
         vec![guid(1, 20), guid(2, 30)],
-        vec![("fillPaints", FigValue::Array(vec![new_image]))],
+        vec![("fillPaints", FigValue::Array(vec![new_image].into()))],
     );
 
     let out = apply_instance_overrides(
@@ -420,7 +432,7 @@ fn nested_override_forwarding_prefers_forwarded_fields_on_pk_collision() {
         .and_then(|paints| paints.first())
         .and_then(|paint| paint.get("image"))
         .and_then(|image| image.get("hash"));
-    assert_eq!(hash, Some(&FigValue::Bytes(vec![0x22; 4])));
+    assert_eq!(hash, Some(&FigValue::Bytes(vec![0x22; 4].into())));
 }
 
 use crate::figma_types::FigGuid;
@@ -440,10 +452,13 @@ fn nested_derived_forwarding_preserves_authored_derived_data() {
     // Authored derived data of the nested instance itself.
     inst_figma.set(
         "derivedSymbolData",
-        FigValue::Array(vec![derived_with(
-            vec![guid(2, 30)],
-            vec![("size", size(43.0, 43.0))],
-        )]),
+        FigValue::Array(
+            vec![derived_with(
+                vec![guid(2, 30)],
+                vec![("size", size(43.0, 43.0))],
+            )]
+            .into(),
+        ),
     );
     let inst = TreeNode {
         figma: inst_figma,

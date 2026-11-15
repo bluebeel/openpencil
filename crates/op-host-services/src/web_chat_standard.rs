@@ -419,6 +419,11 @@ fn apply_request_snapshot(
     let mut broadcast_tick = None;
     let mut snapshot = {
         let mut guard = state.lock().unwrap_or_else(|p| p.into_inner());
+        if guard.recovery.required() {
+            return Err(WebChatStandardError::CollabRefused(
+                crate::web_canvas_server::DaemonMutationRefusal::RecoveryRequired,
+            ));
+        }
         if let Some(agent) = req.transient_builtin.as_ref() {
             if !agent.has_model(req.ai.model.trim()) {
                 return Err(WebChatStandardError::TransientModelMismatch);
@@ -447,7 +452,9 @@ fn apply_request_snapshot(
                 // The one instant this turn touches the document; refused
                 // outright once shutdown has closed the barrier.
                 let _write_pass = admit_document_write(write_barrier)?;
-                guard.replace_document(loaded.value);
+                guard
+                    .replace_document(loaded.value)
+                    .map_err(|e| WebChatStandardError::Document(e.to_string()))?;
                 broadcast_tick = Some(guard.sse_tick());
             }
         }
