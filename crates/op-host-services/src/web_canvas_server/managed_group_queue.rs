@@ -2,10 +2,13 @@
 //! Compatibility callers wait synchronously; owned TCP callers use notified
 //! futures and bounded cohort execution. No retry or document ownership.
 use std::{
-    collections::VecDeque,
     sync::{Arc, Condvar, Mutex},
     time::{Duration, Instant},
 };
+
+#[path = "managed_group_pending.rs"]
+mod pending;
+use pending::Pending;
 
 pub(crate) struct Limits {
     pub calls: usize,
@@ -33,7 +36,8 @@ struct Job<T, R> {
 }
 
 struct Inner<T, R> {
-    pending: VecDeque<Arc<Job<T, R>>>,
+    pending: Pending<Arc<Job<T, R>>>,
+    pending_body_bytes: usize,
     retained_calls: usize,
     retained_bytes: usize,
     leader: bool,
@@ -50,6 +54,9 @@ pub(crate) struct Ticket<T, R> {
     queue: Queue<T, R>,
     job: Arc<Job<T, R>>,
     consumed: bool,
+    // Valid only while Pending. Claim/cancel changes that state while holding
+    // the queue lock, so a detached ticket never accesses a reused slot.
+    pending_slot: usize,
 }
 
 impl<T, R> Queue<T, R> {
@@ -58,7 +65,8 @@ impl<T, R> Queue<T, R> {
         assert!(limits.bytes > 0 && limits.group_bytes > 0);
         Self {
             inner: Arc::new(Mutex::new(Inner {
-                pending: VecDeque::new(),
+                pending: Pending::new(),
+                pending_body_bytes: 0,
                 retained_calls: 0,
                 retained_bytes: 0,
                 leader: false,
@@ -78,7 +86,8 @@ impl<T, R> Queue<T, R> {
         charge: usize,
     ) -> Result<Ticket<T, R>, T> {
         let mut inner = self.inner.lock().unwrap_or_else(|p| p.into_inner());
-        if inner.retained_calls >= self.limits.calls
+        if charge < body_bytes
+            || inner.retained_calls >= self.limits.calls
             || charge > self.limits.bytes.saturating_sub(inner.retained_bytes)
             || body_bytes > self.limits.group_bytes
         {
@@ -93,7 +102,8 @@ impl<T, R> Queue<T, R> {
         });
         inner.retained_calls += 1;
         inner.retained_bytes += charge;
-        inner.pending.push_back(Arc::clone(&job));
+        let pending_slot = inner.pending.push_back(Arc::clone(&job));
+        inner.pending_body_bytes += body_bytes;
         if inner.leader {
             self.collect.notify_one();
             self.collected.notify_one();
@@ -105,6 +115,7 @@ impl<T, R> Queue<T, R> {
             queue: self.clone(),
             job,
             consumed: false,
+            pending_slot,
         })
     }
 
@@ -156,7 +167,9 @@ impl<T, R> Ticket<T, R> {
             // One bounded collection window. Incoming notifications never reset
             // its deadline, and a complete group starts without another delay.
             let deadline = Instant::now() + queue.limits.wait;
-            while inner.pending.len() < queue.limits.group_calls {
+            while inner.pending.len() < queue.limits.group_calls
+                && inner.pending_body_bytes < queue.limits.group_bytes
+            {
                 let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
                     break;
                 };
@@ -187,6 +200,7 @@ impl<T, R> Ticket<T, R> {
                 inputs.push(input.take().expect("one input owner"));
                 *state = State::Claimed;
                 bytes += next.body_bytes;
+                inner.pending_body_bytes -= next.body_bytes;
                 drop(state);
                 jobs.push(next);
             }
@@ -206,6 +220,7 @@ impl<T, R> Ticket<T, R> {
             // still cover the network write; abandoned calls are already done.
             drop(inputs);
             let mut inner = queue.inner.lock().unwrap_or_else(|p| p.into_inner());
+            let mut abandoned = Vec::new();
             for (job, reply) in jobs.into_iter().zip(replies) {
                 let mut state = job.state.lock().unwrap_or_else(|p| p.into_inner());
                 match &*state {
@@ -217,10 +232,8 @@ impl<T, R> Ticket<T, R> {
                     State::Abandoned => {
                         // Already claimed work is never replayed or rolled back
                         // merely because its reply waiter disappeared.
-                        drop(reply);
                         *state = State::Consumed;
-                        inner.retained_calls -= 1;
-                        inner.retained_bytes -= job.charge;
+                        abandoned.push((reply, job.charge));
                     }
                     _ => unreachable!("one claimed-group completion"),
                 }
@@ -230,11 +243,41 @@ impl<T, R> Ticket<T, R> {
                 head.ready.notify_one();
                 head.notified.notify_one();
             }
+            drop(inner);
+            queue.retire_abandoned(abandoned);
             // Consume this caller's response in the same path as every follower.
         }
     }
 }
 
+/// Keep accounting until payload destruction has finished outside queue locks.
+struct RetiredCredits<'a, T, R> {
+    queue: &'a Queue<T, R>,
+    calls: usize,
+    bytes: usize,
+}
+impl<T, R> Drop for RetiredCredits<'_, T, R> {
+    fn drop(&mut self) {
+        let mut inner = self.queue.inner.lock().unwrap_or_else(|p| p.into_inner());
+        inner.retained_calls -= self.calls;
+        inner.retained_bytes -= self.bytes;
+    }
+}
+impl<T, R> Queue<T, R> {
+    fn retire_abandoned(&self, replies: Vec<(R, usize)>) {
+        if replies.is_empty() {
+            return;
+        }
+        let _credits = RetiredCredits {
+            queue: self,
+            calls: replies.len(),
+            bytes: replies.iter().map(|(_, bytes)| *bytes).sum(),
+        };
+        for (reply, _) in replies {
+            drop(reply);
+        }
+    }
+}
 impl<T, R> Drop for Ticket<T, R> {
     fn drop(&mut self) {
         if self.consumed {
@@ -243,12 +286,17 @@ impl<T, R> Drop for Ticket<T, R> {
         let queue = &self.queue;
         let mut inner = queue.inner.lock().unwrap_or_else(|p| p.into_inner());
         let mut state = self.job.state.lock().unwrap_or_else(|p| p.into_inner());
-        match &*state {
+        let mut removed = None;
+        let retired = match &*state {
             State::Pending(_) => {
-                inner.pending.retain(|job| !Arc::ptr_eq(job, &self.job));
-                *state = State::Canceled;
-                inner.retained_calls -= 1;
-                inner.retained_bytes -= self.job.charge;
+                removed = Some(
+                    inner
+                        .pending
+                        .remove(self.pending_slot)
+                        .expect("pending ticket owns one stable FIFO slot"),
+                );
+                inner.pending_body_bytes -= self.job.body_bytes;
+                let retired = std::mem::replace(&mut *state, State::Canceled);
                 if inner.leader {
                     queue.collect.notify_one();
                     queue.collected.notify_one();
@@ -256,17 +304,24 @@ impl<T, R> Drop for Ticket<T, R> {
                     head.ready.notify_one();
                     head.notified.notify_one();
                 }
+                Some(retired)
             }
-            State::Complete(_) => {
-                *state = State::Consumed;
-                inner.retained_calls -= 1;
-                inner.retained_bytes -= self.job.charge;
-            }
+            State::Complete(_) => Some(std::mem::replace(&mut *state, State::Consumed)),
             State::Claimed => {
                 *state = State::Abandoned;
+                None
             }
-            State::Abandoned | State::Canceled | State::Consumed => {}
-        }
+            State::Abandoned | State::Canceled | State::Consumed => None,
+        };
+        drop(state);
+        drop(inner);
+        let _credits = retired.as_ref().map(|_| RetiredCredits {
+            queue,
+            calls: 1,
+            bytes: self.job.charge,
+        });
+        drop(retired);
+        drop(removed);
     }
 }
 

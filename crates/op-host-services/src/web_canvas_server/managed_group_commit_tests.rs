@@ -128,6 +128,9 @@ fn queued<'a>(ctx: &ConnCtx<'a>, lines: &[String]) -> Vec<Value> {
                 .submit(
                     Request {
                         line: line.clone(),
+                        structural: op_mcp::parse_tool_call(line).is_some_and(|call| {
+                            mcp_serve::cohort_coverage::structural_tool(&call.tool)
+                        }),
                         profile: PROFILE,
                         path: path.clone(),
                         document: path.clone(),

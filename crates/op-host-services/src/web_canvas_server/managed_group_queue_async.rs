@@ -93,15 +93,13 @@ impl<T: Send + 'static, R: Send + 'static> Ticket<T, R> {
                         loop {
                             let mut collected = pin!(self.queue.collected.notified());
                             collected.as_mut().enable();
-                            if self
-                                .queue
-                                .inner
-                                .lock()
-                                .unwrap_or_else(|p| p.into_inner())
-                                .pending
-                                .len()
-                                >= self.queue.limits.group_calls
-                            {
+                            let full = {
+                                let inner =
+                                    self.queue.inner.lock().unwrap_or_else(|p| p.into_inner());
+                                inner.pending.len() >= self.queue.limits.group_calls
+                                    || inner.pending_body_bytes >= self.queue.limits.group_bytes
+                            };
+                            if full {
                                 break;
                             }
                             if tokio::time::timeout_at(deadline, collected).await.is_err() {
@@ -183,6 +181,7 @@ impl<T: Send + 'static, R: Send + 'static> Ticket<T, R> {
             inputs.push(input.take().expect("one input owner"));
             *state = State::Claimed;
             bytes += next.body_bytes;
+            inner.pending_body_bytes -= next.body_bytes;
             drop(state);
             jobs.push(next);
         }
@@ -192,6 +191,7 @@ impl<T: Send + 'static, R: Send + 'static> Ticket<T, R> {
 impl<T, R> Queue<T, R> {
     fn complete(&self, jobs: Vec<Arc<Job<T, R>>>, replies: Vec<R>) {
         let mut inner = self.inner.lock().unwrap_or_else(|p| p.into_inner());
+        let mut abandoned = Vec::new();
         for (job, reply) in jobs.into_iter().zip(replies) {
             let mut state = job.state.lock().unwrap_or_else(|p| p.into_inner());
             match &*state {
@@ -201,10 +201,8 @@ impl<T, R> Queue<T, R> {
                     job.notified.notify_one();
                 }
                 State::Abandoned => {
-                    drop(reply);
                     *state = State::Consumed;
-                    inner.retained_calls -= 1;
-                    inner.retained_bytes -= job.charge;
+                    abandoned.push((reply, job.charge));
                 }
                 _ => unreachable!("one claimed-group completion"),
             }
@@ -214,6 +212,8 @@ impl<T, R> Queue<T, R> {
             head.ready.notify_one();
             head.notified.notify_one();
         }
+        drop(inner);
+        self.retire_abandoned(abandoned);
     }
 }
 

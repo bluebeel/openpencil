@@ -21,7 +21,7 @@ mod metrics;
 mod quota;
 #[path = "resident_group_transaction.rs"]
 mod transaction;
-const MAX_LINE: usize = 256 * 1024;
+const MAX_LINE: usize = crate::web_canvas_server::managed_group_commit::MAX_BODY;
 const MAX_REPLY: usize = 256 * 1024;
 
 struct Request {
@@ -98,20 +98,12 @@ impl Groups {
     }
 }
 fn candidate(line: &str, profile: McpAccessProfile) -> Option<op_mcp::ToolCall> {
-    if profile.deny_unshareable_tools || line.len() > MAX_LINE || line.contains(['\n', '\r']) {
+    if profile.deny_unshareable_tools {
         return None;
     }
-    let call = op_mcp::parse_tool_call(line)?;
-    if !call.arguments.contains_key("agentId")
-        || profile.refuse_call(&call.tool, &call.arguments).is_some()
-    {
-        return None;
-    }
-    if !super::cohort_coverage::call(&call) {
-        return None;
-    }
-    Some(call)
+    super::cohort_candidate::parse(line, profile, MAX_LINE)
 }
+
 fn audited_command(command: &EditorCommand) -> bool {
     super::cohort_coverage::command(command)
 }
@@ -170,6 +162,9 @@ pub(crate) fn dispatch(
             )))
         }
     };
+    // Canonical routing and error correlation are complete. Do not retain the
+    // parser's argument allocations alongside the queued owned wire request.
+    drop(call);
     let deferred = crate::web_canvas_server::async_completion::prepare();
     let charge = line
         .len()
@@ -268,10 +263,11 @@ fn run(lease: &DocumentLease<'_>, requests: &[Request]) -> Vec<Reply> {
     let claim_epoch = match lease.claim_receipt() {
         Ok(epoch) => epoch,
         Err(error) => {
+            let message = error.to_string();
             return requests
                 .iter()
-                .map(|request| request.error(&error.to_string()))
-                .collect()
+                .map(|request| request.error(&message))
+                .collect();
         }
     };
     let result = lease.with_tracked_editor_accounted_epoch(
@@ -316,10 +312,13 @@ fn run(lease: &DocumentLease<'_>, requests: &[Request]) -> Vec<Reply> {
                 ))))
             })
             .collect(),
-        Err(error) => requests
-            .iter()
-            .map(|request| request.error(&error.to_string()))
-            .collect(),
+        Err(error) => {
+            let message = error.to_string();
+            requests
+                .iter()
+                .map(|request| request.error(&message))
+                .collect()
+        }
     }
 }
 

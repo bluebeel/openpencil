@@ -24,11 +24,12 @@ mod metrics;
 #[path = "managed_group_queue.rs"]
 pub(crate) mod queue;
 
-const MAX_BODY: usize = 16 * 1024 * 1024;
+pub(crate) const MAX_BODY: usize = 16 * 1024 * 1024;
 const MAX_REPLY: usize = 256 * 1024;
 
 struct Request {
     line: String,
+    structural: bool,
     profile: McpAccessProfile,
     path: PathBuf,
     document: PathBuf,
@@ -103,22 +104,8 @@ fn error(line: &str, reason: &impl std::fmt::Display) -> String {
         .unwrap_or_default()
 }
 
-fn candidate(line: &str, profile: McpAccessProfile) -> bool {
-    if line.len() > MAX_BODY || line.contains(['\n', '\r']) {
-        return false;
-    }
-    if !serde_json::from_str::<serde_json::Value>(line).is_ok_and(|value| value.is_object()) {
-        return false;
-    }
-    let Some(call) = op_mcp::parse_tool_call(line) else {
-        return false;
-    };
-    if !call.arguments.contains_key("agentId")
-        || profile.refuse_call(&call.tool, &call.arguments).is_some()
-    {
-        return false;
-    }
-    mcp_serve::cohort_coverage::call(&call)
+fn candidate(line: &str, profile: McpAccessProfile) -> Option<op_mcp::ToolCall> {
+    mcp_serve::cohort_candidate::parse(line, profile, MAX_BODY)
 }
 
 fn audited(command: &C) -> bool {
@@ -139,10 +126,28 @@ pub(super) fn dispatch(
     if !matches!(ctx.mode, ServeMode::Managed) {
         return None;
     }
-    let groups = &ctx.authority.managed_groups;
-    if !writes || !candidate(line, profile) {
+    if !writes {
         return None;
     }
+    // Parsing may own large structured arguments. Release them before queueing
+    // the already validated immutable input rather than keeping a second copy
+    // throughout a synchronous save or network wait.
+    let call = candidate(line, profile)?;
+    let structural = mcp_serve::cohort_coverage::structural_tool(&call.tool);
+    drop(call);
+    dispatch_prechecked(ctx, line, profile, path, document, admission, structural)
+}
+
+fn dispatch_prechecked(
+    ctx: &ConnCtx<'_>,
+    line: &str,
+    profile: McpAccessProfile,
+    path: Option<&Path>,
+    document: &Path,
+    admission: &AgentAdmission<'_>,
+    structural: bool,
+) -> Option<Result<String, WebCanvasError>> {
+    let groups = &ctx.authority.managed_groups;
     let path = path?;
     let route = ctx.authority.bound_route()?;
     if route.path.as_deref() != Some(path)
@@ -156,6 +161,7 @@ pub(super) fn dispatch(
     let permit = admission.execution_permit(&ctx.authority.agent_contexts, document)?;
     let input = Request {
         line: line.to_owned(),
+        structural,
         profile,
         path: path.to_owned(),
         document: document.to_owned(),
@@ -226,15 +232,12 @@ pub(super) fn dispatch_early(
     profile: McpAccessProfile,
     admission: &AgentAdmission<'_>,
 ) -> Option<Result<String, WebCanvasError>> {
-    if !matches!(ctx.mode, ServeMode::Managed)
-        || ctx.write_barrier.is_some()
-        || !candidate(line, profile)
-    {
+    if !matches!(ctx.mode, ServeMode::Managed) || ctx.write_barrier.is_some() {
         return None;
     }
+    let call = candidate(line, profile)?;
     let route = ctx.authority.bound_route()?;
     let path = route.path.as_ref()?;
-    let call = op_mcp::parse_tool_call(line)?;
     if let Some(raw) = call
         .arguments
         .get("filePath")
@@ -247,14 +250,16 @@ pub(super) fn dispatch_early(
             return None;
         }
     }
-    dispatch(
+    let structural = mcp_serve::cohort_coverage::structural_tool(&call.tool);
+    drop(call);
+    dispatch_prechecked(
         ctx,
         line,
         profile,
         Some(path),
         &route.document,
         admission,
-        true,
+        structural,
     )
 }
 
@@ -271,7 +276,7 @@ struct Transaction<'s, 'a, 'q> {
     pending: Vec<Pending>,
     save_chain: crate::doc_io::incremental::SaveChain,
     replies: Vec<Option<Reply>>,
-    ticks: Vec<super::SseTick>,
+    notify: bool,
     changes: Vec<(u64, super::changefeed::Staged)>,
     id_sequence: op_editor_core::CommandIdSequence,
     budget: budget::Budget,
@@ -300,36 +305,37 @@ impl Transaction<'_, '_, '_> {
             ))));
             return;
         }
-        let structural = op_mcp::parse_tool_call(&request.line)
-            .is_some_and(|call| mcp_serve::cohort_coverage::structural_tool(&call.tool));
+        let structural = request.structural;
         if structural && self.live_selection.is_none() {
             let selection = &self.state.editor.selection;
-            if selection.set.len() > 16_384 {
-                self.replies[index] = Some(Reply::Isolated);
-                return;
-            }
+            let page_id = crate::mcp_serve::agent_context::current_page_id(&self.state.editor);
             let bytes = selection
                 .set
                 .iter()
-                .map(|id| id.as_str().len())
-                .sum::<usize>()
-                + selection.set.len() * std::mem::size_of::<op_editor_core::NodeId>()
-                + selection.anchor.as_str().len()
-                + std::mem::size_of::<op_editor_core::SelectionState>();
-            let bytes = bytes
+                .fold(
+                    selection
+                        .set
+                        .len()
+                        .saturating_mul(std::mem::size_of::<op_editor_core::NodeId>())
+                        .saturating_add(selection.anchor.as_str().len())
+                        .saturating_add(std::mem::size_of::<op_editor_core::SelectionState>()),
+                    |bytes, id| bytes.saturating_add(id.as_str().len().saturating_mul(8)),
+                )
                 .saturating_add(
-                    crate::mcp_serve::agent_context::current_page_id(&self.state.editor)
-                        .map_or(0, |id| id.capacity()),
+                    page_id
+                        .as_ref()
+                        .map_or(0, String::capacity)
+                        .saturating_mul(8),
                 )
                 .saturating_add(64);
-            if bytes > 2 * 1024 * 1024 || self.budget.reserve_live_selection(bytes).is_err() {
+            // The shared capture allowance is the actual memory bound. A
+            // separate tiny count/byte ceiling sent large valid selections
+            // through a much more expensive isolated whole-document path.
+            if self.budget.reserve_live_selection(bytes).is_err() {
                 self.replies[index] = Some(Reply::Isolated);
                 return;
             }
-            self.live_page = Some((
-                self.state.editor.ui.active_page_index,
-                crate::mcp_serve::agent_context::current_page_id(&self.state.editor),
-            ));
+            self.live_page = Some((self.state.editor.ui.active_page_index, page_id));
             self.live_selection = Some(selection.clone());
         }
         let policy = self.state.collab_policy();
@@ -452,7 +458,7 @@ impl Transaction<'_, '_, '_> {
                 crate::design_agent_tools::reveal_now_millis(),
             );
             self.state.collab.bump_seq();
-            self.ticks.push(self.state.sse_tick());
+            self.notify = true;
         }
         self.replies[index] = Some(if let Some(failure) = failure {
             Reply::Complete(Ok(error(&request.line, &failure)))
@@ -477,7 +483,7 @@ impl Transaction<'_, '_, '_> {
             self.state.version += 1;
             self.changes.push((self.state.version, committed_changes));
             self.last_changed = Some(index);
-            self.ticks.push(self.state.sse_tick());
+            self.notify = true;
         }
     }
 
@@ -640,8 +646,11 @@ impl Transaction<'_, '_, '_> {
         }
         self.finished = true;
         self.pending.clear();
-        for tick in &self.ticks {
-            self.ctx.hub.broadcast(*tick);
+        // SSE slots intentionally retain only the latest counter pair. All
+        // exact forward records were published above, so one final notification
+        // replaces O(changes × subscribers) locks/wakes for this durable cohort.
+        if self.notify {
+            self.ctx.hub.broadcast(self.state.sse_tick());
         }
         self.state
             .editor
@@ -680,7 +689,7 @@ fn run_group(ctx: &ConnCtx<'_>, owner: &Groups, requests: &[Request]) -> Vec<Rep
         pending: Vec::with_capacity(requests.len()),
         save_chain,
         replies: (0..requests.len()).map(|_| None).collect(),
-        ticks: Vec::with_capacity(requests.len()),
+        notify: false,
         changes: Vec::with_capacity(requests.len()),
         id_sequence: Default::default(),
         budget: budget::Budget::default(),

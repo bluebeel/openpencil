@@ -624,6 +624,7 @@ mod doc_sync;
 pub use doc_sync::*;
 
 pub(crate) mod agent_context;
+pub(crate) mod cohort_candidate;
 pub(crate) mod cohort_coverage;
 pub(crate) mod cohort_generation;
 mod export_result;
