@@ -169,8 +169,8 @@ fn validate_replacements(
                 number_or_expression_from_value(&replacement.to)?;
             }
             "fontSize" => {
-                number_from_value(&replacement.from, "fontSize")?;
-                number_from_value(&replacement.to, "fontSize")?;
+                number_or_expression_from_value(&replacement.from)?;
+                number_or_expression_from_value(&replacement.to)?;
             }
             "fontWeight" => {
                 font_weight_from_value(&replacement.to)?;
@@ -374,18 +374,21 @@ fn replace_gap(node: &mut PenNode, replacement: &StylePropertyReplacement) -> bo
 fn replace_text_number(
     node: &mut PenNode,
     replacement: &StylePropertyReplacement,
-    property: &str,
+    _property: &str,
 ) -> bool {
     let PenNode::Text(text) = node else {
         return false;
     };
-    let Some(current) = text.font_size.and_then(|v| finite_number_value(v).ok()) else {
+    let Some(current) = text.font_size.as_ref().and_then(|value| match value {
+        NumberOrExpression::Number(number) if !number.is_finite() => None,
+        _ => Some(number_or_expression_value(value)),
+    }) else {
         return false;
     };
     if !style_value_equal(&current, &replacement.from) {
         return false;
     }
-    let Ok(to) = number_from_value(&replacement.to, property) else {
+    let Ok(to) = number_or_expression_from_value(&replacement.to) else {
         return false;
     };
     text.font_size = Some(to);

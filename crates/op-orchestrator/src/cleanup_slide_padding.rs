@@ -453,7 +453,7 @@ const BOARD_TEXT_OVERFLOW_EPS: f64 = 2.0;
 struct CopyGroup {
     parent_id: String,
     content: String,
-    font_size: f64,
+    font_size: jian_ops_schema::node::NumberOrExpression,
 }
 
 /// Per-root cleanup pass (Card/Deck board gate): a text descendant whose REAL
@@ -585,7 +585,7 @@ fn collect_copy_group_triggers(
         let group = CopyGroup {
             parent_id: parent_id.to_string(),
             content: text_content_string(&text.content),
-            font_size: text.font_size.unwrap_or(0.0),
+            font_size: text.font_size.clone().unwrap_or_else(|| 0.0.into()),
         };
         if !groups.iter().any(|existing| {
             existing.parent_id == group.parent_id
@@ -639,7 +639,7 @@ fn patch_copy_group(sink: &mut dyn DocSink, root_id: &str, group: &CopyGroup) ->
                 continue;
             };
             if text_content_string(&text.content) != group.content
-                || text.font_size.unwrap_or(0.0) != group.font_size
+                || text.font_size.as_ref().unwrap_or(&0.0.into()) != &group.font_size
             {
                 continue;
             }

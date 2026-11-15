@@ -465,7 +465,7 @@ fn property_value(node: &PenNode, property: StyleProperty) -> Option<Value> {
             .and_then(|c| c.gap.as_ref())
             .and_then(number_or_expression_value),
         StyleProperty::FontSize => match node {
-            PenNode::Text(t) => t.font_size.and_then(number_value),
+            PenNode::Text(t) => t.font_size.as_ref().and_then(number_or_expression_value),
             _ => None,
         },
         StyleProperty::FontFamily => match node {

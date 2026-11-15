@@ -710,8 +710,16 @@ pub(super) fn typography(ctx: &mut Ctx, text: &TextNode, node: &PenNode, classes
     if let Some(family) = text.font_family.as_deref() {
         classes.push_opt(font_family(ctx, family));
     }
-    if let Some(size) = text.font_size.filter(|s| s.is_finite() && *s > 0.0) {
-        classes.push(scale::font_size(size));
+    match &text.font_size {
+        Some(NumberOrExpression::Number(size)) if size.is_finite() && *size > 0.0 => {
+            classes.push(scale::font_size(*size));
+        }
+        Some(NumberOrExpression::Expression(expression)) => {
+            if let Some(value) = expression_length(ctx, expression) {
+                classes.push(format!("text-[length:{value}]"));
+            }
+        }
+        _ => {}
     }
     match &text.font_weight {
         Some(FontWeight::Number(w)) => classes.push_opt(scale::font_weight_class(*w)),

@@ -155,7 +155,7 @@ impl SnapshotCtx<'_> {
             height: sizing.height,
             content: styled_content(object, text, self.text_fill_override.as_deref()),
             font_family: styles.get("font-family").cloned(),
-            font_size: Some(font_size),
+            font_size: Some(font_size.into()),
             font_weight,
             font_style,
             letter_spacing,

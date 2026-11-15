@@ -505,7 +505,10 @@ pub fn node_property_value(node: &PenNode, property: &str) -> Option<Value> {
         "height" => sizing_value(height_sizing(node)?),
         "cornerRadius" => corner_radius_value(node),
         "fontSize" => match node {
-            PenNode::Text(t) => t.font_size.map(json_number),
+            PenNode::Text(t) => t.font_size.as_ref().map(|size| match size {
+                NumberOrExpression::Number(value) => json_number(*value),
+                NumberOrExpression::Expression(value) => Value::String(value.clone()),
+            }),
             _ => None,
         },
         _ => None,

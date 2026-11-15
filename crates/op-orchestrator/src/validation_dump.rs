@@ -152,8 +152,15 @@ fn walk_dump(node: &PenNode, depth: usize, lines: &mut Vec<String>) {
 
     // text-specific fields
     if let PenNode::Text(t) = node {
-        if let Some(fs) = t.font_size {
-            props.push(format!("fontSize={fs}"));
+        if let Some(fs) = &t.font_size {
+            props.push(match fs {
+                jian_ops_schema::node::NumberOrExpression::Number(value) => {
+                    format!("fontSize={value}")
+                }
+                jian_ops_schema::node::NumberOrExpression::Expression(value) => {
+                    format!("fontSize={value:?}")
+                }
+            });
         }
         if let Some(fw) = &t.font_weight {
             props.push(format!("fontWeight={}", format_font_weight(fw)));

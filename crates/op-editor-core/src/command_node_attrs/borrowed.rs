@@ -46,7 +46,7 @@ pub(crate) fn set_node_font_size(node: &mut PenNode, node_id: &NodeId, font_size
     }
     match node {
         PenNode::Text(t) => {
-            t.font_size = Some(font_size as f64);
+            t.font_size = Some((font_size as f64).into());
             true
         }
         _ => false,

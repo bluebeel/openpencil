@@ -329,7 +329,9 @@ fn build_text_node(
         .map(|s| TextContent::Plain(s.to_string()))
         .unwrap_or_else(|| TextContent::Plain(String::new()));
 
-    let font_size = obj.get("fontSize").and_then(|v| v.as_f64());
+    let font_size = obj.get("fontSize").and_then(|value| {
+        serde_json::from_value::<jian_ops_schema::node::NumberOrExpression>(value.clone()).ok()
+    });
     let font_weight = obj
         .get("fontWeight")
         .and_then(|v| v.as_u64())
