@@ -31,7 +31,7 @@ impl WebCanvasState {
             recovery.trip();
         }
         Self {
-            editor,
+            editor: editor.into(),
             recovery,
             primary_files,
             changefeed: Default::default(),

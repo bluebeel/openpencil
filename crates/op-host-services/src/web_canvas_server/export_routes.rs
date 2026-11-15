@@ -283,7 +283,7 @@ fn save_current_file_inner(body: &str, state: &mut WebCanvasState) -> WebReply {
     };
     match save_editor_from_body(body, &state.editor, &path) {
         Ok(next) => {
-            state.editor = next;
+            state.editor = next.into();
             state.recovery.replaced();
             state.version += 1;
             let file_name = path

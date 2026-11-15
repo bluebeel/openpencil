@@ -49,7 +49,8 @@ impl WebCanvasState {
         })?;
         let prepared = super::super::primary_scope::prepared(&self.primary_files, Some(&path))
             .map_err(|error| WebCanvasError::Config(error.to_string()))?;
-        let previous = std::mem::replace(&mut self.editor, op_editor_core::EditorState::new());
+        let previous =
+            std::mem::replace(&mut self.editor, op_editor_core::EditorState::new().into());
         doc_routes::preserve_web_canvas_preferences(&previous, &mut self.editor);
         drop(previous);
         // Stage the replacement without touching the uncertain authority. A
@@ -66,7 +67,7 @@ impl WebCanvasState {
         prepared
             .install()
             .map_err(|error| WebCanvasError::Config(error.to_string()))?;
-        self.editor = next;
+        self.editor = next.into();
         self.version = self.version.saturating_add(1);
         if !self.recovery.recovered(epoch) {
             return Err(WebCanvasError::Config(REQUIRED.into()));

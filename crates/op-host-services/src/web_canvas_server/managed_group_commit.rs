@@ -269,6 +269,7 @@ struct Transaction<'s, 'a, 'q> {
     owner: &'s Groups,
     requests: &'q [Request],
     pending: Vec<Pending>,
+    save_chain: crate::doc_io::incremental::SaveChain,
     replies: Vec<Option<Reply>>,
     ticks: Vec<super::SseTick>,
     changes: Vec<(u64, super::changefeed::Staged)>,
@@ -343,6 +344,7 @@ impl Transaction<'_, '_, '_> {
         let before_budget = *budget;
         let fence = self.state.recovery.clone();
         let metrics = &self.owner.metrics;
+        let save_chain = &mut self.save_chain;
         let response = self
             .id_sequence
             .with_authority(&mut self.state.editor, |editor| {
@@ -427,6 +429,12 @@ impl Transaction<'_, '_, '_> {
                             budget.retain_unanchored_components();
                         }
                         if applied && changed {
+                            save_chain.observe(editor, |visitor| {
+                                capture
+                                    .as_ref()
+                                    .expect("applied capture")
+                                    .visit_metadata_changes(editor, visitor)
+                            });
                             committed_changes
                                 .capture(capture.as_ref().expect("applied capture"), editor);
                         }
@@ -471,6 +479,7 @@ impl Transaction<'_, '_, '_> {
     }
 
     fn rollback(&mut self) -> bool {
+        self.save_chain.invalidate();
         self.id_sequence.invalidate();
         let mut clean = true;
         for pending in std::mem::take(&mut self.pending).into_iter().rev() {
@@ -537,6 +546,7 @@ impl Transaction<'_, '_, '_> {
             let persisted = &mut self.persisted;
             let fence = self.state.recovery.clone();
             let metrics = &self.owner.metrics;
+            let save_chain = &mut self.save_chain;
             #[cfg(test)]
             let owner = self.owner;
             let _ = mcp_serve::agent_context::with_agent_context_for_commit(
@@ -553,7 +563,7 @@ impl Transaction<'_, '_, '_> {
                     if owner.fault.load(Ordering::Acquire) == 1 {
                         panic!("injected before save");
                     }
-                    let saved_result = crate::doc_io::save_to_path_compact(editor, &actor.path);
+                    let saved_result = save_chain.save(editor, &actor.path);
                     #[cfg(test)]
                     if saved_result.is_ok() && owner.fault.load(Ordering::Acquire) == 2 {
                         panic!("injected after rename before save acknowledgement");
@@ -630,6 +640,9 @@ impl Transaction<'_, '_, '_> {
         for tick in &self.ticks {
             self.ctx.hub.broadcast(*tick);
         }
+        self.state
+            .editor
+            .restore_save_chain(std::mem::take(&mut self.save_chain));
         self.replies
             .iter_mut()
             .map(|reply| reply.take().unwrap())
@@ -655,12 +668,14 @@ fn run_group(ctx: &ConnCtx<'_>, owner: &Groups, requests: &[Request]) -> Vec<Rep
     }
     let mut state = ctx.state.lock().unwrap_or_else(|p| p.into_inner());
     let before_version = state.version;
+    let save_chain = state.editor.take_save_chain();
     let mut transaction = Transaction {
         state: &mut state,
         ctx,
         owner,
         requests,
         pending: Vec::with_capacity(requests.len()),
+        save_chain,
         replies: (0..requests.len()).map(|_| None).collect(),
         ticks: Vec::with_capacity(requests.len()),
         changes: Vec::with_capacity(requests.len()),

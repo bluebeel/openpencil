@@ -72,7 +72,7 @@ pub(super) fn open_recent_file(body: &str, state: &mut WebCanvasState) -> WebRep
             if let Err(error) = prepared.install() {
                 return super::connection_binding::refusal(error);
             }
-            state.editor = next;
+            state.editor = next.into();
             state.recovery.replaced();
             state.current_path = Some(path);
             state.version = version;

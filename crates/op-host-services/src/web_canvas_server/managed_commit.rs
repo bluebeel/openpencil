@@ -47,10 +47,14 @@ fn apply_command(
     repair: bool,
     fence: &crate::document_recovery::DocumentRecovery,
     changes: &mut super::changefeed::Staged,
+    save_chain: &mut crate::doc_io::incremental::SaveChain,
 ) -> Result<bool, CommitError> {
     let Some(path) = path.filter(|_| {
         command.may_change_document() || matches!(command, EditorCommand::Batch { .. })
     }) else {
+        if command.may_change_document() || matches!(command, EditorCommand::Batch { .. }) {
+            save_chain.invalidate();
+        }
         let applied = mcp_serve::apply_command_with_undo(editor, command.clone(), repair);
         if applied {
             // Local/Online writes have no confirmed bound-file save boundary.
@@ -80,7 +84,10 @@ fn apply_command(
         return Ok(false);
     }
     if editor.document_revision() != revision {
-        if let Err(source) = crate::doc_io::save_to_path_compact(editor, path) {
+        save_chain.observe(editor, |visitor| {
+            capture.visit_metadata_changes(editor, visitor)
+        });
+        if let Err(source) = save_chain.save(editor, path) {
             let rollback = capture.abort(editor).err();
             if rollback.is_some() {
                 fence.trip();
@@ -173,6 +180,7 @@ fn dispatch_inner(
         return Ok(error_response(line, &CommitError::AuthorityChanged));
     }
     let commit_path = managed.then(|| state.current_path.clone()).flatten();
+    let mut save_chain = state.editor.take_save_chain();
     let before = state.version;
     let mut committed_changes = super::changefeed::Staged::default();
     let mut applied_any = false;
@@ -213,11 +221,10 @@ fn dispatch_inner(
                             return true;
                         }
                         mcp_serve::AuthorityAction::CommitAtomic(summary) => {
+                            save_chain.invalidate();
                             if summary.document_changed(editor) {
                                 if let Some(path) = commit_path.as_deref() {
-                                    if let Err(source) =
-                                        crate::doc_io::save_to_path_compact(editor, path)
-                                    {
+                                    if let Err(source) = save_chain.save(editor, path) {
                                         failed = Some(CommitError::Save {
                                             source,
                                             rollback: None,
@@ -254,6 +261,7 @@ fn dispatch_inner(
                         mcp_serve::write_repairs::generated_tool(tool),
                         &fence,
                         &mut committed_changes,
+                        &mut save_chain,
                     ) {
                         Ok(applied) => {
                             applied_any |=
@@ -291,6 +299,9 @@ fn dispatch_inner(
     }
     if state.version != before || refused.is_some() {
         ctx.hub.broadcast(state.sse_tick());
+    }
+    if !state.recovery.required() {
+        state.editor.restore_save_chain(save_chain);
     }
     Ok(match failed {
         Some(error) => error_response(line, &error),

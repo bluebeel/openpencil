@@ -46,6 +46,7 @@ mod editor_meta_roundtrip_tests;
 mod error;
 #[cfg(test)]
 mod hosted_catalog_tests;
+pub(crate) mod incremental;
 mod load;
 mod load_report;
 #[cfg(test)]
@@ -206,6 +207,35 @@ fn save_serializable_document_with_format<
     path: &std::path::Path,
     format: SaveFormat,
 ) -> Result<(), DocIoError> {
+    save_serializable_document_with_format_and_seed(document, meta, thumbnails, path, format, None)
+}
+
+fn save_compact_recorded(
+    state: &EditorState,
+    path: &std::path::Path,
+    seed: Option<&mut incremental::Seed>,
+    thumbnails: &jian_ops_schema::image_thumbs::ImageThumbSnapshot,
+) -> Result<(), DocIoError> {
+    save_serializable_document_with_format_and_seed(
+        &state.doc,
+        op_pen_loader::EditorMeta::from_state(state),
+        thumbnails,
+        path,
+        SaveFormat::Compact,
+        seed,
+    )
+}
+
+fn save_serializable_document_with_format_and_seed<
+    D: serde::Serialize + jian_ops_schema::image_table::SaveImageOrder + ?Sized,
+>(
+    document: &D,
+    meta: op_pen_loader::EditorMeta,
+    thumbnails: &jian_ops_schema::image_thumbs::ImageThumbSnapshot,
+    path: &std::path::Path,
+    format: SaveFormat,
+    mut seed: Option<&mut incremental::Seed>,
+) -> Result<(), DocIoError> {
     // Write through a sibling temp file so a crash mid-write doesn't
     // leave a half-written file on disk.
     let authorization =
@@ -218,15 +248,29 @@ fn save_serializable_document_with_format<
     let _operation = authorization.scope();
     let canonical = authorization.path().to_path_buf();
     let path = canonical.as_path();
+    if let Some(seed) = seed.as_deref_mut() {
+        seed.bind(path);
+    }
     let (tmp, file) = create_sibling_temp(path)?;
     let write_result = (|| {
         let serialize = |writer: &mut std::io::BufWriter<save_buffer::SaveTarget>| match format {
             SaveFormat::Pretty => canonical_save::write_serializable_document_with_thumbnails(
                 writer, document, meta, thumbnails,
             ),
-            SaveFormat::Compact => canonical_save::write_compact_document_with_thumbnails(
-                writer, document, meta, thumbnails,
-            ),
+            SaveFormat::Compact => {
+                if let Some(seed) = seed.as_deref_mut() {
+                    canonical_save::write_compact_document_with_thumbnails(
+                        &mut seed.writer(writer),
+                        document,
+                        meta,
+                        thumbnails,
+                    )
+                } else {
+                    canonical_save::write_compact_document_with_thumbnails(
+                        writer, document, meta, thumbnails,
+                    )
+                }
+            }
         };
         match format {
             SaveFormat::Pretty => {
@@ -235,6 +279,9 @@ fn save_serializable_document_with_format<
             SaveFormat::Compact => {
                 save_buffer::with_shared_buffered_file(file, serialize)?;
             }
+        }
+        if let Some(seed) = seed.as_deref_mut() {
+            seed.staged(&tmp);
         }
         commit_staged_document(&tmp, path)
     })();

@@ -73,7 +73,7 @@ impl Drop for ConnGuard {
 /// read/replace it over `/api/mcp/document`.
 pub struct WebCanvasState {
     primary_files: Arc<primary_files::PrimaryFiles>,
-    pub(crate) editor: EditorState,
+    pub(crate) editor: crate::doc_io::incremental::TrackedEditor,
     pub(crate) recovery: crate::document_recovery::DocumentRecovery,
     /// Bounded shared committed deltas; no subscriber owns a document snapshot.
     changefeed: changefeed::Feed,
@@ -196,7 +196,7 @@ impl WebCanvasState {
             prepared
                 .install()
                 .map_err(|error| WebCanvasError::Config(error.to_string()))?;
-            self.editor = next;
+            self.editor = next.into();
         } else {
             prepared
                 .install()
