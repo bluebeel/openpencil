@@ -6,13 +6,21 @@ use op_editor_core::{history_snapshot::BorrowedNodeMetadata, PenNodeExt};
 use serde::Serialize;
 use std::io::{self, Write};
 const MAX: usize = 256 * 1024;
-struct Limited(Vec<u8>);
+struct Limited {
+    bytes: Vec<u8>,
+    limit: usize,
+}
 impl Write for Limited {
     fn write(&mut self, b: &[u8]) -> io::Result<usize> {
-        if self.0.len().checked_add(b.len()).is_none_or(|n| n > MAX) {
+        if self
+            .bytes
+            .len()
+            .checked_add(b.len())
+            .is_none_or(|n| n > self.limit)
+        {
             return Err(io::ErrorKind::OutOfMemory.into());
         }
-        self.0.extend_from_slice(b);
+        self.bytes.extend_from_slice(b);
         Ok(b.len())
     }
     fn flush(&mut self) -> io::Result<()> {
@@ -20,9 +28,20 @@ impl Write for Limited {
     }
 }
 pub(super) fn encode(value: &impl Serialize) -> Option<Vec<u8>> {
-    let mut out = Limited(Vec::new());
+    encode_with_limit(value, MAX)
+}
+/// Editor catalogs are independent of node headers: full Bridge metadata is
+/// larger than 1 MiB. Retained replacements still share the existing EDITS cap.
+pub(super) fn editor_meta(value: &op_pen_loader::EditorMeta) -> Option<Vec<u8>> {
+    encode_with_limit(value, 4 * 1024 * 1024)
+}
+fn encode_with_limit(value: &impl Serialize, limit: usize) -> Option<Vec<u8>> {
+    let mut out = Limited {
+        bytes: Vec::new(),
+        limit,
+    };
     serde_json::to_writer(&mut out, value).ok()?;
-    Some(out.0)
+    Some(out.bytes)
 }
 pub(super) fn metadata(node: &PenNode) -> Option<Vec<u8>> {
     let bytes = encode(&BorrowedNodeMetadata::new(node))?;

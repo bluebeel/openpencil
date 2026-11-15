@@ -82,7 +82,9 @@ impl SaveChain {
             if base.generation == state.document_generation()
                 && base.thumbnails.same_contents(&thumbs)
             {
-                if let Some(meta) = splice::encode(&op_pen_loader::EditorMeta::from_state(state)) {
+                if let Some(meta) =
+                    splice::editor_meta(&op_pen_loader::EditorMeta::from_state(state))
+                {
                     let span = base.index.meta;
                     if base.replace(span, meta).is_some() {
                         // A real I/O/ownership failure is returned, never hidden
