@@ -20,12 +20,14 @@ impl Span {
 }
 #[derive(Clone, Copy)]
 pub(super) struct Children {
+    pub flags: u8,
     pub span: Span,
     pub len: usize,
     pub last: Option<usize>,
 }
 #[derive(Clone, Copy)]
 pub(super) struct Node {
+    pub flags: u8,
     pub object: Span,
     pub children: Option<Children>,
 }
@@ -41,6 +43,9 @@ mod inline;
 pub(super) use inline::appended_nodes;
 #[path = "index_stream.rs"]
 mod stream;
+pub(super) const RESOURCE: u8 = 1;
+pub(super) const DEFINITION: u8 = 2;
+pub(super) const REFERENCE: u8 = 4;
 const MAX_INDEX: usize = 224 * 1024 * 1024;
 
 impl Index {

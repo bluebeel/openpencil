@@ -21,16 +21,16 @@ impl PreparedCommandEdit {
         self.capture.visit_metadata_changes(state, visitor)
     }
 
-    pub(crate) fn visit_canonical_edits<'a>(
+    pub(crate) fn visit_canonical_deltas<'a>(
         &'a self,
         state: &'a EditorState,
         limit: usize,
         nodes: impl FnMut(&jian_ops_schema::node::PenNode, &jian_ops_schema::node::PenNode),
         headers: impl FnMut(op_editor_core::CanonicalHeaderChange) -> bool,
-        appends: impl FnMut(op_editor_core::CanonicalAppend<'a>) -> bool,
+        appends: impl FnMut(op_editor_core::CanonicalSplice<'a>) -> bool,
     ) -> bool {
         self.capture
-            .visit_canonical_edits(state, limit, nodes, headers, appends)
+            .visit_canonical_deltas(state, limit, nodes, headers, appends)
     }
 
     pub(crate) fn forward_metadata_json(

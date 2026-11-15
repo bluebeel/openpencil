@@ -347,9 +347,9 @@ pub(crate) fn process_message_for_file_path_arg_with_contexts(
                                             return true;
                                         }
                                         if state.document_revision()!=revision {
-                                            save_chain.observe(state,|nodes,headers,appends| {
+                                            save_chain.observe_deltas(state,|nodes,headers,appends| {
                                                 capture.as_ref().is_some_and(|capture| {
-                                                    capture.visit_canonical_edits(state,
+                                                    capture.visit_canonical_deltas(state,
                                                         crate::doc_io::incremental::HEADER_VALUE_LIMIT,
                                                         nodes,headers,appends)
                                                 })

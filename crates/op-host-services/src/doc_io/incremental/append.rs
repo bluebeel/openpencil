@@ -12,6 +12,7 @@ use std::{
     mem,
 };
 mod metadata;
+mod topology;
 mod write;
 const MAX_IDS: usize = 8192;
 const MAX_NEW_NODES: usize = 4096;
@@ -37,6 +38,10 @@ struct Link {
     segment: usize,
     comma: bool,
 }
+struct ArrayPlan {
+    span: Span,
+    ids: Vec<String>,
+}
 struct Segment {
     bytes: Vec<u8>,
     patches: BTreeMap<Span, Vec<u8>>,
@@ -46,6 +51,7 @@ struct Segment {
 #[derive(Default)]
 pub(super) struct Overlay {
     lists: BTreeMap<Location, State>,
+    arrays: BTreeMap<Location, ArrayPlan>,
     nodes: HashMap<String, PlacedNode>,
     segments: Vec<Segment>,
     raw_points: BTreeMap<usize, Vec<Link>>,
@@ -94,6 +100,21 @@ impl Overlay {
                     .saturating_mul(mem::size_of::<Segment>()),
             )
             .saturating_add(points_bytes(&self.raw_points));
+        bytes = bytes
+            .saturating_add(
+                self.arrays
+                    .len()
+                    .saturating_mul(mem::size_of::<(Location, ArrayPlan)>() + 1024),
+            )
+            .saturating_add(
+                self.arrays
+                    .values()
+                    .map(|plan| {
+                        plan.ids.capacity() * mem::size_of::<String>()
+                            + plan.ids.iter().map(String::capacity).sum::<usize>()
+                    })
+                    .sum::<usize>(),
+            );
         for segment in &self.segments {
             bytes = bytes
                 .saturating_add(segment.bytes.capacity())
@@ -115,9 +136,11 @@ impl Overlay {
         }
     }
     pub(super) fn raw_overlap(&self, span: Span) -> bool {
-        self.raw_points
-            .range(span.start..span.end)
-            .any(|(point, _)| span.start < *point)
+        self.array_overlap(Source::Raw, span)
+            || self
+                .raw_points
+                .range(span.start..span.end)
+                .any(|(point, _)| span.start < *point)
     }
 }
 fn overlap(
@@ -140,6 +163,9 @@ fn overlap(
 }
 impl Base {
     fn placed_node(&self, id: &str) -> Option<PlacedNode> {
+        if let Some(node) = self.appends.nodes.get(id) {
+            return Some(*node);
+        }
         match self.index.nodes.get(id) {
             Some(node) => node.map(|node| PlacedNode {
                 source: Source::Raw,
@@ -172,6 +198,10 @@ impl Base {
             source: array.source,
             at: array.list.span.start,
         };
+        if let Some(plan) = self.appends.arrays.get(&key) {
+            return (plan.ids.len() == len && plan.ids.last().map(String::as_str) == last)
+                .then_some(());
+        }
         if let Some(current) = self.appends.lists.get(&key) {
             return (current.len == len && Some(current.last.as_str()) == last).then_some(());
         }
@@ -217,6 +247,12 @@ impl Base {
     }
     pub(super) fn append(&mut self, receipt: CanonicalAppend<'_>) -> Option<()> {
         let array = self.child_array(receipt.target)?;
+        if self.appends.arrays.contains_key(&Location {
+            source: array.source,
+            at: array.list.span.start,
+        }) {
+            return None;
+        }
         self.before_append(array, receipt.previous_len, receipt.previous_last)?;
         let ids = self.new_ids(receipt.nodes)?;
         let encoded = splice::append(receipt.nodes)?;
@@ -298,7 +334,7 @@ impl Base {
         (self.appends.bytes().checked_add(self.replacement_bytes)? <= EDIT_LIMIT).then_some(())
     }
 }
-fn eligible(node: &PenNode) -> bool {
+pub(super) fn eligible(node: &PenNode) -> bool {
     !matches!(node, PenNode::Ref(_))
         && !matches!(node,PenNode::Frame(frame)if frame.reusable==Some(true))
 }

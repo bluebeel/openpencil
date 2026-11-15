@@ -49,6 +49,7 @@ impl Scan<'_> {
         }
         self.expect(b']')?;
         Some(Children {
+            flags: 0,
             span: Span {
                 start,
                 end: self.at,
@@ -112,6 +113,7 @@ impl Scan<'_> {
         self.nodes.push((
             id?,
             Node {
+                flags: 0,
                 object: Span {
                     start,
                     end: self.at,

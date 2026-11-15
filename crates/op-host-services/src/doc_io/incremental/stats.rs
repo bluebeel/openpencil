@@ -26,8 +26,9 @@ pub(super) enum Event {
     HeaderMismatch,
     AppendRefusal,
     ExplicitCommitReuse,
+    SpliceRefusal,
 }
-const N: usize = 23;
+const N: usize = 24;
 static COUNTS: [AtomicU64; N] = [const { AtomicU64::new(0) }; N];
 pub(super) fn hit(event: Event) {
     COUNTS[event as usize].fetch_add(1, Ordering::Relaxed);
@@ -57,6 +58,7 @@ pub(crate) fn snapshot() -> serde_json::Value {
         "headerMismatches",
         "appendRefusals",
         "explicitMatchingCommitReuses",
+        "spliceRefusals",
     ];
     let mut values = serde_json::Map::new();
     for (name, value) in names.iter().zip(&COUNTS) {

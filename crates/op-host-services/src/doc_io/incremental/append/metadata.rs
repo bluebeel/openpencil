@@ -49,6 +49,9 @@ impl Base {
         (actual == expected).then_some(())
     }
     fn replace_fragment(&mut self, id: usize, span: Span, bytes: Vec<u8>) -> Option<()> {
+        if self.appends.array_overlap(Source::Segment(id), span) {
+            return None;
+        }
         let segment = self.appends.segments.get_mut(id)?;
         if (!segment.patches.contains_key(&span) && segment.patches.len() == MAX_IDS)
             || overlap(&segment.patches, &segment.points, span)

@@ -119,6 +119,36 @@ impl SaveChain {
             self.invalidate();
         }
     }
+    /// Collect the complete exact structural set before changing any array
+    /// plans; nodes/headers use the same all-or-nothing observation as append.
+    pub(crate) fn observe_deltas<'a>(
+        &mut self,
+        state: &'a EditorState,
+        visit: impl FnOnce(
+            &mut dyn FnMut(&PenNode, &PenNode),
+            &mut dyn FnMut(CanonicalHeaderChange) -> bool,
+            &mut dyn FnMut(op_editor_core::CanonicalSplice<'a>) -> bool,
+        ) -> bool,
+    ) {
+        let mut packets = Vec::new();
+        self.observe(state, |nodes, headers, _appends| {
+            visit(nodes, headers, &mut |packet| {
+                if packets.len() == 256 {
+                    return false;
+                }
+                packets.push(packet);
+                true
+            })
+        });
+        if self
+            .base
+            .as_mut()
+            .is_some_and(|base| base.apply_splices(&packets).is_none())
+        {
+            hit(Event::SpliceRefusal);
+            self.invalidate();
+        }
+    }
     pub(crate) fn save(&mut self, state: &EditorState, path: &Path) -> Result<(), DocIoError> {
         self.save_inner(state, path, false).map(|_| ())
     }
@@ -313,6 +343,12 @@ impl Base {
         Some(())
     }
     fn patch(&mut self, old: &PenNode, current: &PenNode) -> Option<()> {
+        if !append::eligible(old) || !append::eligible(current) {
+            return None;
+        }
+        if self.appends.nodes.contains_key(old.id_str()) {
+            return self.patch_appended(old, current);
+        }
         let Some(node) = self.index.nodes.get(old.id_str()).copied().flatten() else {
             return self.patch_appended(old, current);
         };
@@ -365,7 +401,7 @@ impl Base {
         let result = (|| {
             super::save_buffer::with_shared_buffered_file(file, |writer| {
                 self.appends
-                    .write(&mut self.raw, &self.replacements, writer)
+                    .write(&mut self.raw, &self.index, &self.replacements, writer)
             })?;
             let next = std::fs::metadata(&temp)
                 .map(|m| FileVersion::metadata(&m))

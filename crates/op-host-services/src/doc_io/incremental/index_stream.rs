@@ -172,6 +172,64 @@ impl Scan<'_> {
         }
         Some(())
     }
+    fn skip_flags(&mut self, depth: usize) -> Option<u8> {
+        if depth > 512 {
+            return None;
+        }
+        self.space()?;
+        match self.peek()? {
+            b'{' => {
+                self.expect(b'{')?;
+                self.space()?;
+                let mut flags = 0u8;
+                let mut fields = 0;
+                if self.peek() != Some(b'}') {
+                    loop {
+                        fields += 1;
+                        if fields > 4096 {
+                            return None;
+                        }
+                        let key: String = serde_json::from_slice(&self.string(true)?).ok()?;
+                        self.expect(b':')?;
+                        if matches!(key.as_str(), "src" | "url" | "thumbnailUrl") {
+                            flags |= super::RESOURCE;
+                        }
+                        flags |= self.skip_flags(depth + 1)?;
+                        self.space()?;
+                        match self.byte()? {
+                            b',' => (),
+                            b'}' => return Some(flags),
+                            _ => return None,
+                        }
+                    }
+                }
+                self.expect(b'}')?;
+                Some(flags)
+            }
+            b'[' => {
+                self.expect(b'[')?;
+                self.space()?;
+                let mut flags = 0;
+                if self.peek() != Some(b']') {
+                    loop {
+                        flags |= self.skip_flags(depth + 1)?;
+                        self.space()?;
+                        match self.byte()? {
+                            b',' => (),
+                            b']' => return Some(flags),
+                            _ => return None,
+                        }
+                    }
+                }
+                self.expect(b']')?;
+                Some(flags)
+            }
+            _ => {
+                self.skip(depth)?;
+                Some(0)
+            }
+        }
+    }
     fn array(&mut self, role: Role, depth: usize) -> Option<Children> {
         self.space()?;
         let start = self.at;
@@ -180,6 +238,7 @@ impl Scan<'_> {
         if self.peek()? == b']' {
             self.advance(1)?;
             return Some(Children {
+                flags: 0,
                 span: Span {
                     start,
                     end: self.at,
@@ -189,11 +248,12 @@ impl Scan<'_> {
             });
         }
         let mut len = 0usize;
+        let mut flags = 0u8;
         let mut last;
         loop {
             self.space()?;
             last = Some(self.at);
-            self.object(role, depth + 1)?;
+            flags |= self.object(role, depth + 1)?;
             len = len.checked_add(1)?;
             self.space()?;
             match self.byte()? {
@@ -203,6 +263,7 @@ impl Scan<'_> {
             }
         }
         Some(Children {
+            flags,
             span: Span {
                 start,
                 end: self.at,
@@ -211,7 +272,7 @@ impl Scan<'_> {
             last,
         })
     }
-    fn object(&mut self, role: Role, depth: usize) -> Option<()> {
+    fn object(&mut self, role: Role, depth: usize) -> Option<u8> {
         if depth > 512 {
             return None;
         }
@@ -221,6 +282,7 @@ impl Scan<'_> {
         let mut id = None;
         let mut children = None;
         let mut count = 0usize;
+        let mut flags = 0u8;
         self.space()?;
         if self.peek()? == b'}' {
             self.advance(1)?;
@@ -270,6 +332,22 @@ impl Scan<'_> {
                             end: self.at,
                         });
                     }
+                    (Role::Node, "type", b'"') => {
+                        let kind: String = serde_json::from_slice(&self.string(true)?).ok()?;
+                        if kind == "ref" {
+                            flags |= super::REFERENCE;
+                        }
+                    }
+                    (Role::Node, "reusable", _) => {
+                        if self.peek() == Some(b't') {
+                            flags |= super::DEFINITION;
+                        }
+                        self.skip(depth + 1)?;
+                    }
+                    (Role::Node, "src" | "url" | "thumbnailUrl", _) => {
+                        flags |= super::RESOURCE;
+                        self.skip(depth + 1)?;
+                    }
                     (Role::Node | Role::Page, "id", b'"') => {
                         id = Some(serde_json::from_slice::<String>(&self.string(true)?).ok()?);
                     }
@@ -277,6 +355,7 @@ impl Scan<'_> {
                         children = Some(self.array(Role::Node, depth + 1)?);
                     }
                     (Role::Node, "children", _) => return None,
+                    (Role::Node, _, _) => flags |= self.skip_flags(depth + 1)?,
                     _ => self.skip(depth + 1)?,
                 }
                 self.space()?;
@@ -287,6 +366,7 @@ impl Scan<'_> {
                 }
             }
         }
+        flags |= children.map_or(0, |children| children.flags);
         if matches!(role, Role::Page) {
             let id = id?;
             let value = children?;
@@ -300,6 +380,7 @@ impl Scan<'_> {
             let id = id?;
             self.names = self.names.checked_add(id.capacity().checked_add(32)?)?;
             let node = Node {
+                flags,
                 object: Span {
                     start,
                     end: self.at,
@@ -324,6 +405,6 @@ impl Scan<'_> {
         if self.names.checked_add(slots)? > MAX_INDEX {
             return None;
         }
-        Some(())
+        Some(flags)
     }
 }

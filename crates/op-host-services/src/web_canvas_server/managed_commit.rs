@@ -84,8 +84,8 @@ fn apply_command(
         return Ok(false);
     }
     if editor.document_revision() != revision {
-        save_chain.observe(editor, |nodes, headers, appends| {
-            capture.visit_canonical_edits(
+        save_chain.observe_deltas(editor, |nodes, headers, appends| {
+            capture.visit_canonical_deltas(
                 editor,
                 crate::doc_io::incremental::HEADER_VALUE_LIMIT,
                 nodes,
