@@ -163,12 +163,14 @@ export class OpViewer {
  *  optionally load an initial document, and return an OpViewer. */
 export async function createViewer(opts: CreateViewerOptions): Promise<OpViewer> {
   await ensureWasm(opts.wasmUrl);
+  opts.signal?.throwIfAborted();
   const inner = new WasmViewer();
   const viewer = new OpViewer(inner);
   try {
     if (opts.doc !== undefined) viewer.load(opts.doc);
     const id = ensureCanvasId(opts.canvas);
     await inner.attach_canvas(id);
+    opts.signal?.throwIfAborted();
     // Store canvas reference and attach a non-passive wheel listener to forward
     // scroll/pinch events to the wasm renderer with cursor-relative coordinates.
     viewer.canvas = opts.canvas;

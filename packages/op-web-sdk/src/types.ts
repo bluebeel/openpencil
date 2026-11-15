@@ -9,6 +9,8 @@ export interface CreateViewerOptions {
   canvas: HTMLCanvasElement;
   doc?: string | Uint8Array;
   wasmUrl?: string;
+  /** Cancel pending initialization; a partially attached viewer is released. */
+  signal?: AbortSignal;
 }
 
 // Re-export generated document types from the vendored ops schema.

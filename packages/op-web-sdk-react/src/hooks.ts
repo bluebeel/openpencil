@@ -17,7 +17,12 @@ type ViewerEvent = 'load' | 'viewportchange';
 function useViewerSnapshot<T>(event: ViewerEvent, read: (v: OpViewer) => T): T {
   const viewer = useViewer();
   // Null signals "cache is dirty, read fresh on next getSnapshot call".
-  const cache = useRef<{ value: T } | null>(null);
+  const cache = useRef<{
+    viewer: OpViewer;
+    event: ViewerEvent;
+    read: (v: OpViewer) => T;
+    value: T;
+  } | null>(null);
 
   const subscribe = useCallback(
     (cb: () => void) =>
@@ -30,11 +35,16 @@ function useViewerSnapshot<T>(event: ViewerEvent, read: (v: OpViewer) => T): T {
   );
 
   const getSnapshot = useCallback(() => {
-    if (cache.current === null) {
-      cache.current = { value: read(viewer) };
+    if (
+      cache.current === null ||
+      cache.current.viewer !== viewer ||
+      cache.current.event !== event ||
+      cache.current.read !== read
+    ) {
+      cache.current = { viewer, event, read, value: read(viewer) };
     }
     return cache.current.value;
-  }, [viewer, read]);
+  }, [viewer, event, read]);
 
   return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 }
