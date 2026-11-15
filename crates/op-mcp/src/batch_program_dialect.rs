@@ -16,6 +16,7 @@
 //! node bodies (`I()`/`R()`); the field-level rules also run on `U()` patches.
 
 use serde_json::{json, Map, Value};
+use std::borrow::Cow;
 
 // Field-level repairs live in a sibling to keep both files small.
 pub(crate) use super::batch_program_dialect_fields::repair_field_dialect;
@@ -87,8 +88,16 @@ enum StructuralAlias {
 }
 
 fn structural_alias(raw: &str) -> Option<StructuralAlias> {
-    let key = raw.trim().to_ascii_lowercase().replace('_', "-");
-    Some(match key.as_str() {
+    let raw = raw.trim();
+    let key = if raw
+        .bytes()
+        .any(|byte| byte.is_ascii_uppercase() || byte == b'_')
+    {
+        Cow::Owned(raw.to_ascii_lowercase().replace('_', "-"))
+    } else {
+        Cow::Borrowed(raw)
+    };
+    Some(match key.as_ref() {
         "table" | "table-body" | "tbody" => StructuralAlias::Frame { layout: "vertical" },
         "table-row" | "tr" | "table-header" | "table-head" | "thead" => StructuralAlias::Frame {
             layout: "horizontal",
@@ -102,12 +111,14 @@ fn structural_alias(raw: &str) -> Option<StructuralAlias> {
 }
 
 fn rewrite_structural_type(obj: &mut Map<String, Value>, notes: &mut Vec<String>) {
-    let Some(raw) = obj.get("type").and_then(Value::as_str).map(str::to_string) else {
+    let Some(raw) = obj.get("type").and_then(Value::as_str) else {
         return;
     };
-    let Some(alias) = structural_alias(&raw) else {
+    let Some(alias) = structural_alias(raw) else {
         return;
     };
+    // Diagnostics need an owned spelling only for an actual rewrite.
+    let raw = raw.to_owned();
     let target = match alias {
         StructuralAlias::Frame { layout } => {
             default_key(obj, "layout", json!(layout));
@@ -164,16 +175,27 @@ const TEXT_KEYS: [&str; 9] = [
 /// Move an inline label (`content` / `label` / `text`) plus its typography
 /// into an appended text child; `color` / `textColor` become the text fill.
 fn lift_label_child(obj: &mut Map<String, Value>, label_keys: &[&str]) {
-    let Some(content) = label_keys.iter().find_map(|key| match obj.get(*key) {
-        Some(Value::String(text)) if !text.trim().is_empty() => Some(json!(text)),
-        Some(Value::Number(number)) => Some(json!(number.to_string())),
-        _ => None,
+    let Some(selected) = label_keys.iter().copied().find(|key| match obj.get(*key) {
+        Some(Value::String(text)) => !text.trim().is_empty(),
+        Some(Value::Number(_)) => true,
+        _ => false,
     }) else {
         return;
     };
+    let mut content = None;
     for key in label_keys {
-        obj.remove(*key);
+        let value = obj.remove(*key);
+        if *key == selected {
+            content = match value {
+                Some(Value::String(text)) => Some(Value::String(text)),
+                Some(Value::Number(number)) => Some(Value::String(number.to_string())),
+                _ => None,
+            };
+        }
     }
+    let Some(content) = content else {
+        return;
+    };
     let mut text = Map::new();
     text.insert("type".into(), json!("text"));
     text.insert("content".into(), content);

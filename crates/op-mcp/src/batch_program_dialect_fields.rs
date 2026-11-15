@@ -22,11 +22,18 @@ fn repair_text_align_vertical(obj: &mut Map<String, Value>, notes: &mut Vec<Stri
     let Some(raw) = obj.get("textAlignVertical").and_then(Value::as_str) else {
         return;
     };
-    let mapped = match raw.trim().to_ascii_lowercase().as_str() {
-        "center" | "centre" => "middle",
-        "start" | "flex-start" => "top",
-        "end" | "flex-end" => "bottom",
-        _ => return,
+    let mapped = [
+        ("center", "middle"),
+        ("centre", "middle"),
+        ("start", "top"),
+        ("flex-start", "top"),
+        ("end", "bottom"),
+        ("flex-end", "bottom"),
+    ]
+    .into_iter()
+    .find_map(|(alias, value)| raw.trim().eq_ignore_ascii_case(alias).then_some(value));
+    let Some(mapped) = mapped else {
+        return;
     };
     notes.push(format!("textAlignVertical \"{raw}\" read as \"{mapped}\""));
     obj.insert("textAlignVertical".into(), json!(mapped));
@@ -55,14 +62,21 @@ fn repair_corner_radius(obj: &mut Map<String, Value>, notes: &mut Vec<String>) {
         }
         Value::String(_) => radius_number(raw).map(|r| json!(r)),
         Value::Array(items) => {
-            let numbers: Option<Vec<f64>> = items.iter().map(radius_number).collect();
-            match numbers.as_deref() {
-                Some([all]) => Some(json!(all)),
-                Some([a, b]) => Some(json!([a, b, a, b])),
-                Some([a, b, c]) => Some(json!([a, b, c, b])),
-                Some([a, b, c, d]) if items.iter().any(|v| !v.is_number()) => {
-                    Some(json!([a, b, c, d]))
-                }
+            if !(1..=4).contains(&items.len()) {
+                return;
+            }
+            let mut numbers = [0.0; 4];
+            for (value, number) in items.iter().zip(numbers.iter_mut()) {
+                let Some(parsed) = radius_number(value) else {
+                    return;
+                };
+                *number = parsed;
+            }
+            match items.len() {
+                1 => Some(json!(numbers[0])),
+                2 => Some(json!([numbers[0], numbers[1], numbers[0], numbers[1]])),
+                3 => Some(json!([numbers[0], numbers[1], numbers[2], numbers[1]])),
+                4 if items.iter().any(|value| !value.is_number()) => Some(json!(numbers)),
                 _ => None,
             }
         }
@@ -113,13 +127,19 @@ fn repair_events(obj: &mut Map<String, Value>, notes: &mut Vec<String>) {
     if !list.iter().all(Value::is_object) {
         return;
     }
+    // All entries were proved objects above. Move handler bodies while
+    // retaining first-handler-wins and the original parent map slot.
+    let Some(value) = obj.get_mut("events") else {
+        return;
+    };
+    let Value::Array(list) = std::mem::take(value) else {
+        return;
+    };
     let mut merged = Map::new();
     for entry in list {
         if let Value::Object(handlers) = entry {
             for (name, actions) in handlers {
-                merged
-                    .entry(name.clone())
-                    .or_insert_with(|| actions.clone());
+                merged.entry(name).or_insert(actions);
             }
         }
     }
@@ -153,6 +173,9 @@ fn repair_animations(obj: &mut Map<String, Value>, notes: &mut Vec<String>) {
         let Some(trigger) = item.get("trigger").and_then(Value::as_str) else {
             return true;
         };
+        if matches!(trigger, "mount" | "inView") {
+            return true;
+        }
         let canonical = match trigger
             .trim()
             .to_ascii_lowercase()
