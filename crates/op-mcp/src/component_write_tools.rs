@@ -1,20 +1,20 @@
 //! Dedicated Core component mutations; prepared facts borrow the real target.
 use super::{EditorCommand, McpTool, ToolErrorCode, ToolOutcome};
 use jian_ops_schema::node::PenNode;
-use op_editor_core::{EditorState, NodeId, PenNodeExt};
+use op_editor_core::{EditorState, NodeId};
 use std::collections::BTreeMap;
 const MAX_ID: usize = 16 * 1024;
 type Error = (ToolErrorCode, String);
 #[derive(Clone, PartialEq, Eq)]
-struct Input {
-    node: String,
-    component: Option<String>,
+struct Input<S> {
+    node: S,
+    component: Option<S>,
 }
 struct Prepared {
-    input: Option<Input>,
+    input: Option<Input<String>>,
     result: Result<bool, Error>,
 }
-fn id(args: &BTreeMap<String, String>, key: &str) -> Result<String, Error> {
+fn id<'a>(args: &'a BTreeMap<String, String>, key: &str) -> Result<&'a str, Error> {
     let value = args
         .get(key)
         .filter(|value| !value.is_empty())
@@ -25,9 +25,9 @@ fn id(args: &BTreeMap<String, String>, key: &str) -> Result<String, Error> {
             format!("{key} exceeds the 16384-byte ID limit"),
         ));
     }
-    Ok(value.clone())
+    Ok(value)
 }
-fn input(args: &BTreeMap<String, String>, instance: bool) -> Result<Input, Error> {
+fn input(args: &BTreeMap<String, String>, instance: bool) -> Result<Input<&str>, Error> {
     Ok(Input {
         node: id(args, "node_id")?,
         component: if instance {
@@ -40,49 +40,56 @@ fn input(args: &BTreeMap<String, String>, instance: bool) -> Result<Input, Error
 // Core component_routes deliberately uses pre-order DFS, not the raw CRUD
 // sibling-first walker. Preserve that distinction for duplicate authored IDs.
 fn find<'a>(nodes: &'a [PenNode], id: &str) -> Option<&'a PenNode> {
-    for node in nodes {
-        if node.id_str() == id {
-            return Some(node);
-        }
-        if let Some(found) = node.children().and_then(|children| find(children, id)) {
-            return Some(found);
-        }
-    }
-    None
+    crate::tools::read_walk::nodes(nodes)
+        .find(|entry| entry.node.id_str() == id)
+        .map(|entry| entry.node)
 }
-fn validate(state: &EditorState, input: &Input) -> Result<bool, Error> {
+
+fn validate(state: &EditorState, input: &Input<&str>) -> Result<bool, Error> {
     let fail = |message: &str| (ToolErrorCode::InvalidArgument, message.to_owned());
-    let node = find(state.active_children(), &input.node)
-        .ok_or_else(|| fail("node_id does not resolve to a canonical node on the active page"))?;
-    if let Some(component) = &input.component {
+    let roots = state.active_children();
+    let node = if let Some(lookup) = state
+        .trusted_node_lookup(roots)
+        .filter(|lookup| lookup.is_ready())
+    {
+        lookup
+            .find(input.node, op_editor_core::NodeReadOrder::First)
+            .map(|entry| entry.node)
+    } else {
+        find(roots, input.node)
+    }
+    .ok_or_else(|| fail("node_id does not resolve to a canonical node on the active page"))?;
+    if let Some(component) = input.component {
         let PenNode::Ref(reference) = node else {
             return Err(fail("node_id must be an authored canonical Ref instance"));
         };
         if state
             .components
-            .find_by_id(&NodeId::new(component.clone()))
+            .components
+            .iter()
+            .find(|entry| entry.id.as_str() == component)
             .is_none()
         {
             return Err(fail("component_id is not a registered component"));
         }
-        return Ok(reference.target != *component);
+        return Ok(reference.target != component);
     }
     match node {
         PenNode::Ref(reference) => {
-            let lookup =
-                op_editor_core::ref_resolve::NodeLookup::from_components_with_document_fallback(
-                    &state.components,
-                    &state.doc,
-                );
-            lookup
-                .find(&reference.target)
-                .ok_or_else(|| fail("instance target cannot be resolved"))?;
+            op_editor_core::ref_resolve::resolve_component_target(
+                &state.components,
+                &state.doc,
+                &reference.target,
+            )
+            .ok_or_else(|| fail("instance target cannot be resolved"))?;
         }
         PenNode::Frame(_) | PenNode::Group(_) | PenNode::Rectangle(_)
             if matches!(node,PenNode::Frame(frame) if frame.reusable==Some(true))
                 || state
                     .components
-                    .find_by_id(&NodeId::new(input.node.clone()))
+                    .components
+                    .iter()
+                    .find(|entry| entry.id.as_str() == input.node)
                     .is_some() => {}
         _ => {
             return Err(fail(
@@ -97,7 +104,10 @@ fn prepare(state: &EditorState, args: &BTreeMap<String, String>, instance: bool)
         Ok(input) => {
             let result = validate(state, &input);
             Prepared {
-                input: Some(input),
+                input: Some(Input {
+                    node: input.node.to_owned(),
+                    component: input.component.map(str::to_owned),
+                }),
                 result,
             }
         }
@@ -118,7 +128,12 @@ fn outcome(
     };
     let mut changed = true;
     if let Some(prepared) = prepared {
-        if prepared.input.as_ref() != Some(&input) {
+        if prepared
+            .input
+            .as_ref()
+            .map(|saved| (saved.node.as_str(), saved.component.as_deref()))
+            != Some((input.node, input.component))
+        {
             return ToolOutcome::Err(
                 ToolErrorCode::InvalidArgument,
                 "prepared component tool arguments changed; build a fresh request snapshot".into(),
@@ -131,8 +146,8 @@ fn outcome(
     }
     let mut result = BTreeMap::from([("wrote".into(), changed.to_string())]);
     if let Some(component) = input.component {
-        result.insert("node_id".into(), input.node.clone());
-        result.insert("component_id".into(), component.clone());
+        result.insert("node_id".into(), input.node.to_owned());
+        result.insert("component_id".into(), component.to_owned());
         if !changed {
             return ToolOutcome::Ok(result);
         }
@@ -144,7 +159,7 @@ fn outcome(
             },
         )
     } else {
-        result.insert("original_node_id".into(), input.node.clone());
+        result.insert("original_node_id".into(), input.node.to_owned());
         result.insert("result_receipt".into(), "unavailable".into());
         ToolOutcome::OkWithCommand(
             result,

@@ -45,6 +45,31 @@ impl<'a> Iterator for DocumentNodes<'a> {
     }
 }
 
+/// Single-target callers do not need a catalog map or a retained ID index.
+/// Keep the first registered entry's exact stored-route precedence, including
+/// document fallback when its route is stale.
+pub(super) fn component_target<'a>(
+    components: &'a ComponentLibrary,
+    document: &'a PenDocument,
+    id: &str,
+) -> Option<&'a PenNode> {
+    if let Some(component) = components
+        .components
+        .iter()
+        .find(|entry| entry.id.as_str() == id)
+    {
+        let root = if components.is_document_backed(&component.id) {
+            components.root_at_stored_location(document, &component.id)
+        } else {
+            Some(&component.root)
+        };
+        if root.is_some() {
+            return root;
+        }
+    }
+    DocumentNodes::new(document).find(|node| node.id_str() == id)
+}
+
 /// A lookup pass advances at most once through the document. Early targets
 /// avoid indexing unrelated later pages; late/missing targets still cost only
 /// one complete traversal, with first-ID duplicate semantics unchanged.

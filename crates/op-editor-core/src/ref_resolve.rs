@@ -44,6 +44,16 @@ pub(crate) use request_lookup::NodeLookup;
 mod instance_merge;
 pub(crate) use instance_merge::merge as merge_instance;
 
+/// Resolve one target with the same registry/stored-route/document precedence
+/// as instance expansion, without building an index for unrelated components.
+pub fn resolve_component_target<'a>(
+    components: &'a ComponentLibrary,
+    document: &'a PenDocument,
+    id: &str,
+) -> Option<&'a PenNode> {
+    request_lookup::component_target(components, document, id)
+}
+
 /// Expand every `Ref` node in `doc` into its resolved component
 /// subtree. Unresolvable refs (unknown target, cycle) are dropped —
 /// TS `resolveRefs` returns `[]` for them.
