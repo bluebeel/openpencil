@@ -10,6 +10,7 @@ use crate::{
 };
 use jian_ops_schema::node::PenNode;
 use jian_ops_schema::PenDocument;
+use std::fmt::Write as _;
 
 /// HTML + inline-CSS generator. Walks the document's node tree and emits
 /// absolutely positioned elements with optional motion declarations.
@@ -26,7 +27,7 @@ impl Codegen for Html {
         out.push_str("<!DOCTYPE html>\n<html><head><meta charset=\"utf-8\">");
         let motion_css = codegen_motion_css::render(doc);
         if !motion_css.is_empty() {
-            out.push_str(&format!("<style>\n{motion_css}</style>\n"));
+            let _ = write!(out, "<style>\n{motion_css}</style>\n");
         }
         out.push_str("</head>\n<body>\n");
         for node in root_nodes(doc) {
@@ -53,52 +54,49 @@ pub(super) fn emit_node_html(out: &mut String, node: &PenNode, depth: usize) {
         fmt_num(h),
     );
     if let Some(fill) = node_fill_css(node) {
-        style.push_str(&format!(";background:{}", color_to_css(&fill)));
+        let _ = write!(style, ";background:{}", color_to_css(&fill));
     }
     if let Some((color, width)) = node_stroke_css(node) {
-        style.push_str(&format!(
-            ";border:{}px solid {}",
-            width,
-            color_to_css(&color)
-        ));
+        let _ = write!(style, ";border:{}px solid {}", width, color_to_css(&color));
     }
     let radius = emitted_corner_radius(node);
     if radius > 0.0 {
-        style.push_str(&format!(";border-radius:{}px", fmt_num(radius)));
+        let _ = write!(style, ";border-radius:{}px", fmt_num(radius));
     }
     if node_is_ellipse(node) {
         style.push_str(";border-radius:50%");
     }
     let rotation = node_rotation_deg(node);
     if rotation.abs() > f64::EPSILON {
-        style.push_str(&format!(";transform:rotate({}deg)", fmt_num(rotation)));
+        let _ = write!(style, ";transform:rotate({}deg)", fmt_num(rotation));
     }
     style.push_str(&codegen_motion_css::inline_style(node));
     let motion_attr = codegen_motion_css::data_attribute(node);
     if let PenNode::Image(image) = node {
-        style.push_str(&format!(
+        let _ = write!(
+            style,
             ";object-fit:{}",
             image_object_fit(node).expect("image fit")
-        ));
-        out.push_str(&format!(
+        );
+        let _ = write!(
+            out,
             "{indent}<img src=\"{}\" alt=\"{}\"{motion_attr} style=\"{style}\" />\n",
             html_escape(image.src.as_ref()),
             html_escape(image.base.name.as_deref().unwrap_or_default()),
-        ));
+        );
         return;
     }
     // First-class widgets win over the generic div/span heuristic: nest the
     // real form element inside the positioned wrapper.
     if let Some(widget) = widget_markup(node) {
-        out.push_str(&format!(
+        let _ = write!(
+            out,
             "{indent}<div{motion_attr} style=\"{style}\">{widget}</div>\n"
-        ));
+        );
         return;
     }
     if let Some(nav) = tabs_nav_markup(node) {
-        out.push_str(&format!(
-            "{indent}<div{motion_attr} style=\"{style}\">{nav}"
-        ));
+        let _ = write!(out, "{indent}<div{motion_attr} style=\"{style}\">{nav}");
         let children = node_children(node);
         if children.is_empty() {
             out.push_str("</div>\n");
@@ -107,18 +105,19 @@ pub(super) fn emit_node_html(out: &mut String, node: &PenNode, depth: usize) {
             for child in children {
                 emit_node_html(out, child, depth + 1);
             }
-            out.push_str(&format!("{indent}</div>\n"));
+            let _ = write!(out, "{indent}</div>\n");
         }
         return;
     }
     let body = node_text(node).unwrap_or_default();
     let children = node_children(node);
     if children.is_empty() && body.is_empty() {
-        out.push_str(&format!(
+        let _ = write!(
+            out,
             "{indent}<{tag}{motion_attr} style=\"{style}\"></{tag}>\n"
-        ));
+        );
     } else {
-        out.push_str(&format!("{indent}<{tag}{motion_attr} style=\"{style}\">"));
+        let _ = write!(out, "{indent}<{tag}{motion_attr} style=\"{style}\">");
         if !body.is_empty() {
             out.push_str(&html_escape(&body));
         }
@@ -129,6 +128,6 @@ pub(super) fn emit_node_html(out: &mut String, node: &PenNode, depth: usize) {
             }
             out.push_str(&indent);
         }
-        out.push_str(&format!("</{tag}>\n"));
+        let _ = write!(out, "</{tag}>\n");
     }
 }

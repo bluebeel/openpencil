@@ -35,6 +35,7 @@ use jian_ops_schema::style::PenFill;
 use jian_ops_schema::variable::{VariableScalar, VariableValue};
 use jian_ops_schema::PenDocument;
 use op_editor_core::pen_node_ext::PenNodeExt;
+use std::{borrow::Cow, fmt::Write as _};
 
 /// One generator. Implementations are pure (read `PenDocument`,
 /// return `String`); the CLI / panel layer owns file-write side
@@ -65,17 +66,22 @@ impl Codegen for CssVariables {
             return out;
         };
         // Pass 1: scalar (theme-agnostic) variables go under :root.
-        let mut root_scalars: Vec<(String, String)> = Vec::new();
+        let mut root_open = false;
         for (name, def) in variables {
-            if let VariableValue::Scalar(s) = &def.value {
-                root_scalars.push((name.clone(), scalar_to_css(s)));
+            if let VariableValue::Scalar(value) = &def.value {
+                if !root_open {
+                    out.push_str(":root {\n");
+                    root_open = true;
+                }
+                let _ = writeln!(
+                    out,
+                    "  {}: {};",
+                    css_custom_property(name),
+                    scalar_to_css(value)
+                );
             }
         }
-        if !root_scalars.is_empty() {
-            out.push_str(":root {\n");
-            for (name, value) in &root_scalars {
-                out.push_str(&format!("  {}: {};\n", css_custom_property(name), value));
-            }
+        if root_open {
             out.push_str("}\n");
         }
         // Pass 2: themed variables → one block per (axis, value) combo.
@@ -84,21 +90,21 @@ impl Codegen for CssVariables {
         use std::collections::BTreeMap;
         // Maps a theme-map signature (sorted axis/value pairs) to the
         // (variable-name, css-value) entries that share that signature.
-        type ThemeSignature = Vec<(String, String)>;
-        type ThemedBlock = Vec<(String, String)>;
-        let mut themed: BTreeMap<ThemeSignature, ThemedBlock> = BTreeMap::new();
+        type ThemeSignature<'a> = Vec<(&'a str, &'a str)>;
+        type ThemedBlock<'a> = Vec<(&'a str, &'a VariableScalar)>;
+        let mut themed: BTreeMap<ThemeSignature<'_>, ThemedBlock<'_>> = BTreeMap::new();
         for (name, def) in variables {
             if let VariableValue::Themed(entries) = &def.value {
                 for e in entries {
-                    let key: Vec<(String, String)> = e
+                    let key: Vec<(&str, &str)> = e
                         .theme
                         .as_ref()
-                        .map(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+                        .map(|m| m.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect())
                         .unwrap_or_default();
                     themed
                         .entry(key)
                         .or_default()
-                        .push((name.clone(), scalar_to_css(&e.value)));
+                        .push((name.as_str(), &e.value));
                 }
             }
         }
@@ -114,19 +120,19 @@ impl Codegen for CssVariables {
             if axes.is_empty() {
                 out.push_str(":root {\n");
             } else {
-                let sel = axes
-                    .iter()
-                    .map(|(k, v)| format!("[data-{}=\"{}\"]", k, v))
-                    .collect::<Vec<_>>()
-                    .join("");
-                if dark_class {
-                    out.push_str(&format!(":root{}, .dark {{\n", sel));
-                } else {
-                    out.push_str(&format!(":root{} {{\n", sel));
+                out.push_str(":root");
+                for (axis, value) in axes {
+                    let _ = write!(out, "[data-{}=\"{}\"]", axis, value);
                 }
+                out.push_str(if dark_class { ", .dark {\n" } else { " {\n" });
             }
             for (name, value) in decls {
-                out.push_str(&format!("  {}: {};\n", css_custom_property(name), value));
+                let _ = writeln!(
+                    out,
+                    "  {}: {};",
+                    css_custom_property(name),
+                    scalar_to_css(value)
+                );
             }
             out.push_str("}\n");
         }
@@ -231,14 +237,20 @@ pub(crate) fn node_is_ellipse(node: &PenNode) -> bool {
 /// Plain-text body of a node. `Text` variants flatten their
 /// `TextContent` (joining styled segments); every other variant has
 /// no inline body.
-pub(crate) fn node_text(node: &PenNode) -> Option<String> {
+pub(crate) fn node_text(node: &PenNode) -> Option<Cow<'_, str>> {
     use jian_ops_schema::node::TextContent;
     match node {
         PenNode::Text(n) => Some(match &n.content {
-            TextContent::Plain(s) => s.clone(),
-            TextContent::Styled(segs) => segs.iter().map(|s| s.text.as_str()).collect::<String>(),
+            TextContent::Plain(s) => Cow::Borrowed(s),
+            TextContent::Styled(segs) => {
+                Cow::Owned(segs.iter().map(|s| s.text.as_str()).collect::<String>())
+            }
         }),
-        PenNode::TextInput(n) => n.value.clone().or_else(|| n.placeholder.clone()),
+        PenNode::TextInput(n) => n
+            .value
+            .as_deref()
+            .or(n.placeholder.as_deref())
+            .map(Cow::Borrowed),
         _ => None,
     }
 }
@@ -246,7 +258,7 @@ pub(crate) fn node_text(node: &PenNode) -> Option<String> {
 /// First solid-fill color of a node as a `#hex` / `rgba()` string,
 /// when the node carries one. Gradient / image fills are not a flat
 /// color — they read as `None` (same degrade as the TS generators).
-pub(crate) fn node_fill_css(node: &PenNode) -> Option<String> {
+pub(crate) fn node_fill_css(node: &PenNode) -> Option<&str> {
     let fills = node_fills(node)?;
     first_solid_color(fills)
 }
@@ -277,17 +289,20 @@ fn node_fills(node: &PenNode) -> Option<&Vec<PenFill>> {
 }
 
 /// First `Solid` fill's color string in a fill list.
-fn first_solid_color(fills: &[PenFill]) -> Option<String> {
-    fills.iter().find_map(|f| match f {
-        PenFill::Solid(body) => Some(body.color.clone()),
-        _ => None,
-    })
+fn first_solid_color(fills: &[PenFill]) -> Option<&str> {
+    fills
+        .iter()
+        .filter(|fill| fill.is_enabled())
+        .find_map(|f| match f {
+            PenFill::Solid(body) => Some(body.color.as_str()),
+            _ => None,
+        })
 }
 
 /// Stroke description of a node: `(color, width)`. Present only when
 /// the variant carries a `PenStroke` with a solid fill and a uniform
 /// thickness. Per-side thickness collapses to its first value.
-pub(crate) fn node_stroke_css(node: &PenNode) -> Option<(String, f64)> {
+pub(crate) fn node_stroke_css(node: &PenNode) -> Option<(&str, f64)> {
     use jian_ops_schema::style::StrokeThickness;
     let stroke = match node {
         PenNode::Frame(n) => n.container.stroke.as_ref(),
@@ -310,6 +325,15 @@ pub(crate) fn node_stroke_css(node: &PenNode) -> Option<(String, f64)> {
         PenNode::Tabs(n) => n.stroke.as_ref(),
         PenNode::Text(_) | PenNode::Image(_) | PenNode::Ref(_) => None,
     }?;
+    // Absent fill retains the editor's implicit stroke. An explicitly empty
+    // or wholly disabled stack means no stroke, never a synthetic black one.
+    if stroke
+        .fill
+        .as_ref()
+        .is_some_and(|fills| !fills.iter().any(PenFill::is_enabled))
+    {
+        return None;
+    }
     let width = match &stroke.thickness {
         StrokeThickness::Uniform(w) => *w,
         StrokeThickness::PerSide(arr) => arr.first().copied().unwrap_or(0.0),
@@ -319,7 +343,7 @@ pub(crate) fn node_stroke_css(node: &PenNode) -> Option<(String, f64)> {
         .fill
         .as_ref()
         .and_then(|fills| first_solid_color(fills))
-        .unwrap_or_else(|| "#000000".to_string());
+        .unwrap_or("#000000");
     Some((color, width))
 }
 
@@ -366,10 +390,10 @@ pub(crate) fn color_to_css(s: &str) -> String {
     match parse_color(s) {
         Some((r, g, b, a)) => {
             let to_u8 = |c: f32| (c.clamp(0.0, 1.0) * 255.0).round() as u8;
-            if a >= 0.999 {
+            if a >= 1.0 {
                 format!("rgb({},{},{})", to_u8(r), to_u8(g), to_u8(b))
             } else {
-                format!("rgba({},{},{},{:.3})", to_u8(r), to_u8(g), to_u8(b), a)
+                format!("rgba({},{},{},{})", to_u8(r), to_u8(g), to_u8(b), a)
             }
         }
         None => s.to_string(),
@@ -391,11 +415,9 @@ fn scalar_to_css(s: &VariableScalar) -> String {
 /// Format an `f64` the way the TS generators print numbers — drop a
 /// trailing `.0` so `12.0` renders as `12`.
 pub(crate) fn fmt_num(n: f64) -> String {
-    if n.fract() == 0.0 && n.is_finite() {
-        format!("{}", n as i64)
-    } else {
-        format!("{}", n)
-    }
+    // f64 Display already omits an integral .0. Integer casts saturate above
+    // i64::MAX and erase signed zero, corrupting valid authored coordinates.
+    n.to_string()
 }
 
 fn css_ident(name: &str) -> String {

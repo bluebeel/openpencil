@@ -13,14 +13,26 @@
 //! bundles are far below the 4 GiB / 65535-entry thresholds.
 
 /// IEEE CRC-32 (reflected, poly 0xEDB88320) — the zip checksum.
-fn crc32(bytes: &[u8]) -> u32 {
-    let mut crc: u32 = 0xFFFF_FFFF;
-    for &b in bytes {
-        crc ^= b as u32;
-        for _ in 0..8 {
-            let mask = (crc & 1).wrapping_neg();
-            crc = (crc >> 1) ^ (0xEDB8_8320 & mask);
+const fn crc32_table() -> [u32; 256] {
+    let mut table = [0; 256];
+    let mut index = 0;
+    while index < table.len() {
+        let mut value = index as u32;
+        let mut bit = 0;
+        while bit < 8 {
+            value = (value >> 1) ^ (0xEDB8_8320 & (value & 1).wrapping_neg());
+            bit += 1;
         }
+        table[index] = value;
+        index += 1;
+    }
+    table
+}
+const CRC32: [u32; 256] = crc32_table();
+fn crc32(bytes: &[u8]) -> u32 {
+    let mut crc = 0xFFFF_FFFF;
+    for &byte in bytes {
+        crc = (crc >> 8) ^ CRC32[((crc ^ u32::from(byte)) & 0xff) as usize];
     }
     !crc
 }
@@ -35,17 +47,30 @@ fn push_u32(out: &mut Vec<u8>, v: u32) {
 
 /// Encode `files` as a STORED zip archive. Entry order is preserved.
 pub fn build_stored_zip(files: &[(String, Vec<u8>)]) -> Vec<u8> {
-    let mut out = Vec::new();
+    // Local header30 + central header46 + two UTF-8 names + raw bytes,
+    // followed by EOCD22. A single final allocation avoids growing/copying
+    // the full image archive repeatedly. Overflow keeps the legacy grow path.
+    let capacity = files
+        .iter()
+        .try_fold(22usize, |total, (name, data)| {
+            total
+                .checked_add(76)?
+                .checked_add(name.len().checked_mul(2)?)?
+                .checked_add(data.len())
+        })
+        .unwrap_or(0);
+    let mut out = Vec::with_capacity(capacity);
     // (name, crc, size, local-header offset) for the central directory.
-    let mut entries: Vec<(&str, u32, u32, u32)> = Vec::with_capacity(files.len());
+    let mut entries: Vec<(&str, u16, u32, u32, u32)> = Vec::with_capacity(files.len());
 
     for (name, data) in files {
+        let flags = if name.is_ascii() { 0 } else { 1 << 11 };
         let offset = out.len() as u32;
         let crc = crc32(data);
         let size = data.len() as u32;
         push_u32(&mut out, 0x0403_4B50); // local file header signature
         push_u16(&mut out, 20); // version needed: 2.0
-        push_u16(&mut out, 0); // flags
+        push_u16(&mut out, flags); // UTF-8 filename when needed
         push_u16(&mut out, 0); // method: STORED
         push_u16(&mut out, 0); // mod time
         push_u16(&mut out, 0); // mod date
@@ -56,15 +81,15 @@ pub fn build_stored_zip(files: &[(String, Vec<u8>)]) -> Vec<u8> {
         push_u16(&mut out, 0); // extra len
         out.extend_from_slice(name.as_bytes());
         out.extend_from_slice(data);
-        entries.push((name, crc, size, offset));
+        entries.push((name, flags, crc, size, offset));
     }
 
     let cd_offset = out.len() as u32;
-    for (name, crc, size, offset) in &entries {
+    for (name, flags, crc, size, offset) in &entries {
         push_u32(&mut out, 0x0201_4B50); // central directory signature
         push_u16(&mut out, 20); // version made by
         push_u16(&mut out, 20); // version needed
-        push_u16(&mut out, 0); // flags
+        push_u16(&mut out, *flags); // same UTF-8 filename flag
         push_u16(&mut out, 0); // method
         push_u16(&mut out, 0); // mod time
         push_u16(&mut out, 0); // mod date
