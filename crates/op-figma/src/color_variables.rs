@@ -12,6 +12,30 @@ use std::sync::Arc;
 
 type Modes = HashMap<FigGuid, FigGuid>;
 
+// Production inheritance already owns Arc mode maps. Preserve that exact
+// allocation through deferred transforms instead of cloning it per payload.
+// Borrowed-map callers keep the same fresh owned compatibility behavior.
+trait ModeSource {
+    fn modes(&self) -> &Modes;
+    fn shared(&self) -> Arc<Modes>;
+}
+impl ModeSource for Modes {
+    fn modes(&self) -> &Modes {
+        self
+    }
+    fn shared(&self) -> Arc<Modes> {
+        Arc::new(self.clone())
+    }
+}
+impl ModeSource for Arc<Modes> {
+    fn modes(&self) -> &Modes {
+        self.as_ref()
+    }
+    fn shared(&self) -> Arc<Modes> {
+        Arc::clone(self)
+    }
+}
+
 struct Variable {
     collection: Option<FigGuid>,
     values: Vec<FigValue>,
@@ -159,13 +183,15 @@ impl Resolver {
         self.color(entry.get("variableData")?, modes, visiting)
     }
 
-    fn resolve_value(self: &Arc<Self>, value: &mut FigValue, inherited: &Modes) {
+    fn resolve_value(self: &Arc<Self>, value: &mut FigValue, inherited: &impl ModeSource) {
         if let FigValue::Deferred(deferred) = value {
             let resolver = self.clone();
-            let modes = inherited.clone();
+            let modes = inherited.shared();
             crate::kiwi::deferred::Deferred::map(
                 deferred,
-                self.retained_bound + modes_bound(&modes),
+                self.retained_bound
+                    .saturating_add(modes_bound(&modes))
+                    .saturating_add(std::mem::size_of::<Modes>() + 16),
                 move |value| resolver.resolve_value(value, &modes),
             );
             return;
@@ -178,15 +204,15 @@ impl Resolver {
             self.resolve_fields(value, inherited);
             return;
         }
-        let mut modes = inherited.clone();
-        modes.extend(own);
+        let mut modes = inherited.shared();
+        Arc::make_mut(&mut modes).extend(own);
         self.resolve_fields(value, &modes);
     }
 
-    fn resolve_fields(self: &Arc<Self>, value: &mut FigValue, modes: &Modes) {
+    fn resolve_fields(self: &Arc<Self>, value: &mut FigValue, modes: &impl ModeSource) {
         if let Some(mut color) = value
             .get("colorVar")
-            .and_then(|binding| self.color(binding, modes, &mut HashSet::new()))
+            .and_then(|binding| self.color(binding, modes.modes(), &mut HashSet::new()))
         {
             if value.get_str("type") == Some("SOLID") {
                 // A solid paint stores the bound RGBA's alpha in `opacity`,
@@ -299,6 +325,8 @@ pub(crate) fn resolve_color_variables(nodes: &mut [FigValue]) {
     let mut cache = vec![None; nodes.len()];
     let mut shared = vec![None; nodes.len()];
     let empty = Arc::new(Modes::new());
+    let mut master_visiting = HashSet::new();
+    let mut mode_visiting = HashSet::new();
     for node in nodes.iter_mut() {
         if matches!(node.get_str("type"), Some("VARIABLE" | "VARIABLE_SET")) {
             continue;
@@ -308,13 +336,15 @@ pub(crate) fn resolve_color_variables(nodes: &mut [FigValue]) {
             .and_then(FigGuid::from_value)
             .and_then(|id| by_id.get(&id))
             .copied();
-        if key
-            .is_some_and(|i| shared_master_branch(i, &node_modes, &mut shared, &mut HashSet::new()))
-        {
+        master_visiting.clear();
+        if key.is_some_and(|i| {
+            shared_master_branch(i, &node_modes, &mut shared, &mut master_visiting)
+        }) {
             continue;
         }
+        mode_visiting.clear();
         let modes = key
-            .map(|i| inherited_modes(i, &node_modes, &mut cache, &mut HashSet::new(), &empty))
+            .map(|i| inherited_modes(i, &node_modes, &mut cache, &mut mode_visiting, &empty))
             .unwrap_or_else(|| empty.clone());
         resolver.resolve_value(node, &modes);
     }
