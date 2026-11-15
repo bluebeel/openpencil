@@ -55,13 +55,22 @@ impl NativeBackend {
             return;
         }
         let paint_rect = self.active_paint_rect(rect);
-        let rotation_uv = self.raster_image(id).and_then(|image| {
-            super::image_rotation::supported(
-                paint_rect,
-                [image.width() as f32, image.height() as f32],
-                options,
-            )
-        });
+        let rotation_uv = if options.mode == ImageDrawMode::Fill
+            && options.transform.is_none()
+            && options
+                .rotation_degrees
+                .is_some_and(|degrees| degrees != 0.0)
+        {
+            self.raster_image(id).and_then(|image| {
+                super::image_rotation::supported(
+                    paint_rect,
+                    [image.width() as f32, image.height() as f32],
+                    options,
+                )
+            })
+        } else {
+            None
+        };
         self.draw_image_with_options_transform_blend_and_tile_scale(
             canvas,
             rect,

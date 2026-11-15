@@ -31,48 +31,55 @@ pub(super) fn draw(
         );
         return;
     };
-    let mut values = Vec::with_capacity(28);
-    values.extend(g.transform);
-    values.extend([
+    let mut values = [0.0; 28];
+    values[..6].copy_from_slice(&g.transform);
+    values[6..9].copy_from_slice(&[
         code(g.extend_x),
         code(g.extend_y),
         if g.pattern.is_some() { 1.0 } else { 0.0 },
     ]);
-    if let Some(p) = &g.pattern {
-        values.extend(p.transform);
-        values.extend([
-            code(p.extend_x.extension()),
-            code(p.extend_y.extension()),
-            if p.clip { 1.0 } else { 0.0 },
+    if let Some(pattern) = &g.pattern {
+        values[9..15].copy_from_slice(&pattern.transform);
+        values[15..18].copy_from_slice(&[
+            code(pattern.extend_x.extension()),
+            code(pattern.extend_y.extension()),
+            if pattern.clip { 1.0 } else { 0.0 },
         ]);
     } else {
-        values.extend([1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0]);
+        values[9..18].copy_from_slice(&[1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0]);
     }
-    if let Some(v) = &g.viewport {
-        values.extend([
+    if let Some(viewport) = &g.viewport {
+        values[18..25].copy_from_slice(&[
             1.0,
-            v.size[0],
-            v.size[1],
-            match v.fit {
+            viewport.size[0],
+            viewport.size[1],
+            match viewport.fit {
                 ImageViewportFit::None => 0.0,
                 ImageViewportFit::Meet => 1.0,
                 ImageViewportFit::Slice => 2.0,
             },
-            v.align[0],
-            v.align[1],
-            if v.clip { 1.0 } else { 0.0 },
+            viewport.align[0],
+            viewport.align[1],
+            if viewport.clip { 1.0 } else { 0.0 },
         ]);
     } else {
-        values.extend([0.0, 1.0, 1.0, 0.0, 0.5, 0.5, 0.0]);
+        values[18..25].copy_from_slice(&[0.0, 1.0, 1.0, 0.0, 0.5, 0.5, 0.0]);
     }
-    values.push(match g.units {
+    values[25] = match g.units {
         op_editor_ui::ImageFieldUnits::Normalized => 0.0,
         op_editor_ui::ImageFieldUnits::UserSpace => 1.0,
         op_editor_ui::ImageFieldUnits::LocalPixels => 2.0,
-    });
-    let dimensions =
-        op_editor_core::svg_image_composition::source_dimensions(encoded).unwrap_or([0, 0]);
-    values.extend(dimensions.map(f64::from));
+    };
+    let requires_intrinsic = g.units != op_editor_ui::ImageFieldUnits::Normalized
+        || g.viewport.as_ref().is_some_and(|viewport| {
+            viewport.fit != ImageViewportFit::None || viewport.size.contains(&0.0)
+        });
+    let dimensions = if requires_intrinsic {
+        op_editor_core::svg_image_composition::source_dimensions(encoded).unwrap_or([0, 0])
+    } else {
+        [0, 0]
+    };
+    values[26..28].copy_from_slice(&dimensions.map(f64::from));
     let a = options.adjustments;
     let adjustments = [
         a.exposure,

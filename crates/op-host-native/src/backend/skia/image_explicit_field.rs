@@ -54,18 +54,22 @@ pub(super) fn draw(
     let Some(image) = backend.raster_image(id) else {
         return;
     };
-    let intrinsic = if !encoded.is_empty() {
+    let requires_aspect = geometry.viewport.as_ref().is_some_and(|viewport| {
+        viewport.fit != op_editor_ui::ImageViewportFit::None || viewport.size.contains(&0.0)
+    });
+    // In normalized units with a concrete, non-fitting viewport the shared
+    // geometry preparation never consumes source dimensions. Avoid reparsing
+    // SVG or copying the entire encoded raster for unused intrinsic metadata.
+    let requires_intrinsic =
+        geometry.units != op_editor_ui::ImageFieldUnits::Normalized || requires_aspect;
+    let intrinsic = if requires_intrinsic && !encoded.is_empty() {
         op_editor_core::svg_image_composition::source_dimensions(encoded).or_else(|| {
             skia_safe::Image::from_encoded(skia_safe::Data::new_copy(encoded))
-                .map(|v| [v.width() as u32, v.height() as u32])
+                .map(|value| [value.width() as u32, value.height() as u32])
         })
     } else {
         None
     };
-    let requires_aspect = geometry
-        .viewport
-        .as_ref()
-        .is_some_and(|v| v.fit != op_editor_ui::ImageViewportFit::None || v.size.contains(&0.0));
     if requires_aspect && intrinsic.is_none() {
         jian_skia::raster_sampling::mark_unsupported("SVG image intrinsic source is pending");
         return;
