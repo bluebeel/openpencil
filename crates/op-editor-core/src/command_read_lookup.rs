@@ -131,7 +131,7 @@ impl EditorState {
         else {
             return read(self);
         };
-        let mut override_ = SeedOverride::new(generation, None, None);
+        let mut override_ = SeedOverride::new(generation, None, None, None);
         override_.lookup = Mutex::new(lookup::Cache::bounded(index, reservation));
         let prior = mem::replace(&mut self.command_id_seed, override_);
         let result = catch_unwind(AssertUnwindSafe(|| read(self)));

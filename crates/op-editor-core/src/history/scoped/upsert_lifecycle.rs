@@ -9,13 +9,19 @@ impl PendingScopedSnapshot {
     ) -> Option<bool> {
         self.auxiliary.as_mut()?.apply_upsert(state, command)
     }
-    fn prepare_upsert_compaction(&mut self, state: &EditorState) -> Result<(), ScopedHistoryError> {
+    pub(super) fn prepare_upsert_compaction(
+        &mut self,
+        state: &EditorState,
+    ) -> Result<(), ScopedHistoryError> {
         if let Some(pending) = &self.auxiliary {
             pending.prepare_page(state, &mut self.metadata)?;
         }
         Ok(())
     }
-    fn restore_upsert(&mut self, state: &mut EditorState) -> Result<(), ScopedHistoryError> {
+    pub(super) fn restore_upsert(
+        &mut self,
+        state: &mut EditorState,
+    ) -> Result<(), ScopedHistoryError> {
         self.prepare_upsert_compaction(state)?;
         self.metadata.validate_shape(state)?;
         // Validate/compact all destinations before exchange writes any inverse.

@@ -65,7 +65,7 @@ pub(super) fn supports(command: &C) -> bool {
 }
 fn add<T: serde::Serialize + ?Sized>(value: &T, bytes: &mut usize) -> Option<()> {
     *bytes = bytes.checked_add(
-        crate::history_snapshot::command_capture_value_bytes(value, LIMIT.checked_sub(*bytes)?)
+        crate::history_snapshot::command_capture_value_bytes(&value, LIMIT.checked_sub(*bytes)?)
             .ok()?,
     )?;
     (*bytes <= LIMIT).then_some(())
