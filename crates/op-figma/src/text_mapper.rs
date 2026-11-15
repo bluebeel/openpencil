@@ -155,8 +155,9 @@ fn build_content(node: &FigValue) -> TextContent {
         .filter_map(|entry| entry.get_f64("styleID").map(|id| (id as i32, entry)))
         .collect();
 
-    // Figma indexes characterStyleIDs by UTF-16 code unit.
-    let units: Vec<u16> = characters.encode_utf16().collect();
+    // Figma indexes by UTF-16 code unit. Decode each exact run directly into
+    // its final owned String instead of retaining the whole UTF-16 buffer and
+    // then copying every lossy-decoded temporary again into a segment.
     let style_at = |i: usize| -> i32 {
         style_ids
             .get(i)
@@ -164,19 +165,25 @@ fn build_content(node: &FigValue) -> TextContent {
             .map(|v| v as i32)
             .unwrap_or(-1)
     };
-
-    let mut segments: Vec<StyledTextSegment> = Vec::new();
+    let mut units = characters.encode_utf16().enumerate().peekable();
     let mut current = style_ids.first().and_then(|v| v.as_f64()).unwrap_or(0.0) as i32;
-    let mut seg_start = 0usize;
-    for i in 1..=units.len() {
-        let sid = style_at(i);
-        if sid != current || i == units.len() {
-            if i > seg_start {
-                let seg_text = String::from_utf16_lossy(&units[seg_start..i]);
-                segments.push(build_segment(&seg_text, current, table, &keyed_overrides));
+    let mut segments = Vec::new();
+    while units.peek().is_some() {
+        let run_units = std::iter::from_fn(|| {
+            let &(index, _) = units.peek()?;
+            // The first run's absent/non-numeric style defaults to 0; later
+            // missing IDs default to -1, exactly as the original boundary walk.
+            if index != 0 && style_at(index) != current {
+                return None;
             }
-            current = sid;
-            seg_start = i;
+            units.next().map(|(_, unit)| unit)
+        });
+        let text = std::char::decode_utf16(run_units)
+            .map(|value| value.unwrap_or(char::REPLACEMENT_CHARACTER))
+            .collect();
+        segments.push(build_segment(text, current, table, &keyed_overrides));
+        if let Some(&(index, _)) = units.peek() {
+            current = style_at(index);
         }
     }
 
@@ -200,13 +207,13 @@ fn build_content(node: &FigValue) -> TextContent {
 
 /// Build one styled segment from a style-override-table entry.
 fn build_segment(
-    text: &str,
+    text: String,
     style_id: i32,
     table: &[FigValue],
     keyed_overrides: &HashMap<i32, &FigValue>,
 ) -> StyledTextSegment {
     let mut seg = StyledTextSegment {
-        text: text.to_string(),
+        text,
         font_family: None,
         font_size: None,
         font_weight: None,
@@ -295,40 +302,56 @@ fn canonical_font_family_value(family: &str) -> String {
 
 /// Apply Figma `textCase` (UPPER / LOWER / TITLE) to the content.
 fn apply_text_case(content: TextContent, text_case: Option<&str>) -> TextContent {
-    let transform: fn(&str) -> String = match text_case {
-        Some("UPPER") => |s| s.to_uppercase(),
-        Some("LOWER") => |s| s.to_lowercase(),
-        Some("TITLE") => title_case,
-        _ => return content,
+    let Some(text_case @ ("UPPER" | "LOWER" | "TITLE")) = text_case else {
+        return content;
     };
-    match content {
-        TextContent::Plain(s) => TextContent::Plain(transform(&s)),
-        TextContent::Styled(segs) => TextContent::Styled(
-            segs.into_iter()
-                .map(|mut s| {
-                    s.text = transform(&s.text);
-                    s
-                })
-                .collect(),
-        ),
+    let mut content = content;
+    match &mut content {
+        TextContent::Plain(text) => apply_owned_text_case(text, text_case),
+        TextContent::Styled(segments) => {
+            for segment in segments {
+                apply_owned_text_case(&mut segment.text, text_case);
+            }
+        }
+    }
+    content
+}
+
+fn apply_owned_text_case(text: &mut String, text_case: &str) {
+    match text_case {
+        "UPPER" if text.is_ascii() => text.make_ascii_uppercase(),
+        "LOWER" if text.is_ascii() => text.make_ascii_lowercase(),
+        "UPPER" => *text = text.to_uppercase(),
+        "LOWER" => *text = text.to_lowercase(),
+        "TITLE" => title_case_in_place(text),
+        _ => {}
     }
 }
 
 /// Uppercase the first word character after every word boundary —
 /// `\b\w` with ASCII `\w` (`[A-Za-z0-9_]`), matching JS.
+/// Retain the existing borrowed test helper; production reuses its owned text.
+#[cfg(test)]
 fn title_case(s: &str) -> String {
-    let is_word = |c: char| c.is_ascii_alphanumeric() || c == '_';
-    let mut out = String::with_capacity(s.len());
-    let mut prev_word = false;
-    for c in s.chars() {
-        if is_word(c) && !prev_word {
-            out.extend(c.to_uppercase());
-        } else {
-            out.push(c);
-        }
-        prev_word = is_word(c);
-    }
+    let mut out = s.to_string();
+    title_case_in_place(&mut out);
     out
+}
+
+fn title_case_in_place(text: &mut str) {
+    let mut prev_word = false;
+    for index in 0..text.len() {
+        let byte = text.as_bytes()[index];
+        let word = byte.is_ascii_alphanumeric() || byte == b'_';
+        if word && !prev_word {
+            // Only an ASCII byte is ever changed, so both endpoints are UTF-8
+            // boundaries. Non-ASCII scalars remain unchanged word separators.
+            if let Some(initial) = text.get_mut(index..index + 1) {
+                initial.make_ascii_uppercase();
+            }
+        }
+        prev_word = word;
+    }
 }
 
 /// Figma font-style string → numeric weight. First substring match
