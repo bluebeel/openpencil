@@ -31,7 +31,11 @@ impl CanvasKitBackend {
     pub fn resize_for_display(&mut self, logical_w: u32, logical_h: u32, dpr: f32) {
         self.logical_w = logical_w.max(1);
         self.logical_h = logical_h.max(1);
-        self.dpr = dpr.max(1.0);
+        self.dpr = if dpr.is_finite() && dpr > 0.0 {
+            dpr.max(1.0)
+        } else {
+            1.0
+        };
         self.ck.set_dpr(self.dpr);
         let pw = ((self.logical_w as f32) * self.dpr).round() as u32;
         let ph = ((self.logical_h as f32) * self.dpr).round() as u32;

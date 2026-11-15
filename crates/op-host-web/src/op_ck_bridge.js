@@ -480,16 +480,34 @@ export function opCkDrawRoundedShadow(CK, canvas, effects, source, values, corne
 // drives. Text is rasterized with browser/system fonts by default; the Rust
 // side can additionally register Local Font Access faces through
 // registerSystemFont().
-export async function opCkInit(canvasId) {
+// Keep the observed CSS box stable when canvas intrinsic attributes were its
+// only size source. Explicit/responsive CSS that already held the box wins.
+function setCanvasBufferSize(element, width, height) {
+  if (element.width === width && element.height === height) return;
+  const cssWidth = element.clientWidth, cssHeight = element.clientHeight;
+  element.width = width; element.height = height;
+  if (cssWidth > 0 && element.clientWidth !== cssWidth && !element.style.width) {
+    element.style.width = `${cssWidth}px`;
+  }
+  if (cssHeight > 0 && element.clientHeight !== cssHeight && !element.style.height) {
+    element.style.height = `${cssHeight}px`;
+  }
+}
+export async function opCkInit(canvasId, dpr = 1, logicalWidth = 0, logicalHeight = 0) {
   const CK = await sharedCanvasKit();
   if (typeof createWebImageCaches !== 'function') {
     throw new Error('CanvasKit image cache factory was not configured');
+  }
+  const el = document.getElementById(canvasId);
+  if (!el || typeof el.getContext !== 'function') throw new Error('CanvasKit: canvas not found');
+  if (logicalWidth > 0 && logicalHeight > 0 && Number.isFinite(dpr) && dpr > 0) {
+    setCanvasBufferSize(el, Math.max(1, Math.round(logicalWidth * dpr)),
+      Math.max(1, Math.round(logicalHeight * dpr)));
   }
   let surface = CK.MakeWebGLCanvasSurface(canvasId);
   if (!surface) throw new Error('CanvasKit: MakeWebGLCanvasSurface returned null');
   let canvas = surface.getCanvas();
   let shadowBasis = Float32Array.from(canvas.getTotalMatrix());
-  const el = document.getElementById(canvasId);
   let textFontGeneration=0;
   const textMasks=createTextMaskCapture(CK,()=>canvas,c=>{canvas=c;},
     ()=>[el.width,el.height],()=>textFontGeneration);
@@ -2226,7 +2244,8 @@ export async function opCkInit(canvasId) {
 
     resize(w, h) {
       textMasks.cancel();
-      el.width = w; el.height = h;
+      if (el.width === w && el.height === h) return;
+      setCanvasBufferSize(el, w, h);
       try { surface.delete(); } catch (e) {}
       surface = CK.MakeWebGLCanvasSurface(canvasId);
       canvas = surface.getCanvas();

@@ -756,9 +756,14 @@ pub async fn init_backend(
     logical_w: u32,
     logical_h: u32,
 ) -> Result<CanvasKitBackend, JsValue> {
+    let dpr = if dpr.is_finite() && dpr > 0.0 {
+        dpr.max(1.0)
+    } else {
+        1.0
+    };
     let image_cache_factory = web_image_cache_factory();
     set_image_cache_factory(&image_cache_factory);
-    let promise = op_ck_init(canvas_id)?;
+    let promise = op_ck_init(canvas_id, dpr, logical_w.max(1), logical_h.max(1))?;
     let ck_val = wasm_bindgen_futures::JsFuture::from(promise).await?;
     let ck: OpCk = ck_val.unchecked_into();
     Ok(CanvasKitBackend::new(ck, dpr, logical_w, logical_h))

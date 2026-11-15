@@ -32,11 +32,34 @@ struct Session {
     shared: Rc<RenderShared>,
     pump: Rc<PumpHandle>,
 }
+#[derive(Clone, Copy, PartialEq)]
+struct DisplaySize {
+    width: u32,
+    height: u32,
+    dpr: f32,
+}
+impl DisplaySize {
+    fn read(canvas: &web_sys::HtmlCanvasElement, window: &web_sys::Window) -> Self {
+        let scale = window.device_pixel_ratio() as f32;
+        Self {
+            width: canvas.client_width().max(1) as u32,
+            height: canvas.client_height().max(1) as u32,
+            dpr: if scale.is_finite() && scale > 0.0 {
+                scale.max(1.0)
+            } else {
+                1.0
+            },
+        }
+    }
+}
 struct RenderShared {
     active: Cell<bool>,
     state: DirtyState,
     pending_scene: Cell<Option<Option<Scene>>>,
     pending_viewport: Cell<Option<DocViewport>>,
+    pending_size: Cell<Option<DisplaySize>>,
+    requested_size: Cell<DisplaySize>,
+    canvas: web_sys::HtmlCanvasElement,
     pump: Weak<PumpHandle>,
     inner: RefCell<RenderInner>,
 }
@@ -129,13 +152,23 @@ impl Viewer {
             .ok_or_else(|| JsValue::from_str("attach_canvas: canvas not found"))?
             .dyn_into()
             .map_err(|_| JsValue::from_str("attach_canvas: element is not a <canvas>"))?;
-        let width = canvas.client_width().max(1) as u32;
-        let height = canvas.client_height().max(1) as u32;
-        let dpr = (canvas.width().max(1) as f32 / width as f32).max(1.0);
-        let backend = init_backend(&canvas_id, dpr, width, height).await?;
+        let initial_size = DisplaySize::read(&canvas, &window);
+        let mut backend = init_backend(
+            &canvas_id,
+            initial_size.dpr,
+            initial_size.width,
+            initial_size.height,
+        )
+        .await?;
         if !self.render.matches(&token) {
             backend.dispose();
             return Err(JsValue::from_str("attach_canvas: attachment superseded"));
+        }
+        // A resize/DPR change can happen while CanvasKit is loading, before
+        // a ResizeObserver has a live session to notify. Resample once here.
+        let size = DisplaySize::read(&canvas, &window);
+        if size != initial_size {
+            backend.resize_for_display(size.width, size.height, size.dpr);
         }
         let pump = Rc::new(PumpHandle {
             closure: RefCell::new(None),
@@ -147,11 +180,14 @@ impl Viewer {
             state: DirtyState::new_dirty(),
             pending_scene: Cell::new(None),
             pending_viewport: Cell::new(None),
+            pending_size: Cell::new(None),
+            requested_size: Cell::new(size),
+            canvas,
             pump: Rc::downgrade(&pump),
             inner: RefCell::new(RenderInner {
                 backend,
-                logical_w: width as f32,
-                logical_h: height as f32,
+                logical_w: size.width as f32,
+                logical_h: size.height as f32,
                 scene: self.scene.clone(),
                 viewport: self.viewport,
             }),
@@ -162,6 +198,23 @@ impl Viewer {
         }));
         start_raf_pump(&shared, &pump);
         Ok(())
+    }
+    /// Notify this Viewer's existing session of a CSS-size or display-DPR
+    /// change. Safe during paint: backend resize is deferred to the next frame.
+    /// Returns false when unattached or unchanged and does not wake an idle
+    /// canvas for duplicate ResizeObserver notifications.
+    pub fn resize_canvas(&self) -> bool {
+        let (Some(shared), Some(window)) = (self.render.shared(), web_sys::window()) else {
+            return false;
+        };
+        let size = DisplaySize::read(&shared.canvas, &window);
+        if size == shared.requested_size.get() {
+            return false;
+        }
+        shared.requested_size.set(size);
+        shared.pending_size.set(Some(size));
+        mark_and_arm(&shared);
+        true
     }
     /// Idle-safe teardown of this Viewer's session only.
     pub fn detach(&self) {
@@ -287,6 +340,12 @@ fn paint_frame(shared: &RenderShared) -> bool {
     // — is what makes the dirty generation bumped at push time honest:
     // the generation is never consumed by a frame that painted stale
     // (or missing) payload.
+    if let Some(size) = shared.pending_size.take() {
+        b.backend
+            .resize_for_display(size.width, size.height, size.dpr);
+        b.logical_w = size.width as f32;
+        b.logical_h = size.height as f32;
+    }
     if let Some(pending_scene) = shared.pending_scene.take() {
         b.scene = pending_scene;
     }

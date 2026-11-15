@@ -11,7 +11,12 @@ extern "C" {
     /// Async init: load CanvasKit, make a WebGL surface on `canvas_id`, build
     /// the bridge object. Text uses browser/system fonts via the JS bridge.
     #[wasm_bindgen(js_name = opCkInit, catch)]
-    pub(super) fn op_ck_init(canvas_id: &str) -> Result<js_sys::Promise, JsValue>;
+    pub(super) fn op_ck_init(
+        canvas_id: &str,
+        dpr: f32,
+        logical_w: u32,
+        logical_h: u32,
+    ) -> Result<js_sys::Promise, JsValue>;
     #[wasm_bindgen(js_name = setImageCacheFactory)]
     pub(super) fn set_image_cache_factory(factory: &js_sys::Function);
 
