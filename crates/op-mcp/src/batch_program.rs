@@ -59,7 +59,7 @@ use jian_ops_schema::node::PenNode;
 use op_editor_core::{EditorState, NodeId, PenNodeExt};
 use serde_json::{json, Value};
 
-use super::batch_design::{find_top_level_char, normalize_node_shape, split_operations};
+use super::batch_design::{find_top_level_char, normalize_node_shape, split_operation_slices};
 use super::batch_direct_ops::{split_top_level_args, update_command_from_value};
 use super::batch_page::optional_page_id;
 pub(crate) use super::batch_program_context::ProgramCtx;
@@ -103,7 +103,7 @@ pub(crate) fn run_batch_design_program(
         .or_else(|| args.get("post_process"))
         .map(|raw| matches!(raw.trim(), "true" | "1"))
         .unwrap_or(false);
-    let lines = split_operations(operations);
+    let lines = split_operation_slices(operations);
     let mut ctx = ProgramCtx {
         sim: op_editor_core::CommandSimulation::new(snapshot.clone_for_command_simulation()),
         page_id: page_id.clone(),
@@ -314,58 +314,67 @@ fn execute_line(line: &str, ctx: &mut ProgramCtx) -> Result<()> {
 /// Return append-G line indexes that are robustly sized by later U() calls in
 /// the same program. Parsing uses the DSL's top-level delimiter rules, so an
 /// '=' inside a quoted image prompt is never mistaken for a result binding.
-fn explicitly_sized_append_lines(lines: &[String]) -> BTreeSet<usize> {
+fn explicitly_sized_append_lines(lines: &[impl AsRef<str>]) -> BTreeSet<usize> {
+    #[derive(Default)]
+    struct Dimensions {
+        width: Option<bool>,
+        height: Option<bool>,
+    }
     let mut sized = BTreeSet::new();
-    for (index, line) in lines.iter().enumerate() {
-        let Some((Some(binding), 'G', args)) = parsed_operation(line) else {
+    let mut future: BTreeMap<String, Dimensions> = BTreeMap::new();
+    // The first patch seen backwards is the last patch in the forward sizing
+    // window. A rebind closes the window for earlier G() operations.
+    for (index, line) in lines.iter().enumerate().rev() {
+        let Some((binding, op, args)) = parsed_operation(line.as_ref()) else {
             continue;
         };
-        let parts = split_top_level_args(args);
-        let is_append = parts.len() == 4
-            && matches!(
-                serde_json::from_str::<String>(parts[3].trim()),
-                Ok(placement) if placement == "append"
-            );
-        if !is_append {
+        if let Some(binding) = binding {
+            if op == 'G'
+                && future
+                    .get(binding)
+                    .is_some_and(|dims| dims.width == Some(true) && dims.height == Some(true))
+            {
+                let parts = split_top_level_args(args);
+                if parts.len() == 4
+                    && matches!(
+                        serde_json::from_str::<String>(parts[3].trim()),
+                        Ok(placement) if placement == "append"
+                    )
+                {
+                    sized.insert(index);
+                }
+            }
+            future.remove(binding);
+        }
+        if op != 'U' {
             continue;
         }
-
-        let mut width_is_positive_number = false;
-        let mut height_is_positive_number = false;
-        for later in &lines[index + 1..] {
-            let Some((later_binding, op, later_args)) = parsed_operation(later) else {
-                continue;
-            };
-            // Rebinding closes this append's sizing window. A U() beyond it
-            // would target the newer node, not this image.
-            if later_binding == Some(binding) {
-                break;
-            }
-            if op != 'U' {
-                continue;
-            }
-            let Some(comma) = find_top_level_char(later_args, ',') else {
-                continue;
-            };
-            let target = strip_outer_quotes(later_args[..comma].trim());
-            if target != binding {
-                continue;
-            }
-            let Ok(value) = parse_json_arg(&later_args[comma + 1..]) else {
-                continue;
-            };
-            let Some(patch) = value.as_object() else {
-                continue;
-            };
-            if let Some(width) = patch.get("width") {
-                width_is_positive_number = positive_json_number(width);
-            }
-            if let Some(height) = patch.get("height") {
-                height_is_positive_number = positive_json_number(height);
-            }
+        let Some(comma) = find_top_level_char(args, ',') else {
+            continue;
+        };
+        let target = strip_outer_quotes(args[..comma].trim());
+        // A bound U() is invalid to execute, but it is still a rebinding
+        // boundary in this analysis, exactly as in the forward scanner.
+        if binding == Some(target.as_str()) {
+            continue;
         }
-        if width_is_positive_number && height_is_positive_number {
-            sized.insert(index);
+        let Ok(value) = parse_json_arg(&args[comma + 1..]) else {
+            continue;
+        };
+        let Some(patch) = value.as_object() else {
+            continue;
+        };
+        let width = patch.get("width").map(positive_json_number);
+        let height = patch.get("height").map(positive_json_number);
+        if width.is_none() && height.is_none() {
+            continue;
+        }
+        let dims = future.entry(target).or_default();
+        if dims.width.is_none() {
+            dims.width = width;
+        }
+        if dims.height.is_none() {
+            dims.height = height;
         }
     }
     sized

@@ -22,25 +22,23 @@ type Result<T> = std::result::Result<T, ProgramError>;
 pub(crate) fn parse_single_direct_operation(line: &str) -> Result<Option<EditorCommand>> {
     let line = line.trim().trim_end_matches(';').trim();
     let line = strip_bound_direct_operation(line);
-    for op in ["U", "D", "M", "C", "R", "G"] {
-        let prefix = format!("{op}(");
-        if line.starts_with(&prefix) && line.ends_with(')') {
-            let body = &line[prefix.len()..line.len() - 1];
-            return match op {
-                "U" => parse_update_operation(body).map(Some),
-                "D" => Ok(Some(EditorCommand::DeleteNode {
-                    node_id: NodeId::new(&parse_ref_token(body)?),
-                    page_id: None,
-                })),
-                "M" => parse_move_operation(body).map(Some),
-                "C" => parse_copy_operation(body).map(Some),
-                "R" => parse_replace_operation(body).map(Some),
-                "G" => parse_image_operation(body).map(Some),
-                _ => unreachable!(),
-            };
-        }
+    let bytes = line.as_bytes();
+    if bytes.len() < 3 || bytes[1] != b'(' || !line.ends_with(')') {
+        return Ok(None);
     }
-    Ok(None)
+    let body = &line[2..line.len() - 1];
+    match bytes[0] {
+        b'U' => parse_update_operation(body).map(Some),
+        b'D' => Ok(Some(EditorCommand::DeleteNode {
+            node_id: NodeId::new(parse_ref_token(body)?),
+            page_id: None,
+        })),
+        b'M' => parse_move_operation(body).map(Some),
+        b'C' => parse_copy_operation(body).map(Some),
+        b'R' => parse_replace_operation(body).map(Some),
+        b'G' => parse_image_operation(body).map(Some),
+        _ => Ok(None),
+    }
 }
 
 /// Whether a legacy single-line operations payload is a `G()` call, with or

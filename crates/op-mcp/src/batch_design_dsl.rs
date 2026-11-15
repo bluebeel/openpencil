@@ -16,7 +16,7 @@ use super::batch_design_dsl_error::InsertDslError;
 struct ParsedInsert {
     binding: String,
     parent: ParentRef,
-    node: PenNode,
+    node: Option<PenNode>,
 }
 
 enum ParentRef {
@@ -27,11 +27,11 @@ enum ParentRef {
 type InsertForest = (NodeId, Vec<PenNode>, usize, Vec<String>);
 
 pub(crate) fn parse_insert_operations(input: &str) -> Result<InsertForest, InsertDslError> {
-    let lines = split_operations(input);
+    let lines = split_operation_slices(input);
     if lines.is_empty() {
         return Err(InsertDslError::NoOperations);
     }
-    let mut inserts = Vec::new();
+    let mut inserts = Vec::with_capacity(lines.len());
     let mut binding_to_idx = BTreeMap::new();
     let mut tmp_id = 1usize;
     for (line_idx, line) in lines.iter().enumerate() {
@@ -60,7 +60,7 @@ pub(crate) fn parse_insert_operations(input: &str) -> Result<InsertForest, Inser
         inserts.push(ParsedInsert {
             binding,
             parent,
-            node,
+            node: Some(node),
         });
     }
     let bindings: Vec<String> = inserts.iter().map(|i| i.binding.clone()).collect();
@@ -69,7 +69,7 @@ pub(crate) fn parse_insert_operations(input: &str) -> Result<InsertForest, Inser
 }
 
 fn assemble_insert_forest(
-    inserts: Vec<ParsedInsert>,
+    mut inserts: Vec<ParsedInsert>,
     binding_to_idx: &BTreeMap<String, usize>,
 ) -> Result<(NodeId, Vec<PenNode>, usize), InsertDslError> {
     let mut children_by_parent = vec![Vec::<usize>::new(); inserts.len()];
@@ -105,34 +105,71 @@ fn assemble_insert_forest(
     }
     let mut visit = vec![0u8; inserts.len()];
     let mut nodes = Vec::with_capacity(roots.len());
+    let mut stack = Vec::new();
     for root in roots {
-        nodes.push(build_tree(root, &inserts, &children_by_parent, &mut visit)?);
+        nodes.push(build_tree(
+            root,
+            &mut inserts,
+            &children_by_parent,
+            &mut visit,
+            &mut stack,
+        )?);
+    }
+    // A disconnected cycle has no root. It must not disappear silently while
+    // another component succeeds and nodeCount still reports every operation.
+    if visit.iter().any(|state| *state != 2) {
+        return Err(InsertDslError::ParentCycle);
     }
     Ok((real_parent.unwrap_or(NodeId::NONE), nodes, inserts.len()))
 }
 
+struct BuildFrame {
+    index: usize,
+    next_child: usize,
+    node: PenNode,
+}
+
 fn build_tree(
-    idx: usize,
-    inserts: &[ParsedInsert],
+    root: usize,
+    inserts: &mut [ParsedInsert],
     children_by_parent: &[Vec<usize>],
     visit: &mut [u8],
+    stack: &mut Vec<BuildFrame>,
 ) -> Result<PenNode, InsertDslError> {
-    match visit[idx] {
-        1 => return Err(InsertDslError::ParentCycle),
-        2 => return Ok(inserts[idx].node.clone()),
-        _ => {}
+    let take = |index: usize, inserts: &mut [ParsedInsert], visit: &mut [u8]| {
+        if visit[index] != 0 {
+            return Err(InsertDslError::ParentCycle);
+        }
+        visit[index] = 1;
+        let node = inserts[index]
+            .node
+            .take()
+            .ok_or(InsertDslError::ParentCycle)?;
+        Ok(BuildFrame {
+            index,
+            next_child: 0,
+            node,
+        })
+    };
+    stack.push(take(root, inserts, visit)?);
+    loop {
+        let current = stack.last_mut().ok_or(InsertDslError::ParentCycle)?;
+        if let Some(&child) = children_by_parent[current.index].get(current.next_child) {
+            current.next_child += 1;
+            stack.push(take(child, inserts, visit)?);
+            continue;
+        }
+        let done = stack.pop().ok_or(InsertDslError::ParentCycle)?;
+        visit[done.index] = 2;
+        if let Some(parent) = stack.last_mut() {
+            let children = parent.node.children_mut().ok_or_else(|| {
+                InsertDslError::NotAContainer(inserts[parent.index].binding.clone())
+            })?;
+            children.push(done.node);
+        } else {
+            return Ok(done.node);
+        }
     }
-    visit[idx] = 1;
-    let mut node = inserts[idx].node.clone();
-    for child_idx in &children_by_parent[idx] {
-        let child = build_tree(*child_idx, inserts, children_by_parent, visit)?;
-        let Some(children) = node.children_mut() else {
-            return Err(InsertDslError::NotAContainer(inserts[idx].binding.clone()));
-        };
-        children.push(child);
-    }
-    visit[idx] = 2;
-    Ok(node)
 }
 
 fn parse_insert_operation(
@@ -210,43 +247,51 @@ fn bracket_delta(line: &str) -> i32 {
 }
 
 pub(crate) fn split_operations(raw: &str) -> Vec<String> {
+    split_operation_slices(raw)
+        .into_iter()
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Same recovery boundaries as the owned compatibility API, retaining slices
+/// of the original program instead of a growable buffer plus per-line copies.
+pub(crate) fn split_operation_slices<'a>(raw: &'a str) -> Vec<&'a str> {
     let mut out = Vec::new();
-    let mut buf = String::new();
+    let mut start = None;
     let mut depth = 0i32;
-    let flush = |buf: &mut String, out: &mut Vec<String>| {
-        let line = buf.trim();
-        if !line.is_empty() && !line.starts_with("//") {
-            out.push(line.to_string());
-        }
-        buf.clear();
-    };
-    for line in raw.split('\n') {
-        // A new operation-start line always begins a fresh operation, even if
-        // the previous buffer's bracket count looked unbalanced (a stray quote
-        // or a bracket inside a string value can throw the count off).
-        if line_starts_operation(line) && !buf.trim().is_empty() {
-            flush(&mut buf, &mut out);
-            depth = 0;
-        }
-        if buf.is_empty() {
-            let t = line.trim();
-            if t.is_empty() || t.starts_with("//") {
-                continue;
+    let mut offset = 0usize;
+    let flush = |start: &mut Option<usize>, end: usize, out: &mut Vec<&'a str>| {
+        if let Some(begin) = start.take() {
+            let line = raw[begin..end].trim();
+            if !line.is_empty() && !line.starts_with("//") {
+                out.push(line);
             }
         }
-        if !buf.is_empty() {
-            buf.push('\n');
-        }
-        buf.push_str(line);
-        depth += bracket_delta(line);
-        // Brackets balanced → the operation is complete (a multi-line JSON
-        // body keeps depth > 0 until its closing `})` line).
-        if depth <= 0 {
-            flush(&mut buf, &mut out);
+    };
+    for packet in raw.split_inclusive('\n') {
+        let line = packet.strip_suffix('\n').unwrap_or(packet);
+        if line_starts_operation(line) && start.is_some() {
+            flush(&mut start, offset, &mut out);
             depth = 0;
         }
+        let end = offset + line.len();
+        let next = offset + packet.len();
+        if start.is_none() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with("//") {
+                offset = next;
+                continue;
+            }
+            start = Some(offset);
+        }
+        depth += bracket_delta(line);
+        if depth <= 0 {
+            flush(&mut start, end, &mut out);
+            depth = 0;
+        }
+        offset = next;
     }
-    flush(&mut buf, &mut out);
+    flush(&mut start, raw.len(), &mut out);
     out
 }
 

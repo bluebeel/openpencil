@@ -164,7 +164,40 @@ pub(crate) fn outcome_for_call(
     state: &EditorState,
     args: &BTreeMap<String, String>,
 ) -> ToolOutcome {
-    scoped_snapshot(state, args, false).call_with_state(args, Some(state))
+    if let Some(expanded) = expand_script_arg(args) {
+        return match expanded {
+            Ok(args) => outcome_for_call(state, &args),
+            Err(outcome) => outcome,
+        };
+    }
+    match select_batch_input(args) {
+        Ok(BatchInputKind::NodesJson) => return dispatch_batch_design(args, None),
+        Ok(BatchInputKind::Operations) => {}
+        Ok(BatchInputKind::Script) => unreachable!("script expansion handled above"),
+        Err((code, message)) => return ToolOutcome::Err(code, message),
+    }
+    let Some(operations) = args.get("operations") else {
+        return ToolOutcome::Err(
+            ToolErrorCode::MissingArgument,
+            "operations argument is missing".into(),
+        );
+    };
+    // Move the only parsed forest straight into its result/command. The public
+    // reusable snapshot keeps its compatibility path; this host path is one call.
+    match parse_operations(operations) {
+        Ok(ParsedOperations::Insert {
+            parent_id,
+            nodes,
+            bindings,
+            promoted,
+            ..
+        }) => snapshot(state, false, true)
+            .insert_with_result(args, parent_id, nodes, bindings, promoted),
+        Ok(ParsedOperations::Direct(command)) if !is_direct_image_operation(operations) => {
+            super::batch_design::direct_operation_outcome(command, optional_page_id(args), None)
+        }
+        _ => super::batch_program::run_batch_design_program(state, operations, args),
+    }
 }
 
 fn scoped_snapshot(
@@ -200,30 +233,74 @@ fn scoped_snapshot(
     }
 }
 
+fn snapshot_pages(state: &EditorState) -> (Vec<PageNodeCount>, String) {
+    let counts = state.trusted_document_node_counts();
+    match state.doc.pages.as_ref().filter(|pages| !pages.is_empty()) {
+        Some(pages) => {
+            let active = state.ui.active_page_index.min(pages.len() - 1);
+            (
+                pages
+                    .iter()
+                    .enumerate()
+                    .map(|(index, page)| PageNodeCount {
+                        id: page.id.clone(),
+                        count: counts
+                            .as_deref()
+                            .and_then(|counts| counts.pages())
+                            .and_then(|pages| pages.get(index))
+                            .map_or_else(|| count_forest(&page.children), |page| page.total()),
+                    })
+                    .collect(),
+                pages[active].id.clone(),
+            )
+        }
+        None => (
+            vec![PageNodeCount {
+                id: "0".into(),
+                count: counts.as_deref().map_or_else(
+                    || count_forest(&state.doc.children),
+                    |counts| counts.root().total(),
+                ),
+            }],
+            "0".into(),
+        ),
+    }
+}
+
+/// This one-call insert only asks whether its external parent exists. It does
+/// not retain every existing document id merely to answer that one question.
+fn insertion_snapshot(state: &EditorState, parent: &NodeId) -> BatchDesign {
+    let contains = |roots: &[PenNode]| {
+        if let Some(lookup) = state
+            .trusted_node_lookup(roots)
+            .filter(|lookup| lookup.is_ready())
+        {
+            return lookup
+                .find(parent.as_str(), op_editor_core::NodeReadOrder::First)
+                .is_some();
+        }
+        super::tools::read_walk::nodes(roots).any(|entry| entry.node.id_str() == parent.as_str())
+    };
+    let known = parent.is_real()
+        && (state.doc.pages.as_ref().is_some_and(|pages| {
+            pages
+                .iter()
+                .any(|page| page.id == parent.as_str() || contains(&page.children))
+        }) || contains(&state.doc.children));
+    let (pages, active_page_id) = snapshot_pages(state);
+    BatchDesign {
+        state: None,
+        pages,
+        active_page_id,
+        existing_ids: known.then(|| parent.clone()).into_iter().collect(),
+        id_seed: state.next_node_id_seed(),
+        prepared: None,
+    }
+}
+
 fn snapshot(state: &EditorState, program: bool, insert: bool) -> BatchDesign {
     let (pages, active_page_id) = if insert {
-        match state.doc.pages.as_ref().filter(|pages| !pages.is_empty()) {
-            Some(pages) => {
-                let active = state.ui.active_page_index.min(pages.len() - 1);
-                (
-                    pages
-                        .iter()
-                        .map(|page| PageNodeCount {
-                            id: page.id.clone(),
-                            count: count_forest(&page.children),
-                        })
-                        .collect(),
-                    pages[active].id.clone(),
-                )
-            }
-            None => (
-                vec![PageNodeCount {
-                    id: "0".into(),
-                    count: count_forest(&state.doc.children),
-                }],
-                "0".into(),
-            ),
-        }
+        snapshot_pages(state)
     } else {
         (Vec::new(), String::new())
     };
@@ -287,7 +364,9 @@ impl BatchDesign {
             return dispatch_batch_design(args, None); // id-space exhausted → flat path
         };
         let mut seed = seed0;
-        let mut taken = self.existing_ids.clone();
+        // next_node_id_seed is above complete node/page numeric IDs and the
+        // runtime floor. Reserve only this incoming forest, as ProgramCtx does.
+        let mut taken = HashSet::new();
         // Assign unique ids to the forest IN PLACE (from the snapshot's
         // max-id+1, so free vs the snapshot), then emit them as AUTHORED ids
         // the host PRESERVES (`InsertAuthoredSubtree`) rather than remaps. So
@@ -382,14 +461,7 @@ impl BatchDesign {
 
 /// Count every node in a forest (TS `countNodes`).
 fn count_forest(nodes: &[PenNode]) -> usize {
-    nodes.iter().map(count_subtree).sum()
-}
-
-fn count_subtree(node: &PenNode) -> usize {
-    1 + node
-        .children()
-        .map(|children| children.iter().map(count_subtree).sum::<usize>())
-        .unwrap_or(0)
+    super::tools::read_walk::nodes(nodes).count()
 }
 
 #[cfg(test)]
