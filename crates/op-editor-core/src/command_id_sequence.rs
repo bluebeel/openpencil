@@ -199,10 +199,14 @@ impl SeedOverride {
             | C::DuplicatePage { .. }
             | C::InstantiateComponent { .. }
             | C::InstantiateKitComponent { .. }
-            | C::ImportSvg { .. } => {
+            | C::ImportSvg { .. }
+            | C::UpsertComponent { .. }
+            | C::UpsertScreen { .. } => {
                 self.removes |= matches!(
                     command,
-                    C::ReplaceNode { .. }
+                    C::UpsertComponent { .. }
+                        | C::UpsertScreen { .. }
+                        | C::ReplaceNode { .. }
                         | C::ReplaceSubtree { .. }
                         | C::InsertSubtree { .. }
                         | C::BatchInsert { .. }

@@ -14,6 +14,7 @@ mod catalog;
 mod forward;
 #[path = "auxiliary/lifecycle.rs"]
 mod lifecycle;
+mod upsert;
 mod variable_rewrite;
 pub(super) use forward::Label as ForwardLabel;
 #[path = "auxiliary/page_catalog.rs"]
@@ -23,6 +24,7 @@ pub(super) use page_catalog::{AddedPage, PreparedPageCatalog};
 mod plan;
 #[derive(Debug)]
 pub(super) enum Target {
+    Upsert(upsert::Pending),
     VariableRewrite(variable_rewrite::Pending),
     Bulk(bulk::Pending),
     Lifecycle(lifecycle::Pending),
@@ -50,6 +52,7 @@ pub(super) struct Pending {
 }
 #[derive(Debug, Clone, PartialEq)]
 pub(super) enum Patch {
+    ConversionUnit(bulk::conversion::Patch),
     VariableRewrite(variable_rewrite::Patch),
     Bulk(bulk::Patch),
     Catalog(catalog::Patch),
@@ -67,12 +70,16 @@ pub(super) enum Patch {
     },
 }
 pub(crate) fn supports(command: &C) -> bool {
-    variable_rewrite::supports(command)
+    upsert::supports(command)
+        || variable_rewrite::supports(command)
         || bulk::supports(command)
         || lifecycle::supports(command)
         || plan::supports(command)
 }
 pub(crate) fn forecast(state: &EditorState, command: &C) -> Option<(usize, bool)> {
+    if upsert::supports(command) {
+        return upsert::forecast(state, command).map(|bytes| (bytes, false));
+    }
     if variable_rewrite::supports(command) {
         return variable_rewrite::forecast(state, command).map(|bytes| (bytes, false));
     }
@@ -89,6 +96,17 @@ impl Pending {
         state: &EditorState,
         command: &C,
     ) -> Option<(Self, Vec<Scope>, bool, Vec<super::TargetSpec>)> {
+        if upsert::supports(command) {
+            let plan = upsert::Pending::capture(state, command)?;
+            return Some((
+                Self {
+                    value: Target::Upsert(plan.pending),
+                },
+                plan.scopes,
+                false,
+                plan.targets,
+            ));
+        }
         if variable_rewrite::supports(command) {
             let plan = variable_rewrite::Pending::capture(state, command)?;
             return Some((
@@ -154,6 +172,7 @@ impl Pending {
     }
     pub(super) fn matches_header(&self, doc: &jian_ops_schema::PenDocument) -> bool {
         match &self.value {
+            Target::Upsert(value) => value.matches_header(doc),
             Target::VariableRewrite(value) => value.matches_header(doc),
             Target::Bulk(value) => value.matches_header(doc),
             Target::Variable {
@@ -175,6 +194,7 @@ impl Pending {
     }
     pub(super) fn request_matches(&self, command: &C) -> bool {
         match (&self.value, command) {
+            (Target::Upsert(pending), command) => pending.request_matches(command),
             (Target::VariableRewrite(pending), command) => pending.request_matches(command),
             (Target::Bulk(pending), command) => pending.request_matches(command),
             (Target::Lifecycle(pending), command) => pending.request_matches(command),
@@ -200,6 +220,7 @@ impl Pending {
     pub(super) fn matches(&self, state: &EditorState) -> bool {
         self.matches_header(&state.doc)
             && match &self.value {
+                Target::Upsert(pending) => pending.matches(state),
                 Target::VariableRewrite(pending) => pending.matches(state),
                 Target::Bulk(pending) => pending.matches(state),
                 Target::Lifecycle(pending) => pending.matches(state),
@@ -219,6 +240,7 @@ impl Pending {
     }
     pub(super) fn compact(self, state: &EditorState) -> Result<Option<Patch>, ScopedHistoryError> {
         Ok(match self.value {
+            Target::Upsert(_) => return Err(ScopedHistoryError::DocumentHeaderChanged),
             Target::VariableRewrite(pending) => pending.compact(state)?.map(Patch::VariableRewrite),
             Target::Bulk(pending) => pending.compact(state)?.map(Patch::Bulk),
             Target::Lifecycle(pending) => pending.compact(state)?.map(Patch::Catalog),
@@ -285,17 +307,22 @@ impl Patch {
     pub(super) fn changes_document_outside_nodes(&self) -> bool {
         matches!(
             self,
-            Self::VariableRewrite(_) | Self::Bulk(_) | Self::Variable(_) | Self::Page { .. }
+            Self::ConversionUnit(_)
+                | Self::VariableRewrite(_)
+                | Self::Bulk(_)
+                | Self::Variable(_)
+                | Self::Page { .. }
         )
     }
     pub(super) fn is_header(&self) -> bool {
         matches!(
             self,
-            Self::VariableRewrite(_) | Self::Bulk(_) | Self::Variable(_)
+            Self::ConversionUnit(_) | Self::VariableRewrite(_) | Self::Bulk(_) | Self::Variable(_)
         )
     }
     pub(super) fn actor_safe(&self) -> bool {
         match self {
+            Self::ConversionUnit(patch) => patch.actor_safe(),
             Self::VariableRewrite(patch) => patch.actor_safe(),
             Self::Bulk(patch) => patch.actor_safe(),
             Self::Variable(map) => map.actor_safe(),
@@ -305,6 +332,10 @@ impl Patch {
     }
     pub(super) fn actor_conflicts(&self, other: &Self) -> bool {
         match (self, other) {
+            (Self::ConversionUnit(a), Self::ConversionUnit(b)) => a.conflicts(b),
+            (Self::ConversionUnit(a), Self::Bulk(b)) | (Self::Bulk(b), Self::ConversionUnit(a)) => {
+                b.conflicts_unit(a)
+            }
             (Self::VariableRewrite(a), Self::VariableRewrite(b)) => a.conflicts(b),
             (Self::VariableRewrite(a), Self::Variable(b))
             | (Self::Variable(b), Self::VariableRewrite(a)) => a.variables().actor_conflicts(b),
@@ -345,6 +376,7 @@ impl Patch {
     pub(super) fn storage_bytes(&self) -> usize {
         mem::size_of::<Self>()
             + match self {
+                Self::ConversionUnit(patch) => patch.bytes(),
                 Self::VariableRewrite(patch) => patch.bytes(),
                 Self::Bulk(patch) => patch.bytes(),
                 Self::Variable(map) => map.storage_bytes(),
@@ -379,6 +411,12 @@ impl Prepared {
             catalogs.push(None);
             indices.push(match patch {
                 Patch::Catalog(_) => unreachable!(),
+                Patch::ConversionUnit(patch) => {
+                    if !patch.validate(&state.doc, actor) {
+                        return Err(ScopedHistoryError::DocumentHeaderChanged);
+                    }
+                    None
+                }
                 Patch::VariableRewrite(patch) => {
                     if !patch.validate(state, actor) {
                         return Err(ScopedHistoryError::DocumentHeaderChanged);
@@ -435,6 +473,7 @@ impl Prepared {
     pub(super) fn exchange(self, state: &mut EditorState, patches: &mut [Patch]) {
         for ((patch, index), catalog) in patches.iter_mut().zip(self.indices).zip(self.catalogs) {
             match patch {
+                Patch::ConversionUnit(patch) => patch.exchange(&mut state.doc),
                 Patch::VariableRewrite(patch) => patch.exchange(state),
                 Patch::Bulk(patch) => patch.exchange(state),
                 Patch::Catalog(patch) => catalog
@@ -459,6 +498,7 @@ impl Prepared {
 impl Patch {
     pub(super) fn cohort_live_bound(&self, state: &EditorState, limit: usize) -> Option<usize> {
         match self {
+            Self::ConversionUnit(patch) => patch.live_bound(&state.doc, limit),
             Self::VariableRewrite(patch) => patch.live_bound(state, limit),
             Self::Bulk(patch) => patch.cohort_live_bound(state, limit),
             Self::Catalog(patch) => patch.cohort_live_bound(state, limit),
@@ -481,6 +521,43 @@ impl Patch {
                     return None;
                 }
                 crate::history_snapshot::command_capture_value_bytes(&component.name, limit).ok()
+            }
+        }
+    }
+}
+
+impl Pending {
+    pub(super) fn is_upsert(&self) -> bool {
+        matches!(self.value, Target::Upsert(_))
+    }
+    pub(super) fn apply_upsert(&mut self, state: &mut EditorState, command: &C) -> Option<bool> {
+        match &mut self.value {
+            Target::Upsert(pending) => Some(pending.apply(state, command)),
+            _ => None,
+        }
+    }
+    pub(super) fn prepare_page(
+        &self,
+        state: &EditorState,
+        snapshot: &mut super::ScopedEditorSnapshot,
+    ) -> Result<(), ScopedHistoryError> {
+        if let Target::Upsert(pending) = &self.value {
+            pending.prepare_page(state, snapshot)?;
+        }
+        Ok(())
+    }
+    pub(super) fn compact_into(
+        self,
+        state: &EditorState,
+        patches: &mut Vec<Patch>,
+    ) -> Result<(), ScopedHistoryError> {
+        match self.value {
+            Target::Upsert(pending) => pending.compact(state, patches),
+            value => {
+                if let Some(patch) = (Self { value }).compact(state)? {
+                    patches.push(patch);
+                }
+                Ok(())
             }
         }
     }

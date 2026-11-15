@@ -30,7 +30,7 @@ pub const COMPONENTS_PAGE_NAME: &str = "Components";
 
 /// Build a bare page with id / name / children. State + lifecycle
 /// default to `None`.
-fn make_page(id: String, name: String, children: Vec<PenNode>) -> PenPage {
+pub(crate) fn make_page(id: String, name: String, children: Vec<PenNode>) -> PenPage {
     PenPage {
         id,
         name,

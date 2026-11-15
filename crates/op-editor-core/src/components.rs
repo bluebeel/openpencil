@@ -325,6 +325,28 @@ impl ComponentLibrary {
         }
     }
 
+    /// A prepared canonical placement already owns the exact route. Validate
+    /// its final identity instead of walking every unrelated page again.
+    pub(crate) fn register_document_component_at(
+        &mut self,
+        doc: &PenDocument,
+        id: NodeId,
+        name: String,
+        location: DocumentNodeLocation,
+    ) -> bool {
+        let Some(root) = resolve_document_location(doc, &location, id.as_str()) else {
+            return false;
+        };
+        self.insert_document_backed(
+            Component {
+                id,
+                name,
+                root: shallow_root(root),
+            },
+            location,
+        );
+        true
+    }
     pub(crate) fn register_document_component(
         &mut self,
         doc: &PenDocument,

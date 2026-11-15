@@ -31,6 +31,7 @@ mod metadata_changes;
 mod pages;
 mod patch;
 mod ref_target;
+mod restore;
 mod splice;
 mod splice_exchange;
 mod splice_identity;
@@ -40,6 +41,7 @@ mod topology;
 mod topology_move;
 mod topology_parent;
 mod topology_wrap;
+mod upsert_lifecycle;
 mod variable_refs;
 pub(crate) use splice::payload_bound as structural_payload_bound;
 pub(crate) use splice::SpliceSpec;
@@ -326,46 +328,6 @@ impl PendingScopedSnapshot {
     pub(crate) fn revision(&self) -> u64 {
         self.metadata.revision
     }
-    pub(crate) fn restore(&mut self, state: &mut EditorState) -> Result<(), ScopedHistoryError> {
-        self.metadata.validate_shape(state)?;
-        for forest in mem::take(&mut self.forests) {
-            match forest {
-                CapturedForest::Root(nodes) => state.doc.children = nodes,
-                CapturedForest::Regions(regions) => regions.restore(state)?,
-                CapturedForest::Page { index, page } => {
-                    state.doc.pages.as_mut().unwrap()[index] = page
-                }
-            }
-        }
-        targets::restore(state, std::mem::take(&mut self.targets))?;
-        if let Some(clones) = self.clones.take() {
-            clones.restore(state)?;
-        }
-        if let Some(boolean) = self.boolean.take() {
-            boolean.restore(state)?;
-        }
-        if let Some(deletion) = self.deletion.take() {
-            deletion.restore(state)?;
-        }
-        if let Some(auxiliary) = self.auxiliary.take() {
-            auxiliary.restore(state)?;
-        }
-        if let Some(header) = self.header.take() {
-            header.restore(&mut state.doc);
-        }
-        state.selection = self.metadata.selection.clone();
-        state.ui.active_page_index = self.metadata.active_page_index;
-        if self.metadata.captures_components {
-            state.components = self.metadata.components.materialize();
-        }
-        state.app_state_owner = self.metadata.app_state_owner.clone();
-        state.ui.variables.fill_refs = self.metadata.fill_refs.clone();
-        state.ui.variables.stroke_refs = self.metadata.stroke_refs.clone();
-        state.editor_ui.preserve_authored_geometry = self.metadata.preserve_authored_geometry;
-        state.revision = self.metadata.revision;
-        state.sync_dirty_flag();
-        Ok(())
-    }
     pub(crate) fn capture(state: &EditorState, scopes: Vec<Scope>, capture_header: bool) -> Self {
         Self::capture_with_components(state, scopes, capture_header, true)
     }
@@ -425,6 +387,7 @@ impl PendingScopedSnapshot {
         mut self,
         state: &EditorState,
     ) -> Result<ScopedEditorSnapshot, ScopedHistoryError> {
+        self.prepare_upsert_compaction(state)?;
         self.metadata.validate_shape(state)?;
         for forest in self.forests {
             let (scope, old) = match forest {
@@ -472,9 +435,7 @@ impl PendingScopedSnapshot {
             }
         }
         if let Some(auxiliary) = self.auxiliary.take() {
-            if let Some(patch) = auxiliary.compact(state)? {
-                self.metadata.auxiliary_patches.push(patch);
-            }
+            auxiliary.compact_into(state, &mut self.metadata.auxiliary_patches)?;
         }
         self.metadata.header = self.header.map(|header| header.compact(&state.doc));
         let components_unchanged = !self.metadata.captures_components || self.targeted || {

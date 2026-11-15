@@ -1,3 +1,5 @@
+mod prepared_upsert;
+pub(crate) use prepared_upsert::{Destination as UpsertDestination, PreparedUpsert};
 use std::collections::{BTreeMap, HashSet};
 
 use jian_ops_schema::conversion::{ConversionEntry, ConversionKind, ConversionSpec};

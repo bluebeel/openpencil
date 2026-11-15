@@ -578,6 +578,8 @@ impl EditorState {
                         pending
                             .apply_metadata_direct(self, &command, prepared)
                             .expect("single freshly prepared metadata target")
+                    } else if let Some(applied) = pending.apply_prepared_upsert(self, &command) {
+                        applied
                     } else if let Some(applied) = pending.apply_topology(self) {
                         applied
                     } else if let EditorCommand::Batch { commands } = command {

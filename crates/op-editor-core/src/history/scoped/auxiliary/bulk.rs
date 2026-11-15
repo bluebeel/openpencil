@@ -2,7 +2,7 @@
 use super::{exact, EditorState, MapPatch, ScopedHistoryError, C};
 use jian_ops_schema::{variable::VariableDefinition, PenDocument};
 use std::{collections::BTreeMap, mem};
-mod conversion;
+pub(super) mod conversion;
 mod pins;
 mod scalar;
 type Variables = BTreeMap<String, VariableDefinition>;
@@ -319,5 +319,13 @@ impl Patch {
             .ok()?,
         )?;
         (bytes <= limit).then_some(bytes)
+    }
+}
+
+impl Patch {
+    pub(super) fn conflicts_unit(&self, other: &conversion::Patch) -> bool {
+        self.conversion
+            .as_ref()
+            .is_some_and(|value| value.conflicts(other))
     }
 }
