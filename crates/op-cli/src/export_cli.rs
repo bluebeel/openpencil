@@ -1,6 +1,8 @@
-use std::path::Path;
+use std::{
+    io::{Read, Write},
+    path::Path,
+};
 
-use base64::Engine as _;
 use serde_json::{value::RawValue, Value};
 
 use crate::cli_error::CliError;
@@ -130,16 +132,29 @@ pub(crate) fn write_export_response(response: &str, output: &Path) -> Result<Str
         .get("bytes_base64")
         .and_then(|raw| raw_text(raw))
         .ok_or_else(|| CliError::Payload("export_item response is missing bytes_base64".into()))?;
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(encoded.as_bytes())
-        .map_err(|error| {
-            CliError::Payload(format!("export_item returned invalid Base64: {error}"))
-        })?;
-    std::fs::write(output, bytes).map_err(|error| {
-        CliError::Io(format!(
-            "cannot write export to {}: {error}",
-            output.display()
-        ))
+    // Decode directly into a sibling output with bounded scratch storage. A
+    // corrupt tail, I/O failure or failed rename leaves the old output intact.
+    crate::atomic_save::write_path_atomically(output, |writer| {
+        let mut decoder = base64::read::DecoderReader::new(
+            encoded.as_bytes(),
+            &base64::engine::general_purpose::STANDARD,
+        );
+        let mut decoded = [0_u8; 48 * 1024];
+        loop {
+            let count = decoder.read(&mut decoded).map_err(|error| {
+                CliError::Payload(format!("export_item returned invalid Base64: {error}"))
+            })?;
+            if count == 0 {
+                break;
+            }
+            writer.write_all(&decoded[..count]).map_err(|error| {
+                CliError::Io(format!(
+                    "cannot write export to {}: {error}",
+                    output.display()
+                ))
+            })?;
+        }
+        Ok(())
     })?;
 
     let text_field = |name| {

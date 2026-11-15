@@ -72,14 +72,21 @@ pub(crate) fn write_atomically<T>(
     requested: &str,
     write: impl FnOnce(&mut BufWriter<File>) -> Result<T, CliError>,
 ) -> Result<T, CliError> {
-    let destination = Path::new(requested);
+    write_path_atomically(Path::new(requested), write)
+}
+
+pub(crate) fn write_path_atomically<T>(
+    destination: &Path,
+    write: impl FnOnce(&mut BufWriter<File>) -> Result<T, CliError>,
+) -> Result<T, CliError> {
+    let requested = destination.to_string_lossy();
     let (mut temporary, file) =
-        create_sibling(destination).map_err(|e| write_error(requested, e))?;
+        create_sibling(destination).map_err(|e| write_error(&requested, e))?;
     let mut output = BufWriter::with_capacity(64 * 1024, file);
     let result = write(&mut output)?;
-    output.flush().map_err(|e| write_error(requested, e))?;
+    output.flush().map_err(|e| write_error(&requested, e))?;
     drop(output);
-    std::fs::rename(&temporary.0, destination).map_err(|e| write_error(requested, e))?;
+    std::fs::rename(&temporary.0, destination).map_err(|e| write_error(&requested, e))?;
     temporary.0.clear();
     Ok(result)
 }
@@ -96,6 +103,7 @@ pub(crate) fn write_document(
             document,
             &jian_ops_schema::image_thumbs::capture_snapshot(),
         )
+        .map(|_| ())
         .map_err(|error| {
             if error.is_io() {
                 CliError::Io(format!("write {requested:?}: {error}"))

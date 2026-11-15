@@ -55,11 +55,10 @@ impl McpTool for GetNodeChildren {
             return ToolOutcome::Err(ToolErrorCode::ToolFailed, format!("node {id} not found"));
         }
         // Empty children + known id ⇒ count=0 (NOT an error).
-        let empty: Vec<ChildRecord> = Vec::new();
-        let records: &Vec<ChildRecord> = self.children.get(id).unwrap_or(&empty);
+        let records = self.children.get(id).map(Vec::as_slice).unwrap_or_default();
         let mut out = BTreeMap::new();
         out.insert("count".into(), records.len().to_string());
-        let ids: Vec<String> = records.iter().map(|r| r.id.to_string()).collect();
+        let ids: Vec<&str> = records.iter().map(|r| r.id.as_str()).collect();
         out.insert("ids".into(), ids.join(","));
         for (i, rec) in records.iter().enumerate() {
             let prefix = format!("child_{i}");
