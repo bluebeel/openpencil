@@ -33,8 +33,8 @@
 //! Each catalog entry is a raw descriptor string such as
 //! `{"name":"batch_design","description":"...","inputSchema":{...}}`.
 //! Name and description are extracted with `parser::extract_string_field`
-//! — the same hand-rolled extractor used throughout op-mcp — so this
-//! module stays serde-free.
+//! using the borrowed envelope parser, so nested schema fields cannot shadow
+//! top-level names and escaped descriptions are searched as decoded text.
 
 use std::collections::{BTreeMap, HashSet};
 
@@ -111,7 +111,7 @@ fn keyword_search<'a>(catalog: &[&'a str], query: &str, max: usize) -> Vec<&'a s
         let desc = extract_string_field(descriptor, "description").unwrap_or_default();
         let name_lower = name.to_ascii_lowercase();
         let desc_lower = desc.to_ascii_lowercase();
-        let parts = split_tool_name_parts(&name_lower);
+        let parts = split_tool_name_parts(&name, &name_lower);
 
         let mut score: u32 = 0;
         for term in &terms {
@@ -152,26 +152,32 @@ fn keyword_search<'a>(catalog: &[&'a str], query: &str, max: usize) -> Vec<&'a s
         .collect()
 }
 
-/// Split a lowercase tool name into searchable parts.
-///
-/// Underscore-separated names (`batch_design`, `insert_node`) split on `_`.
-/// CamelCase names (`BatchDesign`) split on lowercase-to-uppercase transitions.
-fn split_tool_name_parts(name_lower: &str) -> Vec<&str> {
-    // Underscore-separated (most op-mcp tools).
-    if name_lower.contains('_') {
-        return name_lower.split('_').filter(|s| !s.is_empty()).collect();
+/// Split snake_case and CamelCase names, borrowing slices from the existing
+/// ASCII-lowered name. ASCII case conversion preserves every UTF-8 boundary.
+fn split_tool_name_parts<'a>(original: &str, lower: &'a str) -> Vec<&'a str> {
+    let bytes = original.as_bytes();
+    let mut parts = Vec::new();
+    let mut start = 0;
+    for (index, &byte) in bytes.iter().enumerate() {
+        if byte == b'_' {
+            if start < index {
+                parts.push(&lower[start..index]);
+            }
+            start = index + 1;
+        } else if index > start
+            && byte.is_ascii_uppercase()
+            && (bytes[index - 1].is_ascii_lowercase()
+                || (bytes[index - 1].is_ascii_uppercase()
+                    && bytes.get(index + 1).is_some_and(u8::is_ascii_lowercase)))
+        {
+            parts.push(&lower[start..index]);
+            start = index;
+        }
     }
-    // CamelCase split: insert a split point before each run of a capital
-    // letter that follows a lowercase letter (already lowered, so we detect
-    // transitions via the original chars — we work on the lowered string
-    // but detect positions by looking at the original name lengths being
-    // equal, so just split on underscores if present, otherwise treat as
-    // a single part for snake_case-free tool names like "ToolSearch").
-    //
-    // For names already in lowercase without underscores (e.g. schema
-    // entries whose "name" is already snake_case with underscores handled
-    // above), return as a single part.
-    vec![name_lower]
+    if start < lower.len() {
+        parts.push(&lower[start..]);
+    }
+    parts
 }
 
 /// `true` if `term` appears in `haystack` flanked by non-word characters
