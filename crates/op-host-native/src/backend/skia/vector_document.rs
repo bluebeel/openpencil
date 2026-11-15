@@ -26,3 +26,12 @@ impl NativeBackend {
         paint()
     }
 }
+
+/// The caller already owns a save/restore scope and will draw only this exact
+/// rectangle. PDF runtime-shader fallback otherwise shades the entire page
+/// clip for each small shadow. Native/PNG sampling remains unchanged.
+pub(super) fn clip_shader_draw(canvas: &skia_safe::Canvas, bounds: &skia_safe::Rect) {
+    if is_pdf() && bounds.is_finite() && !bounds.is_empty() {
+        canvas.clip_rect(bounds, skia_safe::ClipOp::Intersect, false);
+    }
+}

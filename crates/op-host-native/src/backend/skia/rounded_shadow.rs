@@ -87,6 +87,7 @@ impl NativeBackend {
         } else {
             bounds.with_outset((shadow.blur.max(0.0), shadow.blur.max(0.0)))
         };
+        super::vector_document::clip_shader_draw(canvas, &draw_bounds);
         let drawn = jian_skia::triangular_shadow::draw(
             canvas,
             &jian_skia::triangular_shadow::RoundedShadowDraw {

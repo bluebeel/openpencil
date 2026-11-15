@@ -35,6 +35,12 @@ impl NativeBackend {
             let (bounds, corners) = shape
                 .map(|(r, c)| (to_sk_rect(r), c))
                 .unwrap_or((skia_safe::Rect::new_empty(), [0.0; 4]));
+            let draw_bounds = if shadow.inner {
+                to_sk_rect(rect).with_outset((1.0, 1.0))
+            } else {
+                bounds.with_outset((shadow.blur, shadow.blur))
+            };
+            super::vector_document::clip_shader_draw(canvas, &draw_bounds);
             let drawn = jian_skia::triangular_corner_shadow::draw(
                 canvas,
                 &jian_skia::triangular_corner_shadow::CornerShadowDraw {
@@ -43,11 +49,7 @@ impl NativeBackend {
                     blur: shadow.blur,
                     color: jian_color_to_color4f(shadow.color),
                     inner: shadow.inner,
-                    draw_bounds: if shadow.inner {
-                        to_sk_rect(rect).with_outset((1.0, 1.0))
-                    } else {
-                        bounds.with_outset((shadow.blur, shadow.blur))
-                    },
+                    draw_bounds,
                 },
             );
             canvas.restore_to_count(saved);
