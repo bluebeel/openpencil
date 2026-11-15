@@ -12,11 +12,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use serde::Deserialize;
 use serde_json::Value;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::protocol::{
-    classify_inbound, Inbound, JsonRpcError, JsonRpcRequest, JsonRpcResponse,
+    classify_inbound_owned, Inbound, JsonRpcError, JsonRpcRequest, JsonRpcResponse,
     RequestPermissionParams, SessionNotification, METHOD_REQUEST_PERMISSION, METHOD_SESSION_UPDATE,
 };
 use crate::types::AcpError;
@@ -34,6 +35,24 @@ pub const NOTIFICATION_CAPACITY: usize = 1024;
 
 /// Map of in-flight request id → response waiter.
 type Pending = Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value, AcpError>>>>>;
+
+/// Registration ownership follows the request future, including cancellation
+/// during enqueue or response wait. Late replies are discarded, never replayed.
+struct PendingCall<'a> {
+    pending: &'a Mutex<HashMap<u64, oneshot::Sender<Result<Value, AcpError>>>>,
+    id: u64,
+}
+
+impl Drop for PendingCall<'_> {
+    fn drop(&mut self) {
+        let waiter = self
+            .pending
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&self.id);
+        drop(waiter);
+    }
+}
 
 /// Non-blocking enqueue for the reader task. Awaiting here would deadlock the
 /// reader against the queues whose responses it must continue dispatching.
@@ -87,14 +106,8 @@ impl JsonRpcEngine {
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             failure.get_or_insert(error).clone()
         };
-        let waiters: Vec<_> = self
-            .pending
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .drain()
-            .map(|(_, waiter)| waiter)
-            .collect();
-        for waiter in waiters {
+        let waiters = std::mem::take(&mut *self.pending.lock().unwrap_or_else(|p| p.into_inner()));
+        for (_, waiter) in waiters {
             let _ = waiter.send(Err(error.clone()));
         }
     }
@@ -127,37 +140,31 @@ impl JsonRpcEngine {
             return Err(error);
         }
         let deadline = tokio::time::Instant::now() + timeout;
-        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let id = self
+            .next_id
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+            .map_err(|_| AcpError::Protocol("ACP request id space exhausted".into()))?;
         let (tx, rx) = oneshot::channel();
         self.pending
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .insert(id, tx);
+        let _registration = PendingCall {
+            pending: &self.pending,
+            id,
+        };
         if let Some(error) = self.current_failure() {
-            self.pending
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .remove(&id);
             return Err(error);
         }
 
-        let req = JsonRpcRequest::new(id, method, params);
-        let frame = serde_json::to_value(&req).map_err(|e| AcpError::Protocol(e.to_string()))?;
-        let forget = || {
-            self.pending
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .remove(&id);
-        };
+        let frame = JsonRpcRequest::new(id, method, params).into_value();
         match tokio::time::timeout_at(deadline, self.out_tx.send(frame)).await {
             Ok(Ok(())) => {}
             // The writer task dropped the receiver — connection died.
             Ok(Err(_)) => {
-                forget();
                 return Err(AcpError::Closed);
             }
             Err(_) => {
-                forget();
                 return Err(AcpError::Transport(format!(
                     "request '{method}' timed out queueing for the agent"
                 )));
@@ -168,10 +175,7 @@ impl JsonRpcEngine {
             Ok(Ok(result)) => result,
             // The reader task dropped the sender — connection died.
             Ok(Err(_)) => Err(AcpError::Closed),
-            Err(_) => {
-                forget();
-                Err(AcpError::Transport(format!("request '{method}' timed out")))
-            }
+            Err(_) => Err(AcpError::Transport(format!("request '{method}' timed out"))),
         }
     }
 
@@ -187,12 +191,12 @@ impl JsonRpcEngine {
         if let Some(error) = self.current_failure() {
             return Err(error);
         }
-        let frame = serde_json::json!({
-            "jsonrpc": "2.0",
-            "method": method,
-            "params": params,
-        });
-        match tokio::time::timeout(timeout, self.out_tx.send(frame)).await {
+        let deadline = tokio::time::Instant::now() + timeout;
+        let mut frame = serde_json::Map::new();
+        frame.insert("jsonrpc".into(), Value::String("2.0".into()));
+        frame.insert("method".into(), Value::String(method.into()));
+        frame.insert("params".into(), params);
+        match tokio::time::timeout_at(deadline, self.out_tx.send(Value::Object(frame))).await {
             Ok(Ok(())) => match self.current_failure() {
                 Some(error) => Err(error),
                 None => Ok(()),
@@ -209,7 +213,7 @@ impl JsonRpcEngine {
 /// request. If the agent offers no allow choice, cancel instead of inventing
 /// an option id that was never advertised.
 pub fn auto_approve_permission(params: &Value) -> Value {
-    let parsed: RequestPermissionParams = serde_json::from_value(params.clone())
+    let parsed: RequestPermissionParams = RequestPermissionParams::deserialize(params)
         .unwrap_or(RequestPermissionParams { options: vec![] });
     let chosen = parsed.options.iter().find(|o| {
         matches!(o.kind.as_deref(), Some("allow_once") | Some("allow_always"))
@@ -265,7 +269,7 @@ fn validate_envelope(value: &Value) -> Result<(), AcpError> {
             "JSON-RPC response must contain exactly one of result or error".into(),
         ));
     }
-    if has_error && serde_json::from_value::<JsonRpcError>(object["error"].clone()).is_err() {
+    if has_error && JsonRpcError::deserialize(&object["error"]).is_err() {
         return Err(AcpError::Protocol(
             "JSON-RPC response contains an invalid error object".into(),
         ));
@@ -279,13 +283,13 @@ fn dispatch_one(
     notif_tx: &mpsc::Sender<SessionNotification>,
 ) -> Result<Option<Value>, AcpError> {
     validate_envelope(&value)?;
-    match classify_inbound(&value) {
+    match classify_inbound_owned(value) {
         Inbound::Response { id, result, error } => {
-            if let Some(tx) = pending
+            let waiter = pending
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .remove(&id)
-            {
+                .unwrap_or_else(|p| p.into_inner())
+                .remove(&id);
+            if let Some(tx) = waiter {
                 let resolved = match error {
                     Some(error) => Err(AcpError::Rpc {
                         code: error.code,

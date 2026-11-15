@@ -15,17 +15,13 @@ use crate::protocol::{ContentBlock, SessionNotification, SessionUpdate};
 /// — ACP places the text under `content[].content.text`.
 fn extract_tool_error(content: &Value) -> Option<String> {
     let blocks = content.as_array()?;
-    let mut found: Option<String> = None;
-    for block in blocks {
-        if let Some(text) = block
+    blocks.iter().rev().find_map(|block| {
+        block
             .get("content")
-            .and_then(|c| c.get("text"))
-            .and_then(|t| t.as_str())
-        {
-            found = Some(text.to_string());
-        }
-    }
-    found
+            .and_then(|content| content.get("text"))
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+    })
 }
 
 /// Map one ACP session-update notification to a [`ChatDelta`], or

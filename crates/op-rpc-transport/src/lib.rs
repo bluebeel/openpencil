@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::io::{Read, Write};
+use std::io::{IoSlice, Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::time::Duration;
 
@@ -28,6 +28,18 @@ impl JsonRpcRequest {
             method: method.to_string(),
             params,
         }
+    }
+
+    /// Build an owned envelope without serializing and rebuilding `params`.
+    pub fn into_value(self) -> Value {
+        let mut object = serde_json::Map::new();
+        object.insert("jsonrpc".into(), Value::String(self.jsonrpc.into()));
+        object.insert("id".into(), self.id.into());
+        object.insert("method".into(), Value::String(self.method));
+        if !self.params.is_null() {
+            object.insert("params".into(), self.params);
+        }
+        Value::Object(object)
     }
 }
 
@@ -115,7 +127,7 @@ pub fn classify_inbound(value: &Value) -> Inbound {
                 result: obj.get("result").cloned(),
                 error: obj
                     .get("error")
-                    .and_then(|e| serde_json::from_value(e.clone()).ok()),
+                    .and_then(|e| JsonRpcError::deserialize(e).ok()),
             },
             None => Inbound::Unknown,
         },
@@ -123,14 +135,52 @@ pub fn classify_inbound(value: &Value) -> Inbound {
     }
 }
 
-pub fn correlate(value: &Value, expected_id: u64) -> Option<Result<Value, JsonRpcError>> {
-    match classify_inbound(value) {
-        Inbound::Response { id, result, error } if id == expected_id => Some(match error {
-            Some(error) => Err(error),
-            None => Ok(result.unwrap_or(Value::Null)),
-        }),
-        _ => None,
+/// Classify an already-owned frame while moving its potentially large payloads.
+/// This has the same permissive classification rules as `classify_inbound`;
+/// protocol-specific validation remains the caller's responsibility.
+pub fn classify_inbound_owned(value: Value) -> Inbound {
+    let Value::Object(mut object) = value else {
+        return Inbound::Unknown;
+    };
+    if let Some(method) = object.remove("method") {
+        let method = match method {
+            Value::String(method) => method,
+            _ => String::new(),
+        };
+        let params = object.remove("params").unwrap_or(Value::Null);
+        return match object.remove("id") {
+            Some(id) if !id.is_null() => Inbound::Request { id, method, params },
+            _ => Inbound::Notification { method, params },
+        };
     }
+    let Some(id) = object.get("id").and_then(Value::as_u64) else {
+        return Inbound::Unknown;
+    };
+    Inbound::Response {
+        id,
+        result: object.remove("result"),
+        error: object
+            .remove("error")
+            .and_then(|error| serde_json::from_value(error).ok()),
+    }
+}
+
+pub fn correlate(value: &Value, expected_id: u64) -> Option<Result<Value, JsonRpcError>> {
+    // Check correlation before cloning a result: unrelated notifications and
+    // responses can carry complete documents or image payloads.
+    let object = value.as_object()?;
+    if object.contains_key("method") || object.get("id").and_then(Value::as_u64)? != expected_id {
+        return None;
+    }
+    Some(
+        match object
+            .get("error")
+            .and_then(|error| JsonRpcError::deserialize(error).ok())
+        {
+            Some(error) => Err(error),
+            None => Ok(object.get("result").cloned().unwrap_or(Value::Null)),
+        },
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -217,20 +267,28 @@ impl TcpJsonRpc {
         self
     }
 
+    fn http_post_header(&self, body_len: usize) -> String {
+        use std::fmt::Write as _;
+        let mut header = String::with_capacity(self.path.len() + self.token.len() + 160);
+        let _ = write!(
+            header,
+            "POST {} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\n",
+            self.path
+        );
+        if !self.token.is_empty() {
+            let _ = write!(header, "X-OpenPencil-Token: {}\r\n", self.token);
+        }
+        let _ = write!(
+            header,
+            "Content-Length: {body_len}\r\nConnection: close\r\n\r\n"
+        );
+        header
+    }
+
     pub fn http_post_request(&self, body: &str) -> String {
-        let authorization = if self.token.is_empty() {
-            String::new()
-        } else {
-            format!("X-OpenPencil-Token: {}\r\n", self.token)
-        };
-        format!(
-            "POST {} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\n\
-             {}Content-Length: {}\r\nConnection: close\r\n\r\n{}",
-            self.path,
-            authorization,
-            body.len(),
-            body
-        )
+        let mut request = self.http_post_header(body.len());
+        request.push_str(body);
+        request
     }
 
     pub fn http_get_request(&self, path: &str) -> String {
@@ -238,14 +296,19 @@ impl TcpJsonRpc {
     }
 
     pub fn post_raw(&self, body: &str, timeout: Duration) -> Result<HttpReply, HttpTransportError> {
-        self.send(&self.http_post_request(body), timeout)
+        self.send(&self.http_post_header(body.len()), body, timeout)
     }
 
     pub fn get_raw(&self, path: &str, timeout: Duration) -> Result<HttpReply, HttpTransportError> {
-        self.send(&self.http_get_request(path), timeout)
+        self.send(&self.http_get_request(path), "", timeout)
     }
 
-    fn send(&self, request: &str, timeout: Duration) -> Result<HttpReply, HttpTransportError> {
+    fn send(
+        &self,
+        header: &str,
+        body: &str,
+        timeout: Duration,
+    ) -> Result<HttpReply, HttpTransportError> {
         let mut stream = TcpStream::connect_timeout(&self.addr, timeout).map_err(|e| {
             HttpTransportError::Connect {
                 addr: self.addr,
@@ -254,25 +317,46 @@ impl TcpJsonRpc {
         })?;
         stream.set_read_timeout(Some(timeout)).ok();
         stream.set_write_timeout(Some(timeout)).ok();
-        stream
-            .write_all(request.as_bytes())
-            .map_err(|e| HttpTransportError::Write(e.to_string()))?;
+        // Avoid a second allocation/copy of large JSON bodies while retaining
+        // one socket write when the platform accepts both vectors together.
+        let mut parts = [
+            IoSlice::new(header.as_bytes()),
+            IoSlice::new(body.as_bytes()),
+        ];
+        let mut remaining = &mut parts[..];
+        while !remaining.is_empty() {
+            match stream.write_vectored(remaining) {
+                Ok(0) => {
+                    return Err(HttpTransportError::Write(
+                        std::io::Error::from(std::io::ErrorKind::WriteZero).to_string(),
+                    ))
+                }
+                Ok(written) => IoSlice::advance_slices(&mut remaining, written),
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(error) => return Err(HttpTransportError::Write(error.to_string())),
+            }
+        }
         stream.flush().ok();
         let mut response = String::new();
         stream
             .read_to_string(&mut response)
             .map_err(|e| HttpTransportError::Read(e.to_string()))?;
-        Ok(split_http_response(&response))
+        Ok(split_http_response(response))
     }
 }
 
-fn split_http_response(response: &str) -> HttpReply {
-    let status = parse_status_code(response).unwrap_or(0);
-    let body = match response.split_once("\r\n\r\n") {
-        Some((_, body)) => body.trim().to_string(),
-        None => response.trim().to_string(),
-    };
-    HttpReply { status, body }
+fn split_http_response(mut response: String) -> HttpReply {
+    let status = parse_status_code(&response).unwrap_or(0);
+    let body_start = response.find("\r\n\r\n").map_or(0, |index| index + 4);
+    let body = &response[body_start..];
+    let leading = body.len() - body.trim_start().len();
+    let end = body_start + leading + body.trim().len();
+    response.truncate(end);
+    response.drain(..body_start + leading);
+    HttpReply {
+        status,
+        body: response,
+    }
 }
 
 fn parse_status_code(response: &str) -> Option<u16> {

@@ -20,15 +20,24 @@ const SPAWN_BACKOFF: Duration = Duration::from_millis(20);
 /// test threads, or a user replacing an agent binary between runs); the
 /// kernel refuses to `exec` the file until that child execs, and the
 /// race clears within milliseconds. Only that error is retried, up to
-/// [`SPAWN_ATTEMPTS`] — bounded so the async caller blocks briefly.
+/// [`SPAWN_ATTEMPTS`] — the backoff yields rather than blocking a runtime worker.
 /// Every other error, and the final ETXTBSY once the budget is gone,
 /// is surfaced unchanged.
-pub(super) fn spawn_with_etxtbsy_retry(cmd: &mut Command) -> io::Result<Child> {
-    retry_etxtbsy(|| cmd.spawn())
+pub(super) async fn spawn_with_etxtbsy_retry(cmd: &mut Command) -> io::Result<Child> {
+    for attempt in 1..=SPAWN_ATTEMPTS {
+        match cmd.spawn() {
+            Err(error) if attempt < SPAWN_ATTEMPTS && is_etxtbsy(&error) => {
+                tokio::time::sleep(SPAWN_BACKOFF).await;
+            }
+            result => return result,
+        }
+    }
+    unreachable!("the final spawn attempt always returns")
 }
 
 /// Drive `spawn` against the ETXTBSY retry budget. Generic so tests can
 /// inject a fake spawner instead of reproducing the kernel race.
+#[cfg(test)]
 fn retry_etxtbsy<T>(mut spawn: impl FnMut() -> io::Result<T>) -> io::Result<T> {
     // `1..SPAWN_ATTEMPTS` retries plus this final attempt = 10 spawns.
     for _ in 1..SPAWN_ATTEMPTS {

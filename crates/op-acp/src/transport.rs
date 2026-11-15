@@ -37,6 +37,17 @@ async fn read_frame_with_limit(
             if available.is_empty() {
                 (0, false, true)
             } else if let Some(index) = available.iter().position(|byte| *byte == b'\n') {
+                if frame.is_empty() && index <= max_bytes {
+                    // Most frames fit in the buffered reader. Parse that slice
+                    // directly instead of allocating/copying another byte Vec.
+                    let result = (!available[..index].iter().all(u8::is_ascii_whitespace))
+                        .then(|| parse_frame(&available[..index]));
+                    reader.consume(index + 1);
+                    if let Some(result) = result {
+                        return result.map(Some);
+                    }
+                    continue;
+                }
                 if frame.len().saturating_add(index) > max_bytes {
                     return Err(AcpError::Protocol(format!(
                         "ACP frame exceeds {max_bytes} bytes"
@@ -66,10 +77,13 @@ async fn read_frame_with_limit(
             frame.clear();
             continue;
         }
-        return serde_json::from_slice::<Value>(&frame)
-            .map(Some)
-            .map_err(|error| AcpError::Protocol(format!("invalid ACP JSON frame: {error}")));
+        return parse_frame(&frame).map(Some);
     }
+}
+
+fn parse_frame(bytes: &[u8]) -> Result<Value, AcpError> {
+    serde_json::from_slice(bytes)
+        .map_err(|error| AcpError::Protocol(format!("invalid ACP JSON frame: {error}")))
 }
 
 /// `AsyncBufRead` is needed for `fill_buf`; re-exported so callers
@@ -82,10 +96,20 @@ pub async fn write_frame(
     writer: &mut (impl AsyncWrite + Unpin),
     value: &Value,
 ) -> Result<(), AcpError> {
-    let mut bytes = serde_json::to_vec(value).map_err(|e| AcpError::Protocol(e.to_string()))?;
+    write_frame_buffered(writer, value, &mut Vec::new()).await
+}
+
+/// Connection-owned scratch avoids reallocating each streaming message.
+pub(crate) async fn write_frame_buffered(
+    writer: &mut (impl AsyncWrite + Unpin),
+    value: &Value,
+    bytes: &mut Vec<u8>,
+) -> Result<(), AcpError> {
+    bytes.clear();
+    serde_json::to_writer(&mut *bytes, value).map_err(|e| AcpError::Protocol(e.to_string()))?;
     bytes.push(b'\n');
     writer
-        .write_all(&bytes)
+        .write_all(bytes.as_slice())
         .await
         .map_err(|e| AcpError::Transport(e.to_string()))?;
     writer
