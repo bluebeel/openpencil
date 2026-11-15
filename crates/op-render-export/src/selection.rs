@@ -90,18 +90,32 @@ pub fn export_selected_node_raster(
 ) -> Result<(), ExportError> {
     format.ensure_supported()?;
     let bounds = selection_bounds(selection)?;
-    // This API always uses Native sampling. Encode the already-painted surface
-    // straight into the existing atomic sibling writer instead of allocating
-    // an encoded Vec and immediately copying it back into the file API.
+    export_selected_node_in_viewport(selection, target, bounds, format, scale, margin)
+}
+
+pub(crate) fn export_selected_node_in_viewport(
+    selection: &SceneSelection<'_>,
+    target: &Path,
+    viewport: Rect,
+    format: RasterFormat,
+    scale: f32,
+    margin: f32,
+) -> Result<(), ExportError> {
+    format.ensure_supported()?;
+    if !selection.is_visible() {
+        return Err(ExportError::NodeHidden {
+            node_id: selection.node().id.clone(),
+        });
+    }
     let scale = crate::raster_scale(scale);
     let margin = margin.max(0.0);
     let cull = Rect::xywh(
-        bounds.origin.x - margin,
-        bounds.origin.y - margin,
-        bounds.size.x + margin * 2.0,
-        bounds.size.y + margin * 2.0,
+        viewport.origin.x - margin,
+        viewport.origin.y - margin,
+        viewport.size.x + margin * 2.0,
+        viewport.size.y + margin * 2.0,
     );
-    crate::render_raster(bounds, target, format, scale, margin, |canvas| {
+    crate::render_raster(viewport, target, format, scale, margin, |canvas| {
         crate::scene_painter::paint_selection(canvas, selection, cull)
     })
 }

@@ -200,6 +200,12 @@ impl ConnectionDriver {
         self.outbound_queue.len() + usize::from(self.outbound.is_some())
     }
 
+    /// Whether a latest-value update will replace an item still in the queue.
+    /// In-flight bytes are excluded: they can no longer be coalesced safely.
+    pub fn has_queued_coalescing_key(&self, key: u64) -> bool {
+        self.outbound_queue.has_coalescing_key(key)
+    }
+
     /// How many items the outbound queue holds before it refuses one.
     ///
     /// Callers that mix droppable and undroppable traffic on one connection

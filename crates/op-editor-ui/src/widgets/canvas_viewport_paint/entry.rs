@@ -38,6 +38,35 @@ pub fn paint_node(
     );
 }
 
+/// Paint a borrowed topmost-first root list through the same sibling-mask and
+/// composite rules as a real scene page. No synthetic ScenePage/forest clone.
+pub fn paint_nodes(
+    cx: &mut PaintCx<'_>,
+    nodes: &[SceneNode],
+    viewport_origin: Point2D,
+    zoom: f32,
+    cull: Rect,
+) {
+    let _ = paint_scene_nodes_with_options_hiding(
+        cx,
+        nodes,
+        viewport_origin,
+        zoom,
+        None,
+        cull,
+        None,
+        None,
+        None,
+        None,
+        None,
+        0,
+        None,
+        None,
+        None,
+        false,
+    );
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn paint_node_with_options<'a>(
     cx: &mut PaintCx<'_>,
@@ -314,9 +343,13 @@ fn paint_scene_nodes_with_options_hiding_mode<'a>(
         suppress_node_composite_id: None,
         fast_interaction,
     };
-    let mut hits = PaintNodeHits::default();
-    paint_child_siblings(cx, nodes, &options, &mut Vec::new(), false, &mut hits);
-    hits
+    // Every reachable node is immutably borrowed for this complete paint.
+    // Nested public/custom paints retain with_bounds_reuse's reentry refusal.
+    super::layer_bounds::with_bounds_reuse(|| {
+        let mut hits = PaintNodeHits::default();
+        paint_child_siblings(cx, nodes, &options, &mut Vec::new(), false, &mut hits);
+        hits
+    })
 }
 
 /// Paint a resolved scene page's node tree with the editor viewport

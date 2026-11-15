@@ -89,7 +89,7 @@ impl<'a> NodeSvgBatch<'a> {
 /// carries its sentence verbatim (`to_string` so the adapter keeps working
 /// if that crate later types its own error).
 pub fn export_svg(scene: &LayoutScene, target: &StdPath) -> Result<(), ExportError> {
-    std::fs::write(target, render_svg_bytes(scene)?).map_err(|e| ExportError::Write(e.to_string()))
+    crate::encoding::write_bytes(target, &render_svg_bytes(scene)?)
 }
 
 /// Serialize one node and its subtree to an SVG file at `target`. Same
@@ -99,8 +99,7 @@ pub fn export_node_svg(
     node_id: &str,
     target: &StdPath,
 ) -> Result<(), ExportError> {
-    std::fs::write(target, render_node_svg_bytes(scene, node_id)?)
-        .map_err(|e| ExportError::Write(e.to_string()))
+    crate::encoding::write_bytes(target, &render_node_svg_bytes(scene, node_id)?)
 }
 
 #[cfg(test)]

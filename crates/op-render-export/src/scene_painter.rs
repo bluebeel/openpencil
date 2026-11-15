@@ -79,7 +79,7 @@ fn no_cull() -> Rect {
 /// shared canvas painter (images, `clip_content`, styled text runs,
 /// gradients, effects — full live-canvas semantics).
 pub fn paint_node(canvas: &Canvas, node: &SceneNode) {
-    paint_nodes(canvas, std::slice::from_ref(node));
+    with_prepared_node(node, |paint| paint(canvas));
 }
 
 /// Paint top-level page nodes in live-canvas z-order. Scene children
@@ -98,6 +98,25 @@ pub(crate) fn with_prepared_nodes<R>(
     with_prepared_draw(
         |backend| image_preparation::nodes_ready(backend, nodes),
         |backend, canvas| draw_nodes(backend, canvas, nodes),
+        action,
+    )
+}
+
+/// An isolated mask node remains ordinary paint; only a real sibling list
+/// interprets it as a mask governing its front siblings.
+pub(crate) fn with_prepared_node<R>(
+    node: &SceneNode,
+    action: impl FnOnce(&mut dyn FnMut(&Canvas)) -> R,
+) -> R {
+    with_prepared_draw(
+        |backend| image_preparation::nodes_ready(backend, std::slice::from_ref(node)),
+        |backend, canvas| {
+            let mut frame = NativeFrameBackend::new(backend, canvas);
+            let mut cx = PaintCx {
+                backend: &mut frame,
+            };
+            canvas_viewport_paint::paint_node(&mut cx, node, Point2D::ZERO, 1.0, no_cull());
+        },
         action,
     )
 }
@@ -133,9 +152,7 @@ fn draw_nodes(backend: &mut NativeBackend, canvas: &Canvas, nodes: &[SceneNode])
     let mut cx = PaintCx {
         backend: &mut frame,
     };
-    for node in nodes.iter().rev() {
-        canvas_viewport_paint::paint_node(&mut cx, node, Point2D::ZERO, 1.0, no_cull());
-    }
+    canvas_viewport_paint::paint_nodes(&mut cx, nodes, Point2D::ZERO, 1.0, no_cull());
 }
 
 struct OnDrop<F: FnOnce()>(Option<F>);

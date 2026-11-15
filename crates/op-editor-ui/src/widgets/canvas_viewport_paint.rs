@@ -68,7 +68,7 @@ mod shadow_geometry;
 mod shapes;
 
 pub use entry::{
-    paint_node, paint_scene_page, paint_scene_page_with_options,
+    paint_node, paint_nodes, paint_scene_page, paint_scene_page_with_options,
     paint_scene_page_without_video_badge,
 };
 #[allow(unused_imports)]

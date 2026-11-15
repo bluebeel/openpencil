@@ -20,7 +20,7 @@ fn io_error(error: io::Error) -> ExportError {
     ExportError::Write(error.to_string())
 }
 
-pub(super) fn write_atomic(
+pub(crate) fn write_atomic(
     target: &Path,
     encode: impl FnOnce(&mut dyn Write) -> Result<(), ExportError>,
 ) -> Result<(), ExportError> {
@@ -66,15 +66,26 @@ pub(super) fn write_atomic(
 
 // Skia returns bool for encoding. Retain the actual IO failure so disk errors
 // are not incorrectly reported as an unsupported or failed codec.
-pub(super) struct CheckedWriter<'a> {
+pub(crate) struct CheckedWriter<'a> {
     writer: &'a mut dyn Write,
     error: Option<String>,
+    written: usize,
 }
 impl<'a> CheckedWriter<'a> {
-    pub(super) fn new(writer: &'a mut dyn Write) -> Self {
+    pub(crate) fn new(writer: &'a mut dyn Write) -> Self {
         Self {
             writer,
             error: None,
+            written: 0,
+        }
+    }
+    pub(crate) fn finish_pdf(self) -> Result<(), ExportError> {
+        if let Some(error) = self.error {
+            Err(ExportError::Write(error))
+        } else if self.written == 0 {
+            Err(ExportError::PdfEncoderEmpty)
+        } else {
+            Ok(())
         }
     }
     pub(super) fn result(self, success: bool, format: RasterFormat) -> Result<(), ExportError> {
@@ -92,15 +103,24 @@ impl<'a> CheckedWriter<'a> {
 impl Write for CheckedWriter<'_> {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         let result = self.writer.write(bytes);
-        if let Err(error) = &result {
-            self.error = Some(error.to_string());
+        match &result {
+            Ok(0) if !bytes.is_empty() => {
+                self.error
+                    .get_or_insert_with(|| io::Error::from(io::ErrorKind::WriteZero).to_string());
+            }
+            Ok(written) => {
+                self.written = self.written.saturating_add(*written);
+            }
+            Err(error) => {
+                self.error.get_or_insert_with(|| error.to_string());
+            }
         }
         result
     }
     fn flush(&mut self) -> io::Result<()> {
         let result = self.writer.flush();
         if let Err(error) = &result {
-            self.error = Some(error.to_string());
+            self.error.get_or_insert_with(|| error.to_string());
         }
         result
     }

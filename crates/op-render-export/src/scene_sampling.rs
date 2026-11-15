@@ -85,14 +85,12 @@ pub fn render_scene_node_raster_bytes_with_sampling(
     let bounds = super::node_bounds(node).ok_or_else(|| ExportError::NodePaintsNothing {
         node_id: node.id.clone(),
     })?;
-    render_scene_nodes_raster_bytes(
-        std::slice::from_ref(node),
-        bounds,
-        format,
-        scale,
-        0.0,
-        sampling,
-    )
+    format.ensure_supported()?;
+    let scale = super::raster_scale(scale);
+    correlated_raster::dimensions(bounds, scale, 0.0)?;
+    super::scene_painter::with_prepared_node(node, |paint| {
+        correlated_raster::render(bounds, format, scale, 0.0, paint)
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -119,5 +117,5 @@ pub fn export_node_raster_with_viewport_and_sampling(
         })?;
     let bytes =
         super::render_selected_node_in_viewport(&selected, viewport, format, scale, 0.0, sampling)?;
-    std::fs::write(target, bytes).map_err(|error| ExportError::Write(error.to_string()))
+    super::encoding::write_bytes(target, &bytes)
 }

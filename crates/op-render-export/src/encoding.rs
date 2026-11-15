@@ -4,6 +4,15 @@ use super::{ExportError, RasterFormat};
 use skia_safe::{AlphaType, ColorType, Data, ImageInfo, Pixmap, Surface};
 
 mod file;
+pub(crate) use file::{write_atomic, CheckedWriter};
+
+pub(crate) fn write_bytes(target: &std::path::Path, bytes: &[u8]) -> Result<(), ExportError> {
+    write_atomic(target, |writer| {
+        writer
+            .write_all(bytes)
+            .map_err(|error| ExportError::Write(error.to_string()))
+    })
+}
 
 pub(super) fn write_surface(
     mut surface: Surface,

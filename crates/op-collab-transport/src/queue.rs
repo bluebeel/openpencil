@@ -158,11 +158,14 @@ impl BoundedTransferQueue {
     }
 
     pub(crate) fn replaces_queued_item(&self, item: &QueueItem) -> bool {
-        item.coalesce_key.is_some_and(|key| {
-            self.items
-                .iter()
-                .any(|queued| queued.coalesce_key == Some(key))
-        })
+        item.coalesce_key
+            .is_some_and(|key| self.has_coalescing_key(key))
+    }
+
+    pub(crate) fn has_coalescing_key(&self, key: u64) -> bool {
+        self.items
+            .iter()
+            .any(|queued| queued.coalesce_key == Some(key))
     }
 
     pub(crate) fn push(&mut self, item: QueueItem) -> Result<(), QueueError> {

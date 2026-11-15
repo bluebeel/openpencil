@@ -250,15 +250,7 @@ pub fn export_node_raster_with_viewport(
         .ok_or_else(|| ExportError::NodeNotFoundOnActivePage {
             node_id: node_id.to_owned(),
         })?;
-    let bytes = render_selected_node_in_viewport(
-        &selected,
-        viewport,
-        format,
-        scale,
-        0.0,
-        RasterSampling::Native,
-    )?;
-    std::fs::write(target, bytes).map_err(|error| ExportError::Write(error.to_string()))
+    selection::export_selected_node_in_viewport(&selected, target, viewport, format, scale, 0.0)
 }
 
 /// In-memory variant of [`export_node_raster`] — renders a single node

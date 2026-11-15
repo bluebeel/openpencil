@@ -13,6 +13,8 @@ use jian_ops_schema::node::PenNode;
 use std::collections::HashSet;
 #[path = "walker_preorder.rs"]
 mod preorder;
+#[path = "walker_mutation_routes.rs"]
+mod routes;
 #[path = "walker_stack.rs"]
 pub(crate) mod stack;
 
@@ -94,37 +96,16 @@ pub fn descendant_contains(node: &PenNode, target: &NodeId) -> bool {
 /// Remove the first node matching `target` from `children` or any
 /// descendant's children. True when something was removed.
 pub fn remove_from_children(children: &mut Vec<PenNode>, target: &NodeId) -> bool {
-    if let Some(idx) = children.iter().position(|n| n.id_str() == target.as_str()) {
-        children.remove(idx);
-        return true;
-    }
-    for child in children.iter_mut() {
-        // Searching is not an insertion: preserve absent child vectors.
-        if let Some(grand) = child.children_mut_if_present() {
-            if remove_from_children(grand, target) {
-                return true;
-            }
-        }
-    }
-    false
+    extract_node(children, target).is_some()
 }
 
 /// Drain the node matching `target` out of the forest and return it.
 /// Mirrors shell-core's `extract_node` — backs the reorder/reparent
 /// extract phase.
 pub fn extract_node(children: &mut Vec<PenNode>, target: &NodeId) -> Option<PenNode> {
-    if let Some(idx) = children.iter().position(|n| n.id_str() == target.as_str()) {
-        return Some(children.remove(idx));
-    }
-    for child in children.iter_mut() {
-        // Searching is not an insertion: preserve absent child vectors.
-        if let Some(grand) = child.children_mut_if_present() {
-            if let Some(extracted) = extract_node(grand, target) {
-                return Some(extracted);
-            }
-        }
-    }
-    None
+    let path = routes::find(children, target, |_, _| true)?;
+    let (at, parents) = path.split_last()?;
+    Some(routes::vec_mut(children, parents)?.remove(*at))
 }
 
 /// Insert `node` immediately before `anchor`. `Ok(())` on success;
@@ -136,21 +117,17 @@ pub fn insert_before_in_children(
     anchor: &NodeId,
     node: PenNode,
 ) -> Result<(), PenNode> {
-    if let Some(idx) = children.iter().position(|n| n.id_str() == anchor.as_str()) {
-        children.insert(idx, node);
-        return Ok(());
-    }
-    let mut carry = node;
-    for child in children.iter_mut() {
-        // Searching is not an insertion: preserve absent child vectors.
-        if let Some(grand) = child.children_mut_if_present() {
-            match insert_before_in_children(grand, anchor, carry) {
-                Ok(()) => return Ok(()),
-                Err(returned) => carry = returned,
-            }
-        }
-    }
-    Err(carry)
+    let Some(path) = routes::find(children, anchor, |_, _| true) else {
+        return Err(node);
+    };
+    let Some((at, parents)) = path.split_last() else {
+        return Err(node);
+    };
+    let Some(siblings) = routes::vec_mut(children, parents) else {
+        return Err(node);
+    };
+    siblings.insert(*at, node);
+    Ok(())
 }
 
 /// Insert `node` immediately after `anchor`. `Ok(())` / `Err(node)`.
@@ -161,21 +138,17 @@ pub fn insert_after_in_children(
     anchor: &NodeId,
     node: PenNode,
 ) -> Result<(), PenNode> {
-    if let Some(idx) = children.iter().position(|n| n.id_str() == anchor.as_str()) {
-        children.insert(idx + 1, node);
-        return Ok(());
-    }
-    let mut carry = node;
-    for child in children.iter_mut() {
-        // Searching is not an insertion: preserve absent child vectors.
-        if let Some(grand) = child.children_mut_if_present() {
-            match insert_after_in_children(grand, anchor, carry) {
-                Ok(()) => return Ok(()),
-                Err(returned) => carry = returned,
-            }
-        }
-    }
-    Err(carry)
+    let Some(path) = routes::find(children, anchor, |_, _| true) else {
+        return Err(node);
+    };
+    let Some((at, parents)) = path.split_last() else {
+        return Err(node);
+    };
+    let Some(siblings) = routes::vec_mut(children, parents) else {
+        return Err(node);
+    };
+    siblings.insert(*at + 1, node);
+    Ok(())
 }
 
 /// Append `node` as the LAST child of `parent`. `Ok(())` / `Err(node)`.
@@ -188,26 +161,18 @@ pub fn append_into(
     parent: &NodeId,
     node: PenNode,
 ) -> Result<(), PenNode> {
-    if let Some(idx) = children.iter().position(|n| n.id_str() == parent.as_str()) {
-        match children[idx].children_mut() {
-            Some(grand) => {
-                grand.push(node);
-                return Ok(());
-            }
-            None => return Err(node),
-        }
-    }
-    let mut carry = node;
-    for child in children.iter_mut() {
-        // Searching is not an insertion: preserve absent child vectors.
-        if let Some(grand) = child.children_mut_if_present() {
-            match append_into(grand, parent, carry) {
-                Ok(()) => return Ok(()),
-                Err(returned) => carry = returned,
-            }
-        }
-    }
-    Err(carry)
+    let Some(path) = routes::find(children, parent, |siblings, at| siblings[at].is_container())
+    else {
+        return Err(node);
+    };
+    let Some(target) = routes::node_mut(children, &path) else {
+        return Err(node);
+    };
+    let Some(grand) = target.children_mut() else {
+        return Err(node);
+    };
+    grand.push(node);
+    Ok(())
 }
 
 /// Insert `node` as the FIRST child of `parent`. `Ok(())` / `Err(node)`.
@@ -221,26 +186,18 @@ pub fn prepend_into(
     parent: &NodeId,
     node: PenNode,
 ) -> Result<(), PenNode> {
-    if let Some(idx) = children.iter().position(|n| n.id_str() == parent.as_str()) {
-        match children[idx].children_mut() {
-            Some(grand) => {
-                grand.insert(0, node);
-                return Ok(());
-            }
-            None => return Err(node),
-        }
-    }
-    let mut carry = node;
-    for child in children.iter_mut() {
-        // Searching is not an insertion: preserve absent child vectors.
-        if let Some(grand) = child.children_mut_if_present() {
-            match prepend_into(grand, parent, carry) {
-                Ok(()) => return Ok(()),
-                Err(returned) => carry = returned,
-            }
-        }
-    }
-    Err(carry)
+    let Some(path) = routes::find(children, parent, |siblings, at| siblings[at].is_container())
+    else {
+        return Err(node);
+    };
+    let Some(target) = routes::node_mut(children, &path) else {
+        return Err(node);
+    };
+    let Some(grand) = target.children_mut() else {
+        return Err(node);
+    };
+    grand.insert(0, node);
+    Ok(())
 }
 
 /// Swap the node matching `target` with its next / prev sibling.
@@ -249,28 +206,24 @@ pub fn reorder_in_children(
     target: &NodeId,
     direction: ReorderDirection,
 ) -> bool {
-    if let Some(idx) = children.iter().position(|n| n.id_str() == target.as_str()) {
-        match direction {
-            ReorderDirection::Up if idx > 0 => {
-                children.swap(idx, idx - 1);
-                return true;
-            }
-            ReorderDirection::Down if idx + 1 < children.len() => {
-                children.swap(idx, idx + 1);
-                return true;
-            }
-            _ => return false,
-        }
-    }
-    for child in children.iter_mut() {
-        // Searching is not an insertion: preserve absent child vectors.
-        if let Some(grand) = child.children_mut_if_present() {
-            if reorder_in_children(grand, target, direction) {
-                return true;
-            }
-        }
-    }
-    false
+    let Some(path) = routes::find(children, target, |siblings, at| match direction {
+        ReorderDirection::Up => at > 0,
+        ReorderDirection::Down => at + 1 < siblings.len(),
+    }) else {
+        return false;
+    };
+    let Some((at, parents)) = path.split_last() else {
+        return false;
+    };
+    let Some(siblings) = routes::slice_mut(children, parents) else {
+        return false;
+    };
+    let neighbor = match direction {
+        ReorderDirection::Up => *at - 1,
+        ReorderDirection::Down => *at + 1,
+    };
+    siblings.swap(*at, neighbor);
+    true
 }
 
 /// Insert every descendant id of the forest into `out`.
@@ -430,17 +383,20 @@ pub fn find_parent_and_index(
     children: &[PenNode],
     target: &NodeId,
 ) -> Option<(Option<NodeId>, usize)> {
-    if let Some(idx) = children.iter().position(|n| n.id_str() == target.as_str()) {
-        return Some((None, idx));
-    }
-    for child in children {
-        if let Some(grand) = child.children() {
-            if let Some((parent, idx)) = find_parent_and_index(grand, target) {
-                return Some((parent.or_else(|| NodeId::new_opt(child.id_str())), idx));
-            }
+    let path = routes::find(children, target, |_, _| true)?;
+    let (at, parents) = path.split_last()?;
+    let mut siblings = children;
+    let mut parent = None;
+    for index in parents {
+        let node = siblings.get(*index)?;
+        // Preserve the old recursive fallback through an invalid empty parent
+        // ID to its nearest nonempty ancestor, not a different duplicate node.
+        if !node.id_str().is_empty() {
+            parent = Some(node.id_str());
         }
+        siblings = node.children()?;
     }
-    None
+    Some((parent.and_then(NodeId::new_opt), *at))
 }
 
 /// Insert `node` into the container `parent` (`None` = top level) at

@@ -6,6 +6,8 @@ use op_editor_core::scene_template_catalog::TemplateScene;
 use op_editor_core::{EditorState, ExportFormat, HomeFamily};
 
 use crate::pdf::{render_deck_pdf_boards_bytes, render_deck_pdf_bytes, render_pdf_bytes};
+#[path = "editor_path.rs"]
+mod file;
 use crate::{
     render_node_on_page_raster_bytes, render_node_on_page_svg_bytes, render_page_raster_bytes,
     render_page_svg_bytes, ExportError, RasterFormat,
@@ -68,8 +70,7 @@ pub fn export_editor_state_to_path(
     scope: &EditorExportScope,
     target: &Path,
 ) -> Result<(), ExportError> {
-    let artifact = export_editor_state(state, scope)?;
-    std::fs::write(target, artifact.bytes).map_err(|e| ExportError::Write(e.to_string()))
+    file::export(state, scope, target)
 }
 
 fn render_configured(state: &EditorState) -> Result<(&'static str, Vec<u8>), ExportError> {

@@ -30,6 +30,7 @@ use super::transport_diagnostic::{
 use super::EventSink;
 
 const ACCEPT_POLL_INTERVAL: Duration = Duration::from_millis(25);
+const MAX_ROUTED_COMMANDS_PER_TURN: usize = 64;
 const PEER_COMMAND_CAPACITY: usize = 64;
 const PEER_TERMINAL_CAPACITY: usize = 1;
 /// Human decision window after Noise and ticket verification. This is
@@ -228,7 +229,8 @@ fn run_inner(
         while let Ok(connection) = done_receiver.try_recv() {
             peers.reap(connection);
         }
-        loop {
+        // A continuous producer cannot starve new peers, renewal or shutdown.
+        for _ in 0..MAX_ROUTED_COMMANDS_PER_TURN {
             match commands.try_recv() {
                 Ok(command) => {
                     if !route_command(command, &mut peers)? {
