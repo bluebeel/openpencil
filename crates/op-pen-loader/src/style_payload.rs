@@ -138,14 +138,15 @@ pub(crate) fn assign_first_fill(p: &mut NodePayload, fills: Option<&[PenFill]>) 
     // Preserve the complete canonical stack for renderers that understand
     // layered fills. Keep populating the historical primary-fill projection
     // below so serialized payloads remain consumable by older clients.
-    p.fill_disabled = disabled_fills(fills);
+    let first = first_active_fill(fills);
+    p.fill_disabled = fills.is_some() && first.is_none();
     p.fill_layers = fills.unwrap_or_default().to_vec();
     p.fill = first_solid_color(fills);
-    p.fill_type = first_fill_type(fills);
-    p.gradient = first_gradient(fills);
-    p.shader = first_shader(fills);
+    p.fill_type = first_fill_type(first);
+    p.gradient = first_gradient(first);
+    p.shader = first_shader(first);
     if let Some((url, fit, transform, original_size, tile_scale, adjustments)) =
-        first_image_fill(fills)
+        first_image_fill(first)
     {
         p.image_src = Some(url);
         p.image_fit = Some(fit);
@@ -153,7 +154,7 @@ pub(crate) fn assign_first_fill(p: &mut NodePayload, fills: Option<&[PenFill]>) 
         p.image_original_size = original_size;
         p.image_tile_scale = tile_scale;
         p.image_adjustments = adjustments;
-        if let Some(PenFill::Image(body)) = first_active_fill(fills) {
+        if let Some(PenFill::Image(body)) = first {
             p.image_thumbnail_src = body.thumbnail_url.clone();
             p.image_nearest_sampling = body.nearest_sampling;
             p.image_rotation_degrees = body.rotation.map(|value| value as f32);
@@ -166,8 +167,8 @@ fn first_active_fill(fills: Option<&[PenFill]>) -> Option<&PenFill> {
     fills?.iter().find(|fill| fill.is_enabled())
 }
 
-fn first_image_fill(fills: Option<&[PenFill]>) -> Option<ImageFillPayload> {
-    let body = first_active_fill(fills).and_then(|f| match f {
+fn first_image_fill(first: Option<&PenFill>) -> Option<ImageFillPayload> {
+    let body = first.and_then(|f| match f {
         PenFill::Image(b) => Some(b),
         _ => None,
     })?;
@@ -272,8 +273,8 @@ fn adjustments_payload(
         .then_some(payload)
 }
 
-fn first_gradient(fills: Option<&[PenFill]>) -> Option<GradientPayload> {
-    gradient_payload(first_active_fill(fills)?)
+fn first_gradient(first: Option<&PenFill>) -> Option<GradientPayload> {
+    gradient_payload(first?)
 }
 
 /// Resolve one canonical gradient layer without projecting away siblings.
@@ -324,8 +325,8 @@ pub(crate) fn gradient_payload(fill: &PenFill) -> Option<GradientPayload> {
 /// `vec4`); the fallback colour is the first `color` uniform, else
 /// mid-gray, so a host that can't compile the program still paints a
 /// visible block. SkSL source stays untrusted — not validated here.
-fn first_shader(fills: Option<&[PenFill]>) -> Option<ShaderPayload> {
-    shader_payload(first_active_fill(fills)?)
+fn first_shader(first: Option<&PenFill>) -> Option<ShaderPayload> {
+    shader_payload(first?)
 }
 
 /// Resolve one canonical shader layer without projecting away siblings.
@@ -340,30 +341,29 @@ pub(crate) fn shader_payload(fill: &PenFill) -> Option<ShaderPayload> {
         return None;
     };
     let expanded = crate::shader_preset::expand(body);
-    let sksl = match &expanded {
-        Some(preset) => preset.sksl.clone(),
-        None => body
-            .sksl
-            .as_ref()
-            .filter(|source| !source.trim().is_empty())?
-            .clone(),
+    let from_preset = expanded.is_some();
+    let (sksl, mut uniforms) = match expanded {
+        Some(preset) => (preset.sksl, preset.uniforms),
+        None => (
+            body.sksl
+                .as_ref()
+                .filter(|source| !source.trim().is_empty())?
+                .clone(),
+            Vec::new(),
+        ),
     };
-    let mut uniforms: Vec<ShaderUniformPayload> = expanded
-        .as_ref()
-        .map(|preset| preset.uniforms.clone())
-        .unwrap_or_default();
     let mut fallback: Option<[f32; 4]> = None;
     if let Some(map) = &body.uniforms {
         for (name, val) in map {
             match val {
-                ShaderUniformValue::Float(f) if expanded.is_none() => {
+                ShaderUniformValue::Float(f) if !from_preset => {
                     uniforms.push(ShaderUniformPayload {
                         name: name.clone(),
                         values: vec![*f as f32],
                     });
                 }
                 ShaderUniformValue::Vec(v) => {
-                    if expanded.is_none() && !v.is_empty() {
+                    if !from_preset && !v.is_empty() {
                         uniforms.push(ShaderUniformPayload {
                             name: name.clone(),
                             values: v.iter().map(|value| *value as f32).collect(),
@@ -375,7 +375,7 @@ pub(crate) fn shader_payload(fill: &PenFill) -> Option<ShaderPayload> {
                         // Premultiply for the vec4 binding (matches the
                         // jian-core scene walker's color-uniform rule).
                         let a = rgba[3];
-                        if expanded.is_none() {
+                        if !from_preset {
                             uniforms.push(ShaderUniformPayload {
                                 name: name.clone(),
                                 values: vec![rgba[0] * a, rgba[1] * a, rgba[2] * a, a],
@@ -406,18 +406,23 @@ pub(crate) fn shader_payload(fill: &PenFill) -> Option<ShaderPayload> {
 /// fully populated for the triangulator. Returns `None` for a
 /// degenerate (< 2×2) grid so the caller falls back to solid.
 fn mesh_colors(body: &jian_ops_schema::style::MeshGradientBody) -> Option<Vec<[f32; 4]>> {
-    let rows = body.rows.max(2);
-    let cols = body.cols.max(2);
     if body.rows < 2 || body.cols < 2 {
         return None;
     }
-    let mut colors = vec![[0.0, 0.0, 0.0, 0.0]; (rows * cols) as usize];
-    for s in &body.stops {
-        if s.row >= rows || s.col >= cols {
+    let rows = usize::try_from(body.rows).ok()?;
+    let cols = usize::try_from(body.cols).ok()?;
+    let cells = rows.checked_mul(cols)?;
+    let mut colors = Vec::new();
+    colors.try_reserve_exact(cells).ok()?;
+    colors.resize(cells, [0.0, 0.0, 0.0, 0.0]);
+    for stop in &body.stops {
+        let row = usize::try_from(stop.row).ok()?;
+        let col = usize::try_from(stop.col).ok()?;
+        if row >= rows || col >= cols {
             continue;
         }
-        if let Some(rgba) = parse_color(&s.color) {
-            colors[(s.row * cols + s.col) as usize] = rgba;
+        if let Some(rgba) = parse_color(&stop.color) {
+            colors[row * cols + col] = rgba;
         }
     }
     Some(colors)
@@ -499,18 +504,16 @@ pub(crate) fn fill_fallback_color(fill: &PenFill) -> Option<[f32; 4]> {
     None
 }
 
-fn first_fill_type(fills: Option<&[PenFill]>) -> String {
-    let Some(fills) = fills else {
-        return "solid".into();
-    };
-    match fills.iter().find(|fill| fill.is_enabled()) {
-        Some(PenFill::LinearGradient(_)) => "linear".into(),
-        Some(PenFill::RadialGradient(_)) => "radial".into(),
-        Some(PenFill::MeshGradient(_)) => "mesh".into(),
-        Some(PenFill::Shader(_)) => "shader".into(),
-        Some(PenFill::Image(_)) => "image".into(),
-        _ => "solid".into(),
+fn first_fill_type(first: Option<&PenFill>) -> String {
+    match first {
+        Some(PenFill::LinearGradient(_)) => "linear",
+        Some(PenFill::RadialGradient(_)) => "radial",
+        Some(PenFill::MeshGradient(_)) => "mesh",
+        Some(PenFill::Shader(_)) => "shader",
+        Some(PenFill::Image(_)) => "image",
+        _ => "solid",
     }
+    .into()
 }
 
 pub(crate) fn disabled_fills(fills: Option<&[PenFill]>) -> bool {
@@ -614,24 +617,29 @@ pub(crate) fn parse_color(s: &str) -> Option<[f32; 4]> {
     if let Some(rgba) = parse_hex(t) {
         return Some(rgba);
     }
-    let lower = t.to_ascii_lowercase();
-    let inner = lower
-        .strip_prefix("rgba(")
-        .or_else(|| lower.strip_prefix("rgb("))?
-        .strip_suffix(')')?;
-    let parts: Vec<&str> = inner.split(',').map(str::trim).collect();
-    if parts.len() < 3 {
+    let inner = if t
+        .get(..5)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("rgba("))
+    {
+        &t[5..]
+    } else if t
+        .get(..4)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("rgb("))
+    {
+        &t[4..]
+    } else {
         return None;
     }
-    // Normalize functional RGB before narrowing. An imported normalized f32
-    // may need more than f32 precision when expressed on the CSS0–255 scale.
-    let r = parts[0].parse::<f64>().ok()?;
-    let g = parts[1].parse::<f64>().ok()?;
-    let b = parts[2].parse::<f64>().ok()?;
-    let a = if parts.len() >= 4 {
-        parts[3].parse::<f32>().ok()?
-    } else {
-        1.0
+    .strip_suffix(')')?;
+    let mut parts = inner.split(',').map(str::trim);
+    // Preserve normalization-before-f32 narrowing and the original numeric
+    // accept-set, including rare case-normalized special/exponent tokens.
+    let r = functional_component::<f64>(parts.next()?)?;
+    let g = functional_component::<f64>(parts.next()?)?;
+    let b = functional_component::<f64>(parts.next()?)?;
+    let a = match parts.next() {
+        Some(alpha) => functional_component::<f32>(alpha)?,
+        None => 1.0,
     };
     Some([
         (r / 255.0).clamp(0.0, 1.0) as f32,
@@ -641,13 +649,20 @@ pub(crate) fn parse_color(s: &str) -> Option<[f32; 4]> {
     ])
 }
 
-pub(crate) fn short_src(src: &str) -> String {
-    let s = src.rsplit('/').next().unwrap_or(src);
-    if s.chars().count() > 24 {
-        let head: String = s.chars().take(24).collect();
-        format!("{head}…")
+fn functional_component<T: std::str::FromStr>(value: &str) -> Option<T> {
+    if value.bytes().any(|byte| byte.is_ascii_uppercase()) {
+        value.to_ascii_lowercase().parse().ok()
     } else {
-        s.to_string()
+        value.parse().ok()
+    }
+}
+
+pub(crate) fn short_src(src: &str) -> String {
+    let name = src.rsplit('/').next().unwrap_or(src);
+    if let Some((end, _)) = name.char_indices().nth(24) {
+        format!("{}…", &name[..end])
+    } else {
+        name.to_owned()
     }
 }
 
