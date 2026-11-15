@@ -329,3 +329,16 @@ impl Patch {
             .is_some_and(|value| value.conflicts(other))
     }
 }
+
+/// One original field image for an audited mixed append, compacted by the
+/// same exact map/pin/scalar receipts as standalone header commands.
+pub(super) fn capture_fields(state: &EditorState, fields: u8) -> Pending {
+    Pending {
+        kind: Kind::Variables,
+        variables: (fields & 1 != 0).then(|| state.doc.variables.clone()),
+        themes: (fields & 2 != 0).then(|| state.doc.themes.clone()),
+        active_theme: (fields & 2 != 0).then(|| state.ui.variables.active_theme.clone()),
+        design_md: (fields & 4 != 0).then(|| state.doc.design_md.clone()),
+        conversion: None,
+    }
+}

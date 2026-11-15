@@ -14,6 +14,7 @@ mod catalog;
 mod forward;
 #[path = "auxiliary/lifecycle.rs"]
 mod lifecycle;
+mod mixed;
 mod upsert;
 mod variable_rewrite;
 pub(super) use forward::Label as ForwardLabel;
@@ -27,6 +28,7 @@ pub(super) enum Target {
     Upsert(upsert::Pending),
     VariableRewrite(variable_rewrite::Pending),
     Bulk(bulk::Pending),
+    Mixed(mixed::Pending),
     Lifecycle(lifecycle::Pending),
     Variable {
         key: String,
@@ -70,13 +72,17 @@ pub(super) enum Patch {
     },
 }
 pub(crate) fn supports(command: &C) -> bool {
-    upsert::supports(command)
+    mixed::supports(command)
+        || upsert::supports(command)
         || variable_rewrite::supports(command)
         || bulk::supports(command)
         || lifecycle::supports(command)
         || plan::supports(command)
 }
 pub(crate) fn forecast(state: &EditorState, command: &C) -> Option<(usize, bool)> {
+    if mixed::supports(command) {
+        return mixed::forecast(state, command).map(|bytes| (bytes, false));
+    }
     if upsert::supports(command) {
         return upsert::forecast(state, command).map(|bytes| (bytes, false));
     }
@@ -96,6 +102,17 @@ impl Pending {
         state: &EditorState,
         command: &C,
     ) -> Option<(Self, Vec<Scope>, bool, Vec<super::TargetSpec>)> {
+        if mixed::supports(command) {
+            let (pending, scopes, targets) = mixed::Pending::capture(state, command)?;
+            return Some((
+                Self {
+                    value: Target::Mixed(pending),
+                },
+                scopes,
+                false,
+                targets,
+            ));
+        }
         if upsert::supports(command) {
             let plan = upsert::Pending::capture(state, command)?;
             return Some((
@@ -167,11 +184,15 @@ impl Pending {
     pub(super) fn is_header(&self) -> bool {
         matches!(
             self.value,
-            Target::VariableRewrite(_) | Target::Bulk(_) | Target::Variable { .. }
+            Target::Mixed(_)
+                | Target::VariableRewrite(_)
+                | Target::Bulk(_)
+                | Target::Variable { .. }
         )
     }
     pub(super) fn matches_header(&self, doc: &jian_ops_schema::PenDocument) -> bool {
         match &self.value {
+            Target::Mixed(value) => value.matches_header(doc),
             Target::Upsert(value) => value.matches_header(doc),
             Target::VariableRewrite(value) => value.matches_header(doc),
             Target::Bulk(value) => value.matches_header(doc),
@@ -194,6 +215,7 @@ impl Pending {
     }
     pub(super) fn request_matches(&self, command: &C) -> bool {
         match (&self.value, command) {
+            (Target::Mixed(pending), command) => pending.request_matches(command),
             (Target::Upsert(pending), command) => pending.request_matches(command),
             (Target::VariableRewrite(pending), command) => pending.request_matches(command),
             (Target::Bulk(pending), command) => pending.request_matches(command),
@@ -217,9 +239,16 @@ impl Pending {
             _ => false,
         }
     }
+    pub(super) fn targets_match(&self, state: &EditorState, command: &C) -> bool {
+        match &self.value {
+            Target::Mixed(pending) => pending.targets_match(state, command),
+            _ => true,
+        }
+    }
     pub(super) fn matches(&self, state: &EditorState) -> bool {
         self.matches_header(&state.doc)
             && match &self.value {
+                Target::Mixed(pending) => pending.matches(state),
                 Target::Upsert(pending) => pending.matches(state),
                 Target::VariableRewrite(pending) => pending.matches(state),
                 Target::Bulk(pending) => pending.matches(state),
@@ -240,6 +269,7 @@ impl Pending {
     }
     pub(super) fn compact(self, state: &EditorState) -> Result<Option<Patch>, ScopedHistoryError> {
         Ok(match self.value {
+            Target::Mixed(pending) => pending.compact(state)?.map(Patch::Bulk),
             Target::Upsert(_) => return Err(ScopedHistoryError::DocumentHeaderChanged),
             Target::VariableRewrite(pending) => pending.compact(state)?.map(Patch::VariableRewrite),
             Target::Bulk(pending) => pending.compact(state)?.map(Patch::Bulk),

@@ -7,6 +7,8 @@ use crate::{
 use jian_ops_schema::node::PenNode;
 #[path = "target_append_batch.rs"]
 mod append_batch;
+#[path = "target_kit_plan.rs"]
+mod kit;
 #[path = "target_selection_plan.rs"]
 mod selection;
 #[path = "target_splice_plan.rs"]
@@ -14,6 +16,15 @@ mod splice;
 #[path = "target_topology_plan.rs"]
 mod topology;
 
+pub(super) fn mixed_append_plan(state: &EditorState, command: &C) -> Option<Vec<TargetSpec>> {
+    if state.instance_write_virtual_anchor.is_some() {
+        return None;
+    }
+    if matches!(command, C::InstantiateKitComponent { .. }) {
+        return Some(vec![kit::plan(state, command, state.ui.active_page_index)?]);
+    }
+    append_batch::plan(state, command)
+}
 pub(super) fn plan(state: &EditorState, command: &C) -> Option<Vec<TargetSpec>> {
     plan_prepared(state, command, false)
 }

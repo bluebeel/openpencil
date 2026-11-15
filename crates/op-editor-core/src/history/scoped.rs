@@ -221,6 +221,7 @@ impl PendingScopedSnapshot {
     ) -> Option<bool> {
         self.auxiliary.as_ref().map(|patch| {
             patch.request_matches(command)
+                && patch.targets_match(state, command)
                 && patch.matches(state)
                 && targets::matches(state, &self.targets)
         })

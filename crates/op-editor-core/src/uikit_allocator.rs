@@ -67,7 +67,7 @@ impl EditorState {
                 _ => return Ok(None),
             }
         }
-        let (template, label, kit_vars) = {
+        let (mut authored, label, kit_vars) = {
             let Some(kit) = self.ui_kits.iter().find(|kit| kit.id == kit_id) else {
                 return Ok(None);
             };
@@ -78,13 +78,24 @@ impl EditorState {
             else {
                 return Ok(None);
             };
+            // Read original template references before overrides, exactly as
+            // the existing kit contract. Retain only referenced definitions,
+            // rather than cloning the entire kit map and template twice.
+            let mut refs = std::collections::BTreeSet::new();
+            crate::uikit_io::collect_template_variable_refs(&component.template, &mut refs);
+            let variables: Vec<_> = refs
+                .into_iter()
+                .filter_map(|reference| {
+                    let name = reference.strip_prefix('$').unwrap_or(&reference);
+                    Some((name.to_owned(), kit.variables.as_ref()?.get(name)?.clone()))
+                })
+                .collect();
             (
                 component.template.clone(),
                 component.name.clone(),
-                kit.variables.clone(),
+                variables,
             )
         };
-        let mut authored = template.clone();
         authored.base_mut().name = Some(label);
         let dx = doc_x - authored.base().x.unwrap_or(0.0);
         let dy = doc_y - authored.base().y.unwrap_or(0.0);
@@ -95,7 +106,7 @@ impl EditorState {
 
         // Allocate the complete subtree before copying variables or mutating
         // the live tree, so exhaustion is document-atomic.
-        let mut taken = self.collect_node_ids();
+        let mut taken = allocator.document_collision_ids(&self.doc);
         let mut clone = walkers::deep_clone_with_allocator(&authored, allocator, &mut taken)?;
         if let PenNode::Frame(frame) = &mut clone {
             frame.reusable = None;
@@ -103,18 +114,12 @@ impl EditorState {
         let new_id = NodeId::new(clone.base().id.clone());
         let snap = self.snapshot_for_undo();
 
-        if let Some(vars) = kit_vars {
-            let mut refs = std::collections::BTreeSet::new();
-            crate::uikit_io::collect_template_variable_refs(&template, &mut refs);
-            for reference in refs {
-                let name = reference.strip_prefix('$').unwrap_or(&reference);
-                if let Some(definition) = vars.get(name) {
-                    let document_vars = self.doc.variables.get_or_insert_with(Default::default);
-                    if !document_vars.contains_key(name) {
-                        document_vars.insert(name.to_string(), definition.clone());
-                    }
-                }
-            }
+        for (name, definition) in kit_vars {
+            self.doc
+                .variables
+                .get_or_insert_with(Default::default)
+                .entry(name)
+                .or_insert(definition);
         }
         if parent_id.is_real() {
             let Some(parent) = walkers::find_node_mut(self.active_children_mut(), parent_id) else {

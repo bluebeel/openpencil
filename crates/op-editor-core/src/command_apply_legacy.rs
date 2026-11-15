@@ -74,6 +74,7 @@ impl EditorState {
                 | EditorCommand::AddPage { .. }
                 | EditorCommand::DuplicatePage { .. }
                 | EditorCommand::InstantiateComponent { .. }
+                | EditorCommand::InstantiateKitComponent { .. }
                 | EditorCommand::DuplicateSelected { .. }
                 | EditorCommand::PasteClipboard { .. }
         ) {

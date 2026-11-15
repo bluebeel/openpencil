@@ -101,6 +101,11 @@ impl Plan<'_> {
                 parent_id, page_id, ..
             } => (Some(parent_id), page_id.as_deref()),
             C::BatchInsert { page_id, .. } => (None, page_id.as_deref()),
+            C::InstantiateKitComponent {
+                target_parent,
+                page_id,
+                ..
+            } => (Some(target_parent), page_id.as_deref()),
             _ => return None,
         };
         let scope = self.scope(raw)?;
@@ -138,13 +143,17 @@ impl Plan<'_> {
             if !parent.container || parent.reference {
                 return None;
             }
-            self.add_bound(parent.anchor, splice::insertion_bound(command)?)?;
+            self.add_bound(parent.anchor, insertion_bound(self.state, command)?)?;
             parent.anchor
         } else if let Some(at) = existing {
-            self.extend_group(at, count, splice::insertion_bound(command)?)?;
+            self.extend_group(at, count, insertion_bound(self.state, command)?)?;
             at
         } else {
-            let spec = splice::plan(self.state, command, self.active)?;
+            let spec = if matches!(command, C::InstantiateKitComponent { .. }) {
+                super::kit::plan(self.state, command, self.active)?
+            } else {
+                splice::plan(self.state, command, self.active)?
+            };
             self.merge(spec, key)?
         };
         if let C::InsertAuthoredSubtree { nodes, .. }
@@ -190,8 +199,20 @@ impl Plan<'_> {
                 | C::InsertSubtree { .. }
                 | C::InsertAuthoredSubtree { .. }
                 | C::InsertAuthoredSubtreePreservingRoots { .. }
+                | C::InstantiateKitComponent { .. }
         ) {
             return self.insert(command);
+        }
+        // Header effects are captured separately by the mixed auxiliary
+        // constructor. The ordinary constructor still captures its full header.
+        if matches!(
+            command,
+            C::SetVariables { .. }
+                | C::SetThemes { .. }
+                | C::MergeThemePreset { .. }
+                | C::SetDesignMd { .. }
+        ) {
+            return Some(());
         }
         if let C::DeleteNode { node_id, page_id } = command {
             let owned = self
@@ -397,4 +418,12 @@ fn node<'a>(mut roots: &'a [PenNode], path: &[usize]) -> Option<&'a PenNode> {
         roots = roots.get(*at)?.children()?;
     }
     roots.get(*last)
+}
+
+fn insertion_bound(state: &EditorState, command: &C) -> Option<usize> {
+    if matches!(command, C::InstantiateKitComponent { .. }) {
+        super::kit::bound(state, command)
+    } else {
+        splice::insertion_bound(command)
+    }
 }

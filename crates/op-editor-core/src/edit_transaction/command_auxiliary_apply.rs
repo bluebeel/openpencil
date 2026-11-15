@@ -1,6 +1,13 @@
 //! Lexical exact header/name transactions for synchronous no-repair hosts.
 use super::*;
 impl EditorState {
+    pub(crate) fn mixed_append_targets(
+        &self,
+        command: &EditorCommand,
+    ) -> Option<Vec<crate::history::TargetSpec>> {
+        target_plan::mixed_append_plan(self, command)
+    }
+
     /// Payload bytes and whether a complete component checkpoint is retained.
     pub fn forecast_auxiliary_command_edit(
         &self,
@@ -23,7 +30,9 @@ impl EditorState {
                 history: self.history.clone(),
                 active_theme: self.ui.variables.active_theme.clone(),
             }),
-            batch_actor: None,
+            batch_actor: crate::command_batch::actor::BatchActorSnapshot::for_command(
+                self, command,
+            ),
             rollback_clipboard: None,
         })
     }
