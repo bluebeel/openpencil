@@ -330,6 +330,22 @@ pub(super) async fn mount_ck(canvas_id: String) -> Result<(), JsValue> {
     let mut listeners: Vec<Listener> = Vec::new();
     let canvas_target: web_sys::EventTarget = canvas.clone().into();
     let win_target: web_sys::EventTarget = window.clone().into();
+    {
+        let inner = Rc::downgrade(&inner);
+        add_listener::<web_sys::Event, _, _>(
+            &canvas_target,
+            "openpencil-font-ready",
+            &mut listeners,
+            move |_event| {
+                if let Some(inner) = inner.upgrade() {
+                    if let Ok(mut owner) = inner.try_borrow_mut() {
+                        owner.host.mark_editor_state_dirty();
+                    }
+                    crate::repaint_coalescer::request();
+                }
+            },
+        )?;
+    }
 
     // Accessibility DOM mirror (#57): delegated `focus` / `click` on the
     // hidden mirror container map a focused/activated mirror node back to a

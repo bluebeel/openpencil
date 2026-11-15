@@ -41,8 +41,8 @@ impl CanvasKitBackend {
     /// Register a user-imported font under its selectable family name.
     pub fn register_imported_font(&mut self, family: &str, bytes: &[u8]) -> bool {
         match crate::vf_normalize::with_default_wght_400(bytes) {
-            Some(patched) => self.ck.register_imported_font(family, &patched),
-            None => self.ck.register_imported_font(family, bytes),
+            Some(patched) => register_face(&self.ck, family, &patched, false),
+            None => register_face(&self.ck, family, bytes, false),
         }
     }
 
@@ -55,7 +55,7 @@ impl CanvasKitBackend {
 
     /// Register an app-bundled design face below imported and system faces.
     pub fn register_bundled_font(&mut self, family: &str, bytes: &[u8]) -> bool {
-        self.ck.register_bundled_font(family, bytes)
+        register_face(&self.ck, family, bytes, true)
     }
 
     /// Display names of every registered imported family.
@@ -90,5 +90,31 @@ fn normalized_dpr(dpr: f32) -> f32 {
         dpr.max(1.0)
     } else {
         1.0
+    }
+}
+
+fn register_face(ck: &OpCk, family: &str, bytes: &[u8], bundled: bool) -> bool {
+    if let Some(meta) = crate::font_meta::browser_style(bytes) {
+        if bundled {
+            ck.register_bundled_font_styled(
+                family,
+                bytes,
+                meta.style,
+                &meta.weight,
+                &meta.variations,
+            )
+        } else {
+            ck.register_imported_font_styled(
+                family,
+                bytes,
+                meta.style,
+                &meta.weight,
+                &meta.variations,
+            )
+        }
+    } else if bundled {
+        ck.register_bundled_font(family, bytes)
+    } else {
+        ck.register_imported_font(family, bytes)
     }
 }

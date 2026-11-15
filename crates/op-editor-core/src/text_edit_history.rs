@@ -1,5 +1,7 @@
 //! Scoped inline-text history and canonical String reuse.
 use super::{text_content_node_mut, EditorState, NodeId, TEXT_COALESCE_MS};
+use crate::PenNodeExt;
+use jian_ops_schema::node::PenNode;
 
 impl EditorState {
     pub(super) fn text_edit_sync_input_to_node(
@@ -29,6 +31,12 @@ impl EditorState {
             }
             self.maybe_open_text_edit_history(now_ms);
         }
+        let scope = self.command_lookup_active_scope();
+        let route = self.command_lookup_path(
+            &scope,
+            id,
+            crate::command_id_scope::sequence::LookupOrder::Preorder,
+        );
         let text = self.ui.text_edit_input.text();
         let roots = match self.doc.pages.as_mut().filter(|pages| !pages.is_empty()) {
             Some(pages) => {
@@ -37,9 +45,14 @@ impl EditorState {
             }
             None => &mut self.doc.children,
         };
-        let Some(content) =
-            crate::walkers::find_node_mut(roots, id).and_then(text_content_node_mut)
-        else {
+        let node = match route {
+            Some(Some(path)) => {
+                node_at_path_mut(roots, &path).filter(|node| node.id_str() == id.as_str())
+            }
+            Some(None) => None,
+            None => crate::walkers::find_node_mut(roots, id),
+        };
+        let Some(content) = node.and_then(text_content_node_mut) else {
             return false;
         };
         if content != text {
@@ -67,4 +80,13 @@ impl EditorState {
             self.history_push_past(snap);
         }
     }
+}
+
+fn node_at_path_mut<'a>(roots: &'a mut [PenNode], path: &[usize]) -> Option<&'a mut PenNode> {
+    let (first, tail) = path.split_first()?;
+    let mut node = roots.get_mut(*first)?;
+    for index in tail {
+        node = node.children_mut_if_present()?.get_mut(*index)?;
+    }
+    Some(node)
 }

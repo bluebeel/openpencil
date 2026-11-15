@@ -12,9 +12,9 @@ use std::collections::BTreeMap;
 use jian_ops_schema::PenDocument;
 
 use crate::{
-    apply_txn, canonical_node_hash, diff_fields::apply_changes_to_node, diff_index::TreeIndex,
-    ApplyContext, CanonicalHashError, CollabApplyError, CollabOp, CollabTxn, DiffError,
-    NodeFieldChange,
+    apply::apply_txn_owned, canonical_node_hash, diff_fields::apply_changes_to_node,
+    diff_index::TreeIndex, ApplyContext, CanonicalHashError, CollabApplyError, CollabOp, CollabTxn,
+    DiffError, NodeFieldChange,
 };
 
 /// Failure to re-apply a previously discarded property edit.
@@ -63,8 +63,8 @@ pub fn reapply_property_changes(
             expected_hash: canonical_node_hash(entry.node)?,
             node: replacement,
         };
-        desired = apply_txn(
-            &desired,
+        desired = apply_txn_owned(
+            desired,
             &CollabTxn::new(vec![operation]),
             &ApplyContext::standalone_trusted(),
         )?;

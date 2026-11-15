@@ -1,10 +1,8 @@
 //! Strict, resource-bounded parser for the collaboration Ed25519 JWKS.
 
 use std::collections::{btree_map::Entry, BTreeMap};
-use std::fmt;
+use std::{fmt, sync::Arc};
 
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use base64::Engine as _;
 use ed25519_dalek::VerifyingKey;
 use serde::Deserialize;
 
@@ -20,7 +18,7 @@ pub const HARD_MAX_COLLAB_JWKS_KEYS: usize = 64;
 /// A validated public verification-key set.
 #[derive(Clone, PartialEq, Eq)]
 pub struct CollabJwks {
-    keys: BTreeMap<String, [u8; 32]>,
+    keys: Arc<BTreeMap<String, [u8; 32]>>,
 }
 
 impl CollabJwks {
@@ -57,7 +55,9 @@ impl CollabJwks {
                 Entry::Occupied(_) => return Err(CollabJwksError::DuplicateKeyId),
             }
         }
-        Ok(Self { keys })
+        Ok(Self {
+            keys: Arc::new(keys),
+        })
     }
 
     pub fn len(&self) -> usize {
@@ -73,7 +73,9 @@ impl CollabJwks {
     }
 
     pub(crate) fn from_verification_keys(keys: BTreeMap<String, [u8; 32]>) -> Self {
-        Self { keys }
+        Self {
+            keys: Arc::new(keys),
+        }
     }
 }
 
@@ -136,16 +138,15 @@ fn decode_public_key(value: &str) -> Option<[u8; 32]> {
     if value.contains('=') || value.len() > 64 {
         return None;
     }
-    let decoded = URL_SAFE_NO_PAD.decode(value).ok()?;
-    if URL_SAFE_NO_PAD.encode(&decoded) != value {
-        return None;
-    }
-    decoded.try_into().ok()
+    let decoded = crate::collab_base64::decode_small(value)?;
+    decoded.as_slice().try_into().ok()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use base64::Engine as _;
     use ed25519_dalek::SigningKey;
     use serde_json::json;
 

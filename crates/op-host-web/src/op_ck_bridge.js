@@ -1,6 +1,7 @@
 import { createTextMaskCapture, drawTextMaskImage } from './op_ck_text_mask.js';
 import { createGradientShaderCache } from './op_ck_gradient_cache.js';
 import { createValueCache } from './op_ck_value_cache.js';
+import { createBrowserFontAliases } from './op_ck_font_alias.js';
 import { drawExplicitImageField } from './op_ck_image_geometry.js';
 import { strokePaintGeometry, imagePaintField, drawMeshPaintField, releasePaintHandle } from './op_ck_stroke_paint.js';
 import { opCkBuildMeshGradientData } from './op_ck_mesh_geometry.js';
@@ -520,6 +521,11 @@ export async function opCkInit(canvasId, dpr = 1, logicalWidth = 0, logicalHeigh
     textFontGeneration++;
     browserTextCache.clear();
   };
+  const browserFonts=createBrowserFontAliases(()=>{
+    if(disposed)return;
+    clearBrowserTextCache();clearRegisteredFontCaches();
+    el.dispatchEvent(new Event('openpencil-font-ready'));
+  });
   // Retain DPR so display changes can immediately invalidate stale handles;
   // per-draw supersampling comes from the current CanvasKit transform below.
   let textDpr = 1;
@@ -647,15 +653,24 @@ export async function opCkInit(canvasId, dpr = 1, logicalWidth = 0, logicalHeigh
     try{paint.setColor(col(r,g,b,a));paint.setAntiAlias(true);setPaintStyle(paint,CK.PaintStyle.Fill);return paint;}
     catch(error){releasePaintHandle(paint);throw error;}
   };
-  // Quote the authored family so names with spaces stay one CSS token, and
-  // strip quote/backslash so a family name can't break out of the shorthand.
-  // Only families the BROWSER knows resolve here; faces registered into
-  // CanvasKit as raw bytes are invisible to CSS and fall through the stack.
+  // The shaping engine sees this viewer's actual registered binary through
+  // a private loaded FontFace alias; authored family stacks remain unchanged.
   const cssFamilyToken = (family) => {
-    const name = String(family || '').trim().replace(/["\\]/g, '');
-    return name ? `"${name}", ` : '';
+    const selected=familyTypefaceEntry(family);
+    if(selected&&selected.source!=='system'){
+      const registry=selected.source==='imported'?importedTypefaces:bundledTypefaces;
+      const alias=browserFonts.alias(registry.get(selected.familyKey)?.browser);
+      if(alias)return browserFonts.token(alias)+', ';
+    }
+    const tokens=opCkParseFontFamilyStack(family).map(name=>
+      browserFonts.authoredToken(name,CSS_GENERIC_FONT_FAMILIES.has(normalizedFamily(name)))).filter(Boolean);
+    return tokens.length?tokens.join(', ')+', ':'';
   };
-  const browserTextFont = (sz, weight, italic, family) => `${italic ? 'italic ' : ''}${Math.max(100, Math.min(900, Math.round(weight || 400)))} ${Math.max(1, sz)}px ${cssFamilyToken(family)}${browserTextFontStack}`;
+  const browserTextFont=(sz,weight,italic,family)=>{
+    const numeric=Number(weight),w=Number.isFinite(numeric)&&numeric>0?Math.max(1,Math.min(1000,numeric)):400;
+    const size=Number.isFinite(sz)&&sz>0?sz:1;
+    return `${italic?'italic ':''}${w} ${size}px ${cssFamilyToken(family)}${browserTextFontStack}`;
+  };
   const shouldUseBrowserTextFallback = (_t, _emojiRun) => Boolean(browserTextCtx);
   // Complex scripts (Arabic and friends — see `op_editor_core::text_script`,
   // which owns the predicate for BOTH hosts). CanvasKit's `canvas.drawText`
@@ -1271,6 +1286,7 @@ export async function opCkInit(canvasId, dpr = 1, logicalWidth = 0, logicalHeigh
       imageCaches.dispose?.();
       runtimeEffects.dispose();
       gradientShaders.dispose();
+      browserFonts.dispose();
       registeredFamilyFontCache.clear();
       release(transientRegisteredFont);transientRegisteredFont=null;
       registeredCoverageCache.clear(); coverageCache.clear();
@@ -2006,15 +2022,16 @@ export async function opCkInit(canvasId, dpr = 1, logicalWidth = 0, logicalHeigh
       clearRegisteredFontCaches();
       return true;
     },
-    registerImportedFont(family, bytes) {
+    registerImportedFont(family,bytes,style,weight,variations) {
       const key = primaryFamilyKey(family);
       if (!key) return false;
       const tf = CK.Typeface.MakeFreeTypeFaceFromData(copyBytes(bytes));
       if (!tf) return false;
       // Replace any prior face under the same key, freeing its wasm-heap tf.
       const prev = importedTypefaces.get(key);
+      browserFonts.remove(prev?.browser);
       if (prev && prev.tf && prev.tf.delete) prev.tf.delete();
-      importedTypefaces.set(key, { tf, family: String(family || '') });
+      importedTypefaces.set(key,{tf,family:String(family||''),browser:browserFonts.add(bytes,style,weight,variations)});
       coverageCache.clear();
       clearRegisteredFontCaches();
       return true;
@@ -2022,14 +2039,15 @@ export async function opCkInit(canvasId, dpr = 1, logicalWidth = 0, logicalHeigh
     // Register an app-bundled design face. Same replace-on-same-key discipline
     // as `registerImportedFont`; only the registry (and therefore the lookup
     // rank) differs.
-    registerBundledFont(family, bytes) {
+    registerBundledFont(family,bytes,style,weight,variations) {
       const key = primaryFamilyKey(family);
       if (!key) return false;
       const tf = CK.Typeface.MakeFreeTypeFaceFromData(copyBytes(bytes));
       if (!tf) return false;
       const prev = bundledTypefaces.get(key);
+      browserFonts.remove(prev?.browser);
       if (prev && prev.tf && prev.tf.delete) prev.tf.delete();
-      bundledTypefaces.set(key, { tf, family: String(family || '') });
+      bundledTypefaces.set(key,{tf,family:String(family||''),browser:browserFonts.add(bytes,style,weight,variations)});
       coverageCache.clear();
       clearRegisteredFontCaches();
       return true;
@@ -2052,6 +2070,7 @@ export async function opCkInit(canvasId, dpr = 1, logicalWidth = 0, logicalHeigh
       if (!key) return;
       const entry = importedTypefaces.get(key);
       if (!entry) return;
+      browserFonts.remove(entry.browser);
       if (entry.tf && entry.tf.delete) entry.tf.delete();
       importedTypefaces.delete(key);
       clearRegisteredFontCaches();

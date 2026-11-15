@@ -50,7 +50,7 @@ impl Serialize for BorrowedNodeMetadata<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         self.0.serialize(node_wire::ReplaceChildren::new(
             serializer,
-            self.0.children().map(|_| &[][..]),
+            self.0.children().map(|_| SharedNodes(&[][..])),
         ))
     }
 }

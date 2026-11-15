@@ -17,7 +17,7 @@ mod node_shallow;
 pub use node_shallow::clone_without_children;
 
 use jian_ops_schema::node::PenNode;
-use jian_ops_schema::node::{AlignItems, JustifyContent, LayoutMode, PenNodeBase};
+use jian_ops_schema::node::{LayoutMode, PenNodeBase};
 use jian_ops_schema::sizing::SizingBehavior;
 
 /// Read a `SizingBehavior` as a concrete pixel number. Keyword /
@@ -43,6 +43,16 @@ pub trait PenNodeExt {
     /// Mutably borrow this node's children, if it is a container
     /// variant. Frame / Group / Rectangle / Ref carry `children`.
     fn children_mut(&mut self) -> Option<&mut Vec<PenNode>>;
+    /// Borrow only an already-authored child list. Search/metadata walkers must
+    /// not create Some(empty) overrides on an absent canonical/Ref child field.
+    /// External implementations retain a compatible guarded default.
+    fn children_mut_if_present(&mut self) -> Option<&mut Vec<PenNode>> {
+        if self.children().is_some() {
+            self.children_mut()
+        } else {
+            None
+        }
+    }
 
     /// True when this variant can hold children (Frame / Group /
     /// Rectangle / Ref). Used by reparenting + group ops.
@@ -219,6 +229,17 @@ impl PenNodeExt for PenNode {
             PenNode::Rectangle(n) => Some(n.children.get_or_insert_with(Vec::new)),
             PenNode::Tabs(n) => Some(n.children.get_or_insert_with(Vec::new)),
             PenNode::Ref(n) => Some(n.children.get_or_insert_with(Vec::new)),
+            _ => None,
+        }
+    }
+
+    fn children_mut_if_present(&mut self) -> Option<&mut Vec<PenNode>> {
+        match self {
+            PenNode::Frame(n) => n.children.as_mut(),
+            PenNode::Group(n) => n.children.as_mut(),
+            PenNode::Rectangle(n) => n.children.as_mut(),
+            PenNode::Tabs(n) => n.children.as_mut(),
+            PenNode::Ref(n) => n.children.as_mut(),
             _ => None,
         }
     }
@@ -426,6 +447,3 @@ pub fn layout_mode_eq(a: &Option<LayoutMode>, b: LayoutMode) -> bool {
 /// Re-export so call sites that only need the alignment enums don't
 /// have to reach into `jian_ops_schema` directly.
 pub use jian_ops_schema::node::{AlignItems as OpsAlignItems, JustifyContent as OpsJustifyContent};
-
-#[allow(dead_code)]
-fn _enum_use(_a: AlignItems, _j: JustifyContent) {}

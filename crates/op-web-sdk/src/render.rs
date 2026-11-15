@@ -16,6 +16,8 @@ use std::{
 };
 use wasm_bindgen::{closure::Closure, prelude::*, JsCast};
 type Scene = Arc<op_editor_ui::layout_scene::LayoutScene>;
+#[path = "render/font_ready.rs"]
+mod font_ready;
 
 #[wasm_bindgen]
 extern "C" {
@@ -60,6 +62,7 @@ struct RenderShared {
     pending_size: Cell<Option<DisplaySize>>,
     requested_size: Cell<DisplaySize>,
     canvas: web_sys::HtmlCanvasElement,
+    font_ready: RefCell<Option<font_ready::Listener>>,
     pump: Weak<PumpHandle>,
     inner: RefCell<RenderInner>,
 }
@@ -183,6 +186,7 @@ impl Viewer {
             pending_size: Cell::new(None),
             requested_size: Cell::new(size),
             canvas,
+            font_ready: RefCell::new(None),
             pump: Rc::downgrade(&pump),
             inner: RefCell::new(RenderInner {
                 backend,
@@ -192,6 +196,9 @@ impl Viewer {
                 viewport: self.viewport,
             }),
         });
+        shared
+            .font_ready
+            .replace(Some(font_ready::Listener::install(&shared)?));
         self.render.current.replace(Some(Session {
             shared: Rc::clone(&shared),
             pump: Rc::clone(&pump),

@@ -239,7 +239,7 @@ impl Serialize for SharedNode {
         self.metadata
             .serialize(super::node_wire::ReplaceChildren::new(
                 serializer,
-                self.children(),
+                self.children().map(super::SharedNodes),
             ))
     }
 }

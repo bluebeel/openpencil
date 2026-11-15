@@ -29,6 +29,8 @@
 //! pause) snapshots the pre-edit state and pushes it. The
 //! last-keystroke timestamp lives on `ui.text_edit_last_ms`.
 
+#[path = "text_edit_change.rs"]
+mod change;
 #[path = "text_edit_history.rs"]
 mod history;
 
@@ -46,7 +48,8 @@ impl EditorState {
     /// isn't a `Text` node or doesn't exist. The caret seeds at the
     /// end of the content; history opens lazily on the first edit.
     pub fn start_text_edit(&mut self, id: NodeId) -> bool {
-        let Some(node) = crate::walkers::find_node(self.active_children(), &id) else {
+        let scope = self.command_lookup_active_scope();
+        let Some(node) = self.command_find_node(&scope, &id) else {
             return false;
         };
         if !matches!(node, PenNode::Text(_)) {
@@ -64,7 +67,8 @@ impl EditorState {
     /// active / the node vanished / the content is `Styled`.
     pub fn text_edit_content(&self) -> Option<&str> {
         let id = self.ui.text_editing.as_ref()?;
-        let node = crate::walkers::find_node(self.active_children(), id)?;
+        let scope = self.command_lookup_active_scope();
+        let node = self.command_find_node(&scope, id)?;
         text_content(node)?;
         Some(self.ui.text_edit_input.text())
     }
@@ -78,11 +82,10 @@ impl EditorState {
             return false;
         };
         let revision_before = self.document_revision();
-        let mut input = self.ui.text_edit_input.clone();
+        let input = &mut self.ui.text_edit_input;
+        let changed = change::replacement_changes(input, change::pending_range(input), text);
         input.clear_composition();
         input.insert_str(text, now_ms);
-        let changed = input.text() != self.ui.text_edit_input.text();
-        self.ui.text_edit_input = input;
         if changed {
             if !self.text_edit_sync_input_to_node(&id, now_ms, revision_before) {
                 return false;
@@ -110,15 +113,20 @@ impl EditorState {
             return false;
         };
         let revision_before = self.document_revision();
-        let mut input = self.ui.text_edit_input.clone();
+        let input = &mut self.ui.text_edit_input;
+        let (start, end) = change::pending_range(input);
+        let changed = start != end
+            || if forward {
+                input.caret() < input.text().len()
+            } else {
+                input.caret() != 0
+            };
         input.clear_composition();
         if forward {
             input.delete_forward(now_ms);
         } else {
             input.backspace(now_ms);
         }
-        let changed = input.text() != self.ui.text_edit_input.text();
-        self.ui.text_edit_input = input;
         if !changed {
             return false;
         }
@@ -137,10 +145,13 @@ impl EditorState {
             return false;
         };
         let revision_before = self.document_revision();
-        let mut input = self.ui.text_edit_input.clone();
+        let input = &mut self.ui.text_edit_input;
+        let (start, end) = change::pending_range(input);
+        let keeps_region = input
+            .composition()
+            .is_some_and(|composition| composition.region.is_some());
+        let changed = !keeps_region && start != end;
         input.set_composition(text, cursor, now_ms);
-        let changed = input.text() != self.ui.text_edit_input.text();
-        self.ui.text_edit_input = input;
         if changed {
             if !self.text_edit_sync_input_to_node(&id, now_ms, revision_before) {
                 return false;
@@ -167,10 +178,9 @@ impl EditorState {
             return false;
         }
         let revision_before = self.document_revision();
-        let mut input = self.ui.text_edit_input.clone();
+        let input = &mut self.ui.text_edit_input;
+        let changed = change::composition_changes(input);
         input.commit_composition(now_ms);
-        let changed = input.text() != self.ui.text_edit_input.text();
-        self.ui.text_edit_input = input;
         if changed {
             if !self.text_edit_sync_input_to_node(&id, now_ms, revision_before) {
                 return false;
@@ -280,7 +290,9 @@ impl EditorState {
         }
         let line_idx = line_index_for_offset(line_ranges, caret);
         let (line_start, _) = line_ranges[line_idx];
-        let column = content[line_start.min(len)..caret.min(len)].chars().count();
+        let caret = jian_core::text_input::prev_char_boundary(content, caret.min(len));
+        let start = jian_core::text_input::prev_char_boundary(content, line_start.min(caret));
+        let column = content[start..caret].chars().count();
         let next = if down {
             match line_ranges.get(line_idx + 1) {
                 Some(range) => offset_at_column(&content, *range, column),
@@ -353,7 +365,8 @@ impl EditorState {
 
     fn text_edit_plain_node_id(&self) -> Option<NodeId> {
         let id = self.ui.text_editing.as_ref()?;
-        let node = crate::walkers::find_node(self.active_children(), id)?;
+        let scope = self.command_lookup_active_scope();
+        let node = self.command_find_node(&scope, id)?;
         text_content(node)?;
         Some(id.clone())
     }
@@ -405,7 +418,8 @@ fn line_index_for_offset(line_ranges: &[(usize, usize)], offset: usize) -> usize
 /// Byte offset of the `column`-th character within `range` of
 /// `content`, clamped to the range end.
 fn offset_at_column(content: &str, range: (usize, usize), column: usize) -> usize {
-    let (start, end) = (range.0.min(content.len()), range.1.min(content.len()));
+    let start = jian_core::text_input::prev_char_boundary(content, range.0);
+    let end = jian_core::text_input::prev_char_boundary(content, range.1.max(start));
     let line = &content[start..end];
     for (taken, (i, _)) in line.char_indices().enumerate() {
         if taken == column {

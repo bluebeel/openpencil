@@ -45,10 +45,10 @@ pub(crate) fn inline_node(value: &mut Value, images: &Map<String, Value>) {
         return;
     }
     let node = std::mem::take(value);
-    let mut wrapper = serde_json::json!({
-        "children": [node],
-        "images": Value::Object(images.clone()),
-    });
+    let mut wrapper = Map::new();
+    wrapper.insert("children".into(), Value::Array(vec![node]));
+    wrapper.insert("images".into(), Value::Object(images.clone()));
+    let mut wrapper = Value::Object(wrapper);
     inline_images(&mut wrapper);
     *value = wrapper
         .get_mut("children")
@@ -76,10 +76,10 @@ pub(crate) fn inline_txn(value: &mut Value, images: &Map<String, Value>) {
         return;
     }
 
-    let mut wrapper = serde_json::json!({
-        "children": Value::Array(nodes),
-        "images": Value::Object(images.clone()),
-    });
+    let mut wrapper = Map::new();
+    wrapper.insert("children".into(), Value::Array(nodes));
+    wrapper.insert("images".into(), Value::Object(images.clone()));
+    let mut wrapper = Value::Object(wrapper);
     inline_images(&mut wrapper);
     let restored = wrapper
         .get_mut("children")
@@ -98,19 +98,21 @@ pub(crate) fn inline_frame(value: &mut Value, images: &Map<String, Value>) {
     let Some(body) = value.get_mut("body") else {
         return;
     };
-    let Some(kind) = body.get("type").and_then(Value::as_str).map(str::to_owned) else {
-        return;
+    let kind = match body.get("type").and_then(Value::as_str) {
+        Some("submit" | "commit") => 1,
+        Some("snapshot") => 2,
+        _ => return,
     };
     let Some(payload) = body.get_mut("payload") else {
         return;
     };
-    match kind.as_str() {
-        "submit" | "commit" => {
+    match kind {
+        1 => {
             if let Some(txn) = payload.get_mut("txn") {
                 inline_txn(txn, images);
             }
         }
-        "snapshot" => {
+        2 => {
             if let Some(document) = payload.get_mut("document") {
                 inline_document(document, images);
             }
@@ -123,17 +125,19 @@ pub(crate) fn frame_has_external_image_ref(value: &mut Value) -> bool {
     let Some(body) = value.get_mut("body") else {
         return false;
     };
-    let Some(kind) = body.get("type").and_then(Value::as_str).map(str::to_owned) else {
-        return false;
+    let kind = match body.get("type").and_then(Value::as_str) {
+        Some("submit" | "commit") => 1,
+        Some("snapshot") => 2,
+        _ => return false,
     };
     let Some(payload) = body.get_mut("payload") else {
         return false;
     };
-    match kind.as_str() {
-        "submit" | "commit" => payload
+    match kind {
+        1 => payload
             .get_mut("txn")
             .is_some_and(txn_has_external_image_ref),
-        "snapshot" => payload
+        2 => payload
             .get_mut("document")
             .is_some_and(document_has_external_image_ref),
         _ => false,
@@ -159,7 +163,9 @@ pub(crate) fn document_has_external_image_ref(value: &mut Value) -> bool {
 
 pub(crate) fn node_has_external_image_ref(value: &mut Value) -> bool {
     let node = std::mem::take(value);
-    let mut wrapper = serde_json::json!({ "children": [node] });
+    let mut wrapper = Map::new();
+    wrapper.insert("children".into(), Value::Array(vec![node]));
+    let mut wrapper = Value::Object(wrapper);
     let found = document_has_external_image_ref(&mut wrapper);
     *value = wrapper
         .get_mut("children")

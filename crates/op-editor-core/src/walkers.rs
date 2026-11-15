@@ -67,10 +67,11 @@ pub fn find_node_mut<'a>(children: &'a mut [PenNode], id: &NodeId) -> Option<&'a
             return Some(node);
         }
         // Search must never author a previously absent Ref child override.
-        if node.children().is_some() {
-            if let Some(children) = node.children_mut().filter(|children| !children.is_empty()) {
-                pending.push(children.iter_mut());
-            }
+        if let Some(children) = node
+            .children_mut_if_present()
+            .filter(|children| !children.is_empty())
+        {
+            pending.push(children.iter_mut());
         }
     }
     None
@@ -99,10 +100,7 @@ pub fn remove_from_children(children: &mut Vec<PenNode>, target: &NodeId) -> boo
     }
     for child in children.iter_mut() {
         // Searching is not an insertion: preserve absent child vectors.
-        if child.children().is_none() {
-            continue;
-        }
-        if let Some(grand) = child.children_mut() {
+        if let Some(grand) = child.children_mut_if_present() {
             if remove_from_children(grand, target) {
                 return true;
             }
@@ -120,10 +118,7 @@ pub fn extract_node(children: &mut Vec<PenNode>, target: &NodeId) -> Option<PenN
     }
     for child in children.iter_mut() {
         // Searching is not an insertion: preserve absent child vectors.
-        if child.children().is_none() {
-            continue;
-        }
-        if let Some(grand) = child.children_mut() {
+        if let Some(grand) = child.children_mut_if_present() {
             if let Some(extracted) = extract_node(grand, target) {
                 return Some(extracted);
             }
@@ -148,10 +143,7 @@ pub fn insert_before_in_children(
     let mut carry = node;
     for child in children.iter_mut() {
         // Searching is not an insertion: preserve absent child vectors.
-        if child.children().is_none() {
-            continue;
-        }
-        if let Some(grand) = child.children_mut() {
+        if let Some(grand) = child.children_mut_if_present() {
             match insert_before_in_children(grand, anchor, carry) {
                 Ok(()) => return Ok(()),
                 Err(returned) => carry = returned,
@@ -176,10 +168,7 @@ pub fn insert_after_in_children(
     let mut carry = node;
     for child in children.iter_mut() {
         // Searching is not an insertion: preserve absent child vectors.
-        if child.children().is_none() {
-            continue;
-        }
-        if let Some(grand) = child.children_mut() {
+        if let Some(grand) = child.children_mut_if_present() {
             match insert_after_in_children(grand, anchor, carry) {
                 Ok(()) => return Ok(()),
                 Err(returned) => carry = returned,
@@ -211,10 +200,7 @@ pub fn append_into(
     let mut carry = node;
     for child in children.iter_mut() {
         // Searching is not an insertion: preserve absent child vectors.
-        if child.children().is_none() {
-            continue;
-        }
-        if let Some(grand) = child.children_mut() {
+        if let Some(grand) = child.children_mut_if_present() {
             match append_into(grand, parent, carry) {
                 Ok(()) => return Ok(()),
                 Err(returned) => carry = returned,
@@ -247,10 +233,7 @@ pub fn prepend_into(
     let mut carry = node;
     for child in children.iter_mut() {
         // Searching is not an insertion: preserve absent child vectors.
-        if child.children().is_none() {
-            continue;
-        }
-        if let Some(grand) = child.children_mut() {
+        if let Some(grand) = child.children_mut_if_present() {
             match prepend_into(grand, parent, carry) {
                 Ok(()) => return Ok(()),
                 Err(returned) => carry = returned,
@@ -281,10 +264,7 @@ pub fn reorder_in_children(
     }
     for child in children.iter_mut() {
         // Searching is not an insertion: preserve absent child vectors.
-        if child.children().is_none() {
-            continue;
-        }
-        if let Some(grand) = child.children_mut() {
+        if let Some(grand) = child.children_mut_if_present() {
             if reorder_in_children(grand, target, direction) {
                 return true;
             }

@@ -131,8 +131,11 @@ impl<F: CollabJwksFetcher> CollabTicketVerifier<F> {
             cancelled,
             cancellation_enabled,
         )?;
-        let claims_bytes =
-            decode_segment(parsed.claims_segment, "claims", MAX_COLLAB_JWS_CLAIMS_BYTES)?;
+        let claims_bytes = zeroize::Zeroizing::new(decode_segment(
+            parsed.claims_segment,
+            "claims",
+            MAX_COLLAB_JWS_CLAIMS_BYTES,
+        )?);
         let claims: UnverifiedRelayTokenClaims = serde_json::from_slice(&claims_bytes)
             .map_err(|_| CollabVerifyError::MalformedJson { part: "claims" })?;
         let decoded_dh_pub_x25519 = decode_channel_binding(&claims.dh_pub_x25519)?;
@@ -201,8 +204,17 @@ impl<F: CollabJwksFetcher> CollabTicketVerifier<F> {
             });
         }
         if parsed.header.typ == COLLAB_JWS_TYPE && accept_full_collab_ticket {
-            let verified =
-                self.verify_at(bearer, expected_dh_pub_x25519, now_unix_seconds, cache_now)?;
+            if expected_dh_pub_x25519.iter().all(|byte| *byte == 0) {
+                return Err(CollabVerifyError::InvalidChannelBinding.into());
+            }
+            let verified = self.verify_ticket_parsed(
+                &parsed,
+                expected_dh_pub_x25519,
+                now_unix_seconds,
+                cache_now,
+                &|| false,
+                false,
+            )?;
             return Ok(VerifiedRelayBearer {
                 kind: RelayBearerKind::FullCollabTicket,
                 expires_at_unix_seconds: verified.expires_at_unix_seconds(),

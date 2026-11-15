@@ -43,7 +43,10 @@ pub fn command_capture_node_bytes(
     };
     count.add(std::mem::size_of::<SharedNode>() * 4)?;
     if header_only {
-        node.serialize(node_wire::ReplaceChildren::new(&mut count, Some(&[])))?;
+        node.serialize(node_wire::ReplaceChildren::new(
+            &mut count,
+            Some(super::SharedNodes(&[])),
+        ))?;
     } else {
         node.serialize(&mut count)?;
     }

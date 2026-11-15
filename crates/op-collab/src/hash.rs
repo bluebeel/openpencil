@@ -1,4 +1,8 @@
-use std::{fmt, str::FromStr};
+use std::{
+    fmt,
+    io::{BufWriter, Write},
+    str::FromStr,
+};
 
 use jian_ops_schema::{node::PenNode, PenDocument};
 use serde::{de::Error as _, Deserialize, Deserializer, Serialize, Serializer};
@@ -145,52 +149,72 @@ fn typed_canonical_value<T: Serialize>(
 }
 
 fn hash_value(value: &Value, domain: &str) -> Result<CanonicalHash, CanonicalHashError> {
-    let mut encoded = Vec::new();
-    write_canonical_value(value, &mut encoded)?;
     let mut hasher = blake3::Hasher::new();
     hasher.update(domain.as_bytes());
     hasher.update(&[0]);
-    hasher.update(&encoded);
-    let digest = hasher.finalize();
+    let mut writer = BufWriter::with_capacity(64 * 1024, HashWriter(hasher));
+    write_canonical_value(value, &mut writer)?;
+    writer.flush().map_err(serde_json::Error::io)?;
+    let digest = writer.get_ref().0.finalize();
     let mut bytes = [0_u8; CanonicalHash::BYTE_LEN];
     bytes.copy_from_slice(digest.as_bytes());
     Ok(CanonicalHash(bytes))
 }
 
-fn write_canonical_value(value: &Value, output: &mut Vec<u8>) -> Result<(), CanonicalHashError> {
+fn write_canonical_value<W: Write>(
+    value: &Value,
+    output: &mut W,
+) -> Result<(), CanonicalHashError> {
     match value {
-        Value::Null => output.extend_from_slice(b"null"),
-        Value::Bool(value) => output.extend_from_slice(if *value { b"true" } else { b"false" }),
-        Value::Number(value) => output.extend_from_slice(value.to_string().as_bytes()),
+        Value::Null => output.write_all(b"null").map_err(serde_json::Error::io)?,
+        Value::Bool(value) => output
+            .write_all(if *value { b"true" } else { b"false" })
+            .map_err(serde_json::Error::io)?,
+        Value::Number(value) => output
+            .write_all(value.to_string().as_bytes())
+            .map_err(serde_json::Error::io)?,
         Value::String(value) => {
             serde_json::to_writer(output, value)?;
         }
         Value::Array(values) => {
-            output.push(b'[');
+            output.write_all(b"[").map_err(serde_json::Error::io)?;
             for (index, value) in values.iter().enumerate() {
                 if index != 0 {
-                    output.push(b',');
+                    output.write_all(b",").map_err(serde_json::Error::io)?;
                 }
                 write_canonical_value(value, output)?;
             }
-            output.push(b']');
+            output.write_all(b"]").map_err(serde_json::Error::io)?;
         }
         Value::Object(values) => {
-            output.push(b'{');
+            output.write_all(b"{").map_err(serde_json::Error::io)?;
             let mut entries: Vec<_> = values.iter().collect();
             entries.sort_unstable_by(|left, right| left.0.cmp(right.0));
             for (index, (key, value)) in entries.into_iter().enumerate() {
                 if index != 0 {
-                    output.push(b',');
+                    output.write_all(b",").map_err(serde_json::Error::io)?;
                 }
                 serde_json::to_writer(&mut *output, key)?;
-                output.push(b':');
+                output.write_all(b":").map_err(serde_json::Error::io)?;
                 write_canonical_value(value, output)?;
             }
-            output.push(b'}');
+            output.write_all(b"}").map_err(serde_json::Error::io)?;
         }
     }
     Ok(())
+}
+
+/// BLAKE3 consumes the identical canonical byte stream without retaining a
+/// second complete UTF-8 encoding alongside its already-decoded Value tree.
+struct HashWriter(blake3::Hasher);
+impl Write for HashWriter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.update(bytes);
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 
 fn hex_nibble(byte: u8) -> u8 {
