@@ -314,6 +314,27 @@ fn decorate_slice(
 /// translucent bar ("greeking") instead of running the full layout.
 const GREEK_TEXT_MAX_DEVICE_PX: f32 = 3.0;
 
+/// Keep authored node translation outside the snapped glyph coordinate.
+/// Rounding a document-space baseline makes fractional node translation alter
+/// the glyph's local shape placement. The backend snaps only the alphabetic
+/// baseline; translations, rotations and camera transforms belong in the CTM.
+fn with_text_node_origin<R>(
+    backend: &mut dyn RenderBackend,
+    origin: Point2D,
+    action: impl FnOnce(&mut dyn RenderBackend) -> R,
+) -> R {
+    struct Restore<'a>(&'a mut dyn RenderBackend);
+    impl Drop for Restore<'_> {
+        fn drop(&mut self) {
+            self.0.restore();
+        }
+    }
+    backend.save();
+    let scope = Restore(backend);
+    scope.0.translate(origin);
+    action(&mut *scope.0)
+}
+
 pub(crate) fn paint_text_node(
     cx: &mut PaintCx<'_>,
     node: &SceneNode,
@@ -433,100 +454,98 @@ pub(crate) fn paint_text_node(
         } else {
             cx.backend.text_ascent_family(font_size, family, weight)
         };
-        let first_baseline_y = world_rect.origin.y + baseline_offset;
-        let last_line = layout.lines.len().saturating_sub(1);
-        for (idx, line) in layout.lines.iter().enumerate() {
-            if line.is_empty() {
-                continue;
-            }
-            let line_start = layout.line_starts[idx];
-            let line_end = line_start + line.len();
-            let line_w = measure_line_slices(
-                cx.backend,
-                paint_node,
-                text,
-                line_start,
-                line_end,
-                font_size,
-                weight,
-                ink,
-                family,
-                letter_spacing,
-            );
-            let x0 = match paint_node.text_align {
-                SceneTextAlign::Center => {
-                    world_rect.origin.x + (layout.align_width - line_w).max(0.0) / 2.0
+        with_text_node_origin(cx.backend, world_rect.origin, |backend| {
+            let first_baseline_y = baseline_offset;
+            let last_line = layout.lines.len().saturating_sub(1);
+            for (idx, line) in layout.lines.iter().enumerate() {
+                if line.is_empty() {
+                    continue;
                 }
-                SceneTextAlign::Right => {
-                    world_rect.origin.x + (layout.align_width - line_w).max(0.0)
-                }
-                SceneTextAlign::Left | SceneTextAlign::Justify => world_rect.origin.x,
-            };
-            // Justify spreads the residual width across space gaps on
-            // every line except the last (TS Justify parity).
-            let justify_extra =
-                if paint_node.text_align == SceneTextAlign::Justify && idx != last_line {
-                    justify_extra_per_gap((layout.align_width - line_w).max(0.0), line)
-                } else {
-                    0.0
+                let line_start = layout.line_starts[idx];
+                let line_end = line_start + line.len();
+                let line_w = measure_line_slices(
+                    backend,
+                    paint_node,
+                    text,
+                    line_start,
+                    line_end,
+                    font_size,
+                    weight,
+                    ink,
+                    family,
+                    letter_spacing,
+                );
+                let x0 = match paint_node.text_align {
+                    SceneTextAlign::Center => (layout.align_width - line_w).max(0.0) / 2.0,
+                    SceneTextAlign::Right => (layout.align_width - line_w).max(0.0),
+                    SceneTextAlign::Left | SceneTextAlign::Justify => 0.0,
                 };
-            let baseline_y = first_baseline_y + idx as f32 * layout.line_h;
-            let mut x = x0;
-            for_each_slice_range(
-                &paint_node.text_runs,
-                line_start,
-                line_end,
-                |start, end, run| {
-                    let style = resolved_slice_style(
-                        paint_node,
-                        font_size,
-                        weight,
-                        ink,
-                        run.map(|i| &paint_node.text_runs[i]),
-                    );
-                    let slice = &text[start..end];
-                    let slice_x0 = x;
-                    let (next_x, glyph_end) = draw_slice(
-                        cx.backend,
-                        slice,
-                        style,
-                        family,
-                        x,
-                        baseline_y,
-                        letter_spacing,
-                        justify_extra,
-                        paint_node.font_kerning,
-                        &paint_node.font_features,
-                    );
-                    let handled = style.enabled
-                        && style.text_decoration_skip_ink.is_some_and(|skip_ink| {
-                            (style.underline || style.strikethrough)
-                                && cx.backend.draw_text_decoration(&TextDecorationRequest {
-                                    text: slice,
-                                    font_family: family,
-                                    font_size: style.font_size,
-                                    font_weight: style.weight,
-                                    italic: style.italic,
-                                    kerning: paint_node.font_kerning,
-                                    letter_spacing,
-                                    line_height: paint_node.line_height,
-                                    justify_extra,
-                                    font_features: &paint_node.font_features,
-                                    origin: Point2D::new(slice_x0, baseline_y),
-                                    width: glyph_end - slice_x0,
-                                    color: style.color,
-                                    underline: style.underline,
-                                    strikethrough: style.strikethrough,
-                                    skip_ink,
-                                })
-                        });
-                    if !handled {
-                        decorate_slice(cx.backend, style, slice_x0, glyph_end, baseline_y);
-                    }
-                    x = next_x;
-                },
-            );
-        }
+                // Justify spreads the residual width across space gaps on
+                // every line except the last (TS Justify parity).
+                let justify_extra =
+                    if paint_node.text_align == SceneTextAlign::Justify && idx != last_line {
+                        justify_extra_per_gap((layout.align_width - line_w).max(0.0), line)
+                    } else {
+                        0.0
+                    };
+                let baseline_y = first_baseline_y + idx as f32 * layout.line_h;
+                let mut x = x0;
+                for_each_slice_range(
+                    &paint_node.text_runs,
+                    line_start,
+                    line_end,
+                    |start, end, run| {
+                        let style = resolved_slice_style(
+                            paint_node,
+                            font_size,
+                            weight,
+                            ink,
+                            run.map(|i| &paint_node.text_runs[i]),
+                        );
+                        let slice = &text[start..end];
+                        let slice_x0 = x;
+                        let (next_x, glyph_end) = draw_slice(
+                            backend,
+                            slice,
+                            style,
+                            family,
+                            x,
+                            baseline_y,
+                            letter_spacing,
+                            justify_extra,
+                            paint_node.font_kerning,
+                            &paint_node.font_features,
+                        );
+                        let handled = style.enabled
+                            && style.text_decoration_skip_ink.is_some_and(|skip_ink| {
+                                (style.underline || style.strikethrough)
+                                    && backend.draw_text_decoration(&TextDecorationRequest {
+                                        text: slice,
+                                        font_family: family,
+                                        font_size: style.font_size,
+                                        font_weight: style.weight,
+                                        italic: style.italic,
+                                        kerning: paint_node.font_kerning,
+                                        letter_spacing,
+                                        line_height: paint_node.line_height,
+                                        justify_extra,
+                                        font_features: &paint_node.font_features,
+                                        origin: Point2D::new(slice_x0, baseline_y),
+                                        width: glyph_end - slice_x0,
+                                        color: style.color,
+                                        underline: style.underline,
+                                        strikethrough: style.strikethrough,
+                                        skip_ink,
+                                    })
+                            });
+                        if !handled {
+                            decorate_slice(backend, style, slice_x0, glyph_end, baseline_y);
+                        }
+                        x = next_x;
+                    },
+                );
+            }
+        });
     }
     if let Some((start, end, _)) = composition_range {
         let thickness = (1.0 / zoom).max(1.0);
