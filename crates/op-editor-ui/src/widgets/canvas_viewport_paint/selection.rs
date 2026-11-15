@@ -96,6 +96,9 @@ impl SceneSelection<'_> {
 /// parents, overlays, placeholders in mask sources, or unrelated siblings.
 /// `cull` is the final page-space export viewport and bounds every layer hint.
 pub fn paint_export_selection(cx: &mut PaintCx<'_>, selection: &SceneSelection<'_>, cull: Rect) {
+    layer_bounds::with_bounds_reuse(|| paint_export_selection_inner(cx, selection, cull));
+}
+fn paint_export_selection_inner(cx: &mut PaintCx<'_>, selection: &SceneSelection<'_>, cull: Rect) {
     if !selection.visible {
         return;
     }

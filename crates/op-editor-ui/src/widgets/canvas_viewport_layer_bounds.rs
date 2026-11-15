@@ -21,6 +21,9 @@ const DEVICE_EDGE_PAD: f32 = 1.0;
 const MIN_LAYER_EXTENT: f32 = 1.0;
 
 type BoundsResult = Result<Option<Rect>, ()>;
+#[path = "canvas_viewport_layer_bounds_reuse.rs"]
+mod reuse;
+pub(super) use reuse::with_scope as with_bounds_reuse;
 
 /// Bounds for a node-level blend layer. The caller has already installed the
 /// root node's transform, so only descendant transforms are folded into this
@@ -117,6 +120,49 @@ fn subtree_visual_bounds(
 }
 
 fn subtree_visual_bounds_inner(
+    node: &SceneNode,
+    apply_root_transform: bool,
+    hidden_id: Option<&str>,
+    world_to_parent: glam::Mat2,
+    selected_output: bool,
+) -> BoundsResult {
+    // Leaf bounds have no repeated descendant traversal. Keep their original
+    // path and avoid a one-use hash allocation for a flat export root.
+    if node.children.is_empty() || hidden_id.is_some() {
+        return compute_subtree_visual_bounds(
+            node,
+            apply_root_transform,
+            hidden_id,
+            world_to_parent,
+            selected_output,
+        );
+    }
+    if hidden_id.is_none() {
+        if let Some(bounds) =
+            reuse::lookup(node, apply_root_transform, world_to_parent, selected_output)
+        {
+            return bounds;
+        }
+    }
+    let bounds = compute_subtree_visual_bounds(
+        node,
+        apply_root_transform,
+        hidden_id,
+        world_to_parent,
+        selected_output,
+    );
+    if hidden_id.is_none() {
+        reuse::insert(
+            node,
+            apply_root_transform,
+            world_to_parent,
+            selected_output,
+            bounds,
+        );
+    }
+    bounds
+}
+fn compute_subtree_visual_bounds(
     node: &SceneNode,
     apply_root_transform: bool,
     hidden_id: Option<&str>,

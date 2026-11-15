@@ -187,7 +187,9 @@ fn paint_node_with_options_hiding_mode<'a>(
         suppress_node_composite_id: None,
         fast_interaction,
     };
-    paint_node_inner(cx, node, &options, &mut Vec::new(), false)
+    super::layer_bounds::with_bounds_reuse(|| {
+        paint_node_inner(cx, node, &options, &mut Vec::new(), false)
+    })
 }
 
 /// Paint a topmost-first sibling list with the same mask semantics used by

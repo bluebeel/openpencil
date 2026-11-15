@@ -39,6 +39,11 @@ pub(super) fn nodes_ready(backend: &mut NativeBackend, nodes: &[SceneNode]) -> b
 }
 fn nodes_ready_uncached(backend: &mut NativeBackend, nodes: &[SceneNode]) -> bool {
     nodes.iter().all(|node| {
+        // The real painter returns before widget/resource access for this
+        // complete branch. Hidden authored data stays in the immutable scene.
+        if node.hidden {
+            return true;
+        }
         // Custom/widget painters may acquire resources not represented by the
         // ordinary scene image fields. Keep their original discovery path.
         if node.widget.is_some() || matches!(node.kind, NodeKind::Other(_)) {

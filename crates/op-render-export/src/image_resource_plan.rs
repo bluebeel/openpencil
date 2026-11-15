@@ -149,6 +149,11 @@ fn build(root: &SceneNode) -> Plan {
             stack.pop();
             continue;
         };
+        // Same unconditional early return as paint_node_inner, not a bounds
+        // approximation. Hidden images cannot require a discovery paint.
+        if node.hidden {
+            continue;
+        }
         if node.widget.is_some() || matches!(node.kind, NodeKind::Other(_)) {
             return Plan::Legacy;
         }
