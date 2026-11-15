@@ -1,4 +1,6 @@
 //! Keep fractional color values while constructing minification mip levels.
+#[path = "image_precision_cache.rs"]
+mod reuse;
 
 pub(super) fn minification_source(
     image: &skia_safe::Image,
@@ -12,6 +14,9 @@ pub(super) fn minification_source(
         )
     {
         return image.clone();
+    }
+    if let Some(converted) = reuse::get(image) {
+        return converted;
     }
     // Skia's 8-bit CPU mip chain rounds at each level, accumulating a dark
     // bias in deep reductions. Convert only this draw's source, preserving
@@ -28,7 +33,9 @@ pub(super) fn minification_source(
         return image.clone();
     };
     surface.canvas().draw_image(image, (0.0, 0.0), None);
-    surface.image_snapshot()
+    let converted = surface.image_snapshot();
+    reuse::remember(image, &converted);
+    converted
 }
 
 fn is_minified(canvas: &skia_safe::Canvas, local: [f32; 6]) -> bool {

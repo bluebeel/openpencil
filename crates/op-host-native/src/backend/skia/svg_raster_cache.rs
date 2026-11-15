@@ -15,7 +15,7 @@ pub(super) struct SvgRasterKey {
     pub path_key: u64,
     pub d_len: usize,
     pub even_odd: bool,
-    pub color_rgba: u32,
+    pub color_rgba: [u32; 4],
     pub size_bits: u32,
     pub viewbox_bits: u32,
     pub dpi_bits: u32,
@@ -28,6 +28,7 @@ pub(super) struct SvgRasterCacheEntry {
 }
 
 struct CachedRaster {
+    source: String,
     raster: SvgRasterCacheEntry,
     bytes: usize,
     last_used: u64,
@@ -58,18 +59,23 @@ impl SvgRasterCache {
         }
     }
 
-    pub fn contains_key(&self, key: &SvgRasterKey) -> bool {
-        self.entries.contains_key(key)
+    pub fn contains_key(&self, key: &SvgRasterKey, source: &str) -> bool {
+        self.entries
+            .get(key)
+            .is_some_and(|entry| entry.source == source)
     }
 
-    pub fn get(&mut self, key: &SvgRasterKey) -> Option<&SvgRasterCacheEntry> {
+    pub fn get(&mut self, key: &SvgRasterKey, source: &str) -> Option<&SvgRasterCacheEntry> {
         let entry = self.entries.get_mut(key)?;
+        if entry.source != source {
+            return None;
+        }
         self.tick = self.tick.wrapping_add(1);
         entry.last_used = self.tick;
         Some(&entry.raster)
     }
 
-    pub fn insert(&mut self, key: SvgRasterKey, raster: SvgRasterCacheEntry) {
+    pub fn insert(&mut self, key: SvgRasterKey, source: &str, raster: SvgRasterCacheEntry) {
         // These are raster_n32 snapshots. Use the actual row stride when
         // available so row padding also counts against the pixel budget.
         let bytes = raster.image.peek_pixels().map_or_else(
@@ -80,7 +86,12 @@ impl SvgRasterCache {
                     .saturating_mul(pixels.height().max(0) as usize)
             },
         );
-        if bytes > self.byte_budget || self.max_entries == 0 {
+        if bytes.saturating_add(source.len()) > self.byte_budget || self.max_entries == 0 {
+            return;
+        }
+        let source = source.to_owned();
+        let bytes = bytes.saturating_add(source.capacity());
+        if bytes > self.byte_budget {
             return;
         }
         if let Some(old) = self.entries.remove(&key) {
@@ -103,6 +114,7 @@ impl SvgRasterCache {
         self.entries.insert(
             key,
             CachedRaster {
+                source,
                 raster,
                 bytes,
                 last_used: self.tick,

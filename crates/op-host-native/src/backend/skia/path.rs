@@ -25,6 +25,7 @@ pub(super) struct SvgPathCacheEntry {
 
 struct SvgRasterRequest<'a> {
     path_key: u64,
+    source: &'a str,
     d_len: usize,
     path: &'a skia_safe::Path,
     even_odd: bool,
@@ -84,11 +85,12 @@ impl NativeBackend {
         &mut self,
         req: SvgRasterRequest<'_>,
     ) -> Option<&SvgRasterCacheEntry> {
-        if jian_skia::raster_sampling::is_point_sampling() {
+        if jian_skia::raster_sampling::is_point_sampling() || super::vector_document::is_pdf() {
             return None;
         }
         let SvgRasterRequest {
             path_key,
+            source,
             d_len,
             path,
             even_odd,
@@ -108,18 +110,6 @@ impl NativeBackend {
         } else {
             1.0
         };
-        let raster_s = s * dpi;
-        let pad_px = (SVG_RASTER_PAD * dpi).ceil();
-        let bounds = path.compute_tight_bounds();
-        if !bounds.is_finite() || bounds.is_empty() {
-            return None;
-        }
-        let width = (bounds.width() * raster_s).abs().ceil() as i32 + (pad_px as i32 * 2);
-        let height = (bounds.height() * raster_s).abs().ceil() as i32 + (pad_px as i32 * 2);
-        if width <= 0 || height <= 0 || width.saturating_mul(height) > SVG_RASTER_MAX_PIXELS {
-            return None;
-        }
-
         let key = SvgRasterKey {
             path_key,
             d_len,
@@ -129,9 +119,32 @@ impl NativeBackend {
             viewbox_bits: viewbox.to_bits(),
             dpi_bits: dpi.to_bits(),
         };
-        if self.svg_raster_cache.contains_key(&key) {
-            return self.svg_raster_cache.get(&key);
+        if self.svg_raster_cache.contains_key(&key, source) {
+            return self.svg_raster_cache.get(&key, source);
         }
+
+        let raster_s = s * dpi;
+        let pad_px = (SVG_RASTER_PAD * dpi).ceil();
+        let bounds = path.compute_tight_bounds();
+        if !bounds.is_finite() || bounds.is_empty() {
+            return None;
+        }
+        if !pad_px.is_finite() {
+            return None;
+        }
+        let pad = (pad_px as i64).checked_mul(2)?;
+        let width = ((bounds.width() * raster_s).abs().ceil() as i64).checked_add(pad)?;
+        let height = ((bounds.height() * raster_s).abs().ceil() as i64).checked_add(pad)?;
+        if width <= 0
+            || height <= 0
+            || width.saturating_mul(height) > i64::from(SVG_RASTER_MAX_PIXELS)
+        {
+            return None;
+        }
+        // Positive dimensions with a product below2M are representable as i32.
+        // Validate before narrowing; enormous valid floats must not overflow
+        // the old padding addition and panic before the fallback can run.
+        let (width, height) = (width as i32, height as i32);
 
         let mut surface = skia_safe::surfaces::raster_n32_premul((width, height))?;
         let raster_canvas = surface.canvas();
@@ -159,8 +172,8 @@ impl NativeBackend {
             ),
             size: Point2D::new(width as f32 / dpi, height as f32 / dpi),
         };
-        self.svg_raster_cache.insert(key, entry);
-        self.svg_raster_cache.get(&key)
+        self.svg_raster_cache.insert(key, source, entry);
+        self.svg_raster_cache.get(&key, source)
     }
 
     /// Step 5 SVG icons: parse an SVG path `d` string once, scale from
@@ -262,6 +275,7 @@ impl NativeBackend {
         let even_odd = explicit_even_odd.unwrap_or(inferred_even_odd);
         if let Some(raster) = self.cached_raster_svg_path(SvgRasterRequest {
             path_key,
+            source: d,
             d_len: d.len(),
             path: &path,
             even_odd,
@@ -728,9 +742,6 @@ fn fit_path_to_rect_uncached(path: &skia_safe::Path, rect: Rect) -> skia_safe::P
     path.with_transform(&matrix)
 }
 
-fn color_key(c: Color) -> u32 {
-    fn ch(v: f32) -> u32 {
-        (v.clamp(0.0, 1.0) * 255.0).round() as u32
-    }
-    (ch(c.r) << 24) | (ch(c.g) << 16) | (ch(c.b) << 8) | ch(c.a)
+fn color_key(c: Color) -> [u32; 4] {
+    [c.r.to_bits(), c.g.to_bits(), c.b.to_bits(), c.a.to_bits()]
 }
