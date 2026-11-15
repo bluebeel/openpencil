@@ -24,8 +24,6 @@ op-ai = { path = "../op-ai" }
 # Canonical hex-color parsing (dependency-free + wasm32-clean).
 op-util = { path = "../op-util" }
 base64 = "0.22"
-# Source-media edges for standard SVG pad extension, not vector rasterization.
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif", "bmp", "tiff", "ico"] }
 # Pure-Rust source-image edge extraction for vector SVG Clamp composition.
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp", "gif", "tiff", "bmp", "ico", "pnm", "qoi", "tga", "hdr"] }
 # Existing workspace-resolved, pure-Rust SVG grammar and f64 arc geometry.
