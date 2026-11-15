@@ -97,7 +97,7 @@ impl NativeBackend {
     /// gradient. `colors` is a row-major `rows`×`cols` lattice
     /// (length == `rows * cols`); vertex `(r, c)` anchors the colour at
     /// rect position `(c/(cols-1), r/(rows-1))`. The grid is triangulated
-    /// into `VertexMode::Triangles` with a u16 index buffer and drawn via
+    /// into `VertexMode::Triangles` (indexed when representable) and drawn via
     /// `Canvas::draw_vertices` under a round-rect clip so the fill
     /// respects the corner radius. `opacity` folds into the layer alpha.
     #[allow(clippy::too_many_arguments)]
@@ -128,59 +128,30 @@ impl NativeBackend {
         if super::raster_point::mesh(canvas, rect, radius, rows, cols, colors, opacity) {
             return;
         }
-        let rows = rows.max(2);
-        let cols = cols.max(2);
-        let vcount = (rows * cols) as usize;
-        if colors.len() != vcount {
-            // Malformed grid — degrade to first-vertex solid so the
-            // node still paints instead of vanishing.
+        let count = rows.max(2).checked_mul(cols.max(2)).map(|n| n as usize);
+        if count != Some(colors.len()) {
+            // Preserve the legacy malformed-grid solid fallback.
             if let Some(c) = colors.first() {
                 self.fill_round_rect(canvas, rect, radius, fold_opacity(*c, opacity));
             }
             return;
         }
-
-        let denom_c = (cols - 1) as f32;
-        let denom_r = (rows - 1) as f32;
-        let mut positions: Vec<skia_safe::Point> = Vec::with_capacity(vcount);
-        let mut sk_colors: Vec<skia_safe::Color> = Vec::with_capacity(vcount);
-        for r in 0..rows {
-            for c in 0..cols {
-                let x = rect.origin.x + (c as f32 / denom_c) * rect.size.x;
-                let y = rect.origin.y + (r as f32 / denom_r) * rect.size.y;
-                positions.push(skia_safe::Point::new(x, y));
-                let col = colors[(r * cols + c) as usize];
+        let Some(vertices) = jian_skia::mesh_geometry::lattice_vertices(
+            [rect.origin.x, rect.origin.y, rect.size.x, rect.size.y],
+            rows,
+            cols,
+            colors.len(),
+            |i| {
+                let col = colors[i];
                 let to_u8 = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
-                let a = (col.a * opacity).clamp(0.0, 1.0);
-                sk_colors.push(skia_safe::Color::from_argb(
-                    to_u8(a),
-                    to_u8(col.r),
-                    to_u8(col.g),
-                    to_u8(col.b),
-                ));
-            }
-        }
-
-        // Two triangles per grid cell (CCW). Index of vertex (r, c) is
-        // `r * cols + c`.
-        let mut indices: Vec<u16> = Vec::with_capacity(((rows - 1) * (cols - 1) * 6) as usize);
-        for r in 0..(rows - 1) {
-            for c in 0..(cols - 1) {
-                let tl = (r * cols + c) as u16;
-                let tr = (r * cols + c + 1) as u16;
-                let bl = ((r + 1) * cols + c) as u16;
-                let br = ((r + 1) * cols + c + 1) as u16;
-                indices.extend_from_slice(&[tl, tr, bl, tr, br, bl]);
-            }
-        }
-
-        let vertices = skia_safe::Vertices::new_copy(
-            skia_safe::vertices::VertexMode::Triangles,
-            &positions,
-            &positions,
-            &sk_colors,
-            Some(&indices),
-        );
+                // The draw paint applies layer opacity exactly once, matching
+                // the float-mesh path and Jian's mesh draw.
+                skia_safe::Color::from_argb(to_u8(col.a), to_u8(col.r), to_u8(col.g), to_u8(col.b))
+            },
+        ) else {
+            jian_skia::raster_sampling::mark_unsupported("unrepresentable mesh grid");
+            return;
+        };
 
         let restore = canvas.save();
         if radius > 0.5 {

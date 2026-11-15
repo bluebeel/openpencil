@@ -101,7 +101,9 @@ pub(super) fn prepare_solid(paint: &mut Paint) {
     jian_skia::raster_sampling::configure_final_src_over(paint);
 }
 
-const MAX_VERTICES: usize = 65536;
+// RGBAF32 source storage is explicitly bounded. The shader has no u16 index
+// buffer; all integer lattice coordinates within this bound remain exact f32.
+const MAX_MESH_BYTES: usize = 64 * 1024 * 1024;
 const MESH_SOURCE: &str = r#"
 uniform shader colors;
 uniform float4 bounds;
@@ -153,11 +155,11 @@ pub(super) fn mesh_field(
         return false;
     }
     let (rows, cols) = (rows.max(2), cols.max(2));
-    let count = rows.checked_mul(cols).map(|n| n as usize);
-    if count.is_none_or(|n| n > MAX_VERTICES || n != colors.len()) {
-        jian_skia::raster_sampling::mark_unsupported(
-            "invalid float mesh or more than65536 vertices",
-        );
+    let bytes = rows
+        .checked_mul(cols)
+        .and_then(|n| (n as usize).checked_mul(16));
+    if bytes.is_none_or(|n| n > MAX_MESH_BYTES || n / 16 != colors.len()) {
+        jian_skia::raster_sampling::mark_unsupported("invalid or oversized float mesh");
         return true;
     }
     if rect.size.x <= 0.0 || rect.size.y <= 0.0 {
@@ -165,7 +167,8 @@ pub(super) fn mesh_field(
     }
     let shader = MESH.with(|effect| {
         let effect = effect.as_ref()?;
-        let mut values = Vec::with_capacity(colors.len() * 16);
+        let mut values = Vec::new();
+        values.try_reserve_exact(bytes?).ok()?;
         for color in colors {
             let alpha = color.a.clamp(0.0, 1.0);
             for value in [
@@ -183,11 +186,9 @@ pub(super) fn mesh_field(
             AlphaType::Premul,
             None,
         );
-        let vertices = skia_safe::images::raster_from_data(
-            &info,
-            Data::new_copy(&values),
-            cols as usize * 16,
-        )?;
+        let data = Data::new_copy(&values);
+        drop(values);
+        let vertices = skia_safe::images::raster_from_data(&info, data, cols as usize * 16)?;
         let child = vertices.to_shader(None, SamplingOptions::default(), None)?;
         let values = [
             rect.origin.x,
@@ -197,7 +198,7 @@ pub(super) fn mesh_field(
             (cols - 1) as f32,
             (rows - 1) as f32,
         ];
-        let bytes: Vec<_> = values.into_iter().flat_map(f32::to_ne_bytes).collect();
+        let bytes: [u8; 24] = std::array::from_fn(|i| values[i / 4].to_ne_bytes()[i % 4]);
         effect.make_shader(
             Data::new_copy(&bytes),
             &[ChildPtr::Shader(child)],
