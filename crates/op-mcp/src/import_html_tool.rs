@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, fs};
+use std::{borrow::Cow, collections::BTreeMap, fs};
 
 use op_html::{import_html, HtmlImportOptions};
 
@@ -16,7 +16,7 @@ impl McpTool for ImportHtml {
 
     fn call(&self, args: &BTreeMap<String, String>) -> ToolOutcome {
         let html = match args.get("html") {
-            Some(html) => html.clone(),
+            Some(html) => Cow::Borrowed(html.as_str()),
             None => {
                 let Some(path) = args.get("htmlPath").or_else(|| args.get("html_path")) else {
                     return ToolOutcome::Err(
@@ -25,7 +25,7 @@ impl McpTool for ImportHtml {
                     );
                 };
                 match fs::read_to_string(path) {
-                    Ok(html) => html,
+                    Ok(html) => Cow::Owned(html),
                     Err(error) => {
                         return ToolOutcome::Err(
                             ToolErrorCode::ToolFailed,

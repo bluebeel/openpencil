@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, fs};
+use std::{borrow::Cow, collections::BTreeMap, fs};
 
 use op_html::{import_snapshot, HtmlImportOptions};
 
@@ -14,7 +14,7 @@ impl McpTool for ImportWebSnapshot {
 
     fn call(&self, args: &BTreeMap<String, String>) -> ToolOutcome {
         let snapshot = match args.get("snapshot") {
-            Some(snapshot) => snapshot.clone(),
+            Some(snapshot) => Cow::Borrowed(snapshot.as_str()),
             None => {
                 let Some(path) = args
                     .get("snapshotPath")
@@ -26,7 +26,7 @@ impl McpTool for ImportWebSnapshot {
                     );
                 };
                 match fs::read_to_string(path) {
-                    Ok(snapshot) => snapshot,
+                    Ok(snapshot) => Cow::Owned(snapshot),
                     Err(error) => {
                         return ToolOutcome::Err(
                             ToolErrorCode::ToolFailed,

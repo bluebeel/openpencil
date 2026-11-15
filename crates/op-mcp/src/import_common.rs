@@ -84,29 +84,9 @@ pub fn parse_import_placement(
 /// `children`). Distinct from the `count_nodes` MCP read tool, which
 /// counts the open document.
 pub fn count_subtree_nodes(nodes: &[PenNode]) -> usize {
-    nodes
-        .iter()
-        .map(|node| {
-            1 + match node {
-                PenNode::Frame(node) => node
-                    .children
-                    .as_deref()
-                    .map(count_subtree_nodes)
-                    .unwrap_or_default(),
-                PenNode::Group(node) => node
-                    .children
-                    .as_deref()
-                    .map(count_subtree_nodes)
-                    .unwrap_or_default(),
-                PenNode::Rectangle(node) => node
-                    .children
-                    .as_deref()
-                    .map(count_subtree_nodes)
-                    .unwrap_or_default(),
-                _ => 0,
-            }
-        })
-        .sum()
+    // Count every canonical physical child array, including interactive and
+    // Ref override containers; no recursive native stack or per-node copies.
+    crate::tools::read_walk::nodes(nodes).count()
 }
 
 /// Turn an import result into the shared insert-subtree outcome:

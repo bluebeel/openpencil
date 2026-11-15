@@ -71,6 +71,37 @@ pub(crate) fn extract_string_field(body: &str, key: &str) -> Option<String> {
     text(object(body)?.get(key)?)
 }
 
+/// Count one top-level array without allocating its element Value forest.
+/// Raw object fields retain the normal last-key-wins duplicate semantics.
+pub(crate) fn array_field_len(body: &str, key: &str) -> Option<usize> {
+    struct Length(usize);
+    impl<'de> Deserialize<'de> for Length {
+        fn deserialize<D: serde::Deserializer<'de>>(decoder: D) -> Result<Self, D::Error> {
+            struct Array;
+            impl<'de> serde::de::Visitor<'de> for Array {
+                type Value = Length;
+                fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                    formatter.write_str("an array")
+                }
+                fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                    self,
+                    mut values: A,
+                ) -> Result<Length, A::Error> {
+                    let mut count = 0;
+                    while values.next_element::<serde::de::IgnoredAny>()?.is_some() {
+                        count += 1;
+                    }
+                    Ok(Length(count))
+                }
+            }
+            decoder.deserialize_seq(Array)
+        }
+    }
+    serde_json::from_str::<Length>(object(body)?.get(key)?.get())
+        .ok()
+        .map(|length| length.0)
+}
+
 fn arguments(raw: &RawValue, tool: &str) -> Option<BTreeMap<String, String>> {
     argument_fields(object(raw.get())?, tool)
 }

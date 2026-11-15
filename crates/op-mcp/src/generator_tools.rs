@@ -320,21 +320,13 @@ fn update_generator_params_call(
                 // them needs neither a cloned Doc nor speculative application.
                 match &command {
                     op_editor_core::EditorCommand::PatchNodeData { patch_json, .. } => {
-                        serde_json::from_str::<Value>(patch_json)
-                            .ok()
-                            .and_then(|patch| {
-                                patch
-                                    .get("children")
-                                    .and_then(Value::as_array)
-                                    .map(Vec::len)
-                            })
-                            .unwrap_or(0)
+                        crate::parser::array_field_len(patch_json, "children").unwrap_or(0)
                     }
                     _ => 0,
                 }
             } else {
                 // Preserve the legacy arbitrary-argument snapshot contract.
-                let mut after = state.clone();
+                let mut after = state.clone_for_command_simulation();
                 if after.apply(command.clone()) {
                     child_count(find_node(&after, &id))
                 } else {
