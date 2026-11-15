@@ -177,6 +177,22 @@ impl ComponentLibrary {
     pub fn resolved_root<'a>(&'a self, doc: &'a PenDocument, id: &NodeId) -> Option<&'a PenNode> {
         self.resolved_entry(doc, id).map(|(_, root)| root)
     }
+    /// Resolve a known document-backed catalog slot without searching the
+    /// catalog again. Full-catalog validators already hold each exact entry;
+    /// calling resolved_root(id) in that loop turns validation quadratic.
+    /// Missing/stale routes retain the same document-wide identity fallback.
+    /// Owned external prototypes deliberately return None; callers needing
+    /// arbitrary first-ID semantics keep resolved_root.
+    pub fn resolved_document_root_at<'a>(
+        &'a self,
+        doc: &'a PenDocument,
+        index: usize,
+    ) -> Option<&'a PenNode> {
+        let component = self.components.get(index)?;
+        let location = self.document_backing.get(&component.id)?;
+        resolve_document_location(doc, location, component.id.as_str())
+            .or_else(|| find_node_in_document(doc, component.id.as_str()))
+    }
     fn resolved_entry<'a>(
         &'a self,
         doc: &'a PenDocument,

@@ -163,7 +163,17 @@ pub fn merge_library_src_into_state(
     let masters: Vec<_> = library
         .components
         .iter()
-        .filter_map(|component| library.resolved_root(&lib_doc, &component.id).cloned())
+        .enumerate()
+        .filter_map(|(index, component)| {
+            {
+                if library.is_document_backed(&component.id) {
+                    library.resolved_document_root_at(&lib_doc, index)
+                } else {
+                    library.resolved_root(&lib_doc, &component.id)
+                }
+            }
+            .cloned()
+        })
         .collect();
     report.masters_added = state.append_components_page_masters(masters);
 

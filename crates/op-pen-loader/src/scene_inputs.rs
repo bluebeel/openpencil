@@ -54,11 +54,13 @@ impl SceneInputs {
         if state.document_revision() == 0 {
             // The fresh scene builder reads this registry only before the
             // first edit. Mutable external prototypes have no revision proof.
-            for component in &state.components.components {
+            for (index, component) in state.components.components.iter().enumerate() {
                 if !state.components.is_document_backed(&component.id) {
                     return None;
                 }
-                let root = state.components.resolved_root(&state.doc, &component.id)?;
+                let root = state
+                    .components
+                    .resolved_document_root_at(&state.doc, index)?;
                 components.push((component.id.as_str().to_owned(), root as *const _ as usize));
             }
         }
@@ -135,12 +137,13 @@ impl SceneInputs {
                         .components
                         .iter()
                         .zip(&state.components.components)
-                        .all(|((id, ptr), component)| {
+                        .enumerate()
+                        .all(|(index, ((id, ptr), component))| {
                             id == component.id.as_str()
                                 && state.components.is_document_backed(&component.id)
                                 && state
                                     .components
-                                    .resolved_root(&state.doc, &component.id)
+                                    .resolved_document_root_at(&state.doc, index)
                                     .is_some_and(|root| *ptr == root as *const _ as usize)
                         })))
     }

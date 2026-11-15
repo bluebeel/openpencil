@@ -47,11 +47,13 @@ impl Key {
         if state.document_revision() == 0 {
             // External prototypes have no revision contract. Keep them fresh;
             // document-backed prototypes are identified by their exact source.
-            for c in &state.components.components {
+            for (index, c) in state.components.components.iter().enumerate() {
                 if !state.components.is_document_backed(&c.id) {
                     return None;
                 }
-                let root = state.components.resolved_root(&state.doc, &c.id)?;
+                let root = state
+                    .components
+                    .resolved_document_root_at(&state.doc, index)?;
                 components.push((c.id.as_str().to_owned(), root as *const _ as usize));
             }
         }

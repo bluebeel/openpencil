@@ -44,7 +44,7 @@ struct ReadCache {
     active: usize,
 }
 impl ReadCache {
-    fn take(&mut self, state: &EditorState) -> Option<lookup::Index> {
+    fn take(&mut self, state: &EditorState) -> Option<Record> {
         let owner = state.derived_cache_owner();
         let mut found = None;
         let mut kept = VecDeque::new();
@@ -54,7 +54,7 @@ impl ReadCache {
                 if record.generation == state.document_generation()
                     && record.revision == state.document_revision()
                 {
-                    found = Some(record.index);
+                    found = Some(record);
                 }
             } else if record.owner.strong_count() != 0 {
                 self.bytes = self.bytes.saturating_add(record.bytes);
@@ -64,11 +64,17 @@ impl ReadCache {
         self.records = kept;
         found
     }
-    fn acquire(&mut self, state: &EditorState) -> Option<(Option<lookup::Index>, usize)> {
-        let index = self.take(state);
-        let reservation = index
-            .as_ref()
-            .map_or(COLD_BYTES, lookup::Index::storage_bytes);
+    fn acquire(
+        &mut self,
+        state: &EditorState,
+    ) -> Option<(Option<lookup::Index>, usize, Option<usize>)> {
+        let record = self.take(state);
+        // This exact byte count was charged when the immutable record entered
+        // the cache. Recounting all node/ID capacities on every read defeats
+        // both scene-cache hits and small scalar/query snapshots.
+        let known_bytes = record.as_ref().map(|record| record.bytes);
+        let reservation = known_bytes.unwrap_or(COLD_BYTES);
+        let index = record.map(|record| record.index);
         while self
             .bytes
             .saturating_add(self.active)
@@ -81,14 +87,18 @@ impl ReadCache {
             self.bytes = self.bytes.saturating_sub(old.bytes);
         }
         self.active = self.active.saturating_add(reservation);
-        Some((index, reservation))
+        Some((index, reservation, known_bytes))
     }
-    fn release(&mut self, state: &EditorState, reservation: usize, index: Option<lookup::Index>) {
+    fn release(
+        &mut self,
+        state: &EditorState,
+        reservation: usize,
+        index: Option<(lookup::Index, usize)>,
+    ) {
         self.active = self.active.saturating_sub(reservation);
-        let Some(index) = index else {
+        let Some((index, bytes)) = index else {
             return;
         };
-        let bytes = index.storage_bytes();
         if bytes > reservation || bytes > CACHE_BYTES {
             return;
         }
@@ -126,7 +136,7 @@ impl EditorState {
         }
         let generation = self.document_generation();
         let revision = self.document_revision();
-        let Some((index, reservation)) =
+        let Some((index, reservation, known_bytes)) =
             CACHE.lock().ok().and_then(|mut cache| cache.acquire(self))
         else {
             return read(self);
@@ -146,8 +156,16 @@ impl EditorState {
         };
         // Destroy a panicked/invalid active index before returning its quota.
         drop(observed);
+        // The callback had only &EditorState: an already Ready index can be
+        // queried but cannot gain/remove entries or change any Vec capacities.
+        // A cold index is measured once here, outside the global cache mutex.
+        // Mutable writer/cohort observers keep their own original accounting.
+        let retained = index.map(|index| {
+            let bytes = known_bytes.unwrap_or_else(|| index.storage_bytes());
+            (index, bytes)
+        });
         if let Ok(mut cache) = CACHE.lock() {
-            cache.release(self, reservation, index);
+            cache.release(self, reservation, retained);
         }
         match result {
             Ok(result) => result,
