@@ -183,3 +183,16 @@ pub(crate) fn apply_instance_overrides_shared(
     cache.insert_shared(view, Rc::clone(&children));
     children
 }
+
+// Compatibility helpers are test-only and live beside their private shared implementation.
+impl InstanceExpansionCache {
+    #[cfg(test)]
+    pub(super) fn get(&mut self, key: &InstanceExpansionKey) -> Option<Vec<TreeNode>> {
+        self.get_shared(KeyView::from_owned(key))
+            .map(|children| children.as_ref().clone())
+    }
+    #[cfg(test)]
+    pub(super) fn insert(&mut self, key: InstanceExpansionKey, children: &[TreeNode]) {
+        self.insert_owned(key, Rc::new(children.to_vec()));
+    }
+}

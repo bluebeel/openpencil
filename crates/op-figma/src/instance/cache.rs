@@ -331,16 +331,6 @@ impl InstanceExpansionCache {
         self.structural_bytes = 0;
         *epoch
     }
-
-    #[cfg(test)]
-    fn get(&mut self, key: &InstanceExpansionKey) -> Option<Vec<TreeNode>> {
-        self.get_shared(shared::KeyView::from_owned(key))
-            .map(|children| children.as_ref().clone())
-    }
-    #[cfg(test)]
-    fn insert(&mut self, key: InstanceExpansionKey, children: &[TreeNode]) {
-        self.insert_owned(key, Rc::new(children.to_vec()));
-    }
 }
 
 /// Legacy mutable ownership for internal compatibility controls. Production
