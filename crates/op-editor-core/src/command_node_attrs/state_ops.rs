@@ -16,7 +16,6 @@ use crate::command::{EffectField, NodeFlag, StrokeSide};
 use crate::node_id::NodeId;
 use crate::pen_node_ext::PenNodeExt;
 use crate::state::EditorState;
-use crate::walkers::find_node_mut;
 use jian_ops_schema::node::{BoolOrExpression, PenNode};
 use jian_ops_schema::style::PenEffect;
 
@@ -26,7 +25,8 @@ impl EditorState {
         if !node_id.is_real() {
             return false;
         }
-        let Some(node) = find_node_mut(self.active_children_mut(), node_id) else {
+        let scope = self.command_lookup_active_scope();
+        let Some(node) = self.command_find_node_mut(&scope, node_id) else {
             return false;
         };
         super::borrowed::set_node_rotation(node, node_id, degrees)
@@ -38,7 +38,8 @@ impl EditorState {
         if !node_id.is_real() {
             return false;
         }
-        let Some(node) = find_node_mut(self.active_children_mut(), node_id) else {
+        let scope = self.command_lookup_active_scope();
+        let Some(node) = self.command_find_node_mut(&scope, node_id) else {
             return false;
         };
         super::borrowed::set_node_text(node, node_id, text)
@@ -50,7 +51,8 @@ impl EditorState {
         if !node_id.is_real() {
             return false;
         }
-        let Some(node) = find_node_mut(self.active_children_mut(), node_id) else {
+        let scope = self.command_lookup_active_scope();
+        let Some(node) = self.command_find_node_mut(&scope, node_id) else {
             return false;
         };
         super::borrowed::set_node_corner_radius(node, node_id, radius)
@@ -65,7 +67,8 @@ impl EditorState {
         if !node_id.is_real() || !radius.is_finite() || radius < 0.0 {
             return false;
         }
-        let Some(node) = find_node_mut(self.active_children_mut(), node_id) else {
+        let scope = self.command_lookup_active_scope();
+        let Some(node) = self.command_find_node_mut(&scope, node_id) else {
             return false;
         };
         write_corner_radius_at(node, index, radius as f64)
@@ -77,7 +80,8 @@ impl EditorState {
         if !node_id.is_real() || !self.is_editable(node_id) {
             return false;
         }
-        let Some(node) = find_node_mut(self.active_children_mut(), node_id) else {
+        let scope = self.command_lookup_active_scope();
+        let Some(node) = self.command_find_node_mut(&scope, node_id) else {
             return false;
         };
         match node {
@@ -95,7 +99,8 @@ impl EditorState {
         if !node_id.is_real() {
             return false;
         }
-        let Some(node) = find_node_mut(self.active_children_mut(), node_id) else {
+        let scope = self.command_lookup_active_scope();
+        let Some(node) = self.command_find_node_mut(&scope, node_id) else {
             return false;
         };
         super::borrowed::set_node_font_size(node, node_id, font_size)
@@ -107,7 +112,8 @@ impl EditorState {
         if !node_id.is_real() {
             return false;
         }
-        let Some(node) = find_node_mut(self.active_children_mut(), node_id) else {
+        let scope = self.command_lookup_active_scope();
+        let Some(node) = self.command_find_node_mut(&scope, node_id) else {
             return false;
         };
         super::borrowed::set_node_font_weight(node, node_id, font_weight)
@@ -126,7 +132,8 @@ impl EditorState {
         if !node_id.is_real() {
             return false;
         }
-        let Some(node) = find_node_mut(self.active_children_mut(), node_id) else {
+        let scope = self.command_lookup_active_scope();
+        let Some(node) = self.command_find_node_mut(&scope, node_id) else {
             return false;
         };
         super::borrowed::set_node_stroke_hex(node, node_id, hex)
@@ -139,7 +146,8 @@ impl EditorState {
         if !node_id.is_real() {
             return false;
         }
-        let Some(node) = find_node_mut(self.active_children_mut(), node_id) else {
+        let scope = self.command_lookup_active_scope();
+        let Some(node) = self.command_find_node_mut(&scope, node_id) else {
             return false;
         };
         super::borrowed::set_node_stroke_width(node, node_id, width)
@@ -166,7 +174,8 @@ impl EditorState {
         if !node_id.is_real() {
             return false;
         }
-        let Some(node) = find_node_mut(self.active_children_mut(), node_id) else {
+        let scope = self.command_lookup_active_scope();
+        let Some(node) = self.command_find_node_mut(&scope, node_id) else {
             return false;
         };
         super::borrowed::set_node_stroke_side_width_exact(node, node_id, side, width)
@@ -181,7 +190,8 @@ impl EditorState {
         if !node_id.is_real() {
             return false;
         }
-        let Some(node) = find_node_mut(self.active_children_mut(), node_id) else {
+        let scope = self.command_lookup_active_scope();
+        let Some(node) = self.command_find_node_mut(&scope, node_id) else {
             return false;
         };
         super::borrowed::set_node_fill_hex(node, node_id, hex)
@@ -193,7 +203,8 @@ impl EditorState {
         if !node_id.is_real() {
             return false;
         }
-        let Some(node) = find_node_mut(self.active_children_mut(), node_id) else {
+        let scope = self.command_lookup_active_scope();
+        let Some(node) = self.command_find_node_mut(&scope, node_id) else {
             return false;
         };
         super::borrowed::set_node_name(node, node_id, name)
@@ -212,7 +223,8 @@ impl EditorState {
         if !node_id.is_real() {
             return false;
         }
-        let Some(node) = find_node_mut(self.active_children_mut(), node_id) else {
+        let scope = self.command_lookup_active_scope();
+        let Some(node) = self.command_find_node_mut(&scope, node_id) else {
             return false;
         };
         super::borrowed::set_node_flag(node, node_id, flag, value)
@@ -230,7 +242,8 @@ impl EditorState {
         if !node_id.is_real() {
             return false;
         }
-        let Some(node) = find_node_mut(self.active_children_mut(), node_id) else {
+        let scope = self.command_lookup_active_scope();
+        let Some(node) = self.command_find_node_mut(&scope, node_id) else {
             return false;
         };
         super::borrowed::set_node_flip(node, node_id, flip_x, flip_y)
@@ -269,7 +282,8 @@ impl EditorState {
                 return false;
             }
         }
-        let Some(node) = find_node_mut(self.active_children_mut(), node_id) else {
+        let scope = self.command_lookup_active_scope();
+        let Some(node) = self.command_find_node_mut(&scope, node_id) else {
             return false;
         };
         match node {
@@ -299,7 +313,8 @@ impl EditorState {
         if !node_id.is_real() {
             return false;
         }
-        let Some(node) = find_node_mut(self.active_children_mut(), node_id) else {
+        let scope = self.command_lookup_active_scope();
+        let Some(node) = self.command_find_node_mut(&scope, node_id) else {
             return false;
         };
         super::borrowed::add_node_effect(node, node_id, kind)
@@ -312,7 +327,8 @@ impl EditorState {
         if !node_id.is_real() {
             return false;
         }
-        let Some(node) = find_node_mut(self.active_children_mut(), node_id) else {
+        let scope = self.command_lookup_active_scope();
+        let Some(node) = self.command_find_node_mut(&scope, node_id) else {
             return false;
         };
         super::borrowed::remove_node_effect(node, node_id, index)
@@ -332,7 +348,8 @@ impl EditorState {
         if !node_id.is_real() {
             return false;
         }
-        let Some(node) = find_node_mut(self.active_children_mut(), node_id) else {
+        let scope = self.command_lookup_active_scope();
+        let Some(node) = self.command_find_node_mut(&scope, node_id) else {
             return false;
         };
         super::borrowed::set_effect_param(node, node_id, index, field, value)
@@ -347,7 +364,8 @@ impl EditorState {
         if !node_id.is_real() {
             return false;
         }
-        let Some(node) = find_node_mut(self.active_children_mut(), node_id) else {
+        let scope = self.command_lookup_active_scope();
+        let Some(node) = self.command_find_node_mut(&scope, node_id) else {
             return false;
         };
         let Some(effects) = node_effects_slot(node).and_then(Option::as_mut) else {
@@ -371,7 +389,8 @@ impl EditorState {
         if !node_id.is_real() {
             return false;
         }
-        let Some(PenNode::Path(path)) = find_node_mut(self.active_children_mut(), node_id) else {
+        let scope = self.command_lookup_active_scope();
+        let Some(PenNode::Path(path)) = self.command_find_node_mut(&scope, node_id) else {
             return false;
         };
         path.fill_rule = Some(fill_rule);
@@ -393,17 +412,12 @@ impl EditorState {
         if !node_id.is_real() {
             return false;
         }
-        let Some(node) = find_node_mut(self.active_children_mut(), node_id) else {
+        let scope = self.command_lookup_active_scope();
+        let Some(node) = self.command_find_node_mut(&scope, node_id) else {
             return false;
         };
-        // An empty string clears the optional prop so the serialized
-        // `.op` carries no empty placeholder / value / label.
-        let next = if text.is_empty() {
-            None
-        } else {
-            Some(text.to_string())
-        };
-        write_widget_text(node, field, next)
+        // Empty text still clears the field; unsupported kinds allocate none.
+        write_widget_text(node, field, text)
     }
 
     /// Write the `bind:value` two-way binding on a widget node as
@@ -416,7 +430,8 @@ impl EditorState {
         if !node_id.is_real() {
             return false;
         }
-        let Some(node) = find_node_mut(self.active_children_mut(), node_id) else {
+        let scope = self.command_lookup_active_scope();
+        let Some(node) = self.command_find_node_mut(&scope, node_id) else {
             return false;
         };
         let Some(slot) = node_bindings_slot(node) else {
@@ -451,7 +466,8 @@ impl EditorState {
         if !node_id.is_real() || !value.is_finite() {
             return false;
         }
-        let Some(node) = find_node_mut(self.active_children_mut(), node_id) else {
+        let scope = self.command_lookup_active_scope();
+        let Some(node) = self.command_find_node_mut(&scope, node_id) else {
             return false;
         };
         write_widget_number(node, field, value)
@@ -465,7 +481,8 @@ impl EditorState {
         if !node_id.is_real() {
             return false;
         }
-        let Some(node) = find_node_mut(self.active_children_mut(), node_id) else {
+        let scope = self.command_lookup_active_scope();
+        let Some(node) = self.command_find_node_mut(&scope, node_id) else {
             return false;
         };
         match node {
@@ -487,7 +504,8 @@ impl EditorState {
         if !node_id.is_real() {
             return false;
         }
-        let Some(node) = find_node_mut(self.active_children_mut(), node_id) else {
+        let scope = self.command_lookup_active_scope();
+        let Some(node) = self.command_find_node_mut(&scope, node_id) else {
             return false;
         };
         super::borrowed::set_effect_color(node, node_id, index, hex)

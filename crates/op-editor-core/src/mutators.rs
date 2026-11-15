@@ -77,7 +77,8 @@ impl EditorState {
         if !self.selection.anchor.is_real() {
             return None;
         }
-        find_node(self.active_children(), &self.selection.anchor)
+        let scope = self.command_lookup_active_scope();
+        self.command_find_node(&scope, &self.selection.anchor)
     }
 
     /// True when `id` is in the active selection set.
@@ -97,13 +98,14 @@ impl EditorState {
         if self.instance_write_virtual_anchor.as_ref() == Some(id) {
             return true;
         }
-        if let Some(node) = find_node(self.active_children(), id) {
+        let scope = self.command_lookup_active_scope();
+        if let Some(node) = self.command_find_node(&scope, id) {
             return node_editable(node);
         }
         let Some((ref_id, _child_id)) = self.split_instance_anchor(id) else {
             return false;
         };
-        find_node(self.active_children(), &ref_id)
+        self.command_find_node(&scope, &ref_id)
             .filter(|node| matches!(node, PenNode::Ref(_)))
             .is_some_and(node_editable)
     }
@@ -119,7 +121,9 @@ impl EditorState {
     /// every-descendant-visible rule made every imported frame
     /// permanently undeletable and immovable.
     pub fn is_subtree_unlocked(&self, id: &NodeId) -> bool {
-        find_node(self.active_children(), id).is_some_and(subtree_unlocked)
+        let scope = self.command_lookup_active_scope();
+        self.command_find_node(&scope, id)
+            .is_some_and(subtree_unlocked)
     }
 
     /// Largest editor-minted `n{N}` id suffix anywhere in the

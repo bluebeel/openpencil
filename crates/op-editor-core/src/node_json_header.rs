@@ -1,5 +1,5 @@
 //! Root-only JSON updates preserve descendant ownership and exact metadata.
-use crate::{pen_node_ext::clone_without_children, PenNodeExt};
+use crate::{history_snapshot::BorrowedNodeMetadata, PenNodeExt};
 use jian_ops_schema::node::PenNode;
 use serde_json::Value;
 
@@ -38,11 +38,7 @@ pub(crate) fn map_header_json_in_place(
     node: &mut PenNode,
     transform: impl FnOnce(&mut Value),
 ) -> Result<(), HeaderMapError> {
-    let mut value = if node.children().is_none_or(|children| children.is_empty()) {
-        serde_json::to_value(&*node)?
-    } else {
-        serde_json::to_value(clone_without_children(node))?
-    };
+    let mut value = serde_json::to_value(BorrowedNodeMetadata::new(node))?;
     transform(&mut value);
     let header: PenNode = serde_json::from_value(value)?;
     if std::mem::discriminant(node) != std::mem::discriminant(&header) {

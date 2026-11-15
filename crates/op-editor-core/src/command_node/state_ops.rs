@@ -10,8 +10,7 @@
 
 use super::builders::{build_leaf_node, kind_is_valid};
 use super::tree_ops::{
-    apply_copy_overrides, insert_into_parent_or_root, remap_subtree_ids_mapping_with_allocator,
-    remap_subtree_ids_with_allocator,
+    apply_copy_overrides, insert_into_parent_or_root, remap_subtree_ids_with_allocator,
 };
 use crate::command::BatchInsertItem;
 use crate::fills::set_primary_fill_hex;
@@ -517,13 +516,10 @@ impl EditorState {
         if nodes.is_empty() {
             return Ok(None);
         }
-        // Validate the parent up front (when not the page root).
-        if parent_id.is_real() {
-            match walkers::find_node(self.active_children(), parent_id) {
-                Some(p) if p.is_container() => {}
-                _ => return Ok(None),
-            }
-        }
+        let scope = self.command_lookup_active_scope();
+        let Some(destination) = super::insertion::path(self, &scope, parent_id) else {
+            return Ok(None);
+        };
         let mut taken: HashSet<NodeId> = allocator.document_collision_ids(&self.doc);
         let mut nodes = nodes;
         let replacement = replace_empty_root
@@ -535,32 +531,22 @@ impl EditorState {
                 )
             })
             .flatten();
-        // remap_subtree_ids_mapping mutates every node id IN PLACE (DFS order).
-        // Reading root ids from the mapping by index is incorrect: for a
-        // forest where root0 has children, mapping[0..root_count] would yield
-        // [root0, child0a, ...] instead of [root0, root1, ...]. Instead, read
-        // the root ids directly from the top-level nodes after remap — they
-        // are already updated in place and ordering is exact.
-        remap_subtree_ids_mapping_with_allocator(&mut nodes, allocator, &mut taken)?;
+        // No all-descendant old/new map is needed: only actual remapped
+        // top-level root IDs are returned, in their real canonical order.
+        remap_subtree_ids_with_allocator(&mut nodes, allocator, &mut taken)?;
         let root_ids: Vec<String> = nodes.iter().map(|n| n.id_str().to_string()).collect();
-        // All validation + allocation passed — now mutate.
-        if parent_id.is_real() {
-            let root = self.active_children_mut();
-            let Some(parent) = walkers::find_node_mut(root, parent_id) else {
-                return Ok(None);
-            };
-            let Some(slot) = parent.children_mut() else {
-                return Ok(None);
-            };
-            slot.extend(nodes);
-        } else {
-            let roots = self.active_children_mut();
+        if !parent_id.is_real() {
             if let Some(replacement) = replacement.as_ref() {
-                if !crate::command_root_replace::remove_root_frame_replacement(roots, replacement) {
+                if !crate::command_root_replace::remove_root_frame_replacement(
+                    self.active_children_mut(),
+                    replacement,
+                ) {
                     return Ok(None);
                 }
             }
-            roots.extend(nodes);
+        }
+        if self.command_extend_at(&scope, &destination, nodes).is_err() {
+            return Ok(None);
         }
         Ok(Some(root_ids))
     }

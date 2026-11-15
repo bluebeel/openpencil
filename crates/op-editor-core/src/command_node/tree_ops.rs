@@ -133,7 +133,10 @@ pub fn remap_subtree_ids(
     next_id: &mut u64,
     taken: &mut HashSet<NodeId>,
 ) -> bool {
-    remap_subtree_ids_mapping(nodes, next_id, taken).is_some()
+    let mut allocator = SequentialIdAllocator::new(*next_id);
+    let result = remap_subtree_ids_with_allocator(nodes, &mut allocator, taken).is_ok();
+    *next_id = allocator.next_counter();
+    result
 }
 
 /// Allocator-aware form of [`remap_subtree_ids`].
@@ -203,14 +206,22 @@ fn commit_forest_ids(
     planned: &mut impl Iterator<Item = NodeId>,
     record: &mut impl FnMut(String, &str),
 ) {
-    for node in nodes {
+    let mut pending = vec![nodes.iter_mut()];
+    while let Some(siblings) = pending.last_mut() {
+        let Some(node) = siblings.next() else {
+            pending.pop();
+            continue;
+        };
         let fresh: String = planned.next().expect("one prepared ID per node").into();
         let old = std::mem::replace(&mut node.base_mut().id, fresh);
         record(old, node.id_str());
-        // A search/remap must preserve omitted Ref child overrides.
+        // Preserve omitted Ref overrides; use depth-sized explicit cursors
+        // instead of one native call-stack frame for every imported level.
         if node.children().is_some() {
             if let Some(children) = node.children_mut() {
-                commit_forest_ids(children, planned, record);
+                if !children.is_empty() {
+                    pending.push(children.iter_mut());
+                }
             }
         }
     }

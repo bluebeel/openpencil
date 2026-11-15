@@ -1,6 +1,6 @@
 //! Canonical JSON transforms without repeatedly decoding descendant graphs.
 
-use crate::{pen_node_ext::clone_without_children, PenNodeExt};
+use crate::{history_snapshot::BorrowedNodeMetadata, PenNodeExt};
 use jian_ops_schema::node::PenNode;
 use serde_json::Value;
 
@@ -19,14 +19,9 @@ pub fn map_subtree_json(
         root: bool,
         transform: &mut impl FnMut(&mut Value, bool),
     ) -> Result<PenNode, serde_json::Error> {
-        // Leaves and authored empty containers have no descendant graph to
-        // strip. Serialize them by reference instead of cloning all metadata
-        // (strings, paints and optional callback groups) before serialization.
-        let mut value = if source.children().is_none_or(|children| children.is_empty()) {
-            serde_json::to_value(source)?
-        } else {
-            serde_json::to_value(clone_without_children(source))?
-        };
+        // Forward canonical metadata by reference, replacing only children
+        // with an empty presence witness. No owned metadata clone is needed.
+        let mut value = serde_json::to_value(BorrowedNodeMetadata::new(source))?;
         transform(&mut value, root);
         let mut node: PenNode = serde_json::from_value(value)?;
         if let Some(children) = source.children() {

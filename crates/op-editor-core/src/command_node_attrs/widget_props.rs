@@ -9,30 +9,28 @@ use jian_ops_schema::node::{NumberOrExpression, PenNode};
 
 /// Write a string-typed widget prop. Returns true only when the
 /// node variant actually carries `field`.
-pub(super) fn write_widget_text(
-    node: &mut PenNode,
-    field: WidgetTextField,
-    next: Option<String>,
-) -> bool {
+pub(super) fn write_widget_text(node: &mut PenNode, field: WidgetTextField, text: &str) -> bool {
     use WidgetTextField as F;
-    match (node, field) {
-        (PenNode::TextInput(n), F::Placeholder) => n.placeholder = next,
-        (PenNode::TextInput(n), F::Value) => n.value = next,
-        (PenNode::TextArea(n), F::Placeholder) => n.placeholder = next,
-        (PenNode::TextArea(n), F::Value) => n.value = next,
-        (PenNode::NumberInput(n), F::Placeholder) => n.placeholder = next,
-        (PenNode::Select(n), F::Placeholder) => n.placeholder = next,
-        (PenNode::Select(n), F::Value) => n.value = next,
-        (PenNode::RadioGroup(n), F::Value) => n.value = next,
-        (PenNode::Checkbox(n), F::Label) => n.label = next,
-        (PenNode::TextInput(n), F::LeadingIcon) => n.leading_icon = next,
-        (PenNode::TextInput(n), F::TrailingIcon) => n.trailing_icon = next,
-        (PenNode::TextArea(n), F::LeadingIcon) => n.leading_icon = next,
-        (PenNode::TextArea(n), F::TrailingIcon) => n.trailing_icon = next,
-        (PenNode::NumberInput(n), F::LeadingIcon) => n.leading_icon = next,
-        (PenNode::NumberInput(n), F::TrailingIcon) => n.trailing_icon = next,
+    let slot = match (node, field) {
+        (PenNode::TextInput(n), F::Placeholder) => &mut n.placeholder,
+        (PenNode::TextInput(n), F::Value) => &mut n.value,
+        (PenNode::TextArea(n), F::Placeholder) => &mut n.placeholder,
+        (PenNode::TextArea(n), F::Value) => &mut n.value,
+        (PenNode::NumberInput(n), F::Placeholder) => &mut n.placeholder,
+        (PenNode::Select(n), F::Placeholder) => &mut n.placeholder,
+        (PenNode::Select(n), F::Value) => &mut n.value,
+        (PenNode::RadioGroup(n), F::Value) => &mut n.value,
+        (PenNode::Checkbox(n), F::Label) => &mut n.label,
+        (PenNode::TextInput(n), F::LeadingIcon) => &mut n.leading_icon,
+        (PenNode::TextInput(n), F::TrailingIcon) => &mut n.trailing_icon,
+        (PenNode::TextArea(n), F::LeadingIcon) => &mut n.leading_icon,
+        (PenNode::TextArea(n), F::TrailingIcon) => &mut n.trailing_icon,
+        (PenNode::NumberInput(n), F::LeadingIcon) => &mut n.leading_icon,
+        (PenNode::NumberInput(n), F::TrailingIcon) => &mut n.trailing_icon,
         _ => return false,
-    }
+    };
+    // Do not allocate a string before the actual typed target accepts it.
+    *slot = (!text.is_empty()).then(|| text.to_owned());
     true
 }
 
