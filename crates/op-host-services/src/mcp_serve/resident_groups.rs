@@ -107,7 +107,7 @@ fn candidate(line: &str, profile: McpAccessProfile) -> Option<op_mcp::ToolCall> 
     {
         return None;
     }
-    if !super::cohort_coverage::tool(&call.tool) {
+    if !super::cohort_coverage::call(&call) {
         return None;
     }
     Some(call)

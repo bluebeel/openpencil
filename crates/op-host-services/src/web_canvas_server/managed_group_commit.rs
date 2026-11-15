@@ -118,7 +118,7 @@ fn candidate(line: &str, profile: McpAccessProfile) -> bool {
     {
         return false;
     }
-    mcp_serve::cohort_coverage::tool(&call.tool)
+    mcp_serve::cohort_coverage::call(&call)
 }
 
 fn audited(command: &C) -> bool {
@@ -356,6 +356,14 @@ impl Transaction<'_, '_, '_> {
                     request.profile,
                     &request.permit,
                     |editor| {
+                        if !mcp_serve::cohort_coverage::prepared_call(
+                            editor,
+                            &request.line,
+                            request.profile,
+                        ) {
+                            isolated = true;
+                            return Ok(None);
+                        }
                         let operation = fence.watch();
                         let result = mcp_serve::process_message_with_applier_profiled(
                             editor,

@@ -130,7 +130,7 @@ fn collect(
     Ok((result, super::flatten(command)?))
 }
 
-fn stateless_setter(name: &str) -> bool {
+pub(super) fn stateless_setter(name: &str) -> bool {
     op_mcp::advanced_edit_tools::is_local_setter(name)
         || matches!(
             name,

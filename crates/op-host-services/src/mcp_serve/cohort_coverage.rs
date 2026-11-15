@@ -1,6 +1,27 @@
 //! One exact operation allowlist for primary and resident durable cohorts.
 //! Tool admission never replaces real registry validation or Core capture proof.
 use op_editor_core::EditorCommand as C;
+
+pub(crate) fn call(call: &op_mcp::ToolCall) -> bool {
+    tool(&call.tool)
+        || (call.tool == "batch_tools"
+            && super::atomic_tools::sparse_cohort_candidate(&call.arguments))
+}
+
+/// Called only after installing the actual actor context under the writer lock.
+/// Registry preparation cannot enter the broad simulation on this route.
+pub(crate) fn prepared_call(
+    state: &op_editor_core::EditorState,
+    line: &str,
+    profile: super::tool_profile::McpAccessProfile,
+) -> bool {
+    let Some(call) = op_mcp::parse_tool_call(line) else {
+        return false;
+    };
+    call.tool != "batch_tools"
+        || super::atomic_tools::sparse_cohort_prepared(state, &call.arguments, profile)
+}
+
 pub(crate) fn tool(name: &str) -> bool {
     name.starts_with("insert_")
         || matches!(

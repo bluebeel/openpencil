@@ -22,6 +22,30 @@ impl EditorState {
     /// A request-local proof for the live atomic driver, consumed before any
     /// unsupported command runs. It owns no routes or catalog snapshots.
     pub(crate) fn metadata_command_preserves_components(&self, command: &EditorCommand) -> bool {
+        if matches!(command, EditorCommand::Batch { .. }) {
+            let mut pending = vec![(command, 0usize)];
+            let mut count = 0usize;
+            while let Some((member, depth)) = pending.pop() {
+                count += 1;
+                if count > 4096 || depth > 32 {
+                    return false;
+                }
+                if let EditorCommand::Batch { commands } = member {
+                    if commands.is_empty()
+                        || commands.len() > 4096usize.saturating_sub(count + pending.len())
+                    {
+                        return false;
+                    }
+                    pending.extend(commands.iter().map(|member| (member, depth + 1)));
+                } else if !self.metadata_command_preserves_components(member) {
+                    return false;
+                }
+            }
+            // These setters cannot allocate, change IDs/pages or turn a target
+            // into a definition. Each exact leaf proof therefore remains valid
+            // after the preceding metadata setters in this same atomic batch.
+            return true;
+        }
         if bulk::prepare_metadata(command).is_none() {
             return false;
         }

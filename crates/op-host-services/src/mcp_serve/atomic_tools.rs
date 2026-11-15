@@ -22,6 +22,32 @@ mod live;
 mod sparse;
 pub(super) use live::try_execute;
 
+/// Queue admission inspects only bounded input and the closed pure factory
+/// list. Actual sparse eligibility is rechecked in the actor's locked context.
+pub(crate) fn sparse_cohort_candidate(arguments: &BTreeMap<String, String>) -> bool {
+    input::parse(arguments).is_ok_and(|steps| {
+        steps
+            .iter()
+            .all(|step| sparse::stateless_setter(&step.name))
+    })
+}
+
+/// A false result has executed nothing. Cohorts must fall back before the
+/// ordinary planner could instantiate a whole-document atomic simulation.
+pub(crate) fn sparse_cohort_prepared(
+    state: &EditorState,
+    arguments: &BTreeMap<String, String>,
+    profile: McpAccessProfile,
+) -> bool {
+    let Ok(steps) = input::parse(arguments) else {
+        return false;
+    };
+    matches!(
+        sparse::prepare(state, &steps, arguments, profile),
+        Ok(Some(_))
+    )
+}
+
 /// Only the explicitly bound host path supplies these callbacks. Legacy and
 /// arbitrary appliers retain the complete isolated prepare/replay behavior.
 #[derive(Clone, Copy)]

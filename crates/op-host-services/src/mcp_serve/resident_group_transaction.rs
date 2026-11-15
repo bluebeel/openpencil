@@ -162,6 +162,14 @@ impl<'s, 'q> Transaction<'s, 'q> {
                 request.profile,
                 &request.permit,
                 |editor| {
+                    if !mcp_serve::cohort_coverage::prepared_call(
+                        editor,
+                        &request.line,
+                        request.profile,
+                    ) {
+                        isolated = true;
+                        return Ok(None);
+                    }
                     let operation = fence.watch();
                     let result = mcp_serve::process_message_with_bound_authority_profiled(
                         editor,
