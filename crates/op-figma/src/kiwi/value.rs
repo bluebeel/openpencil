@@ -76,14 +76,14 @@ impl FigValue {
         self.make_eager();
         self.materialize_compact();
         match self {
-            FigValue::Object(pairs) => pairs
-                .iter_mut()
-                .find(|(name, _)| name.as_ref() == key)
-                .map(|(_, value)| {
-                    value.make_eager();
-                    value
-                })
-                .filter(|value| !matches!(value, FigValue::Null)),
+            FigValue::Object(pairs) => {
+                // Search borrowed storage first. A missing key must not detach
+                // and clone every field of an otherwise shared source object.
+                let index = pairs.iter().position(|(name, _)| name.as_ref() == key)?;
+                let value = &mut pairs[index].1;
+                value.make_eager();
+                (!matches!(value, FigValue::Null)).then_some(value)
+            }
             _ => None,
         }
     }

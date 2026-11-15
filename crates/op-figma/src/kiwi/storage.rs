@@ -12,7 +12,9 @@ struct Shared<T> {
     values: Box<[T]>,
     copy: OnceLock<CopyValues<T>>,
 }
-pub struct PackedVec<T>(Arc<Shared<T>>);
+// Empty arrays/objects are real schema values, but need no heap owner until
+// an element is inserted. None here is storage-only, never FigValue::Null.
+pub struct PackedVec<T>(Option<Arc<Shared<T>>>);
 fn copy_values<T: Clone>(values: &[T]) -> Box<[T]> {
     values.to_vec().into_boxed_slice()
 }
@@ -21,53 +23,76 @@ impl<T: Clone> Clone for PackedVec<T> {
         // Only Clone can create a shared owner. Install its type-checked copy
         // capability before publishing that owner, so mutation/consumption can
         // retain the existing generic API even for uniquely owned non-Clone T.
-        self.0.copy.get_or_init(|| copy_values::<T>);
-        Self(Arc::clone(&self.0))
+        Self(self.0.as_ref().map(|shared| {
+            shared.copy.get_or_init(|| copy_values::<T>);
+            Arc::clone(shared)
+        }))
     }
 }
 impl<T: std::fmt::Debug> std::fmt::Debug for PackedVec<T> {
     fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        out.debug_tuple("PackedVec").field(&self.0.values).finish()
+        out.debug_tuple("PackedVec")
+            .field(&self.borrowed())
+            .finish()
     }
 }
 impl<T: PartialEq> PartialEq for PackedVec<T> {
     fn eq(&self, other: &Self) -> bool {
         // Preserve element semantics, including non-reflexive NaN values;
         // pointer aliasing alone must never make unequal values compare equal.
-        self.0.values == other.0.values
+        self.borrowed() == other.borrowed()
     }
 }
 impl<T: Eq> Eq for PackedVec<T> {}
 impl<T: std::hash::Hash> std::hash::Hash for PackedVec<T> {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        std::hash::Hash::hash(&self.0.values, state);
+        std::hash::Hash::hash(self.borrowed(), state);
     }
 }
 impl<T> PackedVec<T> {
     fn owned(values: Box<[T]>) -> Self {
-        Self(Arc::new(Shared {
-            values,
-            copy: OnceLock::new(),
-        }))
+        if values.is_empty() {
+            Self(None)
+        } else {
+            Self(Some(Arc::new(Shared {
+                values,
+                copy: OnceLock::new(),
+            })))
+        }
+    }
+    fn borrowed(&self) -> &[T] {
+        match &self.0 {
+            Some(shared) => &shared.values,
+            None => &[],
+        }
     }
     fn unique(&mut self) -> &mut Shared<T> {
-        if Arc::get_mut(&mut self.0).is_none() {
-            let copy = *self
-                .0
+        let shared = self.0.get_or_insert_with(|| {
+            Arc::new(Shared {
+                values: Box::default(),
+                copy: OnceLock::new(),
+            })
+        });
+        if Arc::get_mut(shared).is_none() {
+            let copy = *shared
                 .copy
                 .get()
                 .expect("shared values have Clone capability");
             // Complete every fallible/user Clone before replacing the source.
-            let values = copy(&self.0.values);
-            self.0 = Arc::new(Shared {
+            let values = copy(&shared.values);
+            *shared = Arc::new(Shared {
                 values,
                 copy: OnceLock::new(),
             });
         }
-        Arc::get_mut(&mut self.0).expect("new compact value owner is unique")
+        Arc::get_mut(shared).expect("new compact value owner is unique")
     }
+
     fn into_vec(self) -> Vec<T> {
-        match Arc::try_unwrap(self.0) {
+        let Some(shared) = self.0 else {
+            return Vec::new();
+        };
+        match Arc::try_unwrap(shared) {
             Ok(shared) => shared.values.into_vec(),
             Err(shared) => {
                 let copy = *shared
@@ -81,17 +106,20 @@ impl<T> PackedVec<T> {
 }
 impl<T> Default for PackedVec<T> {
     fn default() -> Self {
-        Self::owned(Box::default())
+        Self(None)
     }
 }
 impl<T> std::ops::Deref for PackedVec<T> {
     type Target = [T];
     fn deref(&self) -> &[T] {
-        &self.0.values
+        self.borrowed()
     }
 }
 impl<T> std::ops::DerefMut for PackedVec<T> {
     fn deref_mut(&mut self) -> &mut [T] {
+        if self.borrowed().is_empty() {
+            return &mut [];
+        }
         &mut self.unique().values
     }
 }
@@ -121,14 +149,14 @@ impl<'a, T> IntoIterator for &'a PackedVec<T> {
     type Item = &'a T;
     type IntoIter = std::slice::Iter<'a, T>;
     fn into_iter(self) -> Self::IntoIter {
-        self.0.values.iter()
+        self.borrowed().iter()
     }
 }
 impl<'a, T> IntoIterator for &'a mut PackedVec<T> {
     type Item = &'a mut T;
     type IntoIter = std::slice::IterMut<'a, T>;
     fn into_iter(self) -> Self::IntoIter {
-        self.unique().values.iter_mut()
+        std::ops::DerefMut::deref_mut(self).iter_mut()
     }
 }
 
@@ -146,14 +174,22 @@ impl<T> PackedVec<T> {
         let target = &mut self.unique().values;
         let values = std::mem::take(target).into_vec();
         let mut guard = Repack { target, values };
-        f(&mut guard.values)
+        let result = f(&mut guard.values);
+        drop(guard);
+        if self.borrowed().is_empty() {
+            self.0 = None;
+        }
+        result
     }
     pub fn capacity(&self) -> usize {
-        self.0.values.len()
+        self.borrowed().len()
     }
     /// This owner's control block and packed elements; allocations owned by
     /// elements are charged separately by the recursive graph estimator.
     pub(crate) fn retained_allocation_bytes(&self) -> usize {
+        if self.0.is_none() {
+            return 0;
+        }
         let header = std::mem::size_of::<Shared<T>>() + 2 * std::mem::size_of::<usize>();
         header.saturating_add(self.capacity().saturating_mul(std::mem::size_of::<T>()))
     }
@@ -165,7 +201,9 @@ impl<T> PackedVec<T> {
         self.with_vec(|v| v.extend(values));
     }
     pub fn retain(&mut self, f: impl FnMut(&T) -> bool) {
-        self.with_vec(|v| v.retain(f));
+        if !self.borrowed().is_empty() {
+            self.with_vec(|v| v.retain(f));
+        }
     }
     pub fn remove(&mut self, index: usize) -> T {
         self.with_vec(|v| v.remove(index))
@@ -174,10 +212,12 @@ impl<T> PackedVec<T> {
         self.with_vec(|v| v.insert(index, value));
     }
     pub fn truncate(&mut self, length: usize) {
-        self.with_vec(|v| v.truncate(length));
+        if length < self.borrowed().len() {
+            self.with_vec(|v| v.truncate(length));
+        }
     }
     pub fn clear(&mut self) {
-        *self = Self::default();
+        self.0 = None;
     }
 }
 
