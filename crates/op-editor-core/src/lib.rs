@@ -204,6 +204,7 @@ pub fn svg_path_data_bounds(d: &str) -> Option<(f32, f32, f32, f32)> {
 }
 mod component_mutation_receipt;
 mod kit_creation_receipt;
+mod node_creation_receipt;
 pub mod screen_sets;
 pub mod text_edit;
 pub mod text_input_focus;
@@ -217,6 +218,7 @@ pub mod ui_draft;
 pub mod uikit;
 pub use component_mutation_receipt::{ComponentDetachCapture, ComponentDetachResult};
 pub use kit_creation_receipt::KitRootCapture;
+pub use node_creation_receipt::InsertRootCapture;
 mod uikit_allocator;
 pub mod uikit_io;
 pub mod uikit_shadcn;

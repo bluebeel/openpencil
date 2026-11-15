@@ -209,10 +209,19 @@ impl EditorState {
         path: &[usize],
         nodes: Vec<PenNode>,
     ) -> Result<(), Vec<PenNode>> {
+        let capture = crate::node_creation_receipt::active(self);
+        let count = nodes.len();
         let Some(destination) = super::list_mut(&mut self.doc, scope, path, true) else {
             return Err(nodes);
         };
+        let slot = destination.len();
         destination.extend(nodes);
+        if capture {
+            let written = (count == 1)
+                .then(|| crate::node_creation_receipt::written_id(&destination[slot]))
+                .flatten();
+            crate::node_creation_receipt::record_append(self, scope, path, slot, written);
+        }
         Ok(())
     }
 }

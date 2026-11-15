@@ -677,10 +677,18 @@ impl EditorState {
         path: &[usize],
         node: PenNode,
     ) -> Result<(), PenNode> {
+        let capture = crate::node_creation_receipt::active(self);
         let Some(nodes) = list_mut(&mut self.doc, scope, path, true) else {
             return Err(node);
         };
+        let slot = nodes.len();
         nodes.push(node);
+        let written = capture
+            .then(|| crate::node_creation_receipt::written_id(&nodes[slot]))
+            .flatten();
+        if capture {
+            crate::node_creation_receipt::record_append(self, scope, path, slot, written);
+        }
         Ok(())
     }
     pub(crate) fn command_remove_at(&mut self, scope: &Scope, path: &[usize]) -> Option<PenNode> {

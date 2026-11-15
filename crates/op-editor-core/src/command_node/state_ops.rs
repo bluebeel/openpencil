@@ -58,20 +58,8 @@ impl EditorState {
             }
         }
         let scope = self.command_lookup_active_scope();
-        let destination = if target_parent.is_real() {
-            match self.command_insertion_path(&scope, target_parent) {
-                Some(Ok(path)) => Some(path),
-                Some(Err(())) => return Ok(false),
-                None => {
-                    match walkers::find_node(self.active_children(), target_parent) {
-                        Some(parent) if parent.is_container() => {}
-                        _ => return Ok(false),
-                    }
-                    None
-                }
-            }
-        } else {
-            None
+        let Some(destination) = super::insertion::path(self, &scope, target_parent) else {
+            return Ok(false);
         };
         let mut taken = allocator.document_collision_ids(&self.doc);
         let new_id = allocator.allocate(&mut taken)?;
@@ -82,22 +70,7 @@ impl EditorState {
         if let Some(hex) = fill_hex {
             set_primary_fill_hex(&mut node, hex);
         }
-        if let Some(path) = destination {
-            return Ok(self.command_append_at(&scope, &path, node).is_ok());
-        }
-        if target_parent.is_real() {
-            let root = self.active_children_mut();
-            let Some(parent) = walkers::find_node_mut(root, target_parent) else {
-                return Ok(false);
-            };
-            let Some(children) = parent.children_mut() else {
-                return Ok(false);
-            };
-            children.push(node);
-        } else {
-            self.active_children_mut().push(node);
-        }
-        Ok(true)
+        Ok(self.command_append_at(&scope, &destination, node).is_ok())
     }
 
     /// `UpdateNode` — patch optional fields on an existing node.
@@ -461,20 +434,8 @@ impl EditorState {
         }
         // Validate the parent up front (when not the page root).
         let scope = self.command_lookup_active_scope();
-        let destination = if parent_id.is_real() {
-            match self.command_insertion_path(&scope, parent_id) {
-                Some(Ok(path)) => Some(path),
-                Some(Err(())) => return Ok(false),
-                None => {
-                    match walkers::find_node(self.active_children(), parent_id) {
-                        Some(p) if p.is_container() => {}
-                        _ => return Ok(false),
-                    }
-                    None
-                }
-            }
-        } else {
-            None
+        let Some(destination) = super::insertion::path(self, &scope, parent_id) else {
+            return Ok(false);
         };
         // Allocate fresh ids for the whole incoming forest.
         let mut taken: HashSet<NodeId> = allocator.document_collision_ids(&self.doc);
@@ -485,29 +446,19 @@ impl EditorState {
             parent_id,
         );
         remap_subtree_ids_with_allocator(&mut nodes, allocator, &mut taken)?;
-        // All validation + allocation passed — now mutate.
-        if let Some(path) = destination {
-            return Ok(self.command_extend_at(&scope, &path, nodes).is_ok());
-        }
-        if parent_id.is_real() {
-            let root = self.active_children_mut();
-            let Some(parent) = walkers::find_node_mut(root, parent_id) else {
-                return Ok(false);
-            };
-            let Some(slot) = parent.children_mut() else {
-                return Ok(false);
-            };
-            slot.extend(nodes);
-        } else {
-            let roots = self.active_children_mut();
+        // All validation + allocation passed — now mutate. A page-root
+        // placeholder is removed before recording the real final append slot.
+        if !parent_id.is_real() {
             if let Some(replacement) = replacement.as_ref() {
-                if !crate::command_root_replace::remove_root_frame_replacement(roots, replacement) {
+                if !crate::command_root_replace::remove_root_frame_replacement(
+                    self.active_children_mut(),
+                    replacement,
+                ) {
                     return Ok(false);
                 }
             }
-            roots.extend(nodes);
         }
-        Ok(true)
+        Ok(self.command_extend_at(&scope, &destination, nodes).is_ok())
     }
 
     /// Same mutation as [`cmd_insert_subtree`] but returns the

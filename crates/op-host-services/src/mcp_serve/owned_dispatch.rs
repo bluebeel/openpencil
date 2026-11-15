@@ -5,6 +5,7 @@ mod kit_insert_reply;
 pub(super) use kit_insert_reply::apply as apply_with_receipt;
 pub(super) struct AppliedReply {
     pub(super) applied: bool,
+    pub(super) inserted_root: Option<op_editor_core::NodeId>,
     pub(super) kit_root: Option<op_editor_core::NodeId>,
     pub(super) detached: Option<op_editor_core::ComponentDetachResult>,
 }
@@ -43,6 +44,11 @@ pub(super) fn process(
             if let Some(root) = applied.kit_root {
                 enrich_kit_root(&mut response, &root);
             }
+            if tool_name == "insert_node" {
+                if let Some(root) = applied.inserted_root {
+                    enrich_insert_root(&mut response, &root);
+                }
+            }
             if let Some(detached) = applied.detached {
                 enrich_detach(&mut response, detached);
             }
@@ -73,6 +79,31 @@ fn enrich_kit_root(response: &mut op_mcp::ToolResponse, root: &op_editor_core::N
         || image.is_some()
         || result.get("kit_id").map(String::as_str) != Some(kit_id.as_str())
         || result.get("component_id").map(String::as_str) != Some(component_id.as_str())
+    {
+        return;
+    }
+    result.insert("node_id".into(), root.as_str().into());
+    let mut fields = result
+        .iter()
+        .map(|(key, value)| (key.clone(), serde_json::Value::String(value.clone())))
+        .collect::<serde_json::Map<_, _>>();
+    fields.insert("newIds".into(), serde_json::json!([root.as_str()]));
+    *json = Some(serde_json::Value::Object(fields).to_string());
+}
+
+/// Enrich only the ordinary insertion descriptor. Public/custom tool JSON and
+/// unapplied/rolled-back requests retain their existing response contract.
+fn enrich_insert_root(response: &mut op_mcp::ToolResponse, root: &op_editor_core::NodeId) {
+    let op_mcp::ToolResponse::Ok {
+        result,
+        json,
+        image,
+        ..
+    } = response
+    else {
+        return;
+    };
+    if json.is_some() || image.is_some() || result.get("wrote").map(String::as_str) != Some("true")
     {
         return;
     }

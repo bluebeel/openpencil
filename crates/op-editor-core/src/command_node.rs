@@ -24,6 +24,7 @@
 
 pub(crate) mod borrowed_geometry;
 mod builders;
+mod insertion;
 mod state_ops;
 mod tree_ops;
 
