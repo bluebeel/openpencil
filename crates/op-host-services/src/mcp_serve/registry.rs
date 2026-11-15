@@ -414,7 +414,15 @@ pub(super) fn rebuild_registry_with_authority(
             None => design_refine_snapshot(doc),
         }
     );
-    register_tool!("finalize_design", finalize_design_snapshot(doc));
+    if should_register(requested_tool, "finalize_design") {
+        if let Some(args) = arguments.filter(|_| trusted_authority && requested_tool.is_some()) {
+            r.register(http_export::wrap(Box::new(
+                finalize_tool::finalize_design_for_call(doc, args),
+            )));
+        } else {
+            r.register(http_export::wrap(Box::new(finalize_design_snapshot(doc))));
+        }
+    }
     register_tool!("enrich_images", enrich_images_snapshot(doc));
     register_tool!("run_design_agent", run_design_agent_snapshot(doc));
     register_tool!(
