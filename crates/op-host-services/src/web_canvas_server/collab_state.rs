@@ -107,7 +107,7 @@ impl WebCollabState {
 /// Assembled per call so the editor can stay where the rest of the daemon
 /// already reads it. Every method matches `HeadlessCollabHost`.
 pub(crate) struct DaemonCollabHost<'a> {
-    editor: &'a mut EditorState,
+    editor: &'a mut crate::doc_io::incremental::TrackedEditor,
     id_allocator: &'a mut Option<DocumentIdAllocator>,
     next_node_id: &'a mut u64,
     dirty: &'a mut bool,
@@ -127,11 +127,19 @@ impl CollaborationEditorHost for DaemonCollabHost<'_> {
         document: PenDocument,
         origin: EditOrigin,
     ) -> Result<DocumentInstallReport, DocumentInstallError> {
-        CollaborationEditorHost::install_collaboration_document(self.editor, document, origin)
+        CollaborationEditorHost::install_collaboration_document(
+            &mut **self.editor,
+            document,
+            origin,
+        )
     }
 }
 
 impl CollabHost for DaemonCollabHost<'_> {
+    fn collaboration_ui_mut(&mut self) -> &mut op_editor_core::CollabUiState {
+        self.editor.collaboration_ui_mut()
+    }
+
     fn mark_editor_state_dirty(&mut self) {
         *self.dirty = true;
     }

@@ -18,8 +18,13 @@ pub(super) enum Event {
     SeedSource,
     SeedIndex,
     SeedCharge,
+    PopulatedMutableInvalidation,
+    TakePopulated,
+    TakeEmpty,
+    RestoreReady,
+    CollaborationProjection,
 }
-const N: usize = 15;
+const N: usize = 20;
 static COUNTS: [AtomicU64; N] = [const { AtomicU64::new(0) }; N];
 pub(super) fn hit(event: Event) {
     COUNTS[event as usize].fetch_add(1, Ordering::Relaxed);
@@ -41,6 +46,11 @@ pub(crate) fn snapshot() -> serde_json::Value {
         "seedSourceRefusals",
         "seedIndexRefusals",
         "seedChargeRefusals",
+        "populatedMutableInvalidations",
+        "takePopulated",
+        "takeEmpty",
+        "restoreReady",
+        "collaborationProjectionBorrows",
     ];
     let mut values = serde_json::Map::new();
     for (name, value) in names.iter().zip(&COUNTS) {

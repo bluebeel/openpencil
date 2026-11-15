@@ -20,7 +20,7 @@ impl CollabRuntime {
     /// the default region while the runtime kept using the real preference.
     pub(super) fn sync_relay_region(&mut self, host: &mut impl CollabHost) {
         let region = *self.relay_region_pref.get_or_insert_with(load);
-        let collab = &mut host.editor_state_mut().editor_ui.collab;
+        let collab = host.collaboration_ui_mut();
         if collab.panel.relay_region != region {
             collab.panel.relay_region = region;
             host.mark_editor_state_dirty();
@@ -42,7 +42,7 @@ impl CollabRuntime {
         // the same region must retry a write that previously failed rather
         // than being skipped by an equality gate.
         store(region);
-        let collab = &mut host.editor_state_mut().editor_ui.collab;
+        let collab = host.collaboration_ui_mut();
         if collab.panel.relay_region != region {
             collab.panel.relay_region = region;
         }

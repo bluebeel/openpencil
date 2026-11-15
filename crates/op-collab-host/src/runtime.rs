@@ -207,7 +207,7 @@ impl CollabRuntime {
         } else {
             CollabAvailability::SignInRequired
         };
-        let collab = &mut host.editor_state_mut().editor_ui.collab;
+        let collab = host.collaboration_ui_mut();
         let mut changed = false;
         if collab.transport_capabilities != self.transport_capabilities {
             collab.transport_capabilities = self.transport_capabilities;
@@ -225,12 +225,7 @@ impl CollabRuntime {
     }
 
     pub fn drain_ui_action(&mut self, host: &mut impl CollabHost) -> bool {
-        let Some(action) = host
-            .editor_state_mut()
-            .editor_ui
-            .collab
-            .take_pending_action()
-        else {
+        let Some(action) = host.collaboration_ui_mut().take_pending_action() else {
             return false;
         };
         if !self.transport_capabilities.supports(&action) {
@@ -392,7 +387,7 @@ impl CollabRuntime {
         self.pending_local_presence = None;
         self.latest_owner_ticket = None;
         host.disable_collaboration_ids();
-        let collab = &mut host.editor_state_mut().editor_ui.collab;
+        let collab = host.collaboration_ui_mut();
         collab.set_phase(CollabConnectionPhase::Idle);
         collab.pending_edit = CollabPendingEditUi::None;
         collab.clear_authenticated();
