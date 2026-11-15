@@ -299,7 +299,9 @@ mod node_snapshot;
 
 #[path = "node_snapshot_stream.rs"]
 mod node_snapshot_stream;
-pub(crate) use node_snapshot_stream::encode as encode_node_snapshots;
+pub(crate) use node_snapshot_stream::{
+    encode as encode_node_snapshots, encode_with_fields as encode_node_fields,
+};
 
 fn arg_alias<'a>(args: &'a BTreeMap<String, String>, keys: &[&str]) -> Option<&'a str> {
     keys.iter()

@@ -20,7 +20,7 @@ use op_editor_core::{EditorState, NodeId};
 use serde_json::{json, Map, Value};
 
 use super::{McpTool, ToolErrorCode, ToolOutcome};
-use crate::read_nodes::node_snapshot_value;
+use crate::read_nodes::encode_node_fields;
 
 // --- Shared helpers --------------------------------------------------
 
@@ -141,24 +141,14 @@ impl McpTool for GetSelection {
             Ok(depth) => depth,
             Err((code, msg)) => return ToolOutcome::Err(code, msg),
         };
-        let nodes: Vec<_> = self
-            .selected_nodes
-            .iter()
-            .map(|node| node_snapshot_value(node, depth))
-            .collect();
-        // Emit EXACTLY TS get-selection's shape — { selectedIds, activePageId,
-        // nodes } — with NATIVE JSON values. The old BTreeMap<String,String>
-        // path stringified every value (selectedIds became "[\"n10\"]", nodes
-        // a stringified array) and leaked Rust-only selected_id/kind/x/y/w/h
-        // keys; OkJson embeds the object verbatim so it matches the TS handler.
-        let selected_ids: serde_json::Value =
-            serde_json::from_str(&self.selected_ids_json).unwrap_or_else(|_| serde_json::json!([]));
-        let out = serde_json::json!({
-            "selectedIds": selected_ids,
-            "activePageId": self.active_page_id,
-            "nodes": nodes,
-        });
-        ToolOutcome::OkJson(out.to_string())
+        let selected_ids: Value =
+            serde_json::from_str(&self.selected_ids_json).unwrap_or_else(|_| json!([]));
+        selection_reply(
+            &self.selected_nodes,
+            depth,
+            selected_ids,
+            &self.active_page_id,
+        )
     }
 }
 
@@ -255,22 +245,34 @@ pub fn selection_snapshot_for_call(
                 .filter(|id| id.is_real())
                 .map(|id| id.as_str())
                 .collect();
-            let nodes: Vec<_> = super::requested_nodes::find_for_state(
+            let nodes = super::requested_nodes::find_for_state(
                 state,
                 state.active_children(),
                 &selected_ids,
-            )
-            .into_iter()
-            .map(|node| node_snapshot_value(node, depth))
-            .collect();
-            ToolOutcome::OkJson(
-                json!({"selectedIds": selected_ids,
-                "activePageId": active_page_id(state), "nodes": nodes})
-                .to_string(),
-            )
+            );
+            selection_reply(nodes, depth, json!(selected_ids), &active_page_id(state))
         }
     };
     PreparedSelection { outcome }
+}
+
+fn selection_reply<'a>(
+    nodes: impl IntoIterator<Item = &'a PenNode>,
+    depth: i32,
+    selected_ids: Value,
+    page_id: &str,
+) -> ToolOutcome {
+    let mut fields = Map::new();
+    fields.insert("selectedIds".into(), selected_ids);
+    fields.insert("activePageId".into(), Value::String(page_id.into()));
+    fields.insert("nodes".into(), Value::Null);
+    match encode_node_fields(nodes, depth, fields) {
+        Ok(json) => ToolOutcome::OkJson(json),
+        Err(error) => ToolOutcome::Err(
+            ToolErrorCode::Internal,
+            format!("serialize selection failed: {error}"),
+        ),
+    }
 }
 
 fn parse_selection_depth(args: &BTreeMap<String, String>) -> Result<i32, (ToolErrorCode, String)> {
