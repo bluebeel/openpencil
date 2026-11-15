@@ -148,6 +148,12 @@ struct Rect {
 /// flex pass `snapshot_layout` uses.
 fn resolved_rects(state: &EditorState) -> HashMap<String, Rect> {
     let scene = op_pen_loader::editor_state_to_active_page_layout_scene(state);
+    resolved_rects_from_scene(&scene)
+}
+
+fn resolved_rects_from_scene(
+    scene: &jian_scene::layout_scene::LayoutScene,
+) -> HashMap<String, Rect> {
     let mut map = HashMap::new();
     if let Some(page) = scene.active_page() {
         collect_rects(&page.children, &mut map);
@@ -452,9 +458,21 @@ const MAX_DIAGNOSTICS: usize = 8;
 /// Pencil's per-batch `snapshot_layout` feedback, with the detection cost
 /// paid in Rust instead of model turns.
 pub fn geometry_diagnostics(state: &EditorState) -> Vec<String> {
-    let rects = resolved_rects(state);
+    let scene = op_pen_loader::editor_state_to_active_page_layout_scene(state);
+    geometry_diagnostics_with_scene(state, &scene)
+}
+
+/// Detect against this exact, already resolved active-page layout. Callers
+/// must provide the matching immutable state/scene pair; no cache is consulted.
+pub fn geometry_diagnostics_with_scene(
+    state: &EditorState,
+    scene: &jian_scene::layout_scene::LayoutScene,
+) -> Vec<String> {
+    let rects = resolved_rects_from_scene(scene);
     let mut out = Vec::new();
-    push_interaction_backfill_diagnostics(state, None, &mut out);
+    geometry_interaction_backfill::push_interaction_backfill_diagnostics_with_rects(
+        state, None, &rects, &mut out,
+    );
     for root in state.active_children() {
         if out.len() >= MAX_DIAGNOSTICS {
             break;

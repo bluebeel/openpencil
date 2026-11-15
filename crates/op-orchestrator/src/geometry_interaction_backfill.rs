@@ -92,7 +92,20 @@ pub(super) fn push_interaction_backfill_diagnostics(
     if out.len() >= MAX_DIAGNOSTICS {
         return;
     }
-    let facts = interaction_backfill_facts(state);
+    let rects = resolved_rects(state);
+    push_interaction_backfill_diagnostics_with_rects(state, root_ids, &rects, out);
+}
+
+pub(super) fn push_interaction_backfill_diagnostics_with_rects(
+    state: &EditorState,
+    root_ids: Option<&[String]>,
+    rects: &HashMap<String, Rect>,
+    out: &mut Vec<String>,
+) {
+    if out.len() >= MAX_DIAGNOSTICS {
+        return;
+    }
+    let facts = interaction_backfill_facts_with_rects(state, rects);
     let allowed = root_ids.map(|ids| descendant_ids_for_roots(state, ids));
     let included = |target: &InteractionTarget| {
         allowed
@@ -133,7 +146,14 @@ pub(super) fn push_interaction_backfill_diagnostics(
 
 fn interaction_backfill_facts(state: &EditorState) -> InteractionBackfillFacts {
     let rects = resolved_rects(state);
-    let screens = collect_screen_facts(state, &rects);
+    interaction_backfill_facts_with_rects(state, &rects)
+}
+
+fn interaction_backfill_facts_with_rects(
+    state: &EditorState,
+    rects: &HashMap<String, Rect>,
+) -> InteractionBackfillFacts {
+    let screens = collect_screen_facts(state, rects);
     if screens.is_empty() {
         return InteractionBackfillFacts::default();
     }

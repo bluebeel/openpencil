@@ -25,7 +25,7 @@ pub struct BatchDesignDiagnostics {
 }
 
 mod report;
-pub use report::collect_batch_design_diagnostics;
+pub use report::{collect_batch_design_diagnostics, collect_batch_design_diagnostics_with_scene};
 
 fn walk(
     node: &PenNode,

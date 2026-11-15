@@ -29,7 +29,12 @@ impl McpTool for GetDesignQuality {
 /// the returned tool owns only its result, never an extra document forest.
 pub(crate) struct PreparedQuality(ToolOutcome);
 pub(crate) fn get_design_quality_for_call(state: &EditorState) -> PreparedQuality {
-    PreparedQuality(collect(state))
+    // This private factory is selected only by the trusted bound-request
+    // registry. Reusable/public snapshots retain fresh layout construction.
+    let scene = op_pen_loader::active_query_scene_cached(state);
+    PreparedQuality(format_report(
+        op_chat_agent::design_agent_tools::collect_design_quality_with_scene(state, scene.as_ref()),
+    ))
 }
 impl McpTool for PreparedQuality {
     fn name(&self) -> &str {
@@ -44,6 +49,11 @@ impl McpTool for PreparedQuality {
 }
 fn collect(state: &EditorState) -> ToolOutcome {
     let report = op_chat_agent::design_agent_tools::collect_design_quality(state);
+    format_report(report)
+}
+fn format_report(
+    report: op_chat_agent::design_agent_tools::DesignQualityDiagnostics,
+) -> ToolOutcome {
     match serde_json::to_string(&report) {
         Ok(json) => ToolOutcome::OkJson(json),
         Err(error) => ToolOutcome::Err(

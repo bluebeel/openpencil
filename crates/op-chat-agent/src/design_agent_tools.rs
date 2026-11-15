@@ -76,7 +76,19 @@ const MAX_CONTRAST_ISSUES: usize = 64;
 /// (`remove_nested_duplicate_status_bars` and mobile-nav reflow), making this
 /// safe for read-only MCP credentials and repeated polling.
 pub fn collect_design_quality(state: &EditorState) -> DesignQualityDiagnostics {
-    let geometry_issues = op_orchestrator::geometry_validation::geometry_diagnostics(state);
+    let scene = op_pen_loader::editor_state_to_active_page_layout_scene(state);
+    collect_design_quality_with_scene(state, &scene)
+}
+
+/// Borrow one authoritative active-page layout for both diagnostics. The
+/// ordinary public collector above always builds fresh; caching is a separate
+/// trusted-host choice and never inferred from a public document revision.
+pub fn collect_design_quality_with_scene(
+    state: &EditorState,
+    scene: &op_editor_ui::layout_scene::LayoutScene,
+) -> DesignQualityDiagnostics {
+    let geometry_issues =
+        op_orchestrator::geometry_validation::geometry_diagnostics_with_scene(state, scene);
     let effective_theme = op_editor_core::variables_resolve::effective_theme(
         &state.doc,
         &state.ui.variables.active_theme,
@@ -93,7 +105,8 @@ pub fn collect_design_quality(state: &EditorState) -> DesignQualityDiagnostics {
     structure_issues.extend(scan_header_icon_row_issues(state.active_children()));
     structure_issues.truncate(12);
     let empty_shells = scan_empty_shells(state.active_children());
-    let diagnostics = crate::design_agent_diagnostics::collect_batch_design_diagnostics(state);
+    let diagnostics =
+        crate::design_agent_diagnostics::collect_batch_design_diagnostics_with_scene(state, scene);
     let nav_issues = op_orchestrator::nav_issues::scan_nav_issues(state);
     DesignQualityDiagnostics {
         geometry_issues,

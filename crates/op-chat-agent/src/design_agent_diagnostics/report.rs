@@ -1,7 +1,16 @@
 use super::*;
 
 pub fn collect_batch_design_diagnostics(state: &EditorState) -> BatchDesignDiagnostics {
-    let rects = resolved_sizes(state);
+    let scene = op_pen_loader::editor_state_to_active_page_layout_scene(state);
+    collect_batch_design_diagnostics_with_scene(state, &scene)
+}
+
+/// Reuse one matching immutable layout without rebuilding its full paint tree.
+pub fn collect_batch_design_diagnostics_with_scene(
+    state: &EditorState,
+    scene: &op_editor_ui::layout_scene::LayoutScene,
+) -> BatchDesignDiagnostics {
+    let rects = resolved_sizes(scene);
     let effective_theme = op_editor_core::variables_resolve::effective_theme(
         &state.doc,
         &state.ui.variables.active_theme,
@@ -23,8 +32,7 @@ pub fn collect_batch_design_diagnostics(state: &EditorState) -> BatchDesignDiagn
     out
 }
 
-fn resolved_sizes(state: &EditorState) -> HashMap<String, (f64, f64)> {
-    let scene = op_pen_loader::editor_state_to_active_page_layout_scene(state);
+fn resolved_sizes(scene: &op_editor_ui::layout_scene::LayoutScene) -> HashMap<String, (f64, f64)> {
     let mut out = HashMap::new();
     fn walk(
         nodes: &[op_editor_ui::layout_scene::SceneNode],
