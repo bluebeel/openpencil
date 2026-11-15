@@ -15,6 +15,32 @@ pub(super) fn apply(
     metrics: &metrics::Metrics,
     capture: &mut Option<CommandEditCapture>,
 ) -> Outcome {
+    if matches!(command, EditorCommand::SetInstanceComponent { .. }) {
+        let mut attempted = false;
+        let result =
+            editor.try_apply_captured_ref_target(command.clone(), capture, |state, bytes| {
+                attempted = true;
+                let reserved = budget.reserve_auxiliary(state, command, input, bytes, false);
+                metrics.observe_forecast(budget.forecast());
+                if let Err(reason) = reserved {
+                    metrics.refuse(reason);
+                    false
+                } else {
+                    true
+                }
+            });
+        return result.map_or_else(
+            || {
+                if !attempted {
+                    metrics
+                        .strict_capture_fallback
+                        .fetch_add(1, Ordering::Relaxed);
+                }
+                Outcome::Isolated
+            },
+            Outcome::Applied,
+        );
+    }
     if matches!(
         command,
         EditorCommand::AddPage { .. }

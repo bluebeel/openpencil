@@ -17,6 +17,8 @@ mod history_cohort;
 mod metadata;
 #[path = "command_pages.rs"]
 mod pages;
+#[path = "command_ref_target.rs"]
+mod ref_target;
 #[path = "target_plan.rs"]
 mod target_plan;
 
@@ -332,6 +334,9 @@ impl EditorState {
         clone_clipboard: bool,
         preserve_components: bool,
     ) -> Option<CommandEditCapture> {
+        if preserve_components && matches!(command, EditorCommand::SetInstanceComponent { .. }) {
+            return self.prepare_ref_target_command_edit(command);
+        }
         if preserve_components && crate::history::auxiliary_command_supported(command) {
             return self.prepare_auxiliary_command_edit(command);
         }

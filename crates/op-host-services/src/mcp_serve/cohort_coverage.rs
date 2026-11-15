@@ -58,6 +58,8 @@ pub(crate) fn tool(name: &str) -> bool {
                 | "create_component"
                 | "delete_component"
                 | "instantiate_component"
+                | "set_instance_component"
+                | "detach_component"
                 | "update_node"
                 | "set_node_rotation"
                 | "set_node_text"
@@ -167,6 +169,8 @@ pub(crate) fn command(command: &C) -> bool {
                 | C::CreateComponent { .. }
                 | C::DeleteComponent { .. }
                 | C::InstantiateComponent { .. }
+                | C::SetInstanceComponent { .. }
+                | C::DetachComponent { .. }
                 | C::InstantiateKitComponent { .. }
                 | C::UpdateNode { .. }
                 | C::PatchNodeData { .. }

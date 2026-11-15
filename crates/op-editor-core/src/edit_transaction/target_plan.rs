@@ -52,6 +52,13 @@ fn collect(
     in_batch: bool,
     numeric_patch: bool,
 ) -> Option<()> {
+    if matches!(command, C::SetInstanceComponent { .. }) {
+        let spec = state.ref_target_command_spec(command, *active)?;
+        if !out.contains(&spec) {
+            out.push(spec);
+        }
+        return Some(());
+    }
     if matches!(command, C::NudgeSelected { .. } | C::AlignSelected { .. }) {
         if in_batch {
             return None;

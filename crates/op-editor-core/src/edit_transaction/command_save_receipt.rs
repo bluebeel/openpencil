@@ -1,6 +1,26 @@
 //! Immediate completed receipts only; public mutation/history needs a full save.
 use super::*;
 impl CommandEditCapture {
+    /// Sealed proof of one completed canonical Ref-target-only change. False
+    /// discards all visitor output. Consume immediately under the same writer.
+    pub fn visit_canonical_ref_targets<'a>(
+        &'a self,
+        state: &'a EditorState,
+        field_limit: usize,
+        mut visitor: impl FnMut(crate::CanonicalRefTarget<'a>) -> bool,
+    ) -> bool {
+        match &self.kind {
+            CaptureKind::Scoped(captured)
+                if captured.targeted && captured.generation == state.document_generation() =>
+            {
+                captured.completed.as_ref().is_some_and(|snapshot| {
+                    snapshot.visit_canonical_ref_targets(state, field_limit, &mut visitor)
+                })
+            }
+            _ => false,
+        }
+    }
+
     /// Immediate completed state deltas from the actual canonical inverses.
     /// This requires the same exclusive authority with no intervening command
     /// or public mutation. False discards ALL partial visitor output.

@@ -39,6 +39,8 @@ pub mod table_filter_contract;
 pub mod table_pagination;
 pub mod text_effect_overlay;
 pub use chat_title::{is_default_chat_title, suggest_chat_title};
+mod canonical_ref_target;
+pub use canonical_ref_target::CanonicalRefTarget;
 mod canonical_splice_receipt;
 pub use canonical_splice_receipt::{CanonicalScope, CanonicalSplice, CanonicalSpliceTarget};
 mod canonical_save_receipt;

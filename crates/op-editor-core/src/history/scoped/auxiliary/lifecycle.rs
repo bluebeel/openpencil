@@ -31,7 +31,10 @@ pub(super) struct Plan {
 pub(super) fn supports(command: &C) -> bool {
     matches!(
         command,
-        C::CreateComponent { .. } | C::DeleteComponent { .. } | C::InstantiateComponent { .. }
+        C::CreateComponent { .. }
+            | C::DeleteComponent { .. }
+            | C::InstantiateComponent { .. }
+            | C::DetachComponent { .. }
     )
 }
 fn eligible(state: &EditorState) -> bool {
@@ -147,6 +150,23 @@ pub(super) fn forecast(state: &EditorState, command: &C) -> Option<usize> {
                     .map(|(node, _)| (node, true, 1));
             bound(state, component_id, source, 0, true)
         }
+        C::DetachComponent { node_id } => {
+            let spec = state.component_edit_target_spec(node_id, state.ui.active_page_index)?;
+            let node = patch::node(patch::roots(&state.doc, &spec.scope).ok()?, &spec.path)?;
+            // Materializing a Ref owns different topology/resources. It keeps
+            // the ordinary real mutator and full durable fallback.
+            if matches!(node, PenNode::Ref(_))
+                || (state.components.find_by_id(node_id).is_none()
+                    && !matches!(node, PenNode::Frame(frame) if frame.reusable == Some(true)))
+                || !matches!(
+                    node,
+                    PenNode::Frame(_) | PenNode::Group(_) | PenNode::Rectangle(_)
+                )
+            {
+                return None;
+            }
+            bound(state, node_id, Some((node, true, 1)), 0, true)
+        }
         C::InstantiateComponent { component_id } => {
             let source = state.components.resolved_root(&state.doc, component_id)?;
             let copies = if state.components.is_document_backed(component_id) {
@@ -162,6 +182,10 @@ pub(super) fn forecast(state: &EditorState, command: &C) -> Option<usize> {
 impl Pending {
     pub(super) fn capture(state: &EditorState, command: &C) -> Option<Plan> {
         forecast(state, command)?;
+        if let C::DetachComponent { node_id } = command {
+            let spec = state.component_edit_target_spec(node_id, state.ui.active_page_index)?;
+            return Self::capture_detach(state, node_id, &spec.path);
+        }
         let (request, id, targets, prototype, catalog_delta) = match command {
             C::CreateComponent { node_id, name } => {
                 let (node, location) =
@@ -344,6 +368,7 @@ impl Pending {
     }
     pub(super) fn request_matches(&self, command: &C) -> bool {
         match (&self.request, command) {
+            (Request::Detach, C::DetachComponent { node_id }) => self.id == *node_id,
             (
                 Request::Create { id, name },
                 C::CreateComponent {

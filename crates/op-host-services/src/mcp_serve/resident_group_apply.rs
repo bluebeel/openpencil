@@ -30,6 +30,16 @@ pub(super) fn apply(
     metrics: &metrics::Metrics,
     capture: &mut Option<CommandEditCapture>,
 ) -> Outcome {
+    if matches!(command, EditorCommand::SetInstanceComponent { .. }) {
+        let result =
+            editor.try_apply_captured_ref_target(command.clone(), capture, |state, bytes| {
+                let ok = budget
+                    .reserve_auxiliary(state, command, input, bytes, false)
+                    .is_ok();
+                reserve(budget, quota, metrics, ok)
+            });
+        return result.map_or(Outcome::Isolated, Outcome::Applied);
+    }
     if matches!(
         command,
         EditorCommand::AddPage { .. }

@@ -166,7 +166,11 @@ impl EditorState {
         if plan.header {
             return None;
         }
-        let specs = target_plan::plan(self, &command)?;
+        let specs = if ref_target {
+            vec![self.component_edit_target_spec(node_id, self.ui.active_page_index)?]
+        } else {
+            target_plan::plan(self, &command)?
+        };
         let target = target_plan::metadata_target(self, &specs)?;
         crate::history_snapshot::command_capture_node_bytes(
             target,
