@@ -11,6 +11,7 @@ declare module 'virtual:op_web_sdk_wasm' {
     active_page_index(): number;
     attach_canvas(canvas_id: string): Promise<void>;
     detach(): void;
+    resize_canvas(): boolean;
     mark_dirty(): void;
     push_scene(): void;
     set_viewport(pan_x: number, pan_y: number, zoom: number): void;

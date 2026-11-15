@@ -24,6 +24,11 @@ function toText(src: string | Uint8Array): string {
 export class OpViewer {
   /** @internal */ wheelHandler?: (e: WheelEvent) => void;
   /** @internal */ canvas?: HTMLCanvasElement;
+  /** @internal */ resizeObserver?: ResizeObserver;
+  /** @internal */ resizeWindow?: Window;
+  /** @internal */ resizeHandler?: () => void;
+  /** @internal */ resizeMedia?: MediaQueryList;
+  /** @internal */ resizeDprHandler?: () => void;
   private readonly emitter = new Emitter();
   private destroyed = false;
 
@@ -138,8 +143,16 @@ export class OpViewer {
     this.destroyed = true;
     if (this.canvas && this.wheelHandler)
       this.canvas.removeEventListener('wheel', this.wheelHandler);
+    this.resizeObserver?.disconnect();
+    if (this.resizeDprHandler) this.resizeMedia?.removeEventListener('change', this.resizeDprHandler);
+    if (this.resizeHandler) this.resizeWindow?.removeEventListener('resize', this.resizeHandler);
     this.canvas = undefined;
     this.wheelHandler = undefined;
+    this.resizeObserver = undefined;
+    this.resizeWindow = undefined;
+    this.resizeHandler = undefined;
+    this.resizeMedia = undefined;
+    this.resizeDprHandler = undefined;
     // Release the instance and subscriptions even if the canvas backend has
     // already failed or disappeared during teardown.
     try {
@@ -174,6 +187,26 @@ export async function createViewer(opts: CreateViewerOptions): Promise<OpViewer>
     // Store canvas reference and attach a non-passive wheel listener to forward
     // scroll/pinch events to the wasm renderer with cursor-relative coordinates.
     viewer.canvas = opts.canvas;
+    viewer.resizeHandler = () => {
+      if (viewer.canvas) inner.resize_canvas();
+    };
+    viewer.resizeWindow = opts.canvas.ownerDocument.defaultView ?? undefined;
+    viewer.resizeWindow?.addEventListener('resize', viewer.resizeHandler);
+    if (typeof viewer.resizeWindow?.matchMedia === 'function') {
+      viewer.resizeDprHandler = () => {
+        if (!viewer.canvas || !viewer.resizeWindow || !viewer.resizeDprHandler) return;
+        viewer.resizeMedia?.removeEventListener('change', viewer.resizeDprHandler);
+        viewer.resizeHandler?.();
+        const dpr = viewer.resizeWindow.devicePixelRatio || 1;
+        viewer.resizeMedia = viewer.resizeWindow.matchMedia(`(resolution: ${dpr}dppx)`);
+        viewer.resizeMedia.addEventListener('change', viewer.resizeDprHandler);
+      };
+      viewer.resizeDprHandler();
+    }
+    if (typeof ResizeObserver !== 'undefined') {
+      viewer.resizeObserver = new ResizeObserver(viewer.resizeHandler);
+      viewer.resizeObserver.observe(opts.canvas);
+    }
     viewer.wheelHandler = (e: WheelEvent) => {
       e.preventDefault();
       const r = opts.canvas.getBoundingClientRect();
