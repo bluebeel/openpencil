@@ -301,6 +301,11 @@ fn snapshot_inner(
                 .iter()
                 .any(|query| matches!(query, Query::Point { .. })))
         .then(|| op_pen_loader::query_hit_index_cached(&scene));
+        let marquee_index = (trusted
+            && queries
+                .iter()
+                .any(|query| matches!(query, Query::Rect { .. })))
+        .then(|| op_pen_loader::query_marquee_index_cached(&scene));
         let mut snap_indexes: HashMap<Option<String>, Arc<SnapIndex>> = HashMap::new();
         for query in queries {
             results.push(match query {
@@ -313,9 +318,8 @@ fn snapshot_inner(
                     json!({"kind":"point", "nodeId":path.as_ref().and_then(|p| p.last()), "path":path})
                 }
                 Query::Rect { x, y, width, height } => {
-                    let ids = scene.nodes_intersecting_doc_rect(Rect {
-                        origin: Point2D::new(x, y), size: Point2D::new(width, height),
-                    });
+                    let rect=Rect{origin:Point2D::new(x,y),size:Point2D::new(width,height)};
+                    let ids=marquee_index.as_ref().map_or_else(||scene.nodes_intersecting_doc_rect(rect),|index|index.nodes_intersecting_doc_rect(&scene,rect));
                     json!({"kind":"rect", "nodeIds":ids})
                 }
                 Query::Snap {x,y,width,height,dx,dy,zoom,threshold,parent,excluded,resize} => {

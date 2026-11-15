@@ -164,7 +164,7 @@ pub fn prepare_export_scene_cached(
             CachedExportScene(Captured::Pending(Arc::clone(&guard.slot)))
         }
         Choice::Fresh => CachedExportScene(Captured::Ready(Arc::new(policy.build(state)))),
-        Choice::Hit(Value::Snap(_) | Value::Hit(_)) => {
+        Choice::Hit(Value::Marquee(_) | Value::Geometry(_) | Value::Snap(_) | Value::Hit(_)) => {
             unreachable!("export scene key cannot name a query index")
         }
     }

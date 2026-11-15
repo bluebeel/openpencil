@@ -96,6 +96,9 @@ pub(crate) fn selected_page_roots_cached<'a>(
     item: Option<&str>,
 ) -> Option<(ScenePage, &'a [PenNode])> {
     let (meta, roots) = selected_page_roots(state, page, None)?;
+    if item.is_none() {
+        return Some((meta, roots));
+    }
     match crate::geometry_cache::values::page_index_cached(state, page) {
         Some(index) => Some((meta, index.select(roots, item))),
         None => selected_page_roots(state, page, item),

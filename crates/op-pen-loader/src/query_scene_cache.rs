@@ -2,15 +2,24 @@
 //! Fresh public builders never enter this cache. Only metadata is globally locked;
 //! same-key builds coalesce, unrelated documents build on their calling threads.
 use crate::scene_inputs::SceneInputs;
-use jian_scene::{layout_scene::LayoutScene, scene_hit_index::SceneHitIndex, snapping::SnapIndex};
+use jian_scene::{
+    layout_scene::LayoutScene,
+    scene_hit_index::{SceneHitIndex, SceneMarqueeIndex},
+    snapping::SnapIndex,
+};
 use op_editor_core::EditorState;
 use std::{
     mem::size_of,
     sync::{Arc, Condvar, Mutex, OnceLock, Weak},
 };
 
+#[path = "query_scene_borrowed.rs"]
+mod borrowed;
+#[path = "query_geometry_cache.rs"]
+mod geometry;
 #[path = "query_scene_storage.rs"]
 mod storage;
+pub(crate) use geometry::computed_geometry_cached;
 
 // Large imported pages must participate in reuse too. The user's current
 // working ceiling is5GB;1GB remains a measured engine optimization target.
@@ -41,6 +50,12 @@ pub use exports::{
 };
 
 enum Key {
+    Geometry {
+        input: SceneInputs,
+        page: usize,
+        scope: (usize, usize),
+        parent: Option<String>,
+    },
     Scene(SceneInputs),
     Export {
         input: SceneInputs,
@@ -52,11 +67,28 @@ enum Key {
         parent: Option<String>,
     },
     Hit(Weak<LayoutScene>),
+    Marquee(Weak<LayoutScene>),
 }
 impl Key {
     fn matches(&self, other: &Self) -> bool {
         match (self, other) {
-            (Self::Hit(a), Self::Hit(b)) => Weak::ptr_eq(a, b),
+            (
+                Self::Geometry {
+                    input: a,
+                    page: pa,
+                    scope: sa,
+                    parent: xa,
+                },
+                Self::Geometry {
+                    input: b,
+                    page: pb,
+                    scope: sb,
+                    parent: xb,
+                },
+            ) => a.matches(b) && pa == pb && sa == sb && xa == xb,
+            (Self::Hit(a), Self::Hit(b)) | (Self::Marquee(a), Self::Marquee(b)) => {
+                Weak::ptr_eq(a, b)
+            }
             (Self::Scene(a), Self::Scene(b)) => a.matches(b),
             (
                 Self::Export {
@@ -85,14 +117,18 @@ impl Key {
     }
     fn live(&self) -> bool {
         match self {
-            Self::Scene(input) | Self::Export { input, .. } => input.owner_live(),
+            Self::Scene(input) | Self::Export { input, .. } | Self::Geometry { input, .. } => {
+                input.owner_live()
+            }
             Self::Snap { scene, .. } => scene.strong_count() != 0,
-            Self::Hit(scene) => scene.strong_count() != 0,
+            Self::Hit(scene) | Self::Marquee(scene) => scene.strong_count() != 0,
         }
     }
     fn stable(&self) -> bool {
         match self {
-            Self::Scene(input) | Self::Export { input, .. } => input.fonts_stable(),
+            Self::Scene(input) | Self::Export { input, .. } | Self::Geometry { input, .. } => {
+                input.fonts_stable()
+            }
             _ => true,
         }
     }
@@ -101,6 +137,9 @@ impl Key {
             + 32
             + match self {
                 Self::Scene(input) => storage::input_bytes(input),
+                Self::Geometry { input, parent, .. } => {
+                    storage::input_bytes(input) + parent.as_ref().map_or(0, String::capacity)
+                }
                 Self::Export {
                     input,
                     policy,
@@ -111,43 +150,53 @@ impl Key {
                         + selected.as_ref().map_or(0, String::capacity)
                 }
                 Self::Snap { parent, .. } => parent.as_ref().map_or(0, String::capacity),
-                Self::Hit(_) => 0,
+                Self::Hit(_) | Self::Marquee(_) => 0,
             }
     }
 }
 #[derive(Clone)]
 enum Value {
+    Geometry(Arc<Vec<crate::ComputedGeometry>>),
     Scene(Arc<LayoutScene>),
     Snap(Option<Arc<SnapIndex>>),
     Hit(Arc<SceneHitIndex>),
+    Marquee(Arc<SceneMarqueeIndex>),
 }
 impl Value {
     fn bytes(&self) -> usize {
         32usize.saturating_add(match self {
             Self::Scene(scene) => storage::scene_bytes(scene),
+            Self::Geometry(geometry) => crate::geometry_cache::geometry_bytes(geometry),
             Self::Snap(index) => index.as_ref().map_or(0, |index| index.storage_bytes()),
             Self::Hit(index) => index.storage_bytes(),
+            Self::Marquee(index) => index.storage_bytes(),
         })
     }
     fn weak(&self) -> WeakValue {
         match self {
             Self::Scene(scene) => WeakValue::Scene(Arc::downgrade(scene)),
+            Self::Geometry(value) => WeakValue::Geometry(Arc::downgrade(value)),
             Self::Snap(index) => WeakValue::Snap(index.as_ref().map(Arc::downgrade)),
             Self::Hit(index) => WeakValue::Hit(Arc::downgrade(index)),
+            Self::Marquee(index) => WeakValue::Marquee(Arc::downgrade(index)),
         }
     }
 }
 #[derive(Clone)]
 enum WeakValue {
+    Geometry(Weak<Vec<crate::ComputedGeometry>>),
     Scene(Weak<LayoutScene>),
     Snap(Option<Weak<SnapIndex>>),
     Hit(Weak<SceneHitIndex>),
+    Marquee(Weak<SceneMarqueeIndex>),
 }
 impl WeakValue {
     fn live(&self) -> bool {
         match self {
             Self::Scene(value) => value.strong_count() != 0,
+            Self::Geometry(value) => value.strong_count() != 0,
             Self::Hit(value) => value.strong_count() != 0,
+            Self::Marquee(value) => value.strong_count() != 0,
             Self::Snap(value) => value
                 .as_ref()
                 .is_some_and(|value| value.strong_count() != 0),
@@ -448,6 +497,9 @@ fn admit(key: Arc<Key>, value: &Value) -> bool {
 /// Trusted hosts only: every canonical edit/reload must maintain revision and
 /// generation authority. Direct-field-mutating/public snapshot callers remain fresh.
 pub fn active_query_scene_cached(state: &EditorState) -> Arc<LayoutScene> {
+    if let Some(Value::Scene(scene)) = borrowed::hit(state, |key| matches!(key, Key::Scene(_))) {
+        return scene;
+    }
     let key = SceneInputs::capture(state).map(Key::Scene);
     match get_or_build(key, || {
         Value::Scene(Arc::new(crate::editor_state_to_active_page_layout_scene(
@@ -455,7 +507,9 @@ pub fn active_query_scene_cached(state: &EditorState) -> Arc<LayoutScene> {
         )))
     }) {
         Value::Scene(scene) => scene,
-        Value::Snap(_) | Value::Hit(_) => unreachable!("cache key kind"),
+        Value::Marquee(_) | Value::Geometry(_) | Value::Snap(_) | Value::Hit(_) => {
+            unreachable!("cache key kind")
+        }
     }
 }
 /// Trusted parent-scoped snap requests share exact scenes under the same
@@ -466,6 +520,12 @@ pub fn active_query_items_scene_cached(state: &EditorState, ids: Vec<String>) ->
     if policy == ExportScenePolicy::ActiveCanvas {
         return active_query_scene_cached(state);
     }
+    if let Some(Value::Scene(scene)) = borrowed::hit(
+        state,
+        |key| matches!(key,Key::Export{policy:p,selected:None,..} if p==&policy),
+    ) {
+        return scene;
+    }
     let key = SceneInputs::capture(state).map(|input| Key::Export {
         input,
         policy: policy.clone(),
@@ -473,7 +533,9 @@ pub fn active_query_items_scene_cached(state: &EditorState, ids: Vec<String>) ->
     });
     match get_or_build(key, || Value::Scene(Arc::new(policy.build(state)))) {
         Value::Scene(scene) => scene,
-        Value::Snap(_) | Value::Hit(_) => unreachable!("scene cache key kind"),
+        Value::Marquee(_) | Value::Geometry(_) | Value::Snap(_) | Value::Hit(_) => {
+            unreachable!("scene cache key kind")
+        }
     }
 }
 /// Reuse the real editor SnapIndex for this exact immutable scene allocation.
@@ -490,7 +552,9 @@ pub fn query_snap_index_cached(
         Value::Snap(SnapIndex::for_scene(scene, parent).map(Arc::new))
     }) {
         Value::Snap(index) => index,
-        Value::Scene(_) | Value::Hit(_) => unreachable!("cache key kind"),
+        Value::Marquee(_) | Value::Geometry(_) | Value::Scene(_) | Value::Hit(_) => {
+            unreachable!("cache key kind")
+        }
     }
 }
 /// Share one conservative picking index across concurrent queries of the exact
@@ -500,7 +564,9 @@ pub fn query_hit_index_cached(scene: &Arc<LayoutScene>) -> Arc<SceneHitIndex> {
         Value::Hit(Arc::new(SceneHitIndex::new(scene)))
     }) {
         Value::Hit(index) => index,
-        Value::Scene(_) | Value::Snap(_) => unreachable!("hit index cache key kind"),
+        Value::Marquee(_) | Value::Geometry(_) | Value::Scene(_) | Value::Snap(_) => {
+            unreachable!("hit index cache key kind")
+        }
     }
 }
 pub fn query_scene_cache_stats() -> QuerySceneCacheStats {
@@ -523,4 +589,14 @@ pub fn query_scene_cache_stats() -> QuerySceneCacheStats {
     drop(dead);
     drop(slots);
     stats
+}
+
+/// Exact marquee preparation is independent of the per-descendant point index.
+pub fn query_marquee_index_cached(scene: &Arc<LayoutScene>) -> Arc<SceneMarqueeIndex> {
+    match get_or_build(Some(Key::Marquee(Arc::downgrade(scene))), || {
+        Value::Marquee(Arc::new(SceneMarqueeIndex::new(scene)))
+    }) {
+        Value::Marquee(index) => index,
+        _ => unreachable!("marquee index key kind"),
+    }
 }

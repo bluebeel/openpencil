@@ -25,6 +25,7 @@ mod computed_geometry;
 mod geometry_cache;
 pub use geometry_cache::editor_state_to_page_item_geometry_cached;
 pub use geometry_cache::editor_state_to_page_parent_geometry_cached;
+pub use geometry_cache::page_nodes_by_id_cached;
 mod editor_meta;
 mod inline_editor_document;
 pub use inline_editor_document::InlineEditorDocument;
@@ -70,8 +71,9 @@ mod scene_cache;
 mod scene_inputs;
 pub use query_scene_cache::{
     active_query_items_scene_cached, active_query_scene_cached, prepare_export_scene_cached,
-    query_hit_index_cached, query_scene_cache_stats, query_snap_index_cached, CachedExportScene,
-    ExportScenePolicy, ExportSceneUnavailable, QuerySceneCacheStats,
+    query_hit_index_cached, query_marquee_index_cached, query_scene_cache_stats,
+    query_snap_index_cached, CachedExportScene, ExportScenePolicy, ExportSceneUnavailable,
+    QuerySceneCacheStats,
 };
 mod shader_preset;
 #[cfg(test)]

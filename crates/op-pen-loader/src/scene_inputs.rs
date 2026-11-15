@@ -96,3 +96,52 @@ impl SceneInputs {
         self.font_generation == crate::current_font_generation()
     }
 }
+
+impl SceneInputs {
+    /// Trusted host only: canonical definitions are covered by revision/owner;
+    /// every transient table/ref/preview/font input is compared by exact value.
+    /// No derived VariableTable, sorted ref copies or component-ID Vec is built
+    /// just to discover an immutable cache hit. Public fresh builders bypass it.
+    pub(crate) fn same_authority(&self, state: &EditorState) -> bool {
+        self.owner.ptr_eq(&state.derived_cache_owner())
+            && self.generation == state.document_generation()
+            && self.revision == state.document_revision()
+    }
+    pub(crate) fn matches_state(&self, state: &EditorState) -> bool {
+        fn refs(
+            stored: &[(String, String)],
+            live: &std::collections::HashMap<op_editor_core::NodeId, String>,
+        ) -> bool {
+            stored.len() == live.len()
+                && live.iter().all(|(id, value)| {
+                    stored
+                        .binary_search_by(|(key, _)| key.as_str().cmp(id.as_str()))
+                        .is_ok_and(|at| stored[at].1 == *value)
+                })
+        }
+        self.same_authority(state)
+            && self.active_page == state.ui.active_page_index
+            && self.preserve == state.editor_ui.preserve_authored_geometry
+            && self.normal_table == state.editor_ui.workspace.visible
+            && self.normal_presentation == crate::editor_scene::normal_presentation(state)
+            && self.preview == state.editor_ui.preview.mode
+            && self.font_generation == crate::current_font_generation()
+            && self.variables.active_theme == state.ui.variables.active_theme
+            && refs(&self.variables.fill_refs, &state.ui.variables.fill_refs)
+            && refs(&self.variables.stroke_refs, &state.ui.variables.stroke_refs)
+            && (self.revision != 0
+                || (self.components.len() == state.components.components.len()
+                    && self
+                        .components
+                        .iter()
+                        .zip(&state.components.components)
+                        .all(|((id, ptr), component)| {
+                            id == component.id.as_str()
+                                && state.components.is_document_backed(&component.id)
+                                && state
+                                    .components
+                                    .resolved_root(&state.doc, &component.id)
+                                    .is_some_and(|root| *ptr == root as *const _ as usize)
+                        })))
+    }
+}

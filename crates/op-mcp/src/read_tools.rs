@@ -125,7 +125,7 @@ fn snapshot_layout_outcome(page: &PageLayout, args: &BTreeMap<String, String>) -
         .filter(|record| match (parent_id, parent_depth) {
             (Some(parent), Some(depth)) => {
                 record.ancestors.iter().any(|id| id == parent)
-                    && record.depth <= depth + max_depth + 1
+                    && record.depth <= depth.saturating_add(max_depth).saturating_add(1)
             }
             _ => record.depth <= max_depth,
         })

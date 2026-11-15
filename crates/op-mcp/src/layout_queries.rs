@@ -2,6 +2,8 @@
 use super::*;
 use op_pen_loader::ComputedGeometry;
 use std::collections::HashSet;
+#[path = "layout_result_cache.rs"]
+mod layout_result_cache;
 
 struct PageScope<'a> {
     index: usize,
@@ -69,14 +71,29 @@ fn prepare_layout(
     } else {
         geometry(state, page.index, parent, cached)
     };
-    let records = limited_records(&roots, page.roots, parent, depth);
-    drop(roots);
-    Ok(snapshot_layout_outcome(
-        &PageLayout {
-            id: page.id.into(),
-            records,
+    Ok(layout_result_cache::result(
+        state,
+        &roots,
+        page.id,
+        parent,
+        depth,
+        cached,
+        || {
+            let records = limited_records(
+                &roots,
+                page.roots,
+                parent,
+                depth,
+                cached.then_some((state, page.index)),
+            );
+            snapshot_layout_outcome(
+                &PageLayout {
+                    id: page.id.into(),
+                    records,
+                },
+                args,
+            )
         },
-        args,
     ))
 }
 
@@ -127,6 +144,7 @@ fn limited_records(
     raw: &[PenNode],
     parent: Option<&str>,
     max_depth: u32,
+    trusted: Option<(&EditorState, usize)>,
 ) -> Vec<LayoutRecord> {
     fn first<'a>(
         nodes: &'a [ComputedGeometry],
@@ -145,7 +163,9 @@ fn limited_records(
     if parent.is_some() && parent_node.is_none() {
         return Vec::new();
     }
-    let cutoff = parent_node.map_or(max_depth, |(_, depth)| depth + max_depth + 1);
+    let cutoff = parent_node.map_or(max_depth, |(_, depth)| {
+        depth.saturating_add(max_depth).saturating_add(1)
+    });
     fn walk(
         nodes: &[ComputedGeometry],
         ancestors: &mut Vec<String>,
@@ -217,7 +237,17 @@ fn limited_records(
         }
     }
     let mut meta = HashMap::new();
-    metadata(raw, &ids, &mut meta);
+    let indexed = trusted.and_then(|(state, page)| {
+        let wanted = ids.iter().copied().collect::<Vec<_>>();
+        op_pen_loader::page_nodes_by_id_cached(state, page, &wanted)
+    });
+    if let Some(nodes) = indexed {
+        for node in nodes.into_iter().flatten() {
+            meta.insert(node.id_str(), node);
+        }
+    } else {
+        metadata(raw, &ids, &mut meta);
+    }
     for record in &mut records {
         if let Some(node) = meta.get(record.id.as_str()) {
             record.name = node.base().name.clone();

@@ -9,7 +9,9 @@ use std::{
     sync::{Arc, Mutex, OnceLock, Weak},
 };
 
-const MAX_BYTES: usize = 32 * 1024 * 1024;
+// Raw-page indexes must cover dense imported pages, not negative-cache them
+// forever at32MiB. Compact geometry now shares the existing scene1GiB budget.
+const MAX_BYTES: usize = 128 * 1024 * 1024;
 const MAX_ENTRIES: usize = 64;
 
 struct Key {
@@ -127,7 +129,7 @@ fn shared_store() -> &'static Mutex<Store> {
     static STORE: OnceLock<Mutex<Store>> = OnceLock::new();
     STORE.get_or_init(|| Mutex::new(Store::new()))
 }
-fn geometry_bytes(nodes: &Vec<ComputedGeometry>) -> usize {
+pub(crate) fn geometry_bytes(nodes: &Vec<ComputedGeometry>) -> usize {
     nodes.capacity() * size_of::<ComputedGeometry>()
         + nodes
             .iter()
@@ -148,15 +150,11 @@ pub fn editor_state_to_page_item_geometry_cached(
     page: usize,
     item: Option<&str>,
 ) -> Arc<Vec<ComputedGeometry>> {
-    get_or_compute(
-        shared_store(),
-        Key::new(state, page, item, crate::current_font_generation()),
-        || {
-            crate::computed_geometry::editor_state_to_page_item_geometry_with_cached_scope(
-                state, page, item,
-            )
-        },
-    )
+    crate::query_scene_cache::computed_geometry_cached(state, page, item, false, || {
+        crate::computed_geometry::editor_state_to_page_item_geometry_with_cached_scope(
+            state, page, item,
+        )
+    })
 }
 
 #[cfg(test)]
@@ -169,16 +167,34 @@ pub fn editor_state_to_page_parent_geometry_cached(
     page: usize,
     parent: &str,
 ) -> Arc<Vec<ComputedGeometry>> {
-    let key = (parent.len() <= 4096)
-        .then(|| Key::new(state, page, Some(parent), crate::current_font_generation()))
-        .flatten()
-        .map(|mut key| {
-            key.parent_query = Some(parent.to_owned());
-            key
-        });
-    get_or_compute(shared_store(), key, || {
+    crate::query_scene_cache::computed_geometry_cached(state, page, Some(parent), true, || {
         crate::computed_geometry::editor_state_to_page_parent_geometry_with_rect_reuse(
             state, page, parent,
         )
     })
+}
+
+/// No cache admission for unproved input/resource ownership.
+pub(crate) fn fresh_geometry(
+    build: impl FnOnce() -> Vec<ComputedGeometry>,
+) -> Arc<Vec<ComputedGeometry>> {
+    get_or_compute(shared_store(), None, build)
+}
+/// Resolve requested original-node metadata through the trusted page's compact
+/// route index. Duplicate/oversized/unproved pages return None for the complete
+/// last-occurrence metadata walk; missing original IDs are individual None.
+pub fn page_nodes_by_id_cached<'a>(
+    state: &'a EditorState,
+    page: usize,
+    ids: &[&str],
+) -> Option<Vec<Option<&'a jian_ops_schema::node::PenNode>>> {
+    if ids.len() > 65536 {
+        return None;
+    }
+    let roots = values::PageIndex::roots(state, page)?;
+    let index = values::page_index_cached(state, page)?;
+    if !index.unique {
+        return None;
+    }
+    ids.iter().map(|id| index.resolve(roots, id)).collect()
 }

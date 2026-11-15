@@ -146,3 +146,34 @@ impl PageIndex {
         (path.last()?.id_str() == id).then_some(path)
     }
 }
+
+impl PageIndex {
+    /// The outer option certifies the indexed route; inner None means an ID
+    /// genuinely absent from this exact raw page (e.g. a virtual Ref child).
+    pub(crate) fn resolve<'a>(
+        &self,
+        roots: &'a [PenNode],
+        id: &str,
+    ) -> Option<Option<&'a PenNode>> {
+        let Some(mut ordinal) = self.by_id.get(id).copied() else {
+            return Some(None);
+        };
+        if ordinal == NONE {
+            return None;
+        }
+        let mut children = Vec::new();
+        let root = loop {
+            let location = self.locations.get(ordinal as usize)?;
+            if location.parent == NONE {
+                break location.root as usize;
+            }
+            children.push(location.child as usize);
+            ordinal = location.parent;
+        };
+        let mut node = roots.get(root)?;
+        for index in children.into_iter().rev() {
+            node = node.children()?.get(index)?;
+        }
+        (node.id_str() == id).then_some(Some(node))
+    }
+}
