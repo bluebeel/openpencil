@@ -314,11 +314,22 @@ pub fn default_theme(themes: Option<&BTreeMap<String, Vec<String>>>) -> Theme {
 /// ref therefore yields `None` here where the TS oracle may yield a
 /// fallback hex — the golden-parity harness must account for this.
 pub fn resolve_color_ref(raw: &str, variables: &Variables, theme: &Theme) -> Option<String> {
+    resolve_color_ref_borrowed(raw, variables, theme).map(str::to_owned)
+}
+
+/// Borrow the exact accepted color from the input or canonical variable map.
+/// Callers emitting owned reports can defer their only clone until an issue
+/// actually exists; rejected/non-string/circular values allocate nothing.
+pub fn resolve_color_ref_borrowed<'a>(
+    raw: &'a str,
+    variables: &'a Variables,
+    theme: &Theme,
+) -> Option<&'a str> {
     if !is_variable_ref(raw) {
-        return Some(raw.to_string());
+        return Some(raw);
     }
     match resolve_variable_ref(raw, variables, theme)? {
-        VariableScalar::Str(s) => Some(s.clone()),
+        VariableScalar::Str(value) => Some(value.as_str()),
         VariableScalar::Bool(_) | VariableScalar::Num(_) => None,
     }
 }
