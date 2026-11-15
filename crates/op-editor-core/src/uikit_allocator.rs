@@ -121,6 +121,7 @@ impl EditorState {
                 .entry(name)
                 .or_insert(definition);
         }
+        let root_slot = (!parent_id.is_real()).then(|| self.active_children().len());
         if parent_id.is_real() {
             let Some(parent) = walkers::find_node_mut(self.active_children_mut(), parent_id) else {
                 return Ok(None);
@@ -134,6 +135,9 @@ impl EditorState {
         }
         self.set_single_selection(new_id.clone());
         self.push_undo(snap);
+        if let Some(index) = root_slot {
+            crate::kit_creation_receipt::record_root(self, kit_id, component_id, index, &new_id);
+        }
         Ok(Some(new_id))
     }
 }

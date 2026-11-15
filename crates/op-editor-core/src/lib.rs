@@ -194,6 +194,7 @@ pub fn svg_path_data_bounds(d: &str) -> Option<(f32, f32, f32, f32)> {
         bounds.h as f32,
     ))
 }
+mod kit_creation_receipt;
 pub mod screen_sets;
 pub mod text_edit;
 pub mod text_input_focus;
@@ -205,6 +206,7 @@ pub mod toolbar_state;
 pub mod topbar_state;
 pub mod ui_draft;
 pub mod uikit;
+pub use kit_creation_receipt::KitRootCapture;
 mod uikit_allocator;
 pub mod uikit_io;
 pub mod uikit_shadcn;

@@ -181,7 +181,11 @@ where
         return Ok(Some(super::owned_dispatch::process(
             registry,
             call,
-            |tool_name, cmd| apply(tool_name, state, AuthorityAction::Command(cmd)),
+            |tool_name, cmd| {
+                super::owned_dispatch::apply_with_receipt(state, cmd, |state| {
+                    apply(tool_name, state, AuthorityAction::Command(cmd))
+                })
+            },
         )));
     }
     process_tool_message_with_registry(&registry, line, |tool_name, cmd| {
