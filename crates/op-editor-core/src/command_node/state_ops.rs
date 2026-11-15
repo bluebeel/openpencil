@@ -11,7 +11,7 @@
 use super::builders::{build_leaf_node, kind_is_valid};
 use super::tree_ops::{
     apply_copy_overrides, insert_into_parent_or_root, remap_subtree_ids_mapping_with_allocator,
-    remap_subtree_ids_with_allocator, replace_node_in_children,
+    remap_subtree_ids_with_allocator,
 };
 use crate::command::BatchInsertItem;
 use crate::fills::set_primary_fill_hex;
@@ -89,7 +89,8 @@ impl EditorState {
         if !node_id.is_real() {
             return false;
         }
-        let Some(node) = walkers::find_node_mut(self.active_children_mut(), node_id) else {
+        let scope = self.command_lookup_active_scope();
+        let Some(node) = self.command_find_node_mut(&scope, node_id) else {
             return false;
         };
         super::borrowed_geometry::update_node(node, node_id, x, y, width, height, name, fill_hex)
@@ -115,13 +116,14 @@ impl EditorState {
         {
             patch.insert("preserveGeometry".into(), serde_json::Value::Bool(false));
         }
+        let scope = self.command_lookup_active_scope();
         if !patch.contains_key("children") && !patch.contains_key("type") {
-            let Some(current) = walkers::find_node_mut(self.active_children_mut(), node_id) else {
+            let Some(current) = self.command_find_node_mut(&scope, node_id) else {
                 return false;
             };
             return super::borrowed_geometry::patch_header(current, &patch);
         }
-        let Some(current) = walkers::find_node(self.active_children(), node_id) else {
+        let Some(current) = self.command_find_node(&scope, node_id) else {
             return false;
         };
         let merge = |value: &mut serde_json::Value, root: bool| {
@@ -147,8 +149,7 @@ impl EditorState {
         if replacement.id_str().is_empty() {
             return false;
         }
-        let mut slot = Some(replacement);
-        replace_node_in_children(self.active_children_mut(), node_id, &mut slot)
+        self.command_replace_node(&scope, node_id, replacement)
     }
 
     /// `DeleteNode` — remove a node + descendants from the active page.
@@ -296,11 +297,11 @@ impl EditorState {
                 return Ok(false);
             }
         }
+        let scope = self.command_lookup_active_scope();
         // Resolve target + check the destructive-swap guard BEFORE
         // minting an id. A target WITH children needs explicit consent.
         {
-            let children = self.active_children();
-            let Some(target) = walkers::find_node(children, node_id) else {
+            let Some(target) = self.command_find_node(&scope, node_id) else {
                 return Ok(false);
             };
             let has_children = target.children().map(|c| !c.is_empty()).unwrap_or(false);
@@ -318,12 +319,7 @@ impl EditorState {
         if let Some(hex) = fill_hex {
             set_primary_fill_hex(&mut replacement, hex);
         }
-        let mut slot = Some(replacement);
-        Ok(replace_node_in_children(
-            self.active_children_mut(),
-            node_id,
-            &mut slot,
-        ))
+        Ok(self.command_replace_node(&scope, node_id, replacement))
     }
 
     /// `ReplaceSubtree` — swap an existing node for a fully-authored
@@ -340,9 +336,9 @@ impl EditorState {
         if !node_id.is_real() {
             return Ok(false);
         }
+        let scope = self.command_lookup_active_scope();
         {
-            let children = self.active_children();
-            let Some(target) = walkers::find_node(children, node_id) else {
+            let Some(target) = self.command_find_node(&scope, node_id) else {
                 return Ok(false);
             };
             let has_children = target.children().map(|c| !c.is_empty()).unwrap_or(false);
@@ -353,12 +349,10 @@ impl EditorState {
         let mut taken = allocator.document_collision_ids(&self.doc);
         let mut nodes = vec![node];
         remap_subtree_ids_with_allocator(&mut nodes, allocator, &mut taken)?;
-        let mut slot = nodes.pop();
-        Ok(replace_node_in_children(
-            self.active_children_mut(),
-            node_id,
-            &mut slot,
-        ))
+        let Some(replacement) = nodes.pop() else {
+            return Ok(false);
+        };
+        Ok(self.command_replace_node(&scope, node_id, replacement))
     }
 
     /// `BatchInsert` — insert N leaf nodes on the active page in one

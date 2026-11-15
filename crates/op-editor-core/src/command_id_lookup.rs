@@ -4,6 +4,8 @@
 use crate::{history::Scope, EditorCommand as C, EditorState, NodeId, PenNodeExt};
 use jian_ops_schema::{node::PenNode, PenDocument};
 use std::{cmp::Ordering, collections::HashMap, sync::Arc};
+#[path = "command_id_access.rs"]
+mod access;
 #[path = "command_id_clones.rs"]
 mod cloning;
 #[path = "command_id_insert.rs"]
