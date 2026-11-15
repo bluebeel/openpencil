@@ -4,7 +4,6 @@
 //! nodes. Pure code motion — behaviour is unchanged.
 
 use super::rounded_shadow::paint_round_shadow;
-use super::MIN_VISIBLE_EFFECT_DEVICE_PX;
 use crate::layout_scene::{Effect, NodeKind, SceneNode};
 use crate::widgets::canvas_viewport_fill_layers::{
     fill_layer_fallback_color, paint_clipped_fill_layers_with, paint_clipped_shape_rich_fill_layer,
@@ -18,13 +17,12 @@ use crate::{Point2D, Rect};
 /// kind — `corner_radius` for Frame / Rect, min-half for an
 /// ellipse silhouette. Offset + blur scale by `zoom` so the
 /// shadow tracks the node across viewport zoom. Spread changes the silhouette
-/// before blur. Shadows whose blur, offset and spread are all sub-pixel skip.
+/// before blur. Every outer shadow participates in a full-quality paint.
 pub(super) fn paint_drop_shadows(
     cx: &mut PaintCx<'_>,
     node: &SceneNode,
     world_rect: Rect,
     zoom: f32,
-    dpi_scale: f32,
 ) {
     let radius = if node.kind == NodeKind::Ellipse {
         world_rect.size.x.min(world_rect.size.y) / 2.0
@@ -45,14 +43,6 @@ pub(super) fn paint_drop_shadows(
         // Inset shadows are painted inside the silhouette by the
         // per-kind painter, not here — skip them in the outer pass.
         if s.inner {
-            continue;
-        }
-        let footprint = s
-            .blur
-            .max(s.offset_x.abs())
-            .max(s.offset_y.abs())
-            .max(s.spread.abs());
-        if footprint * zoom * dpi_scale < MIN_VISIBLE_EFFECT_DEVICE_PX {
             continue;
         }
         let corners = scaled_non_uniform_corner_radii(node, zoom).map(|r| {

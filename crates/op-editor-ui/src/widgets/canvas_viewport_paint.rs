@@ -96,13 +96,6 @@ use rounded_shadow::{has_inset_shadow, paint_fill_and_insets};
 
 use shapes::{paint_drop_shadows, paint_ellipse, push_clip_content};
 
-/// Effects whose zoom-scaled footprint stays under this many device
-/// pixels are invisible — but their save-layers still break the GPU
-/// render pass (measured: a zoomed-out page with ~4.6k blur effects
-/// spent ~85% of every panned frame in per-draw render-pass submits
-/// on the macOS GL-on-Metal driver). Sub-pixel effects skip instead.
-const MIN_VISIBLE_EFFECT_DEVICE_PX: f32 = 0.3;
-
 use super::canvas_overlay_transform::OverlayTransform;
 
 /// Resolve the active tab option by authored/live value. Missing or stale
@@ -210,13 +203,11 @@ fn paint_node_inner<'a>(
         return PaintNodeHits::default();
     }
     let dpi_scale = cx.backend.dpi_scale();
-    // Sub-pixel LOD: a leaf under ~3/4 of a device pixel contributes
-    // nothing visible, but its fill/stroke/clip ops still reach the
-    // GPU — a zoomed-out 38k-node page carries ~8k such leaves per
-    // frame. Always skipped (not only mid-gesture): it makes the
-    // gesture-end full-quality repaint and every zoomed-out resting
-    // frame proportionally cheaper at no visible cost.
-    if node.children.is_empty()
+    // During an interactive gesture the explicit fast mode may omit tiny
+    // leaves. Full-quality paints retain them: sub-pixel fills, strokes and
+    // effects can still contribute antialiased coverage.
+    if options.fast_interaction
+        && node.children.is_empty()
         && world_rect.size.x.abs().max(world_rect.size.y.abs()) * dpi_scale < 0.75
     {
         return PaintNodeHits::default();
@@ -276,11 +267,8 @@ fn paint_node_inner<'a>(
             Effect::BackgroundBlur { radius } if *radius > 0.0 => Some(*radius * 0.5 * zoom),
             _ => None,
         })
-        // Sub-pixel backdrop blur is invisible; skip its save-layer.
-        // Gestures skip all backdrop layers (interactive degrade).
-        .filter(|sigma| {
-            !options.fast_interaction && sigma * dpi_scale >= MIN_VISIBLE_EFFECT_DEVICE_PX
-        });
+        // Gestures explicitly defer backdrop layers until the full repaint.
+        .filter(|_| !options.fast_interaction);
     let background_blur_pushed = if let Some(sigma) =
         background_blur_sigma.filter(|_| world_rect.size.x > 0.0 && world_rect.size.y > 0.0)
     {
@@ -346,11 +334,8 @@ fn paint_node_inner<'a>(
             Effect::Blur(b) if b.radius > 0.0 => Some(b.radius * 0.5 * zoom),
             _ => None,
         })
-        // Sub-pixel layer blur is invisible; skip its save-layer.
-        // Gestures skip all blur layers (interactive degrade).
-        .filter(|sigma| {
-            !options.fast_interaction && sigma * dpi_scale >= MIN_VISIBLE_EFFECT_DEVICE_PX
-        });
+        // Gestures explicitly defer blur layers until the full repaint.
+        .filter(|_| !options.fast_interaction);
     if let Some(sigma) = blur_sigma {
         cx.backend.push_blur_layer(sigma);
     }
@@ -368,7 +353,7 @@ fn paint_node_inner<'a>(
             NodeKind::Frame | NodeKind::Rect | NodeKind::Ellipse
         )
     {
-        paint_drop_shadows(cx, node, world_rect, zoom, dpi_scale);
+        paint_drop_shadows(cx, node, world_rect, zoom);
     }
 
     match &node.kind {

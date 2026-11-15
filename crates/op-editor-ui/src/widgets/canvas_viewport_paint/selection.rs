@@ -7,7 +7,7 @@ pub use lookup::{SceneSelection, SceneSelectionBatch, SceneSelectionCursor};
 
 use super::{
     layer_bounds, mask, paint_node_inner, push_clip_content, Effect, OverlayTransform, PaintCx,
-    PaintNodeOptions, Point2D, Rect, SceneNode, MIN_VISIBLE_EFFECT_DEVICE_PX,
+    PaintNodeOptions, Point2D, Rect, SceneNode,
 };
 use crate::ImageBlendMode;
 
@@ -159,14 +159,10 @@ fn paint_export_selection_inner(cx: &mut PaintCx<'_>, selection: &SceneSelection
                     );
                     layers += 1;
                 }
-                let blur = node
-                    .effects
-                    .iter()
-                    .find_map(|effect| match effect {
-                        Effect::Blur(blur) if blur.radius > 0.0 => Some(blur.radius * 0.5),
-                        _ => None,
-                    })
-                    .filter(|sigma| sigma * cx.backend.dpi_scale() >= MIN_VISIBLE_EFFECT_DEVICE_PX);
+                let blur = node.effects.iter().find_map(|effect| match effect {
+                    Effect::Blur(blur) if blur.radius > 0.0 => Some(blur.radius * 0.5),
+                    _ => None,
+                });
                 if let Some(sigma) = blur {
                     cx.backend.push_blur_layer(sigma);
                     layers += 1;
