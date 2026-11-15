@@ -10,6 +10,7 @@ use std::fmt::Write as _;
 mod batch;
 mod gradient_geometry;
 mod stroke_paint;
+mod text_paints;
 pub use batch::SvgNodeBatch;
 
 mod bounds;
@@ -21,9 +22,12 @@ mod render;
 mod composite;
 #[cfg(test)]
 mod composite_tests;
+mod fill_layers;
+mod image_fields;
 mod image_metadata;
 #[path = "svg_export_rect.rs"]
 mod rect;
+mod resource_scope;
 mod transform;
 
 use rect::{emit_rect, emit_rect_fill, emit_rect_stroke_overlay, emit_widget_frame_background};
@@ -60,6 +64,13 @@ pub enum SvgExportError {
     /// The requested node exists but paints no geometry.
     NodePaintsNothing(String),
     InvalidScale,
+    ResourceNestingLimit {
+        limit: usize,
+    },
+    InvalidImage {
+        node_id: String,
+        source: op_editor_core::svg_image_composition::ImageSvgError,
+    },
     UnsupportedGradientInterpolation {
         node_id: String,
     },
@@ -80,6 +91,8 @@ impl std::fmt::Display for SvgExportError {
             SvgExportError::NodePaintsNothing(id) => write!(f, "node {id} paints nothing"),
             SvgExportError::UnsupportedGradientInterpolation{node_id}=>write!(f,"node {node_id} has a premultiplied alpha gradient that SVG cannot represent exactly"),
             SvgExportError::InvalidGradient{node_id,source}=>write!(f,"node {node_id}: {source}"),
+            SvgExportError::InvalidImage{node_id,source}=>write!(f,"node {node_id}: {source}"),
+            SvgExportError::ResourceNestingLimit{limit}=>write!(f,"SVG resource callback nesting exceeds {limit}"),
             SvgExportError::InvalidScale => write!(f, "SVG scale must be finite and positive"),
         }
     }
@@ -168,6 +181,7 @@ fn serialize_svg(
     scale: f32,
     sibling_roots: bool,
 ) -> Result<String, SvgExportError> {
+    let resource_capture = resource_scope::Capture::begin()?;
     for node in nodes {
         gradient_geometry::validate(node)?;
     }
@@ -193,7 +207,7 @@ fn serialize_svg(
         svg,
         r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="{view_x} {view_y} {view_w} {view_h}" width="{output_w}" height="{output_h}">"#
     );
-    emit_defs(&mut svg, nodes, ancestor_effects, sibling_roots);
+    emit_defs(&mut svg, nodes, ancestor_effects, sibling_roots)?;
     context::emit_groups_start(&mut svg, ancestor_effects);
     let wraps_root = root_xform != glam::Affine2::IDENTITY;
     if wraps_root {
@@ -211,6 +225,7 @@ fn serialize_svg(
     }
     context::close_groups(&mut svg, ancestor_effects);
     svg.push_str("</svg>");
+    resource_capture.finish()?;
     Ok(svg)
 }
 
@@ -219,24 +234,35 @@ fn emit_defs(
     nodes: &[SceneNode],
     ancestor_effects: &[AncestorEffect<'_>],
     sibling_roots: bool,
-) {
+) -> Result<(), SvgExportError> {
     let mut defs = String::new();
     context::emit_defs(&mut defs, ancestor_effects);
     for node in nodes {
-        emit_node_defs(&mut defs, node, sibling_roots);
+        emit_node_defs(&mut defs, node, sibling_roots)?;
     }
     if !defs.is_empty() {
         out.push_str("<defs>");
         out.push_str(&defs);
         out.push_str("</defs>");
     }
+    Ok(())
 }
 
-fn emit_node_defs(out: &mut String, n: &SceneNode, sibling_mask: bool) {
+fn emit_node_defs(
+    out: &mut String,
+    n: &SceneNode,
+    sibling_mask: bool,
+) -> Result<(), SvgExportError> {
     if n.hidden {
-        return;
+        return Ok(());
     }
     let id = svg_id(&n.id);
+    fill_layers::emit_defs(out, n)?;
+    if n.fill_layers.is_empty() {
+        if n.image_src.is_some() {
+            image_fields::emit_node_definition(out, n)?;
+        }
+    }
     stroke_paint::emit_defs(out, n);
     if let Some(shader) = &n.shader {
         if let Some(paint) = shader.gradient.as_deref() {
@@ -276,11 +302,12 @@ fn emit_node_defs(out: &mut String, n: &SceneNode, sibling_mask: bool) {
         }
     }
     for child in n.visible_children() {
-        emit_node_defs(out, child, true);
+        emit_node_defs(out, child, true)?;
     }
     if sibling_mask {
         masks::emit_definition(out, n, glam::Affine2::IDENTITY, false);
     }
+    Ok(())
 }
 
 fn emit_gradient(out: &mut String, id: &str, gradient: &SceneGradient, bounds: Rect) {
@@ -403,6 +430,9 @@ fn emit_polygon(out: &mut String, n: &SceneNode) {
 }
 
 fn emit_line(out: &mut String, n: &SceneNode) {
+    if n.stroke.is_none() && (n.stroke_disabled || n.fill_disabled) {
+        return;
+    }
     if n.stroke_paint.is_some() {
         return;
     }
@@ -424,6 +454,14 @@ fn emit_line(out: &mut String, n: &SceneNode) {
 }
 
 fn emit_text(out: &mut String, n: &SceneNode) {
+    if n.fill_disabled
+        && !n
+            .text_runs
+            .iter()
+            .any(|run| !run.fill_disabled && run.fill.is_some())
+    {
+        return;
+    }
     let Some(text) = n.text.as_deref() else {
         return;
     };
@@ -438,7 +476,9 @@ fn emit_text(out: &mut String, n: &SceneNode) {
         TEXT_DEFAULT_FONT_SIZE
     };
     let line_h = base_size * 1.35;
-    let fill_attr = if color.a < 0.999 {
+    let fill_attr = if n.fill_disabled {
+        String::from(r#" fill="none""#)
+    } else if color.a < 0.999 {
         format!(
             r#" fill="{}" fill-opacity="{}""#,
             color_to_rgb(color),
@@ -454,6 +494,7 @@ fn emit_text(out: &mut String, n: &SceneNode) {
     };
     let _ = write!(out, r#"<g id="{}">"#, xml_escape(&node_id(&n.id)));
     let mut baseline_y = r.origin.y + base_size + 1.0;
+    let mut line_start = 0;
     for line in text.split('\n') {
         let _ = write!(
             out,
@@ -470,9 +511,10 @@ fn emit_text(out: &mut String, n: &SceneNode) {
                 ""
             },
             text_decoration_attr(n),
-            xml_escape(line),
+            text_paints::content(n, line, line_start),
         );
         baseline_y += line_h;
+        line_start += line.len() + 1;
     }
     out.push_str("</g>");
 }
@@ -494,7 +536,12 @@ fn emit_path(out: &mut String, n: &SceneNode) {
         }
         (d, String::new())
     };
-    let attrs = if n.svg_path.is_none() && !n.path_closed && n.stroke.is_none() {
+    let attrs = if n.svg_path.is_none()
+        && !n.path_closed
+        && n.stroke.is_none()
+        && !n.stroke_disabled
+        && !n.fill_disabled
+    {
         let color = n.fill.unwrap_or(Color::BLACK);
         format!(r#" fill="none"{}"#, stroke_attrs(color, 1.5))
     } else {
@@ -544,9 +591,9 @@ fn svg_path_fit_transform(d: &str, bounds: Rect) -> String {
 }
 
 fn emit_image(out: &mut String, n: &SceneNode) {
-    let Some(src) = n.image_src.as_deref() else {
+    if n.image_src.is_none() {
         return;
-    };
+    }
     let r = normalize_rect(n.bounds);
     let id = svg_id(&n.id);
     let clip = if n.corner_radius > 0.0 {
@@ -554,36 +601,14 @@ fn emit_image(out: &mut String, n: &SceneNode) {
     } else {
         String::new()
     };
-    if n.image_fit == SceneImageFit::Tile {
-        let _ = write!(
-            out,
-            r#"<rect id="{}" x="{}" y="{}" width="{}" height="{}" fill="url(#image-pattern-{id})" opacity="{}"{clip}/>"#,
-            xml_escape(&node_id(&n.id)),
-            r.origin.x,
-            r.origin.y,
-            r.size.x,
-            r.size.y,
-            n.opacity.clamp(0.0, 1.0),
-        );
-        return;
-    }
-    let preserve = match n.image_fit {
-        SceneImageFit::Fit => "xMidYMid meet",
-        SceneImageFit::Crop | SceneImageFit::Fill => "xMidYMid slice",
-        SceneImageFit::Stretch => "none",
-        SceneImageFit::Tile => unreachable!("tile images return above"),
-    };
     let _ = write!(
         out,
-        r#"<image id="{}" x="{}" y="{}" width="{}" height="{}" href="{}" preserveAspectRatio="{}" opacity="{}"{clip}/>"#,
+        r#"<rect id="{}" x="{}" y="{}" width="{}" height="{}" fill="url(#image-field-{id})"{clip}/>"#,
         xml_escape(&node_id(&n.id)),
         r.origin.x,
         r.origin.y,
         r.size.x,
-        r.size.y,
-        xml_escape(src),
-        preserve,
-        n.opacity.clamp(0.0, 1.0)
+        r.size.y
     );
 }
 
@@ -628,6 +653,15 @@ fn fill_stroke_attrs(n: &SceneNode) -> String {
 }
 
 fn fill_attrs(n: &SceneNode) -> String {
+    if n.fill_disabled {
+        return String::from(r#" fill="none""#);
+    }
+    if fill_layers::eligible(n) {
+        return r#" fill="none""#.into();
+    }
+    if n.image_src.is_some() {
+        return format!(r#" fill="url(#image-field-{})""#, svg_id(&n.id));
+    }
     let mut s = String::new();
     if n.gradient.is_some()
         || n.shader

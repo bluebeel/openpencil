@@ -67,7 +67,15 @@ pub(crate) fn node_payload_to_scene(
         origin: Point2D::new(node.x, node.y),
         size: Point2D::new(node.w, node.h),
     };
-    let variable_fill = var_table.fill_for(&node_id);
+    // A variable binding replaces the primary active paint; it must not
+    // re-enable an entirely disabled canonical stack in the legacy projection.
+    let variable_fill = (!node.fill_disabled
+        && node
+            .fill_layers
+            .first()
+            .is_none_or(jian_ops_schema::style::PenFill::is_enabled))
+    .then(|| var_table.fill_for(&node_id))
+    .flatten();
     let stroke = if is_unpainted_widget_stroke(&node, &node_id, var_table) {
         // A first-class widget's stroke is its *inactive track / border*
         // role paint, not a literal outline. When the author declared a
@@ -101,6 +109,13 @@ pub(crate) fn node_payload_to_scene(
     };
     let fill_layers = fill_layers_to_scene(&node.fill_layers, variable_fill, [node.w, node.h]);
     drop(node.fill_layers);
+    let image_paint = node
+        .image_paint
+        .map(Arc::from)
+        .or_else(|| match fill_layers.first() {
+            Some(SceneFillLayer::Image { paint, .. }) => paint.clone(),
+            _ => None,
+        });
     let text_runs = text_runs_to_scene(&node.text_runs, paint_opacity);
     drop(node.text_runs);
     let children: Vec<SceneNode> = node
@@ -133,6 +148,8 @@ pub(crate) fn node_payload_to_scene(
             .or_else(|| node.fill.map(array_to_color))
             .map(|c| mul_alpha(c, paint_opacity)),
         fill_layers,
+        fill_disabled: node.fill_disabled,
+        stroke_disabled: node.stroke_disabled,
         fill_type: str_to_scene_fill_type(&node.fill_type),
         gradient: node
             .gradient
@@ -186,6 +203,8 @@ pub(crate) fn node_payload_to_scene(
             .unwrap_or(0),
         image_nearest_sampling: node.image_nearest_sampling.unwrap_or(false),
         image_rotation_degrees: node.image_rotation_degrees,
+        image_geometry: node.image_geometry.map(Arc::from),
+        image_paint,
         video: node.video.map(|video| SceneVideo {
             src: Arc::from(video.src),
             autoplay: video.autoplay,

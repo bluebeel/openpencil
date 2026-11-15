@@ -33,6 +33,9 @@ fn emit_node_inner(out: &mut String, n: &SceneNode, suppress_node_blend: bool) {
         // Frame widgets retain their authored container behind the tab bar.
         emit_widget_frame_background(out, n, defers_rect_stroke);
     }
+    if fill_layers::eligible(n) {
+        fill_layers::emit(out, n);
+    }
     let composite_painted = composite::emit_visual(out, n);
     if !composite_painted {
         match &n.kind {

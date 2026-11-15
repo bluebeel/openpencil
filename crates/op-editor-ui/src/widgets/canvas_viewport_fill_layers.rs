@@ -47,6 +47,9 @@ pub(super) fn paint_fill_layers_with(
     world_rect: Rect,
     mut paint_layer: impl FnMut(&mut PaintCx<'_>, &SceneFillLayer),
 ) -> bool {
+    if node.fill_disabled {
+        return true;
+    }
     if node.fill_layers.is_empty() {
         return false;
     }
@@ -92,6 +95,9 @@ pub(super) fn paint_clipped_fill_layers_with(
     clip: impl FnOnce(&mut dyn crate::RenderBackend),
     paint_layer: impl FnMut(&mut PaintCx<'_>, &SceneFillLayer),
 ) -> bool {
+    if node.fill_disabled {
+        return true;
+    }
     if node.fill_layers.is_empty() {
         return false;
     }
@@ -158,6 +164,8 @@ fn paint_image_fill_layer_with_corners(
     inherit_corners: bool,
 ) -> bool {
     let SceneFillLayer::Image {
+        geometry,
+        paint,
         src,
         src_id,
         thumbnail_src,
@@ -194,6 +202,8 @@ fn paint_image_fill_layer_with_corners(
     image.image_fit = *fit;
     image.image_transform = *transform;
     image.image_rotation_degrees = *rotation_degrees;
+    image.image_geometry = geometry.clone();
+    image.image_paint = paint.clone();
     image.image_original_size = *original_size;
     image.image_tile_scale = *tile_scale;
     image.image_adjustments = *adjustments;

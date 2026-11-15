@@ -11,6 +11,7 @@ use crate::ExportError;
 
 /// Serialize the active page to UTF-8 SVG bytes.
 pub fn render_svg_bytes(scene: &LayoutScene) -> Result<Vec<u8>, ExportError> {
+    op_host_native::svg_image_source::install();
     op_editor_ui::svg_export::serialize_active_page_svg(scene)
         .map(String::into_bytes)
         .map_err(|e| ExportError::SvgSerialize(e.to_string()))
@@ -18,6 +19,7 @@ pub fn render_svg_bytes(scene: &LayoutScene) -> Result<Vec<u8>, ExportError> {
 
 /// Serialize one node and its subtree to UTF-8 SVG bytes.
 pub fn render_node_svg_bytes(scene: &LayoutScene, node_id: &str) -> Result<Vec<u8>, ExportError> {
+    op_host_native::svg_image_source::install();
     op_editor_ui::svg_export::serialize_node_svg(scene, node_id)
         .map(String::into_bytes)
         .map_err(|e| ExportError::SvgSerialize(e.to_string()))
@@ -25,6 +27,7 @@ pub fn render_node_svg_bytes(scene: &LayoutScene, node_id: &str) -> Result<Vec<u
 
 /// Serialize one borrowed page, sharing the already resolved scene.
 pub fn render_page_svg_bytes(page: &ScenePage, scale: f32) -> Result<Vec<u8>, ExportError> {
+    op_host_native::svg_image_source::install();
     op_editor_ui::svg_export::serialize_page_svg(page, scale)
         .map(String::into_bytes)
         .map_err(|e| ExportError::SvgSerialize(e.to_string()))
@@ -36,6 +39,7 @@ pub fn render_node_on_page_svg_bytes(
     node_id: &str,
     scale: f32,
 ) -> Result<Vec<u8>, ExportError> {
+    op_host_native::svg_image_source::install();
     op_editor_ui::svg_export::serialize_node_on_page_svg(page, node_id, scale)
         .map(String::into_bytes)
         .map_err(|e| ExportError::SvgSerialize(e.to_string()))
@@ -48,6 +52,7 @@ pub struct NodeSvgBatch<'a> {
 }
 impl<'a> NodeSvgBatch<'a> {
     pub fn new(page: &'a ScenePage, node_ids: &[String]) -> Self {
+        op_host_native::svg_image_source::install();
         Self {
             prepared: op_editor_ui::svg_export::SvgNodeBatch::new(page, node_ids),
         }

@@ -34,6 +34,7 @@ pub(super) fn default_fill_of_type(kind: FillType, hex: &str) -> PenFill {
     match kind {
         FillType::Solid => solid_fill(hex.to_string()),
         FillType::LinearGradient => PenFill::LinearGradient(LinearGradientBody {
+            enabled: None,
             geometry: None,
             angle: None,
             stops: default_stops(hex),
@@ -42,6 +43,7 @@ pub(super) fn default_fill_of_type(kind: FillType, hex: &str) -> PenFill {
             blend_mode: None,
         }),
         FillType::RadialGradient => PenFill::RadialGradient(RadialGradientBody {
+            enabled: None,
             geometry: None,
             cx: None,
             cy: None,
@@ -52,6 +54,7 @@ pub(super) fn default_fill_of_type(kind: FillType, hex: &str) -> PenFill {
             blend_mode: None,
         }),
         FillType::MeshGradient => PenFill::MeshGradient(MeshGradientBody {
+            enabled: None,
             rows: 2,
             cols: 2,
             stops: default_mesh_stops(hex),
@@ -61,6 +64,8 @@ pub(super) fn default_fill_of_type(kind: FillType, hex: &str) -> PenFill {
         }),
         FillType::Shader => PenFill::Shader(default_shader_body(hex)),
         FillType::Image => PenFill::Image(Box::new(ImageFillBody {
+            enabled: None,
+            geometry: None,
             url: "".into(),
             thumbnail_url: None,
             nearest_sampling: None,
@@ -142,6 +147,7 @@ fn default_shader_body(hex: &str) -> ShaderFillBody {
         jian_ops_schema::style::ShaderUniformValue::Color(hex.to_string()),
     );
     ShaderFillBody {
+        enabled: None,
         preset: None,
         sksl: Some("uniform half4 tint; half4 main(float2 p){ return tint; }".to_string()),
         uniforms: Some(uniforms),
@@ -199,6 +205,7 @@ pub(super) fn convert_fill(existing: PenFill, kind: FillType) -> PenFill {
         // Linear → Radial — carry every shared field.
         (FillType::RadialGradient, PenFill::LinearGradient(body)) => {
             PenFill::RadialGradient(RadialGradientBody {
+                enabled: None,
                 geometry: None,
                 cx: None,
                 cy: None,
@@ -212,6 +219,7 @@ pub(super) fn convert_fill(existing: PenFill, kind: FillType) -> PenFill {
         // Radial → Linear — carry every shared field.
         (FillType::LinearGradient, PenFill::RadialGradient(body)) => {
             PenFill::LinearGradient(LinearGradientBody {
+                enabled: None,
                 geometry: None,
                 angle: None,
                 stops: body.stops,

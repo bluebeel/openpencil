@@ -186,6 +186,7 @@ fn build_content(node: &FigValue) -> TextContent {
             || s.font_weight.is_some()
             || s.font_style.is_some()
             || s.fill.is_some()
+            || s.fill_paints.is_some()
             || s.underline.is_some()
             || s.strikethrough.is_some()
             || s.text_decoration_skip_ink.is_some()
@@ -211,6 +212,7 @@ fn build_segment(
         font_weight: None,
         font_style: None,
         fill: None,
+        fill_paints: None,
         underline: None,
         strikethrough: None,
         href: None,
@@ -255,13 +257,16 @@ fn build_segment(
         Some("STRIKETHROUGH") => seg.strikethrough = Some(true),
         _ => {}
     }
-    if let Some(color) = ov
-        .get_array("fillPaints")
-        .and_then(|p| p.first())
-        .and_then(|p| p.get("color"))
-        .and_then(FigColor::from_value)
-    {
-        seg.fill = Some(figma_color_to_hex(&color));
+    if let Some(paints) = ov.get_array("fillPaints") {
+        seg.fill_paints = Some(crate::mappers::map_figma_fills(Some(paints)).unwrap_or_default());
+        seg.fill = seg.fill_paints.as_deref().and_then(|fills| {
+            fills.iter().find_map(|fill| match fill {
+                jian_ops_schema::style::PenFill::Solid(body) if fill.is_enabled() => {
+                    Some(body.color.clone())
+                }
+                _ => None,
+            })
+        });
     }
     seg
 }

@@ -66,12 +66,12 @@ pub(super) fn jian_color_to_color4f(c: Color) -> skia_safe::Color4f {
 // Gradient shader paint methods (`fill_round_rect_linear_gradient`
 // / `_radial_gradient`) and their helpers live in the sibling
 // `gradient.rs` so this spine stays under the 800-line cap. The
-// methods are added to `NativeBackend` via a sibling `impl` block.
 mod caches;
 mod corner_shadow;
 mod gradient;
 mod image;
 mod image_diagnostics;
+mod image_explicit_field;
 mod image_nearest16;
 mod image_paint_field;
 mod image_precision;
@@ -244,6 +244,7 @@ impl NativeBackend {
     /// image cache. The convenience `with_dpi` covers the common
     /// "fresh backend" path.
     pub fn new(skia: jian_skia::SkiaBackend, dpi: f32) -> Self {
+        crate::svg_image_source::install();
         // `FontMgr::new()` + `new_from_data` are DirectWrite on Windows.
         // Serialize with all other font work (reentrant); the prewarm loop
         // below resolves ~50 glyphs and is likewise locked per call.

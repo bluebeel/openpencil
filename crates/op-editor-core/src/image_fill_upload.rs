@@ -70,6 +70,8 @@ impl EditorState {
                     return false;
                 };
                 let body = PenFill::Image(Box::new(ImageFillBody {
+                    enabled: None,
+                    geometry: None,
                     url: src.into(),
                     thumbnail_url: None,
                     nearest_sampling: None,

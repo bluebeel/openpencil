@@ -105,6 +105,9 @@ pub struct ConversionContext<'tree> {
     pub warnings: Vec<String>,
     /// Sequential `fig_N` id allocator.
     pub id_counter: u32,
+    /// Branches that older imports omitted use an independent ID namespace,
+    /// keeping existing visible node IDs/ref targets stable as layers return.
+    pub retained_ids: RetainedIds,
     /// Geometry / image blob pool.
     pub blobs: Vec<BlobOrString>,
     pub layout_mode: FigLayoutMode,
@@ -115,12 +118,34 @@ pub struct ConversionContext<'tree> {
     pub instance_expansions: InstanceExpansionCache,
 }
 
+#[derive(Default)]
+pub struct RetainedIds {
+    active: bool,
+    next: u64,
+}
+
 impl ConversionContext<'_> {
     /// Mint the next sequential `fig_N` id.
     pub fn generate_id(&mut self) -> String {
+        if self.retained_ids.active {
+            let id = format!("fig_hidden_{}", self.retained_ids.next);
+            self.retained_ids.next += 1;
+            return id;
+        }
         let id = format!("fig_{}", self.id_counter);
         self.id_counter += 1;
         id
+    }
+    pub(crate) fn retain_hidden_ids<R>(
+        &mut self,
+        omitted: bool,
+        convert: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        let previous = self.retained_ids.active;
+        self.retained_ids.active |= omitted;
+        let result = convert(self);
+        self.retained_ids.active = previous;
+        result
     }
 }
 
@@ -256,12 +281,9 @@ pub fn common_props(figma: &FigValue, id: String) -> PenNodeBase {
         x: Some(x),
         y: Some(y),
         rotation: extract_rotation(figma),
-        opacity: figma
-            .get_f64("opacity")
-            .filter(|o| *o < 1.0)
-            .map(NumberOrExpression::Number),
+        opacity: figma.get_f64("opacity").map(NumberOrExpression::Number),
         enabled: None,
-        visible: None,
+        visible: figma.get_bool("visible"),
         locked: if figma.get_bool("locked") == Some(true) {
             Some(true)
         } else {

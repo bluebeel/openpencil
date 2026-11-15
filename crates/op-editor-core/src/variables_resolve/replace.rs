@@ -126,6 +126,11 @@ fn replace_in_node(
                     if let Some(fill) = segment.fill.as_mut() {
                         replace_color(fill, token, new, vars, theme);
                     }
+                    if let Some(fills) = segment.fill_paints.as_mut() {
+                        for fill in fills {
+                            replace_in_fill(fill, token, new, vars, theme);
+                        }
+                    }
                 }
             }
         }

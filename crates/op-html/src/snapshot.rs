@@ -782,6 +782,7 @@ fn matrix_rotation(value: &str) -> Option<f64> {
 
 fn solid_fill(color: String) -> PenFill {
     PenFill::Solid(SolidFillBody {
+        enabled: None,
         color,
         explain: None,
         opacity: None,

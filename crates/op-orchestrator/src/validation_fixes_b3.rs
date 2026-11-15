@@ -64,6 +64,7 @@ fn parse_sizing(v: &Value) -> Option<SizingBehavior> {
 
 fn solid_fill_from_hex(hex: &str) -> Vec<PenFill> {
     vec![PenFill::Solid(SolidFillBody {
+        enabled: None,
         color: hex.to_string(),
         explain: None,
         opacity: None,

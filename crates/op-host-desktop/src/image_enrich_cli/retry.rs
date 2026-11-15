@@ -262,6 +262,7 @@ fn reset_failure_fills(fills: Option<&mut Vec<PenFill>>) {
             PenFill::Image(image) if image.url == SEARCH_FAILED_PLACEHOLDER_SRC
         ) {
             *fill = PenFill::Solid(SolidFillBody {
+                enabled: None,
                 color: "#D1D5DB".to_string(),
                 explain: None,
                 opacity: None,

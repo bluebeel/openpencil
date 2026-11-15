@@ -1,0 +1,13 @@
+uniform shader image;
+uniform float4 sourceInverse;
+uniform float2 sourceOffset;
+uniform float4 viewportInverse;
+uniform float2 viewportOffset;
+uniform float3 clipped;
+half4 main(float2 p){
+    float2 uv=float2(dot(sourceInverse.xy,p),dot(sourceInverse.zw,p))+sourceOffset;
+    if((clipped.x!=0.0&&(uv.x<0.0||uv.x>=1.0))||(clipped.y!=0.0&&(uv.y<0.0||uv.y>=1.0)))return half4(0);
+    float2 q=float2(dot(viewportInverse.xy,p),dot(viewportInverse.zw,p))+viewportOffset;
+    if(clipped.z!=0.0&&(any(lessThan(q,float2(0)))||any(greaterThanEqual(q,float2(1)))))return half4(0);
+    return image.eval(p);
+}

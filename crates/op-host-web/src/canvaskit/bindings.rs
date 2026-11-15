@@ -23,6 +23,25 @@ extern "C" {
     /// a handle rather than borrow the host's.
     #[derive(Clone)]
     pub type OpCk;
+    #[wasm_bindgen(method,js_name=drawExplicitImageField)]
+    pub(super) fn draw_explicit_image_field(
+        this: &OpCk,
+        image_id_lo: u32,
+        image_id_hi: u32,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        geometry: &[f64],
+        adjustments: &[f32],
+        opacity: f32,
+        radius: f32,
+        blend: u8,
+        nearest: bool,
+        source_shader: &str,
+        pattern_shader: &str,
+    );
+
     #[wasm_bindgen(method,js_name=pushPaintSpace)]
     pub(super) fn push_paint_space(this: &OpCk, x: f32, y: f32, w: f32, h: f32);
     #[wasm_bindgen(method,js_name=popPaintSpace)]

@@ -88,6 +88,7 @@ pub(crate) fn convert_tree_all_pages_owned(
         symbol_tree: symbols,
         warnings: Vec::new(),
         id_counter: counter,
+        retained_ids: Default::default(),
         blobs,
         layout_mode,
         instance_assignments: assignments,
@@ -102,13 +103,8 @@ pub(crate) fn convert_tree_all_pages_owned(
                 Root::Owned(node) => node,
                 Root::Retained(index) => &pool[*index],
             };
-            // Exactly the visibility/opacity/ordering rules of convert_children.
-            if node.figma.get_bool("visible") != Some(false)
-                && node.figma.get_f64("opacity").map(|opacity| opacity <= 0.0) != Some(true)
-            {
-                if let Some(node) = convert_node(node, stack, &mut ctx) {
-                    children.push(node);
-                }
+            if let Some(node) = crate::converters::convert_retained_child(node, stack, &mut ctx) {
+                children.push(node);
             }
             // An owned source root leaves here, before the following root's
             // canonical children are allocated. Retained masters remain shared.

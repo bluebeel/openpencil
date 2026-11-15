@@ -301,7 +301,7 @@ fn normalize_node_value(
 /// - a single fill *object* (`{ "type": "color", "color": "...", "enabled": false }`)
 ///   rather than a one-element array
 /// - the `type: "color"` discriminant (jian's solid arm is `"solid"`)
-/// - an `enabled: false` flag → the fill is dropped (disabled in the source)
+/// - an `enabled` flag stays authored on the retained paint
 ///
 /// No-op when `fill` is absent or already a clean canonical array.
 fn normalize_fill(map: &mut serde_json::Map<String, serde_json::Value>, changed: &mut bool) {
@@ -320,7 +320,7 @@ fn normalize_fill(map: &mut serde_json::Map<String, serde_json::Value>, changed:
         }
         Value::Object(_) => {
             // A single fill written as an object → array of (maybe) one,
-            // after legacy-discriminant + enabled normalization.
+            // after legacy-discriminant normalization.
             let mut one = fill.clone();
             let mut dummy = false;
             let arr: Vec<Value> = match normalize_fill_entry(&mut one, &mut dummy) {
@@ -332,7 +332,7 @@ fn normalize_fill(map: &mut serde_json::Map<String, serde_json::Value>, changed:
         }
         Value::Array(items) => {
             // Already an array — but its elements may still carry the legacy
-            // `type: "color"` discriminant or an `enabled: false` flag.
+            // `type: "color"` discriminant.
             let mut local_changed = false;
             let mut out = Vec::with_capacity(items.len());
             for item in items.clone() {
@@ -350,10 +350,9 @@ fn normalize_fill(map: &mut serde_json::Map<String, serde_json::Value>, changed:
     }
 }
 
-/// Normalize one PenFill value. Returns `None` when the fill is explicitly
-/// `enabled: false` (a disabled fill is dropped from the array). Rewrites the
-/// legacy `type: "color"` discriminant to `"solid"` and strips the non-schema
-/// `enabled` key. Sets `changed` when it touches anything.
+/// Normalize one PenFill value without discarding disabled paint data.
+/// Source enablement is retained; only legacy discriminants are rewritten.
+/// Sets `changed` when it touches anything.
 fn normalize_fill_entry(
     entry: &mut serde_json::Value,
     changed: &mut bool,
@@ -362,13 +361,6 @@ fn normalize_fill_entry(
     let Value::Object(obj) = entry else {
         return Some(entry.clone());
     };
-    if obj.get("enabled") == Some(&Value::Bool(false)) {
-        *changed = true;
-        return None;
-    }
-    if obj.remove("enabled").is_some() {
-        *changed = true;
-    }
     match obj.get("type").and_then(Value::as_str) {
         Some("color") => {
             obj.insert("type".to_string(), Value::String("solid".to_string()));

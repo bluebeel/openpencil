@@ -22,6 +22,9 @@ pub(super) enum SvgResourceError {
     Unsupported {
         feature: String,
     },
+    ImageMetadata {
+        source: crate::svg_image_composition::ImageSvgError,
+    },
     GradientMetadata {
         source: crate::svg_gradient_composition::GradientSvgError,
     },
@@ -29,6 +32,7 @@ pub(super) enum SvgResourceError {
 impl std::fmt::Display for SvgResourceError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::ImageMetadata { source } => std::fmt::Display::fmt(source, f),
             Self::Missing { id } => write!(f, "missing local SVG definition #{id}"),
             Self::Cycle { id } => write!(f, "cyclic SVG definition #{id}"),
             Self::DepthLimit => f.write_str("SVG reference depth exceeds 64"),
@@ -42,6 +46,7 @@ impl std::error::Error for SvgResourceError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::GradientMetadata { source } => Some(source),
+            Self::ImageMetadata { source } => Some(source),
             _ => None,
         }
     }
@@ -100,6 +105,7 @@ pub(super) struct SvgResources<'a> {
     pub duplicate_ids: HashSet<&'a str>,
     active: RefCell<Vec<&'a str>>,
     pub has_stylesheets: bool,
+    pub images: RefCell<HashMap<u64, Vec<(jian_ops_schema::node::ImageSrc, Option<[u32; 2]>)>>>,
 }
 impl<'a> SvgResources<'a> {
     pub fn new(nodes: &'a [SvgTree], root_attrs: &[(String, String)]) -> Self {
@@ -140,6 +146,7 @@ impl<'a> SvgResources<'a> {
             duplicate_ids,
             active: RefCell::new(Vec::new()),
             has_stylesheets: has_stylesheet(nodes),
+            images: RefCell::new(HashMap::new()),
         }
     }
     pub fn with_stylesheet_hint(mut self, hint: bool) -> Self {

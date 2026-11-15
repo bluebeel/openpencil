@@ -85,6 +85,10 @@ pub struct NodePayload {
     pub h: f32,
     #[serde(default)]
     pub fill: Option<[f32; 4]>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub fill_disabled: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub stroke_disabled: bool,
     /// Canonical fill stack in paint order (first entry is topmost).
     /// The legacy single-fill fields below remain populated so older
     /// payload readers keep working; an absent stack means the payload
@@ -252,6 +256,10 @@ pub struct NodePayload {
     /// Authored image-paint rotation in degrees (including full turns).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image_rotation_degrees: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_geometry: Option<Box<jian_ops_schema::style::ImageFieldGeometry>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_paint: Option<Box<jian_ops_schema::style::ImageFillBody>>,
     /// Video playback metadata carried by an image poster. The video source
     /// is never externalized into the image table.
     #[serde(default, skip_serializing_if = "Option::is_none")]

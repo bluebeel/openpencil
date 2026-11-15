@@ -16,6 +16,7 @@ use super::{
 
 fn solid_fill(hex: &str) -> PenFill {
     PenFill::Solid(SolidFillBody {
+        enabled: None,
         color: hex.to_string(),
         explain: None,
         opacity: None,

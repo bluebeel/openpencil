@@ -114,13 +114,16 @@ fn paint_blend_is_carried_by_solid_gradient_and_image_fills() {
 }
 
 #[test]
-fn invisible_paints_are_dropped() {
+fn invisible_paints_are_retained_as_disabled() {
     let paints = [obj(vec![
         ("type", FigValue::Str("SOLID".into())),
         ("color", color_obj(0.0, 0.0, 0.0)),
         ("visible", FigValue::Bool(false)),
     ])];
-    assert!(map_figma_fills(Some(&paints)).is_none());
+    let fills = map_figma_fills(Some(&paints)).expect("retain authored paints");
+    assert_eq!(fills.len(), 1);
+    assert_eq!(fills[0].enabled(), Some(false));
+    assert!(!fills[0].is_enabled());
 }
 
 #[test]

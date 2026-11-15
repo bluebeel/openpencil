@@ -185,6 +185,8 @@ mod tests {
 
     fn image(width: SizingBehavior, height: SizingBehavior) -> PenNode {
         PenNode::Image(ImageNode {
+            nearest_sampling: None,
+            geometry: None,
             base: PenNodeBase {
                 id: "image".to_string(),
                 ..Default::default()

@@ -6,6 +6,16 @@ use super::svg_id;
 // our generated resources is escaped into the reserved node namespace too,
 // so a real node named `gradient-n-61` cannot shadow node `a`'s gradient.
 const RESERVED: &[&str] = &[
+    "image-field-",
+    "image-source-",
+    "image-tile-",
+    "image-cell-",
+    "image-viewport-",
+    "image-unit-",
+    "image-repeat-",
+    "image-edge-",
+    "image-adjust-",
+    "fill-paint-",
     "node-n-",
     "gradient-n-",
     "clip-n-",

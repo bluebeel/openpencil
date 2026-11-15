@@ -293,6 +293,7 @@ pub(crate) fn node_stroke_side_widths_exact(node: &PenNode) -> Option<[f64; 4]> 
 /// Build a bare `Solid` fill from a hex string.
 pub(super) fn solid_fill(hex: String) -> PenFill {
     PenFill::Solid(SolidFillBody {
+        enabled: None,
         color: hex,
         explain: None,
         opacity: None,

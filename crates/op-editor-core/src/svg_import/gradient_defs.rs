@@ -82,6 +82,13 @@ fn gradient(
             }
         }
     }
+    if resources
+        .entries
+        .get(id)
+        .is_some_and(|entry| entry.node.tag == "pattern")
+    {
+        return image_pattern(resources, id, opacity, space);
+    }
     let mut chain = Vec::new();
     let mut seen = HashSet::new();
     let mut next = Some(id);
@@ -267,6 +274,7 @@ fn gradient(
     }));
     Ok(Some(match shape {
         GradientShape::Linear { .. } => PenFill::LinearGradient(LinearGradientBody {
+            enabled: None,
             geometry,
             angle: None,
             stops,
@@ -275,6 +283,7 @@ fn gradient(
             blend_mode: None,
         }),
         GradientShape::Radial { .. } => PenFill::RadialGradient(RadialGradientBody {
+            enabled: None,
             geometry,
             cx: None,
             cy: None,

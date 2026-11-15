@@ -33,6 +33,10 @@ mod colors;
 mod geometry;
 mod gradient_defs;
 mod gradient_metadata;
+mod image_defs;
+mod image_pattern_content;
+use image_pattern_content::single_image;
+mod image_metadata;
 mod lexer;
 mod mask_defs;
 mod nodes;
@@ -41,11 +45,14 @@ mod resources;
 mod scale;
 mod style;
 mod transform;
+mod viewport_clip;
 mod xml;
 
 use geometry::*;
 use gradient_defs::*;
 use gradient_metadata::*;
+use image_defs::*;
+use image_metadata::*;
 use lexer::*;
 use mask_defs::*;
 use nodes::*;
@@ -54,6 +61,7 @@ use resources::*;
 use scale::*;
 use style::*;
 use transform::*;
+use viewport_clip::*;
 use xml::*;
 
 use crate::command_node::build_leaf_node;
@@ -113,6 +121,7 @@ struct StyleCtx {
     stroke_opacity: f64,
     current_color: String,
     clip_mode: bool,
+    image_rendering: Option<bool>,
 }
 
 impl Default for StyleCtx {
@@ -131,6 +140,7 @@ impl Default for StyleCtx {
             stroke_opacity: 1.0,
             current_color: "black".into(),
             clip_mode: false,
+            image_rendering: None,
         }
     }
 }
@@ -305,6 +315,8 @@ impl EditorState {
             gestures: None,
             route: None,
         });
+        let group = clip_viewport(group, &root_attrs, matrix, true, allocator, &mut taken)?;
+        let group_id = NodeId::new(group.base().id.clone());
         let pre = self.snapshot_for_undo();
         self.active_children_mut().push(group);
         self.set_single_selection(group_id);

@@ -46,6 +46,10 @@ impl NativeBackend {
         encoded: &[u8],
         options: &op_editor_ui::ImagePaintOptions<'_>,
     ) {
+        if options.geometry.is_some() {
+            super::image_explicit_field::draw(self, canvas, rect, id, encoded, options);
+            return;
+        }
         if options.nearest_sampling && super::image_nearest16::draw(self, canvas, rect, id, options)
         {
             return;
@@ -545,52 +549,7 @@ pub(super) fn figma_image_local_matrix(
 }
 
 pub(super) fn image_adjustment_matrix(adjustments: ImageAdjustments) -> Option<[f32; 20]> {
-    let exp = adjustments.exposure / 100.0;
-    let con = adjustments.contrast / 100.0;
-    let sat = adjustments.saturation / 100.0;
-    let temp = adjustments.temperature / 100.0;
-    let tint = adjustments.tint / 100.0;
-    let hi = adjustments.highlights / 100.0;
-    let sh = adjustments.shadows / 100.0;
-    if adjustments.is_neutral() {
-        return None;
-    }
-
-    let e = 1.0 + exp * 1.5;
-    let c = 1.0 + con;
-    let c_off = 0.5 * (1.0 - c);
-    let s = 1.0 + sat;
-    let (lr, lg, lb) = (0.2126, 0.7152, 0.0722);
-    let sr = (1.0 - s) * lr;
-    let sg = (1.0 - s) * lg;
-    let sb = (1.0 - s) * lb;
-    let f = c * e;
-    let off_r = c_off + temp * 0.15 + (hi + sh * 0.5) * 0.1;
-    let off_g = c_off + tint * 0.15 + (hi + sh * 0.5) * 0.1;
-    let off_b = c_off - temp * 0.15 + (hi + sh * 0.5) * 0.1;
-
-    Some([
-        f * (sr + s),
-        f * sg,
-        f * sb,
-        0.0,
-        off_r,
-        f * sr,
-        f * (sg + s),
-        f * sb,
-        0.0,
-        off_g,
-        f * sr,
-        f * sg,
-        f * (sb + s),
-        0.0,
-        off_b,
-        0.0,
-        0.0,
-        0.0,
-        1.0,
-        0.0,
-    ])
+    op_editor_core::image_field_geometry::image_adjustment_matrix(adjustments)
 }
 
 fn draw_tiled_image(

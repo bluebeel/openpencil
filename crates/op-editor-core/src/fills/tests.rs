@@ -27,6 +27,7 @@ fn seed_linear_gradient(node: &mut PenNode) {
     let fills = node_fills_mut(node).expect("rect carries fills");
     fills.clear();
     fills.push(PenFill::LinearGradient(LinearGradientBody {
+        enabled: None,
         geometry: None,
         angle: Some(45.0),
         stops: vec![

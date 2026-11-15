@@ -501,3 +501,7 @@ pub use web_sync::WebSyncError;
 pub fn svg_path_split_closed_contours(data: &str) -> Option<(String, String)> {
     svg_path_data::split_closed_contours(data)
 }
+
+pub mod image_field_geometry;
+
+pub mod svg_image_composition;

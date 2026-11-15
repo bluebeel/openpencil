@@ -511,6 +511,7 @@ fn truncate_dom_nodes(nodes: &mut Vec<dom::DomNode>, remaining: &mut usize) -> b
 
 fn solid_fill(color: &str) -> PenFill {
     PenFill::Solid(SolidFillBody {
+        enabled: None,
         color: color.to_string(),
         explain: None,
         opacity: None,

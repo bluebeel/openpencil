@@ -166,6 +166,7 @@ pub fn translate_primary_image_crop(
     if next == current {
         return false;
     }
+    body.geometry = None;
     body.transform = Some(next);
     true
 }

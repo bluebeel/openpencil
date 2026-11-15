@@ -199,3 +199,6 @@ pub(crate) mod agent_indicator_test_support {
 
 #[cfg(feature = "bundled-design-fonts")]
 pub mod bundled_design_fonts;
+
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+pub mod svg_image_source;

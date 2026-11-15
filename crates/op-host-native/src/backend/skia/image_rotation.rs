@@ -1,62 +1,7 @@
 //! Authored FILL rotation fitted using the selected decoded source dimensions.
 use op_editor_ui::{ImageDrawMode, ImagePaintOptions, Rect};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum SourceFitError {
-    InvalidDimensions,
-    NonFiniteRotation,
-    DegenerateSourceSpan,
-    NonFiniteTransform,
-}
-
-/// Row-major normalized UV affine [m00,m01,m02,m10,m11,m12]. Keep each
-/// multiply/divide in f32: normalizing the source rectangle first loses the
-/// source-size rounding that determines point-sampling boundary decisions.
-pub(super) fn source_fit(
-    source: [f32; 2],
-    destination: [f32; 2],
-    degrees: f32,
-) -> Result<[f32; 6], SourceFitError> {
-    if !source
-        .into_iter()
-        .chain(destination)
-        .all(|v| v.is_finite() && v > 0.0)
-    {
-        return Err(SourceFitError::InvalidDimensions);
-    }
-    if !degrees.is_finite() {
-        return Err(SourceFitError::NonFiniteRotation);
-    }
-    let theta = (f64::from(degrees) * std::f64::consts::PI / 180.0) as f32;
-    let (sin, cos) = theta.sin_cos();
-    let width = (cos * source[0] - sin * source[1]).abs();
-    let height = (sin * source[0] + cos * source[1]).abs();
-    if width == 0.0 || height == 0.0 {
-        return Err(SourceFitError::DegenerateSourceSpan);
-    }
-    let sx = destination[0] / width;
-    let sy = destination[1] / height;
-    let maximum = sx.max(sy);
-    let x = sx / maximum;
-    let y = sy / maximum;
-    let a = cos * x;
-    let b = sin * y;
-    let c = -sin * x;
-    let d = cos * y;
-    let matrix = [
-        a,
-        b,
-        0.5 - (a * 0.5 + b * 0.5),
-        c,
-        d,
-        0.5 - (c * 0.5 + d * 0.5),
-    ];
-    matrix
-        .iter()
-        .all(|v| v.is_finite())
-        .then_some(matrix)
-        .ok_or(SourceFitError::NonFiniteTransform)
-}
+pub(super) use op_editor_core::image_field_geometry::{source_fit, SourceFitError};
 
 /// Legacy paints, zero rotation, other fitting modes, and an explicit crop
 /// affine keep their previous path. Complete authored turns are not zero.

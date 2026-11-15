@@ -79,6 +79,19 @@ fn root_symbol_override<'a>(instance: &'a FigValue, symbol: &FigValue) -> Option
         })
 }
 
+/// Master canvas visibility does not hide its instances. An explicit root
+/// override still applies when the instance does not author its own flag.
+pub(crate) fn instance_visibility(instance: &FigValue, symbol: Option<&FigValue>) -> bool {
+    instance
+        .get_bool("visible")
+        .or_else(|| {
+            symbol.and_then(|symbol| {
+                root_symbol_override(instance, symbol).and_then(|entry| entry.get_bool("visible"))
+            })
+        })
+        .unwrap_or(true)
+}
+
 /// Merge safe SYMBOL props onto the synthetic instance frame.
 ///
 /// Precedence is:
@@ -100,6 +113,12 @@ pub(crate) fn merge_symbol_props(instance: &FigValue, symbol: &FigValue) -> FigV
                 merged.set(key, value.clone());
             }
         }
+    }
+    if merged.get("visible").is_none() {
+        merged.set(
+            "visible",
+            FigValue::Bool(instance_visibility(instance, Some(symbol))),
+        );
     }
     merged
 }

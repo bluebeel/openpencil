@@ -32,6 +32,9 @@ pub(super) fn emit_visual(out: &mut String, node: &SceneNode) -> bool {
     if !is_icon && !has_widget_visual(node) {
         return false;
     }
+    if is_icon && node.fill_disabled {
+        return true;
+    }
     let mut backend = VisualBackend::new(&node.id);
     backend.rich_stroke = node.stroke_paint.clone();
     backend.stroke = node.stroke;

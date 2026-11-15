@@ -90,6 +90,7 @@ fn correlated_scene_resolves_colored_overlaps_image_and_clip_together() {
                 9001,
                 &[],
                 &ImagePaintOptions {
+                    geometry: None,
                     mode: ImageDrawMode::Stretch,
                     nearest_sampling: true,
                     opacity: 0.7,
@@ -365,6 +366,7 @@ fn correlated_text_export_reuse_matches_independent_camera_scopes_byte_for_byte(
     latin.letter_spacing = 0.15;
     latin.fill = Some(color([32, 53, 128], 0.6));
     latin.text_runs.push(SceneTextRun {
+        fill_disabled: false,
         start: 0,
         end: 3,
         font_size: 25.0,

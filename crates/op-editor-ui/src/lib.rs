@@ -95,3 +95,8 @@ pub use jian_widgets::{
     StrokeCurve, StrokeGeometry, StrokeMaskOptions, StrokePaintCap, StrokePaintJoin,
     StrokePaintStyle, StrokePlacement,
 };
+
+pub use jian_scene::{
+    ImageExtend, ImageFieldGeometry, ImageFieldUnits, ImagePatternGeometry, ImageRepeat,
+    ImageViewportFit, ImageViewportGeometry,
+};

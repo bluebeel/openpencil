@@ -119,15 +119,11 @@ pub fn convert_swapped_boolean_group(
     let child_stack_mode = tree.figma.get_str("stackMode").map(str::to_string);
     let mut children = Vec::new();
     for source_child in &tree.children {
-        if source_child.figma.get_bool("visible") == Some(false)
-            || source_child
-                .figma
-                .get_f64("opacity")
-                .is_some_and(|opacity| opacity <= 0.0)
-        {
-            continue;
-        }
-        let Some(mut child) = convert_node(source_child, child_stack_mode.as_deref(), ctx) else {
+        let Some(mut child) = crate::converters::convert_retained_child(
+            source_child,
+            child_stack_mode.as_deref(),
+            ctx,
+        ) else {
             continue;
         };
         let paints_own_bounds = !expands_transparent_artwork_wrapper(source_child, ctx);

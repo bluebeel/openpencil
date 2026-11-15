@@ -168,6 +168,14 @@ impl Charge {
             + map_bytes(&node.font_features, |_| 0)
             + node.gradient.as_ref().map_or(0, |v| self.gradient(v))
             + node.shader.as_ref().map_or(0, |v| self.shader(v))
+            + node
+                .image_geometry
+                .as_ref()
+                .map_or(0, |g| image_geometry_bytes(g))
+            + node
+                .image_paint
+                .as_ref()
+                .map_or(0, |g| image_paint_bytes(g))
             + node.widget.as_ref().map_or(0, |v| self.widget(v))
             + self.optional_arc(node.image_src.as_ref())
             + self.optional_arc(node.image_thumbnail_src.as_ref())
@@ -192,8 +200,17 @@ impl Charge {
                     SceneFillLayer::Gradient { gradient, .. } => self.gradient(gradient),
                     SceneFillLayer::Shader { shader, .. } => self.shader(shader),
                     SceneFillLayer::Image {
-                        src, thumbnail_src, ..
-                    } => self.arc(src) + self.optional_arc(thumbnail_src.as_ref()),
+                        src,
+                        thumbnail_src,
+                        geometry,
+                        paint,
+                        ..
+                    } => {
+                        self.arc(src)
+                            + self.optional_arc(thumbnail_src.as_ref())
+                            + geometry.as_ref().map_or(0, |g| image_geometry_bytes(g))
+                            + paint.as_ref().map_or(0, |g| image_paint_bytes(g))
+                    }
                 })
                 .sum::<usize>()
             + self.nodes(&node.children)
@@ -231,6 +248,8 @@ fn scene_shape_guard(node: &SceneNode) {
         clip_content: _,
         fill: _,
         fill_layers: _,
+        fill_disabled: _,
+        stroke_disabled: _,
         fill_type: _,
         gradient: _,
         shader: _,
@@ -273,6 +292,8 @@ fn scene_shape_guard(node: &SceneNode) {
         image_blend_mode: _,
         image_transform: _,
         image_rotation_degrees: _,
+        image_geometry: _,
+        image_paint: _,
         image_original_size: _,
         image_tile_scale: _,
         image_adjustments: _,
@@ -282,4 +303,22 @@ fn scene_shape_guard(node: &SceneNode) {
         widget: _,
         children: _,
     } = node;
+}
+
+fn image_geometry_bytes(g: &jian_scene::ImageFieldGeometry) -> usize {
+    size_of::<jian_scene::ImageFieldGeometry>()
+        + 32
+        + g.pattern
+            .as_ref()
+            .map_or(0, |_| size_of::<jian_scene::ImagePatternGeometry>())
+        + g.viewport
+            .as_ref()
+            .map_or(0, |_| size_of::<jian_scene::ImageViewportGeometry>())
+}
+
+fn image_paint_bytes(p: &jian_ops_schema::style::ImageFillBody) -> usize {
+    size_of::<jian_ops_schema::style::ImageFillBody>()
+        + 32
+        + p.explain.as_ref().map_or(0, String::capacity)
+        + p.geometry.as_ref().map_or(0, |g| image_geometry_bytes(g))
 }

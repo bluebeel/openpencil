@@ -290,6 +290,8 @@ fn apply_result_overwrites_only_url_of_empty_image_fill_rectangle() {
         "photo",
         "Album Cover",
         Some(vec![PenFill::Image(Box::new(ImageFillBody {
+            enabled: None,
+            geometry: None,
             url: "".into(),
             thumbnail_url: None,
             nearest_sampling: None,

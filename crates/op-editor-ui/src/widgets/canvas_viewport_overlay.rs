@@ -1,18 +1,15 @@
 //! Selection overlay + fill/stroke node-paint helpers split out
 //! of `canvas_viewport.rs` to keep that file under the 800-line
 //! ceiling.
-
 use super::canvas_text_kinsoku::carry_for_line_start;
 use crate::layout_scene::{SceneGradient, SceneNode, SceneShader, SceneStrokeAlign};
 use crate::theme::Theme;
 use crate::widgets::PaintCx;
 use crate::{Color, Point2D, Rect};
-
 // The legacy `paint_pen_rubber_band` (node-stroke-colored straight
 // line) was retired in favor of `canvas_path_overlay.rs`, which ports
 // the TS pen preview verbatim (dashed selection-blue rubber band +
 // anchor/handle dots).
-
 /// Paint a 1 px primary-tinted outline around `world_rect` plus
 /// 8 handle anchors. Container selections paint with a softened
 /// outline alpha so child content stays visually dominant. When
@@ -68,11 +65,9 @@ pub fn paint_selection_overlay(
         outline_color,
         stroke_w,
     );
-
     if !show_handles {
         return;
     }
-
     // 8 handle anchors.
     let mid_x = world_rect.origin.x + world_rect.size.x / 2.0;
     let mid_y = world_rect.origin.y + world_rect.size.y / 2.0;
@@ -86,7 +81,6 @@ pub fn paint_selection_overlay(
         (left, bottom),
         (left, mid_y),
     ];
-
     let handle_size = 7.0;
     let half = handle_size / 2.0;
     let radius = 1.0;
@@ -127,6 +121,9 @@ pub(crate) fn paint_node_fill(
     zoom: f32,
     fill: Option<crate::Color>,
 ) {
+    if node.fill_disabled {
+        return;
+    }
     let r = node.corner_radius * zoom;
     let use_round = r > 0.5;
     let per_corner = scaled_non_uniform_corner_radii(node, zoom);

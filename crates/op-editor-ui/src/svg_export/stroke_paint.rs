@@ -20,7 +20,7 @@ fn rect(out: &mut String, r: Rect, attrs: &str) {
         r.origin.x, r.origin.y, r.size.x, r.size.y
     );
 }
-fn shape(out: &mut String, node: &SceneNode, attrs: &str) {
+pub(super) fn shape(out: &mut String, node: &SceneNode, attrs: &str) {
     let resolved = geometry(node, node.bounds, 1.0);
     match resolved.get() {
         StrokeGeometry::RawSvg { data, even_odd } => {
@@ -183,6 +183,16 @@ pub(super) fn emit_defs_with_key(out: &mut String, node: &SceneNode, id: &str) {
                     gradient_geometry::emit(out, &key, paint, bounds, shader.opacity);
                 }
             }
+            SceneFillLayer::Image { .. } => {
+                let image = super::image_fields::layer_node(node, layer);
+                match super::image_fields::definition(&key, &image, bounds, area(node)) {
+                    Ok(definition) => out.push_str(&definition),
+                    Err(source) => super::resource_scope::record(SvgExportError::InvalidImage {
+                        node_id: node.id.clone(),
+                        source,
+                    }),
+                }
+            }
             _ => {}
         }
     }
@@ -280,54 +290,7 @@ pub(super) fn emit_with_key(out: &mut String, node: &SceneNode, id: &str) {
                     );
                 }
             }
-            SceneFillLayer::Image {
-                src,
-                fit,
-                transform,
-                opacity,
-                original_size,
-                rotation_degrees,
-                tile_scale,
-                adjustments,
-                ..
-            } => {
-                let mut image = SceneNode::leaf("", NodeKind::Rect);
-                image.bounds = node.bounds;
-                image.image_src = Some(src.clone());
-                image.image_fit = *fit;
-                image.image_transform = *transform;
-                image.image_original_size = *original_size;
-                image.image_rotation_degrees = *rotation_degrees;
-                image.image_tile_scale = *tile_scale;
-                image.image_adjustments = *adjustments;
-                image.opacity = *opacity;
-                // The image resource transform is anchored to the node, while
-                // the stroke mask supplies the final coverage.
-                if *fit == SceneImageFit::Tile {
-                    emit_image_pattern(out, &image, src, &key);
-                    rect(
-                        out,
-                        a,
-                        &format!(r#"fill="url(#image-pattern-{key})" opacity="{opacity}""#),
-                    );
-                } else {
-                    let r = node.bounds;
-                    let preserve = match fit {
-                        SceneImageFit::Fit => "xMidYMid meet",
-                        SceneImageFit::Fill | SceneImageFit::Crop => "xMidYMid slice",
-                        _ => "none",
-                    };
-                    let _ = write!(
-                        out,
-                        r#"<image x="{}" y="{}" width="{}" height="{}" href="{}" preserveAspectRatio="{preserve}" opacity="{opacity}"/>"#,
-                        r.origin.x,
-                        r.origin.y,
-                        r.size.x,
-                        r.size.y,
-                        xml_escape(src)
-                    );
-                }
-            }
+            SceneFillLayer::Image { .. } => rect(out, a, &format!(r#"fill="url(#{key})""#)),
         }
         if g {
             out.push_str("</g>");

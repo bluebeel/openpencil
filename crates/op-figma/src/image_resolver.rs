@@ -257,6 +257,11 @@ fn collect_node_refs(node: &PenNode, refs: &mut ReferencedImages) {
             None
         }
         PenNode::Text(text) => {
+            if let jian_ops_schema::node::text::TextContent::Styled(segments) = &text.content {
+                for segment in segments {
+                    collect_fill_refs(segment.fill_paints.as_deref(), refs);
+                }
+            }
             collect_fill_refs(text.fill.as_deref(), refs);
             None
         }
@@ -442,6 +447,11 @@ fn patch_node(node: &mut PenNode, cache: &mut BlobCache) -> usize {
             None
         }
         PenNode::Text(t) => {
+            if let jian_ops_schema::node::text::TextContent::Styled(segments) = &mut t.content {
+                for segment in segments {
+                    count += patch_fills(&mut segment.fill_paints, cache);
+                }
+            }
             count += patch_fills(&mut t.fill, cache);
             None
         }

@@ -164,6 +164,8 @@ impl EditorState {
         let mut taken = allocator.document_collision_ids(&self.doc);
         let id = allocator.allocate(&mut taken)?;
         let node = PenNode::Image(ImageNode {
+            nearest_sampling: None,
+            geometry: None,
             base: PenNodeBase {
                 id: id.as_str().to_string(),
                 name: Some(name.to_string()),
@@ -420,6 +422,7 @@ fn scaled_image_size(pixel_width: u32, pixel_height: u32) -> Option<(f64, f64)> 
 
 fn default_icon_fill() -> PenFill {
     PenFill::Solid(SolidFillBody {
+        enabled: None,
         color: "#111827".to_string(),
         explain: None,
         opacity: None,

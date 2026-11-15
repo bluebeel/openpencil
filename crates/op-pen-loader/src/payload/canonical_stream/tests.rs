@@ -58,8 +58,8 @@ fn sparse_metadata_keeps_none_empty_rich_unknown_payloads_and_negative_zero() {
 }
 #[test]
 fn legacy_shapes_in_opaque_metadata_cannot_bypass_preprocessing() {
+    compare(&json!({"version":"1","children":[{"type":"rectangle","id":"r","fill":[{"type":"solid","color":"#fff","enabled":false}]}]}).to_string(), true);
     for node in [
-        json!({"type":"rectangle","id":"r","fill":[{"type":"solid","color":"#fff","enabled":false}]}),
         json!({"type":"path","id":"p","geometry":"M0 0L1 1"}),
         json!({"type":"frame","id":"f","cornerRadius":"missing-variable"}),
         json!({"type":"frame","id":"f","padding":["missing-variable",4]}),

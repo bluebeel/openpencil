@@ -71,6 +71,7 @@ pub(super) fn restore_gradient(
     let stops = metadata.paint.stops;
     Ok(Some(match geometry.shape {
         GradientShape::Linear { .. } => PenFill::LinearGradient(LinearGradientBody {
+            enabled: None,
             geometry: Some(Box::new(geometry)),
             angle: None,
             stops,
@@ -79,6 +80,7 @@ pub(super) fn restore_gradient(
             blend_mode: None,
         }),
         GradientShape::Radial { .. } => PenFill::RadialGradient(RadialGradientBody {
+            enabled: None,
             geometry: Some(Box::new(geometry)),
             cx: None,
             cy: None,
@@ -91,7 +93,7 @@ pub(super) fn restore_gradient(
     }))
 }
 
-fn same_visual(expected: &SvgTree, actual: &SvgTree) -> bool {
+pub(super) fn same_visual(expected: &SvgTree, actual: &SvgTree) -> bool {
     if expected.source_tag != actual.source_tag || expected.children.len() != actual.children.len()
     {
         return false;
@@ -109,7 +111,9 @@ fn same_visual(expected: &SvgTree, actual: &SvgTree) -> bool {
 fn visual_attributes(node: &SvgTree) -> Option<BTreeMap<&str, &str>> {
     let mut out = BTreeMap::new();
     for (key, value) in &node.attrs {
-        if key.eq_ignore_ascii_case(METADATA_ATTRIBUTE) {
+        if key.eq_ignore_ascii_case(METADATA_ATTRIBUTE)
+            || key.eq_ignore_ascii_case(crate::svg_image_composition::METADATA_ATTRIBUTE)
+        {
             continue;
         }
         if out.insert(key.as_str(), value.as_str()).is_some() {

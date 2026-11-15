@@ -311,6 +311,7 @@ fn dump_fill_color() {
         },
         container: ContainerProps {
             fill: Some(vec![PenFill::Solid(SolidFillBody {
+                enabled: None,
                 color: "#FF0000".to_string(),
                 explain: None,
                 opacity: None,
@@ -354,6 +355,7 @@ fn dump_stroke() {
                 dash_pattern: None,
                 dash_offset: None,
                 fill: Some(vec![PenFill::Solid(SolidFillBody {
+                    enabled: None,
                     color: "#0000FF".to_string(),
                     explain: None,
                     opacity: None,

@@ -135,6 +135,7 @@ pub(crate) fn convert_tree_all_pages(
         symbol_tree,
         warnings: Vec::new(),
         id_counter: counter,
+        retained_ids: Default::default(),
         blobs,
         layout_mode,
         instance_assignments,
@@ -202,6 +203,7 @@ pub(crate) fn convert_tree_page(
         symbol_tree,
         warnings: Vec::new(),
         id_counter: counter,
+        retained_ids: Default::default(),
         blobs,
         layout_mode,
         instance_assignments,
@@ -317,6 +319,7 @@ pub fn figma_node_changes_to_pen_nodes(
         symbol_tree,
         warnings: Vec::new(),
         id_counter: counter,
+        retained_ids: Default::default(),
         blobs: decoded.blobs,
         layout_mode,
         instance_assignments,
@@ -324,10 +327,9 @@ pub fn figma_node_changes_to_pen_nodes(
     };
     let mut nodes = Vec::new();
     for tree_node in &top_nodes {
-        if tree_node.figma.get_bool("visible") == Some(false) {
-            continue;
-        }
-        if let Some(node) = convert_node(tree_node, None, &mut ctx) {
+        let omitted = tree_node.figma.get_bool("visible") == Some(false);
+        if let Some(node) = ctx.retain_hidden_ids(omitted, |ctx| convert_node(tree_node, None, ctx))
+        {
             nodes.push(node);
         }
     }

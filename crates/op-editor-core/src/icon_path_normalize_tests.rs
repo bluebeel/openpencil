@@ -75,6 +75,7 @@ fn known_chevron_becomes_icon_font_and_keeps_box_and_stroke_fill() {
         icon.fill.as_ref().and_then(|fills| fills.first()),
         Some(&jian_ops_schema::style::PenFill::Solid(
             jian_ops_schema::style::SolidFillBody {
+                enabled: None,
                 color: "#1A1614".into(),
                 explain: None,
                 opacity: None,

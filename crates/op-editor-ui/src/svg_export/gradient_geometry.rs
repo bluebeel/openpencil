@@ -44,6 +44,26 @@ pub(super) fn validate(node: &SceneNode) -> Result<(), SvgExportError> {
             }
         }
     }
+    for layer in &node.fill_layers {
+        if let crate::layout_scene::SceneFillLayer::Shader { shader, .. } = layer {
+            if let Some(paint) = &shader.gradient {
+                let b = normalize_rect(node.bounds);
+                composition::validate(
+                    paint,
+                    [
+                        b.origin.x as f64,
+                        b.origin.y as f64,
+                        b.size.x as f64,
+                        b.size.y as f64,
+                    ],
+                )
+                .map_err(|source| SvgExportError::InvalidGradient {
+                    node_id: node.id.clone(),
+                    source,
+                })?;
+            }
+        }
+    }
     if let Some(stroke) = &node.stroke_paint {
         for layer in &stroke.layers {
             if let crate::layout_scene::SceneFillLayer::Shader { shader, .. } = layer {

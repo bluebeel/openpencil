@@ -23,19 +23,14 @@ const IMAGE_TRANSFORM_EPSILON: f64 = 1e-6;
 
 // ── Fills ─────────────────────────────────────────────────────────
 
-/// Map a Figma paint array to `PenFill[]`. Invisible paints
-/// (`visible == false`) and unmappable types are dropped; an empty
-/// result is `None`.
+/// Map every represented Figma paint, retaining disabled layers in order.
+/// An authored empty stack stays empty; absent/unrepresentable data is `None`.
 pub fn map_figma_fills(paints: Option<&[FigValue]>) -> Option<Vec<PenFill>> {
     let paints = paints?;
     if paints.is_empty() {
-        return None;
+        return Some(Vec::new());
     }
-    let fills: Vec<PenFill> = paints
-        .iter()
-        .filter(|p| p.get_bool("visible") != Some(false))
-        .filter_map(map_single_fill)
-        .collect();
+    let fills: Vec<PenFill> = paints.iter().filter_map(map_single_fill).collect();
     if fills.is_empty() {
         None
     } else {
@@ -104,6 +99,7 @@ fn map_single_fill(paint: &FigValue) -> Option<PenFill> {
         "SOLID" => {
             paint.get("color")?;
             Some(PenFill::Solid(SolidFillBody {
+                enabled: paint.get_bool("visible"),
                 color: fill_color_hex(paint),
                 explain: None,
                 opacity,
@@ -120,6 +116,7 @@ fn map_single_fill(paint: &FigValue) -> Option<PenFill> {
                 .map(|m| gradient_angle_from_transform(&m))
                 .unwrap_or(0);
             Some(PenFill::LinearGradient(LinearGradientBody {
+                enabled: paint.get_bool("visible"),
                 geometry,
                 angle: Some(angle as f64),
                 stops: if precise {
@@ -141,6 +138,7 @@ fn map_single_fill(paint: &FigValue) -> Option<PenFill> {
             };
             let precise = geometry.is_some();
             Some(PenFill::RadialGradient(RadialGradientBody {
+                enabled: paint.get_bool("visible"),
                 geometry,
                 cx: Some(0.5),
                 cy: Some(0.5),
@@ -172,6 +170,8 @@ fn map_single_fill(paint: &FigValue) -> Option<PenFill> {
             };
             let url = image_reference_url(paint.get("image")).unwrap_or_default();
             Some(PenFill::Image(Box::new(ImageFillBody {
+                enabled: paint.get_bool("visible"),
+                geometry: None,
                 url: url.into(),
                 thumbnail_url: image_reference_url(paint.get("imageThumbnail")).map(Into::into),
                 nearest_sampling: Some(true),
@@ -316,16 +316,12 @@ fn map_scale_mode(mode: Option<&str>) -> ImageFillMode {
 // ── Stroke ────────────────────────────────────────────────────────
 
 /// Map a Figma node's stroke properties to a `PenStroke`. `None` when
-/// the node has no visible stroke paint.
+/// the node has no stroke paint.
 pub fn map_figma_stroke(node: &FigValue) -> Option<PenStroke> {
-    let stroke_paints = node.get_array("strokePaints").filter(|p| !p.is_empty())?;
-    let has_visible = stroke_paints
-        .iter()
-        .any(|s| s.get_bool("visible") != Some(false));
-    if !has_visible {
+    let stroke_paints = node.get_array("strokePaints")?;
+    if stroke_paints.is_empty() && node.get_str("type") != Some("LINE") {
         return None;
     }
-
     let thickness = if node.get_bool("borderStrokeWeightsIndependent") == Some(true) {
         StrokeThickness::PerSide([
             node.get_f64("borderTopWeight").unwrap_or(0.0),
@@ -349,7 +345,6 @@ pub fn map_figma_stroke(node: &FigValue) -> Option<PenStroke> {
         cap: map_stroke_cap(node.get_str("strokeCap")),
         dash_pattern,
         dash_offset: node.get_f64("dashOffset"),
-        // `mapFigmaFills` re-applies the visible filter — harmless.
         fill: map_figma_fills(Some(stroke_paints)),
     }))
 }
@@ -427,11 +422,7 @@ pub fn map_figma_effects(effects: Option<&[FigValue]>) -> Option<Vec<PenEffect>>
     if effects.is_empty() {
         return None;
     }
-    let mapped: Vec<PenEffect> = effects
-        .iter()
-        .filter(|e| e.get_bool("visible") != Some(false))
-        .filter_map(map_single_effect)
-        .collect();
+    let mapped: Vec<PenEffect> = effects.iter().filter_map(map_single_effect).collect();
     if mapped.is_empty() {
         None
     } else {
@@ -448,7 +439,7 @@ fn map_single_effect(effect: &FigValue) -> Option<PenEffect> {
             Some(PenEffect::Shadow(ShadowBody {
                 blur_kernel: None,
                 inner: Some(ty == "INNER_SHADOW"),
-                visible: None,
+                visible: effect.get_bool("visible"),
                 offset_x: offset.and_then(|o| o.get_f64("x")).unwrap_or(0.0),
                 offset_y: offset.and_then(|o| o.get_f64("y")).unwrap_or(0.0),
                 blur: radius,
@@ -462,11 +453,11 @@ fn map_single_effect(effect: &FigValue) -> Option<PenEffect> {
         }
         "FOREGROUND_BLUR" => Some(PenEffect::Blur(BlurBody {
             radius,
-            visible: None,
+            visible: effect.get_bool("visible"),
         })),
         "BACKGROUND_BLUR" => Some(PenEffect::BackgroundBlur(BlurBody {
             radius,
-            visible: None,
+            visible: effect.get_bool("visible"),
         })),
         _ => None,
     }

@@ -86,7 +86,7 @@ fn size(a: &Option<SizingBehavior>, b: &Option<SizingBehavior>) -> bool {
     })
 }
 fields!(limits,SizeLimits,{min_width:floats,max_width:floats,min_height:floats,max_height:floats});
-fields!(solid,SolidFillBody,{color:string,explain:strings,opacity:floats,blend_mode:optional});
+fields!(solid,SolidFillBody,{enabled:bools,color:string,explain:strings,opacity:floats,blend_mode:optional});
 #[inline(always)]
 fn fill(a: &PenFill, b: &PenFill) -> bool {
     match a {

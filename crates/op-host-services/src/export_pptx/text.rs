@@ -196,6 +196,7 @@ struct RunStyle {
     strikethrough: bool,
     letter_spacing: f32,
     color: Color,
+    enabled: bool,
     family: String,
 }
 
@@ -209,6 +210,7 @@ impl RunStyle {
             strikethrough: node.strikethrough,
             letter_spacing: node.letter_spacing,
             color: node.fill.unwrap_or(DEFAULT_FILL),
+            enabled: !node.fill_disabled,
             family: primary_family(&node.font_family),
         }
     }
@@ -232,6 +234,7 @@ impl RunStyle {
             strikethrough: self.strikethrough || run.strikethrough,
             letter_spacing: self.letter_spacing,
             color: run.fill.unwrap_or(self.color),
+            enabled: !run.fill_disabled && (self.enabled || run.fill.is_some()),
             family: self.family.clone(),
         }
     }
@@ -275,7 +278,11 @@ fn run(text: &str, style: &RunStyle, alpha: f32) -> String {
     };
     format!(
         "<a:r><a:rPr lang=\"en-US\"{attrs} dirty=\"0\">{}{typefaces}</a:rPr><a:t>{}</a:t></a:r>",
-        solid_fill(style.color, alpha),
+        if style.enabled {
+            solid_fill(style.color, alpha)
+        } else {
+            String::from("<a:noFill/>")
+        },
         escape_xml(&sanitize(text))
     )
 }
@@ -389,6 +396,7 @@ mod tests {
         let mut n = text_node("plain bold");
         n.font_weight = 400;
         n.text_runs = vec![SceneTextRun {
+            fill_disabled: false,
             start: 6,
             end: 10,
             font_size: 0.0,

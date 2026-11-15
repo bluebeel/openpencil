@@ -6,6 +6,8 @@
 //! `OpCk` call bodies for the shape / gradient / SVG-path ops live in `ops`
 //! and the trait methods here forward to them.
 
+#[path = "backend_image_geometry.rs"]
+mod image_geometry;
 #[path = "backend_shadow.rs"]
 mod shadow;
 #[path = "backend_stroke_paint.rs"]
@@ -35,6 +37,16 @@ pub struct CanvasKitBackend {
 }
 
 impl RenderBackend for CanvasKitBackend {
+    fn draw_image_with_paint_options(
+        &mut self,
+        rect: Rect,
+        id: u64,
+        encoded: &[u8],
+        options: &op_editor_ui::ImagePaintOptions<'_>,
+    ) {
+        image_geometry::draw(self, rect, id, encoded, options);
+    }
+
     fn supports_stroke_paint_fields(&self) -> bool {
         true
     }

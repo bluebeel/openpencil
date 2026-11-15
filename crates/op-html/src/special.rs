@@ -438,6 +438,7 @@ fn element_text(element: &DomElement) -> String {
 
 fn solid_fill(color: &str) -> PenFill {
     PenFill::Solid(SolidFillBody {
+        enabled: None,
         color: color.to_string(),
         explain: None,
         opacity: None,

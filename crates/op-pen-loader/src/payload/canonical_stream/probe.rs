@@ -148,7 +148,7 @@ impl<'de> Visitor<'de> for Probe<'_> {
         let mut overflow = Vec::new();
         let (mut has_type, mut has_id, mut has_src, mut stroke) = (false, false, false, false);
         let (mut fill_legacy, mut corner_ref, mut stroke_string) = (false, false, false);
-        let (mut enabled, mut geometry) = (false, false);
+        let mut geometry = false;
         let mut kind = StringKind::Other;
         while let Some((hash, key)) = access.next_key_seed(Key)? {
             // Collisions can only decline the fast path; equal keys always
@@ -180,7 +180,7 @@ impl<'de> Visitor<'de> for Probe<'_> {
                 KeyKind::Spacing => {
                     *self.0 |= matches!(value, Summary::Array { strings: true, .. })
                 }
-                KeyKind::Enabled => enabled = true,
+                KeyKind::Enabled => {}
                 KeyKind::Geometry => geometry = true,
                 KeyKind::Other => {}
             }
@@ -195,7 +195,7 @@ impl<'de> Visitor<'de> for Probe<'_> {
                     || stroke_string))
             || ((node || stroke) && fill_legacy);
         Ok(Summary::Object {
-            legacy_fill: enabled || matches!(kind, StringKind::LegacyFill),
+            legacy_fill: matches!(kind, StringKind::LegacyFill),
         })
     }
 }

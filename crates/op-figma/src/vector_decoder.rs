@@ -357,8 +357,19 @@ pub fn decode_figma_vector_path(
     node: &FigValue,
     blobs: &[BlobOrString],
 ) -> Option<DecodedVectorPath> {
-    let has_fills = any_visible(node.get_array("fillPaints"));
-    let has_strokes = any_visible(node.get_array("strokePaints"));
+    let active_fills = any_visible(node.get_array("fillPaints"));
+    let active_strokes = any_visible(node.get_array("strokePaints"));
+    let inactive_only = !active_fills && !active_strokes;
+    let has_fills = active_fills
+        || (inactive_only
+            && node
+                .get_array("fillPaints")
+                .is_some_and(|paints| !paints.is_empty()));
+    let has_strokes = active_strokes
+        || (inactive_only
+            && node
+                .get_array("strokePaints")
+                .is_some_and(|paints| !paints.is_empty()));
 
     // Fall through to the OPPOSITE paint geometry only when the
     // preferred key is ABSENT; a present-but-empty preferred stream

@@ -14,7 +14,6 @@ fn board(children: Vec<SceneNode>) -> SceneNode {
     n.children = children;
     n
 }
-
 /// A board deliberately placed away from the origin, so any emitter
 /// that forgot to subtract the board origin produces obviously wrong
 /// coordinates rather than accidentally-correct ones.
@@ -23,7 +22,6 @@ fn offset_board(children: Vec<SceneNode>) -> SceneNode {
     n.bounds = Rect::xywh(1000.0, 500.0, 200.0, 100.0);
     n
 }
-
 fn page_with(board: SceneNode) -> ScenePage {
     ScenePage {
         id: "p1".into(),
@@ -31,16 +29,13 @@ fn page_with(board: SceneNode) -> ScenePage {
         children: vec![board],
     }
 }
-
 fn markup_of(board: SceneNode) -> SlideMarkup {
     let page = page_with(board);
     board_slide_markup(&page, "board", "Slide".into()).expect("board emits")
 }
-
 fn body_of(board: SceneNode) -> String {
     markup_of(board).body
 }
-
 fn text_node(id: &str, x: f32, y: f32, content: &str) -> SceneNode {
     let mut n = SceneNode::leaf(id, NodeKind::Text);
     n.bounds = Rect::xywh(x, y, 160.0, 40.0);
@@ -55,7 +50,6 @@ fn text_node(id: &str, x: f32, y: f32, content: &str) -> SceneNode {
     });
     n
 }
-
 // ---------------------------------------------------------------- text
 
 #[test]
@@ -189,6 +183,7 @@ fn a_non_wrapping_text_node_keeps_its_newlines_without_wrapping() {
 fn styled_runs_become_spans_without_breaking_the_flat_text() {
     let mut node = text_node("t", 0.0, 0.0, "plain BOLD plain");
     node.text_runs = vec![op_editor_ui::layout_scene::SceneTextRun {
+        fill_disabled: false,
         start: 6,
         end: 10,
         font_size: 0.0,

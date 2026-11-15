@@ -46,6 +46,7 @@ fn shader_body(
     uniforms: BTreeMap<String, ShaderUniformValue>,
 ) -> ShaderFillBody {
     ShaderFillBody {
+        enabled: None,
         preset: preset.map(str::to_string),
         sksl,
         uniforms: (!uniforms.is_empty()).then_some(uniforms),

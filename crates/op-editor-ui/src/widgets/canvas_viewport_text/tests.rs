@@ -9,6 +9,7 @@ use crate::widgets::PaintCx;
 
 fn run(start: usize, end: usize) -> SceneTextRun {
     SceneTextRun {
+        fill_disabled: false,
         start,
         end,
         font_size: 0.0,

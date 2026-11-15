@@ -45,7 +45,7 @@ use assignment::{
     guessed_mapping_is_implausible, instance_scale, rescale_only, reserve_direct_identities,
 };
 pub(crate) use cache::{apply_instance_overrides_shared, InstanceExpansionCache};
-pub(crate) use style::merge_symbol_props;
+pub(crate) use style::{instance_visibility, merge_symbol_props};
 pub(crate) use swap_filter::filter_swap_stale_derived;
 
 /// Keys that must never be copied off an override entry onto a node.

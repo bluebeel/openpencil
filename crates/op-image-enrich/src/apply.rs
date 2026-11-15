@@ -83,6 +83,8 @@ pub fn apply_result(state: &mut EditorState, node_id: &NodeId, url: &str) -> boo
                 }
                 _ => {
                     frame.container.fill = Some(vec![PenFill::Image(Box::new(ImageFillBody {
+                        enabled: None,
+                        geometry: None,
                         url: url.into(),
                         thumbnail_url: None,
                         nearest_sampling: None,
@@ -116,6 +118,8 @@ pub fn apply_result(state: &mut EditorState, node_id: &NodeId, url: &str) -> boo
                 }
                 _ => {
                     rect.container.fill = Some(vec![PenFill::Image(Box::new(ImageFillBody {
+                        enabled: None,
+                        geometry: None,
                         url: url.into(),
                         thumbnail_url: None,
                         nearest_sampling: None,

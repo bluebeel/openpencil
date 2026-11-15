@@ -51,6 +51,7 @@ pub(super) fn transformed_leaf(
             &ctx.current_color,
             space,
         )
+        .or_else(|| Some(Vec::new()))
     };
     let stroke_raw = if ctx.clip_mode {
         "none"
@@ -101,6 +102,17 @@ pub(super) fn transformed_leaf(
         }
         if stroke.as_ref().is_some_and(|stroke| stroke.fill.is_none()) {
             stroke = None;
+        }
+        if el.tag == "line" && stroke.is_none() {
+            let mut empty_ctx = geometry_ctx.clone();
+            empty_ctx.stroke = Some("black".into());
+            let width = empty_ctx.stroke_width * scalar.unwrap_or(1.0);
+            empty_ctx.stroke_width = 1.0;
+            if let Some(mut empty) = resolve_svg_stroke_geometry(&[], &empty_ctx, 1.0) {
+                empty.thickness = StrokeThickness::Uniform(width.max(0.0));
+                empty.fill = Some(Vec::new());
+                stroke = Some(empty);
+            }
         }
         if let Some(mut node) = typed_axis_shape(el, id.clone(), matrix) {
             node.base_mut().name = Some(name.to_string());

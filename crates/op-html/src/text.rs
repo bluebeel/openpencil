@@ -203,6 +203,7 @@ fn build_text_node_in_path(
             segments
                 .into_iter()
                 .map(|segment| StyledTextSegment {
+                    fill_paints: None,
                     text: segment.text,
                     font_family: segment.style.font_family,
                     font_size: segment.style.font_size,
@@ -516,6 +517,7 @@ fn text_length_context(style: &ComputedStyle, context: &MapCtx<'_>) -> LengthCtx
 
 fn solid_fill(color: String) -> PenFill {
     PenFill::Solid(SolidFillBody {
+        enabled: None,
         color,
         explain: None,
         opacity: None,

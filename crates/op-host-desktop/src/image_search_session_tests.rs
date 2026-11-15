@@ -24,6 +24,7 @@ use jian_ops_schema::style::{ImageFillBody, ImageFillMode, PenFill, SolidFillBod
 
 fn image_node(id: &str, src: &str, query: Option<&str>) -> PenNode {
     PenNode::Image(ImageNode {
+        geometry: None,
         base: PenNodeBase {
             id: id.to_string(),
             name: Some("Menu photo".into()),
@@ -172,6 +173,7 @@ fn rectangle_node_with_sizing(
 
 fn solid_fill() -> PenFill {
     PenFill::Solid(SolidFillBody {
+        enabled: None,
         color: "#E5E7EB".into(),
         explain: None,
         opacity: None,
@@ -181,6 +183,8 @@ fn solid_fill() -> PenFill {
 
 fn image_fill(url: &str) -> PenFill {
     PenFill::Image(Box::new(ImageFillBody {
+        enabled: None,
+        geometry: None,
         url: url.into(),
         thumbnail_url: None,
         nearest_sampling: None,

@@ -1,27 +1,22 @@
+use crate::color::parse_css_color;
+use crate::css::cascade::ComputedStyle;
 use crate::import_warning::ImportWarning;
+use crate::length::{parse_length, LengthCtx};
+use crate::mapper::MapCtx;
 use jian_ops_schema::node::container::CornerRadius;
 use jian_ops_schema::node::ImageSrc;
 use jian_ops_schema::style::{
     BlendMode, BlurBody, GradientStop, ImageFillBody, LinearGradientBody, PenEffect, PenFill,
     PenStroke, RadialGradientBody, ShadowBody, SolidFillBody, StrokeAlign, StrokeThickness,
 };
-
-use crate::color::parse_css_color;
-use crate::css::cascade::ComputedStyle;
-use crate::length::{parse_length, LengthCtx};
-
-use crate::mapper::MapCtx;
-
 #[path = "mapper_visual_syntax.rs"]
 mod syntax;
 use syntax::{
     exact_function_body, parse_gradient_angle, parse_radial_position, split_top_level,
     split_whitespace_top_level, strip_interpolation_method,
 };
-
 #[path = "mapper_background.rs"]
 mod background;
-
 #[path = "mapper_text_paint.rs"]
 mod text_paint;
 pub(crate) use text_paint::{background_clips_text, text_paint_has_partial_alpha};
@@ -61,6 +56,8 @@ pub(super) fn map_fill(
                 let geometry = background::image_layer(style, index, node, definite, context);
                 position_dropped |= geometry.position_dropped;
                 fills.push(PenFill::Image(Box::new(ImageFillBody {
+                    enabled: None,
+                    geometry: None,
                     url: ImageSrc::from(url),
                     thumbnail_url: None,
                     nearest_sampling: None,
@@ -377,6 +374,7 @@ fn map_gradient(value: &str, style: &ComputedStyle, context: &mut MapCtx<'_>) ->
     }
     if radial {
         Some(PenFill::RadialGradient(RadialGradientBody {
+            enabled: None,
             geometry: None,
             cx: center.0,
             cy: center.1,
@@ -394,6 +392,7 @@ fn map_gradient(value: &str, style: &ComputedStyle, context: &mut MapCtx<'_>) ->
         }))
     } else {
         Some(PenFill::LinearGradient(LinearGradientBody {
+            enabled: None,
             geometry: None,
             // Copied through unchanged ON PURPOSE: the editor canvas
             // (`linear_gradient_endpoints`, `angle - 90`), SVG export and
@@ -625,6 +624,7 @@ fn length_context(style: &ComputedStyle, context: &MapCtx<'_>) -> LengthCtx {
 
 fn solid_fill(color: String, blend_mode: Option<BlendMode>) -> PenFill {
     PenFill::Solid(SolidFillBody {
+        enabled: None,
         color,
         explain: None,
         opacity: None,

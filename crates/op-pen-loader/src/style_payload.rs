@@ -33,6 +33,8 @@ pub(crate) fn base_payload(base: &PenNodeBase, kind: &str) -> NodePayload {
         h: 0.0,
         fill: None,
         fill_layers: Vec::new(),
+        fill_disabled: false,
+        stroke_disabled: false,
         stroke: None,
         text: None,
         font_family: String::new(),
@@ -82,6 +84,8 @@ pub(crate) fn base_payload(base: &PenNodeBase, kind: &str) -> NodePayload {
         image_thumbnail_src: None,
         image_nearest_sampling: None,
         image_rotation_degrees: None,
+        image_geometry: None,
+        image_paint: None,
         video: None,
         image_fit: None,
         image_blend_mode: None,
@@ -108,7 +112,7 @@ pub(crate) fn apply_container_style(
     corner_radius: Option<&CornerRadius>,
 ) {
     assign_first_fill(p, fill);
-    p.stroke = stroke_to_payload(stroke);
+    assign_stroke(p, stroke);
     p.corner_radii = match corner_radius {
         Some(CornerRadius::PerCorner(corners)) => Some(corners.map(|radius| radius as f32)),
         _ => None,
@@ -133,6 +137,7 @@ pub(crate) fn assign_first_fill(p: &mut NodePayload, fills: Option<&[PenFill]>) 
     // Preserve the complete canonical stack for renderers that understand
     // layered fills. Keep populating the historical primary-fill projection
     // below so serialized payloads remain consumable by older clients.
+    p.fill_disabled = disabled_fills(fills);
     p.fill_layers = fills.unwrap_or_default().to_vec();
     p.fill = first_solid_color(fills);
     p.fill_type = first_fill_type(fills);
@@ -147,16 +152,21 @@ pub(crate) fn assign_first_fill(p: &mut NodePayload, fills: Option<&[PenFill]>) 
         p.image_original_size = original_size;
         p.image_tile_scale = tile_scale;
         p.image_adjustments = adjustments;
-        if let Some(PenFill::Image(body)) = fills.and_then(|fills| fills.first()) {
+        if let Some(PenFill::Image(body)) = first_active_fill(fills) {
             p.image_thumbnail_src = body.thumbnail_url.clone();
             p.image_nearest_sampling = body.nearest_sampling;
             p.image_rotation_degrees = body.rotation.map(|value| value as f32);
+            p.image_geometry = body.geometry.clone();
         }
     }
 }
 
+fn first_active_fill(fills: Option<&[PenFill]>) -> Option<&PenFill> {
+    fills?.iter().find(|fill| fill.is_enabled())
+}
+
 fn first_image_fill(fills: Option<&[PenFill]>) -> Option<ImageFillPayload> {
-    let body = fills?.first().and_then(|f| match f {
+    let body = first_active_fill(fills).and_then(|f| match f {
         PenFill::Image(b) => Some(b),
         _ => None,
     })?;
@@ -262,11 +272,14 @@ fn adjustments_payload(
 }
 
 fn first_gradient(fills: Option<&[PenFill]>) -> Option<GradientPayload> {
-    gradient_payload(fills?.first()?)
+    gradient_payload(first_active_fill(fills)?)
 }
 
 /// Resolve one canonical gradient layer without projecting away siblings.
 pub(crate) fn gradient_payload(fill: &PenFill) -> Option<GradientPayload> {
+    if !fill.is_enabled() {
+        return None;
+    }
     match fill {
         PenFill::LinearGradient(body) => {
             if body.geometry.is_some() {
@@ -311,11 +324,14 @@ pub(crate) fn gradient_payload(fill: &PenFill) -> Option<GradientPayload> {
 /// mid-gray, so a host that can't compile the program still paints a
 /// visible block. SkSL source stays untrusted — not validated here.
 fn first_shader(fills: Option<&[PenFill]>) -> Option<ShaderPayload> {
-    shader_payload(fills?.first()?)
+    shader_payload(first_active_fill(fills)?)
 }
 
 /// Resolve one canonical shader layer without projecting away siblings.
 pub(crate) fn shader_payload(fill: &PenFill) -> Option<ShaderPayload> {
+    if !fill.is_enabled() {
+        return None;
+    }
     if let Some(gradient) = crate::gradient_geometry::paint(fill) {
         return crate::gradient_geometry::shader(gradient);
     }
@@ -429,6 +445,9 @@ fn first_solid_color(fills: Option<&[PenFill]>) -> Option<[f32; 4]> {
 
 /// Paintable solid fallback for one canonical fill layer.
 pub(crate) fn fill_fallback_color(fill: &PenFill) -> Option<[f32; 4]> {
+    if !fill.is_enabled() {
+        return None;
+    }
     match fill {
         PenFill::Solid(body) => {
             if let Some(rgba) = parse_color(&body.color) {
@@ -483,7 +502,7 @@ fn first_fill_type(fills: Option<&[PenFill]>) -> String {
     let Some(fills) = fills else {
         return "solid".into();
     };
-    match fills.first() {
+    match fills.iter().find(|fill| fill.is_enabled()) {
         Some(PenFill::LinearGradient(_)) => "linear".into(),
         Some(PenFill::RadialGradient(_)) => "radial".into(),
         Some(PenFill::MeshGradient(_)) => "mesh".into(),
@@ -493,8 +512,20 @@ fn first_fill_type(fills: Option<&[PenFill]>) -> String {
     }
 }
 
+pub(crate) fn disabled_fills(fills: Option<&[PenFill]>) -> bool {
+    fills.is_some_and(|fills| !fills.iter().any(PenFill::is_enabled))
+}
+
+pub(crate) fn assign_stroke(p: &mut NodePayload, stroke: Option<&PenStroke>) {
+    p.stroke_disabled = stroke.is_some_and(|stroke| disabled_fills(stroke.fill.as_deref()));
+    p.stroke = stroke_to_payload(stroke);
+}
+
 pub(crate) fn stroke_to_payload(s: Option<&PenStroke>) -> Option<StrokePayload> {
     let s = s?;
+    if disabled_fills(s.fill.as_deref()) {
+        return None;
+    }
     let (width, sides) = match &s.thickness {
         StrokeThickness::Uniform(n) => (*n as f32, None),
         StrokeThickness::PerSide(sides) => (

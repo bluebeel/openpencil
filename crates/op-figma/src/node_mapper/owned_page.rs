@@ -83,6 +83,7 @@ pub(crate) fn convert_tree_page_owned(
         symbol_tree: symbols,
         warnings: Vec::new(),
         id_counter: counter,
+        retained_ids: Default::default(),
         blobs,
         layout_mode,
         instance_assignments: assignments,

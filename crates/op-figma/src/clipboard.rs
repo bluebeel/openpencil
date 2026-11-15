@@ -538,6 +538,7 @@ pub fn fix_unresolved_images(nodes: &mut [PenNode]) {
 
 fn placeholder_fill() -> PenFill {
     PenFill::Solid(SolidFillBody {
+        enabled: None,
         color: "#E5E7EB".to_string(),
         explain: None,
         opacity: None,
@@ -641,6 +642,7 @@ fn enrich_text(t: &mut TextNode, hints: &HashMap<String, HtmlStyleHint>) {
     if t.fill.is_none() {
         if let Some(color) = &hint.color {
             t.fill = Some(vec![PenFill::Solid(SolidFillBody {
+                enabled: None,
                 color: color.clone(),
                 explain: None,
                 opacity: None,
@@ -683,6 +685,7 @@ fn enrich_container_bg(
     if let Some(hint) = hints.get(trimmed) {
         if let Some(bg) = &hint.background_color {
             container.fill = Some(vec![PenFill::Solid(SolidFillBody {
+                enabled: None,
                 color: bg.clone(),
                 explain: None,
                 opacity: None,

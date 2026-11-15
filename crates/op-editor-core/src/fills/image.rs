@@ -74,6 +74,7 @@ pub fn set_primary_image_fill_mode(node: &mut PenNode, mode: ImageFillMode) -> b
     };
     let schema_mode = mode.to_schema();
     let mut changed = body.mode.as_ref() != Some(&schema_mode);
+    changed |= body.geometry.take().is_some();
     body.mode = Some(schema_mode);
     if mode == ImageFillMode::Crop {
         if body.transform.is_none() {
@@ -133,6 +134,15 @@ pub fn set_primary_image_tile_scale(node: &mut PenNode, value: f32) -> bool {
     };
     if effective_image_tile_scale(body.tile_scale) == value {
         return false;
+    }
+    if let Some(pattern) = body.geometry.as_mut().and_then(|g| g.pattern.as_mut()) {
+        let ratio = value / effective_image_tile_scale(body.tile_scale);
+        let cell = kurbo::Affine::new(pattern.transform);
+        pattern.transform = (cell
+            * kurbo::Affine::translate((0.5, 0.5))
+            * kurbo::Affine::scale(ratio)
+            * kurbo::Affine::translate((-0.5, -0.5)))
+        .as_coeffs();
     }
     body.tile_scale = (value != 1.0).then_some(value);
     true

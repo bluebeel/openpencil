@@ -39,10 +39,41 @@ pub(super) fn element_to_node_ctx(
     } else {
         parent_viewport
     };
-    let mut node = if el.tag == "g" || el.tag == "svg" {
-        if el.tag == "svg" {
-            tracing::warn!("nested SVG viewport mapping is imported; automatic viewport clipping is not represented");
-        }
+    let mut node = if el.tag == "image" {
+        let Some(node) = image_element(el, &ctx, matrix, viewport, resources, allocator, taken)?
+        else {
+            return Ok(None);
+        };
+        node
+    } else if el.tag == "use" {
+        let Some(id) = resource_href(el) else {
+            return Ok(None);
+        };
+        let scope = match resources.enter(id) {
+            Ok(s) => s,
+            Err(error) => {
+                tracing::warn!(%error,"SVG use reference pending/invalid");
+                return Ok(None);
+            }
+        };
+        let source = &resources.entries[id];
+        let x = el.attr("x").and_then(svg_number).unwrap_or(0.0);
+        let y = el.attr("y").and_then(svg_number).unwrap_or(0.0);
+        let node = element_to_node_ctx(
+            source.node,
+            &ctx,
+            matrix * kurbo::Affine::translate((x, y)),
+            viewport,
+            resources,
+            allocator,
+            taken,
+        )?;
+        drop(scope);
+        let Some(node) = node else {
+            return Ok(None);
+        };
+        node
+    } else if el.tag == "g" || el.tag == "svg" {
         let mut children = Vec::new();
         for child in &el.children {
             if let Some(child) =
@@ -106,6 +137,9 @@ pub(super) fn element_to_node_ctx(
                 taken,
             )?;
         }
+    }
+    if el.tag == "svg" {
+        node = clip_viewport(node, &el.attrs, matrix, false, allocator, taken)?;
     }
     if !ctx.clip_mode {
         node.base_mut().opacity = svg_node_opacity(&el.attrs);

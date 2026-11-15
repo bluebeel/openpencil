@@ -56,7 +56,7 @@ fn apply_layout(l: LayoutProps, c: &mut ContainerProps) {
     }
 }
 
-/// Convert a parent's children, skipping invisible / transparent nodes.
+/// Convert all authored children; visibility/opacity control painting, not existence.
 pub fn convert_children(parent: &TreeNode, ctx: &mut ConversionContext<'_>) -> Vec<PenNode> {
     convert_children_parts(&parent.figma, &parent.children, ctx)
 }
@@ -68,17 +68,26 @@ fn convert_children_parts(
     let parent_stack_mode = figma.get_str("stackMode");
     let mut result = Vec::new();
     for child in children {
-        if child.figma.get_bool("visible") == Some(false) {
-            continue;
-        }
-        if child.figma.get_f64("opacity").map(|o| o <= 0.0) == Some(true) {
-            continue;
-        }
-        if let Some(node) = convert_node(child, parent_stack_mode, ctx) {
+        if let Some(node) = convert_retained_child(child, parent_stack_mode, ctx) {
             result.push(node);
         }
     }
     result
+}
+
+/// This entry replaces the historical child filter, so only formerly omitted
+/// branches use new IDs. Direct selected-root conversion keeps its old policy.
+pub(crate) fn convert_retained_child(
+    tree: &TreeNode,
+    parent: Option<&str>,
+    ctx: &mut ConversionContext<'_>,
+) -> Option<PenNode> {
+    let omitted = tree.figma.get_bool("visible") == Some(false)
+        || tree
+            .figma
+            .get_f64("opacity")
+            .is_some_and(|opacity| opacity <= 0.0);
+    ctx.retain_hidden_ids(omitted, |ctx| convert_node(tree, parent, ctx))
 }
 
 /// Dispatch one tree node to its type-specific converter.
@@ -153,8 +162,16 @@ fn build_container(
         apply_layout(l, &mut container);
     }
     container.corner_radius = map_corner_radius(figma);
-    container.fill = map_figma_fills(figma.get_array("fillPaints"))
-        .or_else(|| map_figma_fills(figma.get_array("backgroundPaints")));
+    let fills = figma.get_array("fillPaints");
+    container.fill = if fills.is_some_and(|fills| !fills.is_empty()) {
+        map_figma_fills(fills)
+    } else {
+        // Legacy background paints predate fillPaints. Preserve that active
+        // fallback only for an absent/empty new stack, never a disabled one.
+        map_figma_fills(figma.get_array("backgroundPaints"))
+            .filter(|fills| !fills.is_empty())
+            .or_else(|| map_figma_fills(fills))
+    };
     container.stroke = map_figma_stroke(figma);
     container.effects = map_figma_node_effects(figma);
     container
@@ -173,8 +190,18 @@ fn convert_frame_parts(
     parent_stack_mode: Option<&str>,
     ctx: &mut ConversionContext<'_>,
 ) -> PenNode {
+    convert_frame_parts_with_retained_ids(figma, children, parent_stack_mode, ctx, false)
+}
+fn convert_frame_parts_with_retained_ids(
+    figma: &FigValue,
+    children: &[TreeNode],
+    parent_stack_mode: Option<&str>,
+    ctx: &mut ConversionContext<'_>,
+    retained: bool,
+) -> PenNode {
     let id = ctx.generate_id();
-    let children = convert_children_parts(figma, children, ctx);
+    let children =
+        ctx.retain_hidden_ids(retained, |ctx| convert_children_parts(figma, children, ctx));
     let has_auto_layout = figma
         .get_str("stackMode")
         .map(|s| s != "NONE")
@@ -276,6 +303,29 @@ fn has_visual_overrides(figma: &FigValue) -> bool {
         .unwrap_or(false)
 }
 
+/// Additional authored paint/visibility overrides that older imports omitted.
+fn has_authoring_overrides(figma: &FigValue) -> bool {
+    ["fillPaints", "strokePaints", "effects"]
+        .iter()
+        .any(|key| figma.get(key).is_some())
+        || figma
+            .get("symbolData")
+            .and_then(|data| data.get_array("symbolOverrides"))
+            .is_some_and(|overrides| {
+                overrides.iter().any(|entry| {
+                    [
+                        "visible",
+                        "opacity",
+                        "fillPaints",
+                        "strokePaints",
+                        "effects",
+                    ]
+                    .iter()
+                    .any(|key| entry.get(key).is_some())
+                })
+            })
+}
+
 fn convert_instance(
     tree: &TreeNode,
     parent_stack_mode: Option<&str>,
@@ -293,8 +343,9 @@ fn convert_instance(
     let is_swap = override_guid
         .as_ref()
         .is_some_and(|target| base_guid.as_ref() != Some(target));
-    let inline = component_guid.is_some()
-        && (is_swap || tree.children.is_empty() || has_visual_overrides(figma));
+    let legacy_inline = is_swap || tree.children.is_empty() || has_visual_overrides(figma);
+    let restored_inline = !legacy_inline && has_authoring_overrides(figma);
+    let inline = component_guid.is_some() && (legacy_inline || restored_inline);
 
     if inline {
         let key = component_guid.clone().unwrap();
@@ -336,7 +387,13 @@ fn convert_instance(
                     &mut ctx.instance_assignments,
                 );
                 let merged = merge_symbol_props(&tree.figma, &symbol_node.figma);
-                return convert_frame_parts(&merged, children.as_slice(), parent_stack_mode, ctx);
+                return convert_frame_parts_with_retained_ids(
+                    &merged,
+                    children.as_slice(),
+                    parent_stack_mode,
+                    ctx,
+                    restored_inline,
+                );
             }
         }
     }
@@ -348,7 +405,13 @@ fn convert_instance(
         .cloned()
     {
         let id = ctx.generate_id();
-        return ref_node(common_props(&tree.figma, id), pen_id);
+        let mut base = common_props(&tree.figma, id);
+        let symbol = component_guid
+            .as_ref()
+            .and_then(|guid| ctx.symbol_tree.get(guid))
+            .map(|tree| &tree.figma);
+        base.visible = Some(crate::instance::instance_visibility(&tree.figma, symbol));
+        return ref_node(base, pen_id);
     }
 
     convert_frame(tree, parent_stack_mode, ctx)
@@ -595,7 +658,15 @@ fn convert_vector(
         // Only a path that genuinely CAME from strokeGeometry is the
         // pre-expanded outline; a vector-network fallback is a
         // centerline and must keep its stroke.
-        let is_stroke_only = !has_visible_fills && has_visible_strokes && from_stroke_geometry;
+        let has_authored_fills = figma
+            .get_array("fillPaints")
+            .is_some_and(|paints| !paints.is_empty());
+        let has_authored_strokes = figma
+            .get_array("strokePaints")
+            .is_some_and(|paints| !paints.is_empty());
+        let is_stroke_only = !has_visible_fills
+            && (has_visible_strokes || (!has_authored_fills && has_authored_strokes))
+            && from_stroke_geometry;
 
         if is_stroke_only {
             return path_node(
@@ -681,87 +752,8 @@ fn convert_vector(
     rectangle_node(common_props(figma, id), container)
 }
 
-/// Build a `Path` PenNode for a host-resolved icon — ports
-/// `path-converter.ts` lines 25-65. Stroke gets a sensible default
-/// when the node has no stroke paint, and the stroke thickness scales
-/// down proportionally for icons smaller than the lucide 24×24
-/// reference box.
-fn build_icon_path_node(
-    figma: &FigValue,
-    id: String,
-    parent_stack_mode: Option<&str>,
-    ctx: &mut ConversionContext<'_>,
-    icon: crate::common::IconLookupResult,
-) -> PenNode {
-    use jian_ops_schema::style::{
-        PenFill, PenStroke, SolidFillBody, StrokeCap, StrokeJoin, StrokeThickness,
-    };
-
-    let icon_w = resolve_width(figma, parent_stack_mode, ctx);
-    let icon_h = resolve_height(figma, parent_stack_mode, ctx);
-
-    // iconSize = min(width-if-numeric, height-if-numeric), defaulting to
-    // 24 (the lucide reference box) when either axis is non-numeric.
-    let w_num: f64 = match icon_w {
-        SizingBehavior::Number(n) => n,
-        _ => 24.0,
-    };
-    let h_num: f64 = match icon_h {
-        SizingBehavior::Number(n) => n,
-        _ => 24.0,
-    };
-    let icon_size = w_num.min(h_num);
-    let icon_scale: f64 = icon_size / 24.0;
-
-    let style = icon.style.unwrap_or(IconStyle::Stroke);
-    let mapped_stroke = map_figma_stroke(figma);
-    let mut stroke = match style {
-        IconStyle::Stroke => Some(mapped_stroke.unwrap_or_else(|| {
-            PenStroke::from(jian_ops_schema::style::PenStrokeBody {
-                thickness: StrokeThickness::Uniform(1.5),
-                align: None,
-                join: Some(StrokeJoin::Round),
-                cap: Some(StrokeCap::Round),
-                dash_pattern: None,
-                dash_offset: None,
-                fill: Some(vec![PenFill::Solid(SolidFillBody {
-                    color: fig_fill_color(figma).unwrap_or_else(|| "#000000".to_string()),
-                    explain: None,
-                    opacity: None,
-                    blend_mode: None,
-                })]),
-            })
-        })),
-        IconStyle::Fill => mapped_stroke,
-    };
-
-    if let Some(s) = stroke.as_mut() {
-        if icon_scale < 0.99 {
-            if let StrokeThickness::Uniform(t) = s.thickness {
-                let scaled = round2(t * icon_scale);
-                s.thickness = StrokeThickness::Uniform(scaled);
-            }
-        }
-    }
-
-    let fill = match style {
-        IconStyle::Fill => map_figma_fills(figma.get_array("fillPaints")),
-        IconStyle::Stroke => None,
-    };
-
-    path_node(
-        common_props(figma, id),
-        Some(icon.d),
-        icon.icon_id,
-        None,
-        icon_w,
-        icon_h,
-        fill,
-        stroke,
-        map_figma_node_effects(figma),
-        figma_path_mask(figma),
-    )
-}
+mod icon;
+use icon::build_icon_path_node;
 
 #[cfg(test)]
 mod tests;

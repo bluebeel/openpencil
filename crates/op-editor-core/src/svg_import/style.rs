@@ -26,6 +26,11 @@ pub(super) fn merge_style_ctx(parent: &StyleCtx, attrs: &[(String, String)]) -> 
             .filter(|v| v != "inherit")
             .unwrap_or_else(|| parent.current_color.clone()),
         clip_mode: parent.clip_mode,
+        image_rendering: match value("image-rendering").as_deref() {
+            Some("pixelated" | "crisp-edges" | "optimizeSpeed") => Some(true),
+            Some("auto" | "smooth" | "high-quality" | "optimizeQuality") => Some(false),
+            _ => parent.image_rendering,
+        },
         fill_rule: value(if parent.clip_mode {
             "clip-rule"
         } else {
@@ -157,6 +162,7 @@ pub(super) fn resolve_svg_stroke_geometry(
 
 pub(super) fn solid_fill(hex: &str) -> PenFill {
     PenFill::Solid(SolidFillBody {
+        enabled: None,
         color: hex.to_string(),
         explain: None,
         opacity: None,

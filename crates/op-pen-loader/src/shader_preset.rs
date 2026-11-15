@@ -139,6 +139,7 @@ mod tests {
 
     fn body_with_uniforms(uniforms: BTreeMap<String, ShaderUniformValue>) -> ShaderFillBody {
         ShaderFillBody {
+            enabled: None,
             preset: Some("turbulence".to_string()),
             sksl: None,
             uniforms: Some(uniforms),

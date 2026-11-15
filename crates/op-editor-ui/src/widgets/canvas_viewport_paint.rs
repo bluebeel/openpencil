@@ -455,13 +455,15 @@ fn paint_node_inner<'a>(
                 paint_node_stroke(cx, node, world_rect, zoom);
             }
         }
-        NodeKind::Other(tag) if tag == "icon_font" => crate::widgets::icons::paint_icon_font_node(
-            cx.backend,
-            node.font_family.as_str(),
-            node.text.as_deref().unwrap_or(""),
-            world_rect,
-            node.fill,
-        ),
+        NodeKind::Other(tag) if tag == "icon_font" && !node.fill_disabled => {
+            crate::widgets::icons::paint_icon_font_node(
+                cx.backend,
+                node.font_family.as_str(),
+                node.text.as_deref().unwrap_or(""),
+                world_rect,
+                node.fill,
+            )
+        }
         NodeKind::Group | NodeKind::Other(_) => {
             // `clipContent` is container-level in the canonical schema
             // (Frame / Group / Rectangle all carry it) — honour it on
@@ -620,15 +622,18 @@ fn paint_node_inner<'a>(
                 world_rect.origin.x + world_rect.size.x,
                 world_rect.origin.y + world_rect.size.y,
             );
-            let (color, width) = match node.stroke {
-                Some(s) => (s.color, s.width * zoom),
-                None => (
+            let stroke = match node.stroke {
+                Some(s) => Some((s.color, s.width * zoom)),
+                None if !node.stroke_disabled && !node.fill_disabled => Some((
                     node.fill.unwrap_or(crate::Color::BLACK),
                     (1.5_f32).max(zoom),
-                ),
+                )),
+                None => None,
             };
             if !super::canvas_viewport_stroke_paint::paint(cx, node, world_rect, zoom) {
-                cx.backend.stroke_line(from, to, color, width);
+                if let Some((color, width)) = stroke {
+                    cx.backend.stroke_line(from, to, color, width);
+                }
             }
         }
         NodeKind::Path => {
@@ -690,7 +695,7 @@ fn paint_node_inner<'a>(
             // outline.
             let stroke = match node.stroke {
                 Some(s) => Some((s.color, s.width * zoom)),
-                None if !filled => Some((
+                None if !filled && !node.stroke_disabled && !node.fill_disabled => Some((
                     node.fill.unwrap_or(crate::Color::BLACK),
                     (1.5_f32).max(zoom),
                 )),

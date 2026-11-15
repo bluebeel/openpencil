@@ -41,7 +41,13 @@ pub(crate) fn apply_text_content(p: &mut NodePayload, n: &TextNode) {
                         .font_weight
                         .map(|w| w.min(u16::MAX as u32) as u16)
                         .unwrap_or(0),
-                    fill: seg.fill.as_deref().and_then(parse_color),
+                    fill: match seg.fill_paints.as_deref() {
+                        Some(fills) => fills
+                            .iter()
+                            .find_map(crate::style_payload::fill_fallback_color),
+                        None => seg.fill.as_deref().and_then(parse_color),
+                    },
+                    fill_disabled: crate::style_payload::disabled_fills(seg.fill_paints.as_deref()),
                     italic: seg
                         .font_style
                         .as_ref()

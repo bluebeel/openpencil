@@ -113,7 +113,7 @@ fn coordinate(attrs: &[(String, String)], name: &'static str) -> Result<f64, Svg
         .filter(|v| v.is_finite())
         .ok_or(SvgTransformError::InvalidViewport { attribute: name })
 }
-fn length(
+pub(super) fn length(
     attrs: &[(String, String)],
     name: &'static str,
     default: f64,
@@ -133,7 +133,7 @@ fn length(
         Err(SvgTransformError::InvalidViewport { attribute: name })
     }
 }
-fn viewbox(attrs: &[(String, String)]) -> Result<Option<[f64; 4]>, SvgTransformError> {
+pub(super) fn viewbox(attrs: &[(String, String)]) -> Result<Option<[f64; 4]>, SvgTransformError> {
     let Some(raw) = attr(attrs, "viewBox") else {
         return Ok(None);
     };
@@ -158,7 +158,7 @@ fn viewbox(attrs: &[(String, String)]) -> Result<Option<[f64; 4]>, SvgTransformE
     }
     Ok(Some(values))
 }
-fn viewbox_matrix(
+pub(super) fn viewbox_matrix(
     attrs: &[(String, String)],
     vb: Option<[f64; 4]>,
     width: f64,

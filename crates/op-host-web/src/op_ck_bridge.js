@@ -1,3 +1,4 @@
+import { drawExplicitImageField } from './op_ck_image_geometry.js';
 import { strokePaintGeometry, imagePaintField, drawMeshPaintField } from './op_ck_stroke_paint.js';
 // Thin CanvasKit FFI bridge for the Rust web shell.
 //
@@ -1539,6 +1540,10 @@ export async function opCkInit(canvasId) {
       imageCaches.drawThumbnailCover(canvas, imageIdLo, imageIdHi, jpeg, x, y, w, h);
     },
 
+    drawExplicitImageField(lo,hi,x,y,w,h,geometry,adjustments,opacity,radius,blend,nearest,sourceShader,patternShader){
+      const image=imageCaches.fullImage(lo,hi);if(!image)return;
+      drawExplicitImageField(CK,canvas,image,[x,y,w,h],paintSpace(x,y,w,h),geometry,adjustments,opacity,radius,blend,nearest,sourceShader,patternShader,runtimeEffects,imageAdjustmentMatrix,blendModeForCode);
+    },
     drawImageWithOptions(imageIdLo, imageIdHi, x, y, w, h, mode, transform, adjustments, opacity, cornerRadius, blendMode, originalWidth, originalHeight, tileScale) {
       const image = imageCaches.fullImage(imageIdLo, imageIdHi);
       if (!image || !(w > 0) || !(h > 0)) return;

@@ -210,6 +210,7 @@ fn styled_content(
         let style = |key: &str| styles.and_then(|map| map.get(key)).and_then(Value::as_str);
         let decoration = style("text-decoration-line").unwrap_or("");
         segments.push(StyledTextSegment {
+            fill_paints: None,
             text: text.to_string(),
             font_family: style("font-family").map(str::to_string),
             font_size: style("font-size").and_then(parse_px),

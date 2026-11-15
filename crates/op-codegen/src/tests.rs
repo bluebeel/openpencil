@@ -62,6 +62,7 @@ fn axis(name: &str, value: &str) -> BTreeMap<String, String> {
 
 fn solid(color: &str) -> Vec<PenFill> {
     vec![PenFill::Solid(SolidFillBody {
+        enabled: None,
         color: color.into(),
         explain: None,
         opacity: None,

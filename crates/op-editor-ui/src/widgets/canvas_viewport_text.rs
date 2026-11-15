@@ -40,6 +40,7 @@ struct SliceStyle {
     strikethrough: bool,
     text_decoration_skip_ink: Option<bool>,
     color: Color,
+    enabled: bool,
 }
 
 /// Map a painted line's byte range `[line_start, line_end)` onto run
@@ -128,6 +129,7 @@ fn resolved_slice_style(
             strikethrough: node.strikethrough,
             text_decoration_skip_ink: node.text_decoration_skip_ink,
             color: ink,
+            enabled: !node.fill_disabled,
         },
         Some(r) => SliceStyle {
             font_size: if r.font_size > 0.0 {
@@ -145,6 +147,7 @@ fn resolved_slice_style(
             strikethrough: r.strikethrough,
             text_decoration_skip_ink: r.text_decoration_skip_ink.or(node.text_decoration_skip_ink),
             color: r.fill.unwrap_or(ink),
+            enabled: !r.fill_disabled && (!node.fill_disabled || r.fill.is_some()),
         },
     }
 }
@@ -208,16 +211,18 @@ fn draw_slice(
     if (letter_spacing.abs() < f32::EPSILON || kerning.is_some() || !font_features.is_empty())
         && justify_extra <= 0.0
     {
-        backend.draw_text(
-            &TextLayout::single_run(slice, family, style.font_size, jc, Point2D::ZERO)
-                .with_source_color(style.color)
-                .with_font_weight(style.weight)
-                .with_italic(style.italic)
-                .with_kerning(kerning)
-                .with_letter_spacing(letter_spacing)
-                .with_font_features(font_features),
-            Point2D::new(x, baseline_y),
-        );
+        if style.enabled {
+            backend.draw_text(
+                &TextLayout::single_run(slice, family, style.font_size, jc, Point2D::ZERO)
+                    .with_source_color(style.color)
+                    .with_font_weight(style.weight)
+                    .with_italic(style.italic)
+                    .with_kerning(kerning)
+                    .with_letter_spacing(letter_spacing)
+                    .with_font_features(font_features),
+                Point2D::new(x, baseline_y),
+            );
+        }
         let advance = backend.measure_text_family_kerned(
             slice,
             style.font_size,
@@ -240,16 +245,18 @@ fn draw_slice(
     for ch in slice.chars() {
         let mut buf = [0u8; 4];
         let s = ch.encode_utf8(&mut buf);
-        backend.draw_text(
-            &TextLayout::single_run(s, family, style.font_size, jc, Point2D::ZERO)
-                .with_source_color(style.color)
-                .with_font_weight(style.weight)
-                .with_italic(style.italic)
-                .with_kerning(kerning)
-                .with_letter_spacing(letter_spacing)
-                .with_font_features(font_features),
-            Point2D::new(cursor, baseline_y),
-        );
+        if style.enabled {
+            backend.draw_text(
+                &TextLayout::single_run(s, family, style.font_size, jc, Point2D::ZERO)
+                    .with_source_color(style.color)
+                    .with_font_weight(style.weight)
+                    .with_italic(style.italic)
+                    .with_kerning(kerning)
+                    .with_letter_spacing(letter_spacing)
+                    .with_font_features(font_features),
+                Point2D::new(cursor, baseline_y),
+            );
+        }
         let adv = backend.measure_text_family_kerned(
             s,
             style.font_size,
@@ -279,7 +286,7 @@ fn decorate_slice(
     x1: f32,
     baseline_y: f32,
 ) {
-    if (!style.underline && !style.strikethrough) || x1 <= x0 {
+    if !style.enabled || (!style.underline && !style.strikethrough) || x1 <= x0 {
         return;
     }
     let thickness = (style.font_size * 0.07).max(1.0);
@@ -361,7 +368,13 @@ pub(crate) fn paint_text_node(
         };
         let device_px = font_size_doc * zoom * cx.backend.dpi_scale();
         if device_px < GREEK_TEXT_MAX_DEVICE_PX {
-            if !text.is_empty() {
+            if !text.is_empty()
+                && (!paint_node.fill_disabled
+                    || paint_node
+                        .text_runs
+                        .iter()
+                        .any(|run| !run.fill_disabled && run.fill.is_some()))
+            {
                 cx.backend
                     .fill_rect(world_rect, ink.with_alpha(ink.a * 0.18));
             }
@@ -485,27 +498,28 @@ pub(crate) fn paint_text_node(
                         paint_node.font_kerning,
                         &paint_node.font_features,
                     );
-                    let handled = style.text_decoration_skip_ink.is_some_and(|skip_ink| {
-                        (style.underline || style.strikethrough)
-                            && cx.backend.draw_text_decoration(&TextDecorationRequest {
-                                text: slice,
-                                font_family: family,
-                                font_size: style.font_size,
-                                font_weight: style.weight,
-                                italic: style.italic,
-                                kerning: paint_node.font_kerning,
-                                letter_spacing,
-                                line_height: paint_node.line_height,
-                                justify_extra,
-                                font_features: &paint_node.font_features,
-                                origin: Point2D::new(slice_x0, baseline_y),
-                                width: glyph_end - slice_x0,
-                                color: style.color,
-                                underline: style.underline,
-                                strikethrough: style.strikethrough,
-                                skip_ink,
-                            })
-                    });
+                    let handled = style.enabled
+                        && style.text_decoration_skip_ink.is_some_and(|skip_ink| {
+                            (style.underline || style.strikethrough)
+                                && cx.backend.draw_text_decoration(&TextDecorationRequest {
+                                    text: slice,
+                                    font_family: family,
+                                    font_size: style.font_size,
+                                    font_weight: style.weight,
+                                    italic: style.italic,
+                                    kerning: paint_node.font_kerning,
+                                    letter_spacing,
+                                    line_height: paint_node.line_height,
+                                    justify_extra,
+                                    font_features: &paint_node.font_features,
+                                    origin: Point2D::new(slice_x0, baseline_y),
+                                    width: glyph_end - slice_x0,
+                                    color: style.color,
+                                    underline: style.underline,
+                                    strikethrough: style.strikethrough,
+                                    skip_ink,
+                                })
+                        });
                     if !handled {
                         decorate_slice(cx.backend, style, slice_x0, glyph_end, baseline_y);
                     }

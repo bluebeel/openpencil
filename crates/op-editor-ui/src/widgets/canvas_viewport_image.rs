@@ -571,6 +571,7 @@ fn paint_image_node_with_stroke(
         };
         let tile_scale = authored_tile_scale * tile_zoom;
         let options = crate::ImagePaintOptions {
+            geometry: node.image_geometry.as_deref(),
             mode: node.image_fit.to_draw_mode(),
             adjustments: node.image_adjustments,
             opacity: node.opacity,

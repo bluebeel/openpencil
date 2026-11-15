@@ -170,6 +170,7 @@ fn text_runs_to_scene(
             let scene = SceneTextRun {
                 start,
                 end,
+                fill_disabled: run.fill_disabled,
                 font_size: run.font_size,
                 font_weight: run.font_weight,
                 fill: run
@@ -304,6 +305,7 @@ fn fill_layers_to_scene(
 
     fills
         .iter()
+        .filter(|fill| fill.is_enabled())
         .enumerate()
         .filter_map(|(index, fill)| {
             let blend_mode = fill_blend_mode_to_scene(fill);
@@ -345,6 +347,8 @@ fn fill_layers_to_scene(
                 PenFill::Image(body) if !body.url.trim().is_empty() => {
                     let fit = crate::style_payload::image_fill_mode_to_payload(body.mode.as_ref());
                     Some(SceneFillLayer::Image {
+                        geometry: body.geometry.as_deref().map(|g| Arc::new(g.clone())),
+                        paint: Some(Arc::new((**body).clone())),
                         src: body.url.as_arc(),
                         src_id: stable_image_source_id(body.url.as_ref()),
                         thumbnail_src: body.thumbnail_url.as_ref().map(|src| src.as_arc()),
