@@ -25,7 +25,11 @@
 //! - `replace` — [`replace_variable_refs_in_tree`] and its walk
 
 mod palette;
+mod reference_fields;
+pub(crate) mod reference_index;
 mod replace;
+pub(crate) use reference_fields::visit_reference_fields;
+pub(crate) use replace::replace_variable_refs_in_node_header;
 #[cfg(test)]
 mod tests;
 

@@ -10,6 +10,8 @@ use std::{
 
 #[path = "command_id_lookup.rs"]
 mod lookup;
+#[path = "command_variable_references.rs"]
+mod variable_references;
 pub(crate) use lookup::Order as LookupOrder;
 #[path = "command_read_lookup.rs"]
 mod read_lookup;
@@ -26,12 +28,14 @@ pub struct CommandIdSequence {
     owner: Option<(usize, u64)>,
     next: Option<Seed>,
     lookup: Option<lookup::Index>,
+    references: Option<crate::variables_resolve::reference_index::Index>,
 }
 
 impl CommandIdSequence {
     pub fn invalidate(&mut self) {
         self.next = None;
         self.lookup = None;
+        self.references = None;
     }
 
     /// The same provenance contract as a trusted command capture: the caller
@@ -61,14 +65,21 @@ impl CommandIdSequence {
         }
         let prior = mem::replace(
             &mut state.command_id_seed,
-            SeedOverride::new(owner.1, self.next, self.lookup.take()),
+            SeedOverride::new(
+                owner.1,
+                self.next,
+                self.lookup.take(),
+                self.references.take(),
+            ),
         );
         let result = catch_unwind(AssertUnwindSafe(|| operation(state)));
         let mut observed = mem::replace(&mut state.command_id_seed, prior);
         self.next = None;
         self.lookup = None;
+        self.references = None;
         if result.is_ok() && observed.valid && state.document_generation() == owner.1 {
             self.lookup = observed.take_lookup(state);
+            self.references = observed.take_reference_index();
             if let Some(seed) = observed.next.get().copied() {
                 let runtime = state.runtime_next_id_seed();
                 // A public pre-scope write may have introduced a higher live
@@ -104,6 +115,7 @@ pub(crate) struct SeedOverride {
     removes: bool,
     next: OnceLock<Seed>,
     lookup: Mutex<lookup::Cache>,
+    references: Mutex<crate::variables_resolve::reference_index::Cache>,
 }
 impl Clone for SeedOverride {
     fn clone(&self) -> Self {
@@ -111,7 +123,12 @@ impl Clone for SeedOverride {
     }
 }
 impl SeedOverride {
-    fn new(generation: u64, next: Option<Seed>, index: Option<lookup::Index>) -> Self {
+    fn new(
+        generation: u64,
+        next: Option<Seed>,
+        index: Option<lookup::Index>,
+        references: Option<crate::variables_resolve::reference_index::Index>,
+    ) -> Self {
         let slot = OnceLock::new();
         if let Some(next) = next {
             let _ = slot.set(next);
@@ -123,6 +140,9 @@ impl SeedOverride {
             removes: false,
             next: slot,
             lookup: Mutex::new(lookup::Cache::new(index)),
+            references: Mutex::new(crate::variables_resolve::reference_index::Cache::new(
+                references,
+            )),
         }
     }
     pub(crate) fn get(&self, state: &EditorState) -> Option<Seed> {
@@ -208,6 +228,7 @@ impl EditorState {
         self.command_id_seed.valid = false;
     }
     pub(crate) fn observe_command_id_sequence(&mut self, command: &C) {
+        self.command_id_seed.observe_references(command);
         self.command_id_seed.observe_lookup(self, command);
         self.command_id_seed.observe(command);
         if self.command_id_seed.entered

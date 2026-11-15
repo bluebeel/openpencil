@@ -40,6 +40,7 @@ mod topology;
 mod topology_move;
 mod topology_parent;
 mod topology_wrap;
+mod variable_refs;
 pub(crate) use splice::payload_bound as structural_payload_bound;
 pub(crate) use splice::SpliceSpec;
 pub(crate) use targets::TargetSpec;
@@ -484,6 +485,7 @@ impl PendingScopedSnapshot {
                 self.metadata.components.components_arc(),
             ) && current.backing_identity() == self.metadata.components.backing_identity()
         };
+        let owns_ui_refs = self.metadata.owns_ui_ref_receipt();
         self.metadata.actor_safe = components_unchanged
             && self
                 .metadata
@@ -493,10 +495,12 @@ impl PendingScopedSnapshot {
             && self.metadata.header.is_none()
             && self.metadata.page_headers.is_empty()
             && self.metadata.app_state_owner == state.app_state_owner
-            && self.metadata.fill_refs == state.ui.variables.fill_refs
-            && self.metadata.stroke_refs == state.ui.variables.stroke_refs
+            && (owns_ui_refs
+                || (self.metadata.fill_refs == state.ui.variables.fill_refs
+                    && self.metadata.stroke_refs == state.ui.variables.stroke_refs))
             && self.metadata.preserve_authored_geometry
                 == state.editor_ui.preserve_authored_geometry;
+        self.metadata.release_owned_ui_refs();
         self.metadata.patches.shrink_to_fit();
         self.metadata.page_headers.shrink_to_fit();
         Ok(self.metadata)
@@ -783,8 +787,7 @@ impl ScopedEditorSnapshot {
             self.components = reverse.components;
         }
         state.app_state_owner = mem::replace(&mut self.app_state_owner, reverse.app_state_owner);
-        state.ui.variables.fill_refs = mem::replace(&mut self.fill_refs, reverse.fill_refs);
-        state.ui.variables.stroke_refs = mem::replace(&mut self.stroke_refs, reverse.stroke_refs);
+        self.exchange_legacy_ui_refs(state, reverse.fill_refs, reverse.stroke_refs);
         state.editor_ui.preserve_authored_geometry = mem::replace(
             &mut self.preserve_authored_geometry,
             reverse.preserve_authored_geometry,

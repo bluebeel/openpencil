@@ -27,6 +27,8 @@ pub(crate) fn tool(name: &str) -> bool {
             | "set_variable_string"
             | "set_variable_boolean"
             | "create_variable"
+            | "rename_variable"
+            | "delete_variable"
             | "rename_page"
             | "rename_component"
             | "create_component"
@@ -129,6 +131,8 @@ pub(crate) fn command(command: &C) -> bool {
                 | C::SetVariableColor { .. }
                 | C::SetVariableScalar { .. }
                 | C::CreateVariable { .. }
+                | C::RenameVariable { .. }
+                | C::DeleteVariable { .. }
                 | C::RenamePage { .. }
                 | C::RenameComponent { .. }
                 | C::CreateComponent { .. }

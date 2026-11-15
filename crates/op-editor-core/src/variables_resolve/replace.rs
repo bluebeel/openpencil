@@ -47,6 +47,27 @@ fn replace_in_node(
     vars: Option<&Vars>,
     theme: &Theme,
 ) {
+    replace_variable_refs_in_node_header(node, token, new, vars, theme);
+    // The compatibility mutator authors Some(empty); traverse only children
+    // that were actually present, including explicitly empty child vectors.
+    if node.children().is_some() {
+        if let Some(children) = node.children_mut() {
+            for child in children {
+                replace_in_node(child, token, new, vars, theme);
+            }
+        }
+    }
+}
+
+/// Same compatibility rewrite without traversing children. The caller owns an
+/// exact metadata route census and validates every route before any mutation.
+pub(crate) fn replace_variable_refs_in_node_header(
+    node: &mut PenNode,
+    token: &str,
+    new: Option<&str>,
+    vars: Option<&Vars>,
+    theme: &Theme,
+) {
     // Opacity / gap / padding expressions.
     let replace_expr = |value: &mut NumberOrExpression| {
         if let NumberOrExpression::Expression(expr) = value {
@@ -132,15 +153,6 @@ fn replace_in_node(
                         }
                     }
                 }
-            }
-        }
-    }
-    // The compatibility mutator authors Some(empty); traverse only children
-    // that were actually present, including explicitly empty child vectors.
-    if node.children().is_some() {
-        if let Some(children) = node.children_mut() {
-            for child in children {
-                replace_in_node(child, token, new, vars, theme);
             }
         }
     }

@@ -83,6 +83,40 @@ impl<V: PartialEq + Serialize> MapPatch<V> {
             }],
         })
     }
+    /// Exact closed multi-key writer; unrelated map values stay borrowed.
+    pub(super) fn selected_keys(
+        old_present: bool,
+        old_len: usize,
+        old: Vec<(String, Option<V>)>,
+        current: &Option<BTreeMap<String, V>>,
+    ) -> Option<Self> {
+        let mut expected_len = old_len;
+        let mut entries = Vec::new();
+        for (key, previous) in old {
+            let value = current.as_ref().and_then(|m| m.get(&key));
+            if exact(&previous.as_ref(), &value) {
+                continue;
+            }
+            expected_len = expected_len
+                .saturating_add(usize::from(previous.is_none() && value.is_some()))
+                .saturating_sub(usize::from(previous.is_some() && value.is_none()));
+            entries.push(Entry {
+                key,
+                old: previous,
+                expected_present: value.is_some(),
+            });
+        }
+        if entries.is_empty() && old_present == current.is_some() {
+            return None;
+        }
+        entries.shrink_to_fit();
+        Some(Self {
+            old_present,
+            expected_present: current.is_some(),
+            expected_len,
+            entries,
+        })
+    }
     pub(super) fn actor_safe(&self) -> bool {
         self.old_present && self.expected_present
     }
