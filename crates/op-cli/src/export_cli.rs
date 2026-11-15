@@ -1,11 +1,11 @@
 use std::path::Path;
 
 use base64::Engine as _;
-use serde_json::Value;
+use serde_json::{value::RawValue, Value};
 
 use crate::cli_error::CliError;
 use crate::command_helpers::flag_value;
-use crate::mcp_http_cli::{post, tool_call_body};
+use crate::mcp_http_cli::{post, raw_object, raw_text, tool_call_body};
 use crate::{Command, Flags};
 
 pub(crate) fn map_export(flags: &Flags) -> Result<Command, CliError> {
@@ -121,15 +121,17 @@ pub(crate) fn run_export_deck(
 }
 
 pub(crate) fn write_export_response(response: &str, output: &Path) -> Result<String, CliError> {
-    let value: Value = serde_json::from_str(response).map_err(|error| {
+    let value: &RawValue = serde_json::from_str(response).map_err(|error| {
         CliError::Payload(format!("export_item returned invalid JSON: {error}"))
     })?;
-    let encoded = value
+    let fields = raw_object(value.get())
+        .ok_or_else(|| CliError::Payload("export_item response is missing bytes_base64".into()))?;
+    let encoded = fields
         .get("bytes_base64")
-        .and_then(Value::as_str)
+        .and_then(|raw| raw_text(raw))
         .ok_or_else(|| CliError::Payload("export_item response is missing bytes_base64".into()))?;
     let bytes = base64::engine::general_purpose::STANDARD
-        .decode(encoded)
+        .decode(encoded.as_bytes())
         .map_err(|error| {
             CliError::Payload(format!("export_item returned invalid Base64: {error}"))
         })?;
@@ -140,11 +142,17 @@ pub(crate) fn write_export_response(response: &str, output: &Path) -> Result<Str
         ))
     })?;
 
+    let text_field = |name| {
+        fields
+            .get(name)
+            .and_then(|raw| raw_text(raw))
+            .unwrap_or_default()
+    };
     Ok(serde_json::json!({
         "output": output.to_string_lossy(),
-        "itemId": value.get("itemId").and_then(Value::as_str).unwrap_or(""),
-        "itemType": value.get("itemType").and_then(Value::as_str).unwrap_or(""),
-        "format": value.get("format").and_then(Value::as_str).unwrap_or(""),
+        "itemId": text_field("itemId"),
+        "itemType": text_field("itemType"),
+        "format": text_field("format"),
     })
     .to_string())
 }
