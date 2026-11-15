@@ -6,6 +6,9 @@
 
 use super::*;
 
+#[path = "connection_metrics.rs"]
+mod metrics;
+
 /// One request's document authority and client-context store.
 /// Online resolves a verified tenant before dispatch; Local and Managed reuse
 /// their daemon's pair. Agent admission is separate from the document mutex,
@@ -240,6 +243,12 @@ fn dispatch_inner<S: Read + Write>(
             )?;
             return Ok(false);
         }
+    }
+    // This diagnostic reads bounded atomics only, before any document binding
+    // or writer lock. Monitoring must remain usable during a slow operation.
+    if req.method == "GET" && req.path == "/api/mcp/metrics" {
+        metrics::serve(stream, ctx, cors_origin)?;
+        return Ok(false);
     }
     // Online account projection. The device-login proxy stays 404 (it drives
     // a process-wide device session), but the shell must be able to learn

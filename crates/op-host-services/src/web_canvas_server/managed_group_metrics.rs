@@ -65,6 +65,13 @@ impl Metrics {
         self.refusals[reason as usize].fetch_add(1, Ordering::Relaxed);
     }
     pub(in crate::web_canvas_server) fn snapshot(&self) -> serde_json::Value {
+        self.snapshot_with_histograms(false)
+    }
+    /// Monitoring under writer saturation needs only occupied histogram bins.
+    pub(in crate::web_canvas_server) fn compact_snapshot(&self) -> serde_json::Value {
+        self.snapshot_with_histograms(true)
+    }
+    fn snapshot_with_histograms(&self, sparse: bool) -> serde_json::Value {
         let mut refusals = serde_json::Map::new();
         for reason in budget::Refusal::ALL {
             refusals.insert(
@@ -78,11 +85,10 @@ impl Metrics {
             values
                 .iter()
                 .enumerate()
-                .map(|(i, count)| {
-                    (
-                        (i + 1).to_string(),
-                        serde_json::Value::from(count.load(Ordering::Relaxed)),
-                    )
+                .filter_map(|(i, count)| {
+                    let count = count.load(Ordering::Relaxed);
+                    (!sparse || count != 0)
+                        .then(|| ((i + 1).to_string(), serde_json::Value::from(count)))
                 })
                 .collect::<serde_json::Map<_, _>>()
         };
