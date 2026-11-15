@@ -83,6 +83,9 @@ pub fn collect_design_quality(state: &EditorState) -> DesignQualityDiagnostics {
 /// Borrow one authoritative active-page layout for both diagnostics. The
 /// ordinary public collector above always builds fresh; caching is a separate
 /// trusted-host choice and never inferred from a public document revision.
+/// Bound-result cache dependencies: canonical active roots/metadata, variables
+/// and themes, exact active_theme, and this matching scene. New noncanonical
+/// state, clock/global or scenario inputs must also update the host result key.
 pub fn collect_design_quality_with_scene(
     state: &EditorState,
     scene: &op_editor_ui::layout_scene::LayoutScene,
@@ -106,7 +109,11 @@ pub fn collect_design_quality_with_scene(
     structure_issues.truncate(12);
     let empty_shells = scan_empty_shells(state.active_children());
     let diagnostics =
-        crate::design_agent_diagnostics::collect_batch_design_diagnostics_with_scene(state, scene);
+        crate::design_agent_diagnostics::collect_batch_design_diagnostics_with_scene_and_theme(
+            state,
+            scene,
+            &effective_theme,
+        );
     let nav_issues = op_orchestrator::nav_issues::scan_nav_issues(state);
     DesignQualityDiagnostics {
         geometry_issues,

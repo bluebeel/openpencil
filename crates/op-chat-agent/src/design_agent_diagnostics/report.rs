@@ -10,18 +10,27 @@ pub fn collect_batch_design_diagnostics_with_scene(
     state: &EditorState,
     scene: &op_editor_ui::layout_scene::LayoutScene,
 ) -> BatchDesignDiagnostics {
-    let rects = resolved_sizes(scene);
     let effective_theme = op_editor_core::variables_resolve::effective_theme(
         &state.doc,
         &state.ui.variables.active_theme,
     );
+    collect_batch_design_diagnostics_with_scene_and_theme(state, scene, &effective_theme)
+}
+/// Same report, borrowing the already derived effective theme of the enclosing
+/// quality scan. Public fresh entrypoints still compute their current table.
+pub(crate) fn collect_batch_design_diagnostics_with_scene_and_theme(
+    state: &EditorState,
+    scene: &op_editor_ui::layout_scene::LayoutScene,
+    effective_theme: &BTreeMap<String, String>,
+) -> BatchDesignDiagnostics {
+    let rects = resolved_sizes(scene);
     let mut out = BatchDesignDiagnostics::default();
     for root in state.active_children() {
         walk(
             root,
             &rects,
             state.doc.variables.as_ref(),
-            &effective_theme,
+            effective_theme,
             &mut out,
         );
     }

@@ -25,6 +25,7 @@ pub struct BatchDesignDiagnostics {
 }
 
 mod report;
+pub(crate) use report::collect_batch_design_diagnostics_with_scene_and_theme;
 pub use report::{collect_batch_design_diagnostics, collect_batch_design_diagnostics_with_scene};
 
 fn walk(
