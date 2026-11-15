@@ -5,9 +5,6 @@ use serde_json::json;
 use super::{flag_value, required_pos, Command, Flags};
 use crate::cli_error::CliError;
 
-#[path = "figma_cli_save.rs"]
-mod atomic_save;
-
 pub(super) fn map_import_figma(positionals: &[String], flags: &Flags) -> Result<Command, CliError> {
     let fig_path = required_pos(
         positionals,
@@ -36,21 +33,7 @@ pub(super) fn run_import_figma(fig_path: &str, out_path: &str) -> Result<String,
         op_figma::prepare_fig_binary_owned(bytes, file_name, op_figma::FigLayoutMode::OpenPencil)
             .and_then(|prepared| prepared.into_all_pages_with_images(None))
             .map_err(|e| CliError::Document(format!("import {fig_path:?}: {e}")))?;
-    // Stream shared image payloads once, then atomically replace the destination.
-    atomic_save::write_atomically(out_path, |output| {
-        jian_ops_schema::image_table::write_document(
-            output,
-            &import.document,
-            &jian_ops_schema::image_thumbs::capture_snapshot(),
-        )
-        .map_err(|e| {
-            if e.is_io() {
-                CliError::Io(format!("write {out_path:?}: {e}"))
-            } else {
-                CliError::Payload(format!("serialize {out_path:?}: {e}"))
-            }
-        })
-    })?;
+    crate::atomic_save::write_document(out_path, &import.document)?;
     let page_count = import.document.pages.as_ref().map_or(1, Vec::len);
     let node_count = import
         .document

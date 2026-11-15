@@ -1,4 +1,4 @@
-//! Sibling-file replacement for the streaming Figma importer save.
+//! Shared bounded-buffer, atomic output for CLI document importers.
 
 use crate::cli_error::CliError;
 use std::fs::{File, OpenOptions};
@@ -68,7 +68,7 @@ fn create_sibling(destination: &Path) -> std::io::Result<(Temporary, File)> {
 
 /// The requested path is untouched until serialization and buffered writes
 /// succeed. A failed write, flush, or rename removes only our temporary file.
-pub(super) fn write_atomically<T>(
+pub(crate) fn write_atomically<T>(
     requested: &str,
     write: impl FnOnce(&mut BufWriter<File>) -> Result<T, CliError>,
 ) -> Result<T, CliError> {
@@ -82,6 +82,28 @@ pub(super) fn write_atomically<T>(
     std::fs::rename(&temporary.0, destination).map_err(|e| write_error(requested, e))?;
     temporary.0.clear();
     Ok(result)
+}
+
+/// Stream canonical nodes and shared image payloads directly to a sibling
+/// file, avoiding a second JSON forest and a complete serialized String.
+pub(crate) fn write_document(
+    requested: &str,
+    document: &jian_ops_schema::PenDocument,
+) -> Result<(), CliError> {
+    write_atomically(requested, |output| {
+        jian_ops_schema::image_table::write_document(
+            output,
+            document,
+            &jian_ops_schema::image_thumbs::capture_snapshot(),
+        )
+        .map_err(|error| {
+            if error.is_io() {
+                CliError::Io(format!("write {requested:?}: {error}"))
+            } else {
+                CliError::Payload(format!("serialize {requested:?}: {error}"))
+            }
+        })
+    })
 }
 
 #[cfg(test)]

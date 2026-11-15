@@ -1,12 +1,12 @@
-use std::path::PathBuf;
+use std::path::Path;
 
 pub(crate) fn resolve_file_path_arg(value: &str) -> String {
     if value.starts_with("live://") {
         return value.to_string();
     }
-    let path = PathBuf::from(value);
+    let path = Path::new(value);
     if path.is_absolute() {
-        return path.display().to_string();
+        return value.to_string();
     }
     std::env::current_dir()
         .map(|cwd| cwd.join(path).display().to_string())

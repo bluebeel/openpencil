@@ -101,7 +101,15 @@ fn required_flag(flags: &Flags, name: &str, usage: &str) -> Result<String, CliEr
 fn read_payload_file(flags: &Flags, usage: &str) -> Result<String, CliError> {
     let path = required_flag(flags, "file", usage)?;
     fs::read_to_string(&path)
-        .map(|contents| contents.trim().to_string())
+        .map(|mut contents| {
+            let start = contents.len() - contents.trim_start().len();
+            let end = start + contents.trim().len();
+            contents.truncate(end);
+            if start > 0 {
+                contents.drain(..start);
+            }
+            contents
+        })
         .map_err(|e| CliError::Io(format!("cannot read --file {path:?}: {e}")))
 }
 

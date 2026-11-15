@@ -4,6 +4,8 @@
 use std::collections::BTreeMap;
 
 mod app_control_cli;
+#[path = "figma_cli_save.rs"]
+mod atomic_save;
 mod brand_cli;
 mod cli_conversion;
 mod cli_error;

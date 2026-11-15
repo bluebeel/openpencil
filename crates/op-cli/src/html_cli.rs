@@ -1,4 +1,7 @@
-use std::path::{Component, Path};
+use std::{
+    borrow::Cow,
+    path::{Component, Path},
+};
 
 use jian_ops_schema::node::PenNode;
 use serde_json::json;
@@ -139,9 +142,12 @@ pub(super) fn run_import_html(
         .and_then(|stem| stem.to_str())
         .unwrap_or("HTML Import")
         .to_string();
+    let resource_root = resource_dir.canonicalize().ok();
     let fetcher = |url: &str| {
         let href = url.strip_prefix(LOCAL_RESOURCE_ORIGIN).unwrap_or(url);
-        local_resource_fetch(resource_dir, href)
+        resource_root
+            .as_deref()
+            .and_then(|root| local_resource_fetch_at_root(root, href))
     };
     let options = op_html::HtmlImportOptions {
         document_name: Some(document_name),
@@ -150,6 +156,8 @@ pub(super) fn run_import_html(
         ..op_html::HtmlImportOptions::default()
     };
     let imported = op_html::import_html_document(source.as_ref(), &options, Some(&fetcher), None);
+    drop(source);
+    drop(source_bytes);
     if imported.document.children.is_empty() {
         let detail = imported
             .warnings
@@ -160,10 +168,7 @@ pub(super) fn run_import_html(
             "no importable content: {detail}"
         )));
     }
-    let value = serde_json::to_value(&imported.document)
-        .map_err(|error| CliError::Payload(format!("serialize {out_path:?}: {error}")))?;
-    std::fs::write(out_path, value.to_string())
-        .map_err(|error| CliError::Io(format!("write {out_path:?}: {error}")))?;
+    crate::atomic_save::write_document(out_path, &imported.document)?;
     Ok(json!({
         "ok": true,
         "filePath": out_path,
@@ -178,6 +183,7 @@ pub(super) fn run_import_snapshot(json_path: &str, out_path: &str) -> Result<Str
         .map_err(|error| CliError::Io(format!("read {json_path:?}: {error}")))?;
     let imported =
         op_html::import_snapshot_document(&source, &op_html::HtmlImportOptions::default());
+    drop(source);
     if imported.document.children.is_empty() {
         let detail = imported
             .warnings
@@ -188,10 +194,7 @@ pub(super) fn run_import_snapshot(json_path: &str, out_path: &str) -> Result<Str
             "no importable content: {detail}"
         )));
     }
-    let value = serde_json::to_value(&imported.document)
-        .map_err(|error| CliError::Payload(format!("serialize {out_path:?}: {error}")))?;
-    std::fs::write(out_path, value.to_string())
-        .map_err(|error| CliError::Io(format!("write {out_path:?}: {error}")))?;
+    crate::atomic_save::write_document(out_path, &imported.document)?;
     Ok(json!({
         "ok": true,
         "filePath": out_path,
@@ -201,7 +204,12 @@ pub(super) fn run_import_snapshot(json_path: &str, out_path: &str) -> Result<Str
     .to_string())
 }
 
+#[cfg(test)]
 fn local_resource_fetch(dir: &Path, href: &str) -> Option<Vec<u8>> {
+    local_resource_fetch_at_root(&dir.canonicalize().ok()?, href)
+}
+
+fn local_resource_fetch_at_root(root: &Path, href: &str) -> Option<Vec<u8>> {
     let href = href.split(['?', '#']).next()?.trim_start_matches('/');
     // `Url::join` percent-encodes spaces and non-ASCII path bytes before the
     // importer calls this fetcher, so `hero style.css` arrives as
@@ -210,7 +218,7 @@ fn local_resource_fetch(dir: &Path, href: &str) -> Option<Vec<u8>> {
     // boundary, so encoded separators and `..` still cannot escape `dir`
     // (mirrors `html_import_session.rs`'s local fetch).
     let href = percent_decode_path(href)?;
-    let href = href.as_str();
+    let href = href.as_ref();
     let relative = Path::new(href);
     if href.is_empty()
         || href.contains('\0')
@@ -224,16 +232,18 @@ fn local_resource_fetch(dir: &Path, href: &str) -> Option<Vec<u8>> {
     {
         return None;
     }
-    let root = dir.canonicalize().ok()?;
-    let path = dir.join(relative).canonicalize().ok()?;
-    path.starts_with(&root)
+    let path = root.join(relative).canonicalize().ok()?;
+    path.starts_with(root)
         .then(|| std::fs::read(path).ok())
         .flatten()
 }
 
 /// Percent-decode a resolved resource path. A stray `%` that is not followed
 /// by two hex digits, or bytes that are not UTF-8, reject the lookup.
-fn percent_decode_path(encoded: &str) -> Option<String> {
+fn percent_decode_path(encoded: &str) -> Option<Cow<'_, str>> {
+    if !encoded.as_bytes().contains(&b'%') {
+        return Some(Cow::Borrowed(encoded));
+    }
     let source = encoded.as_bytes();
     let mut decoded = Vec::with_capacity(source.len());
     let mut index = 0;
@@ -248,7 +258,7 @@ fn percent_decode_path(encoded: &str) -> Option<String> {
         decoded.push((high << 4) | low);
         index += 3;
     }
-    String::from_utf8(decoded).ok()
+    String::from_utf8(decoded).map(Cow::Owned).ok()
 }
 
 fn hex_value(byte: u8) -> Option<u8> {
