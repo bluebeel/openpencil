@@ -116,7 +116,7 @@ pub(crate) fn find_node_by_path<'a>(
     let mut parts = path.split('/');
     let first = parts.next()?;
     let first_id = alias.get(first).map_or(first, String::as_str);
-    let mut current = op_editor_core::walkers::find_node(children, &NodeId::new(first_id))?;
+    let mut current = op_editor_core::walkers::find_node(children, &NodeId::new_opt(first_id)?)?;
     for part in parts {
         let part_id = alias.get(part).map_or(part, String::as_str);
         let kids = current.children()?;

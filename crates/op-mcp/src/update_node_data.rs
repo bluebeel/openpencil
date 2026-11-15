@@ -25,7 +25,7 @@ pub(super) fn ts_update_patch_json(
             "data must be a JSON object".into(),
         ));
     };
-    ts_update_patch_json_value(&value)
+    ts_update_patch_json_value_owned(value)
         .map_err(|error| ToolOutcome::Err(ToolErrorCode::InvalidArgument, error.to_string()))
 }
 
@@ -54,24 +54,39 @@ impl std::fmt::Display for UpdateDataError {
 impl std::error::Error for UpdateDataError {}
 
 pub(super) fn ts_update_patch_json_value(value: &Value) -> Result<Option<String>, UpdateDataError> {
+    if update_patch_is_rich(value) {
+        serialize_update_patch(value.clone()).map(Some)
+    } else {
+        Ok(None)
+    }
+}
+
+pub(super) fn ts_update_patch_json_value_owned(
+    value: Value,
+) -> Result<Option<String>, UpdateDataError> {
+    if update_patch_is_rich(&value) {
+        serialize_update_patch(value).map(Some)
+    } else {
+        Ok(None)
+    }
+}
+
+pub(super) fn update_patch_is_rich(value: &Value) -> bool {
     let Some(obj) = value.as_object() else {
-        return Ok(None);
+        return false;
     };
-    let is_rich = obj.is_empty()
+    obj.is_empty()
         || obj.keys().any(|key| !is_flat_update_data_key(key))
         || geometry_requires_rich_patch(obj)
         || uses_sizing_keyword(obj)
-        || fill_requires_rich_patch(obj);
-    if !is_rich {
-        return Ok(None);
-    }
+        || fill_requires_rich_patch(obj)
+}
 
-    let mut patch = value.clone();
+pub(super) fn serialize_update_patch(mut patch: Value) -> Result<String, UpdateDataError> {
     canonicalize_fill_hex_shortcut(&mut patch)?;
-    // Rich `fill` values stay on the canonical patch path. Normalize legacy
-    // string/object spellings before `PatchNodeData` deserializes the node.
+    // Preserve exact canonical normalization, moving the caller's owned Value.
     super::batch_design::normalize_node_shape(&mut patch);
-    Ok(Some(patch.to_string()))
+    Ok(patch.to_string())
 }
 
 /// `UpdateNode` stores width and height as integers, while canonical node data

@@ -79,7 +79,7 @@ fn parse_update_operation(body: &str) -> Result<EditorCommand> {
     let mut value: serde_json::Value = serde_json::from_str(body[comma + 1..].trim())
         .map_err(|e| ProgramError::Json(format!("invalid U JSON: {e}")))?;
     normalize_node_shape(&mut value);
-    update_command_from_value(node_id, &value)
+    update_command_from_owned_value(node_id, value)
 }
 
 /// Build the U() editor command from an already-parsed + normalized
@@ -145,6 +145,25 @@ pub(crate) fn update_command_from_value(
         fill_hex,
         page_id: None,
     })
+}
+
+/// Owned callers already parsed/repaired this patch. Transfer rich values into
+/// normalization rather than retaining and cloning a second complete JSON tree.
+pub(crate) fn update_command_from_owned_value(
+    node_id: NodeId,
+    value: serde_json::Value,
+) -> Result<EditorCommand> {
+    if super::update_node_data::update_patch_is_rich(&value) {
+        let patch_json = super::update_node_data::serialize_update_patch(value)
+            .map_err(|error| ProgramError::Json(error.to_string()))?;
+        Ok(EditorCommand::PatchNodeData {
+            node_id,
+            patch_json,
+            page_id: None,
+        })
+    } else {
+        update_command_from_value(node_id, &value)
+    }
 }
 
 fn parse_move_operation(body: &str) -> Result<EditorCommand> {

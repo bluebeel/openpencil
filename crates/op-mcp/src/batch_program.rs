@@ -60,7 +60,7 @@ use op_editor_core::{EditorState, NodeId, PenNodeExt};
 use serde_json::{json, Value};
 
 use super::batch_design::{find_top_level_char, normalize_node_shape, split_operation_slices};
-use super::batch_direct_ops::{split_top_level_args, update_command_from_value};
+use super::batch_direct_ops::{split_top_level_args, update_command_from_owned_value};
 use super::batch_page::optional_page_id;
 pub(crate) use super::batch_program_context::ProgramCtx;
 use super::batch_program_error::ProgramError;
@@ -80,6 +80,9 @@ use super::batch_program_resolve::{
     count_forest, find_node_by_path, line_preview, lookup_id, parent_node_id, resolve_page_index,
     resolve_parent_ref, resolve_path_expr, resolve_ref, strip_outer_quotes, with_page_id,
 };
+
+#[path = "batch_program_metadata.rs"]
+mod metadata;
 
 /// Every fallible step of the executor fails with [`ProgramError`].
 pub(crate) type Result<T> = std::result::Result<T, ProgramError>;
@@ -104,6 +107,9 @@ pub(crate) fn run_batch_design_program(
         .map(|raw| matches!(raw.trim(), "true" | "1"))
         .unwrap_or(false);
     let lines = split_operation_slices(operations);
+    if let Some(outcome) = metadata::prepare(snapshot, &lines, page_id.clone(), post_process) {
+        return outcome;
+    }
     let mut ctx = ProgramCtx {
         sim: op_editor_core::CommandSimulation::new(snapshot.clone_for_command_simulation()),
         page_id: page_id.clone(),
@@ -564,7 +570,7 @@ fn execute_update(args: &str, ctx: &mut ProgramCtx) -> Result<()> {
     // `batch_direct_ops` is shared with the non-program write paths and is
     // outside this conversion's scope; adapt its `String` at the boundary
     // rather than rippling the change into it.
-    let cmd = update_command_from_value(node_id, &value)?;
+    let cmd = update_command_from_owned_value(node_id, value)?;
     let cmd = with_page_id(cmd, ctx.page_id.clone());
     ctx.emit(cmd, &format!("Update failed for: {path}"))
 }
