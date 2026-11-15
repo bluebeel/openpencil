@@ -659,3 +659,6 @@ pub(super) use owned_compact::{
 #[path = "incremental_compact.rs"]
 mod incremental_compact;
 pub(super) use incremental_compact::compact_incremental_roots;
+
+#[path = "patch/canonical_delta.rs"]
+mod canonical_delta;

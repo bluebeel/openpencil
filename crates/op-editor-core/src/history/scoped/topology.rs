@@ -78,6 +78,15 @@ pub(super) enum TopologyPatch {
     Wrap(WrapPatch),
 }
 impl TopologyPatch {
+    pub(super) fn canonical_deltas<'a>(
+        &'a self,
+        doc: &'a crate::PenDocument,
+    ) -> Option<Vec<crate::CanonicalSplice<'a>>> {
+        match self {
+            Self::Move(p) => p.canonical_deltas(doc),
+            Self::Wrap(p) => p.canonical_deltas(doc).map(|delta| vec![delta]),
+        }
+    }
     pub(super) fn roots(&self) -> &[Arc<SharedNode>] {
         match self {
             Self::Move(_) => &[],

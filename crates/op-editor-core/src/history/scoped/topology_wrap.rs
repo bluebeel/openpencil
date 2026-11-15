@@ -534,3 +534,6 @@ impl WrapPatch {
         Children::capture(doc, &self.scope, &self.parent.path, before, true, budget)
     }
 }
+
+#[path = "topology_wrap/canonical_delta.rs"]
+mod canonical_delta;

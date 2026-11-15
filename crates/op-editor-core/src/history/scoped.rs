@@ -16,6 +16,7 @@ pub(crate) use deletion::forecast as deletion_command_bound;
 mod clones;
 mod cohort;
 pub(crate) use boolean::forecast as boolean_command_bound;
+mod canonical_deltas;
 mod forward;
 mod forward_apply;
 mod forward_catalog;

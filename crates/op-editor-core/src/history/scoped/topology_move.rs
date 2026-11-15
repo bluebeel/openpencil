@@ -354,3 +354,6 @@ impl MovePatch {
         ])
     }
 }
+
+#[path = "topology_move/canonical_delta.rs"]
+mod canonical_delta;
