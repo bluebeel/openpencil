@@ -47,21 +47,36 @@ fn push_u32(out: &mut Vec<u8>, v: u32) {
 
 /// Encode `files` as a STORED zip archive. Entry order is preserved.
 pub fn build_stored_zip(files: &[(String, Vec<u8>)]) -> Vec<u8> {
+    build_stored_zip_borrowed(
+        files
+            .iter()
+            .map(|(name, data)| (name.as_str(), data.as_slice())),
+    )
+}
+
+/// Encode borrowed entries without retaining another copy of their payloads.
+/// The repeatable iterator is used for sizing and then for writing, in order.
+/// As with `build_stored_zip`, callers enforce the non-Zip64 entry limits.
+pub fn build_stored_zip_borrowed<'a>(
+    files: impl Iterator<Item = (&'a str, &'a [u8])> + Clone,
+) -> Vec<u8> {
     // Local header30 + central header46 + two UTF-8 names + raw bytes,
-    // followed by EOCD22. A single final allocation avoids growing/copying
-    // the full image archive repeatedly. Overflow keeps the legacy grow path.
-    let capacity = files
-        .iter()
-        .try_fold(22usize, |total, (name, data)| {
-            total
-                .checked_add(76)?
-                .checked_add(name.len().checked_mul(2)?)?
-                .checked_add(data.len())
+    // followed by EOCD22. Preserve the legacy grow path on size overflow.
+    let (capacity, count) = files
+        .clone()
+        .try_fold((22usize, 0usize), |(total, count), (name, data)| {
+            Some((
+                total
+                    .checked_add(76)?
+                    .checked_add(name.len().checked_mul(2)?)?
+                    .checked_add(data.len())?,
+                count.checked_add(1)?,
+            ))
         })
-        .unwrap_or(0);
+        .unwrap_or((0, 0));
     let mut out = Vec::with_capacity(capacity);
     // (name, crc, size, local-header offset) for the central directory.
-    let mut entries: Vec<(&str, u16, u32, u32, u32)> = Vec::with_capacity(files.len());
+    let mut entries: Vec<(&str, u16, u32, u32, u32)> = Vec::with_capacity(count);
 
     for (name, data) in files {
         let flags = if name.is_ascii() { 0 } else { 1 << 11 };

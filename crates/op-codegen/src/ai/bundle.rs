@@ -78,6 +78,31 @@ pub fn build_structure_bundle(
     StructureBundle { files }
 }
 
+/// Encode a bundle directly from its borrowed views/assets. The existing
+/// owned file-set API remains available for callers that need separate files.
+pub fn build_structure_bundle_zip(
+    raw_nodes_json: &str,
+    sanitized_nodes_json: &str,
+    assets: &[AssetFile],
+    scope: BundleScope,
+) -> Vec<u8> {
+    let manifest = build_manifest(&scope, assets);
+    let manifest_bytes = serde_json::to_vec_pretty(&manifest).unwrap_or_default();
+    crate::ai::stored_zip::build_stored_zip_borrowed(
+        [
+            (MANIFEST_PATH, manifest_bytes.as_slice()),
+            (RAW_VIEW_PATH, raw_nodes_json.as_bytes()),
+            (SANITIZED_VIEW_PATH, sanitized_nodes_json.as_bytes()),
+        ]
+        .into_iter()
+        .chain(
+            assets
+                .iter()
+                .map(|asset| (asset.zip_path.as_str(), asset.bytes.as_slice())),
+        ),
+    )
+}
+
 /// Build the manifest.json object. Mirrors the TS manifest field names
 /// where this leaf packager has the data: `kind` / `version` /
 /// `consumerView` / `scope` / `views.{raw,sanitized}.{path,...}` /

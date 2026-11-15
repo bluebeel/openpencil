@@ -1,12 +1,13 @@
 //! Shared code-generation input builders.
 
+use std::collections::{HashMap, HashSet};
 use std::io::{self, Write};
 
 use jian_ops_schema::node::PenNode;
 use op_ai::chat_provider::{EffortLevel, ThinkingMode};
 use op_codegen::ai::types::CodegenInput;
 use op_editor_core::state::EditorState;
-use op_editor_core::walkers::find_node;
+use op_editor_core::PenNodeExt;
 
 /// Default hard per-request token cap. Phase builders stay within it while
 /// selecting planning/chunk/assembly budgets of 6k/12k/16k respectively.
@@ -29,11 +30,9 @@ pub(crate) enum CodegenNodesJsonError {
 /// the raw selected-nodes JSON used by desktop export bundling.
 pub fn build_codegen_input(state: &EditorState) -> Option<(CodegenInput, String)> {
     let selected = codegen_target_nodes(state)?;
-    Some(input_from_nodes(
-        &selected,
-        state.codegen.framework,
-        &state.doc,
-    ))
+    let input = input_from_nodes(&selected, state.codegen.framework, &state.doc);
+    let raw_nodes_json = input.nodes_json.clone();
+    Some((input, raw_nodes_json))
 }
 
 /// Serialize only the selected/page nodes for live bundle export, stopping
@@ -67,7 +66,12 @@ pub(crate) fn build_codegen_nodes_json_limited(
 /// Web hosts do not need the raw selected-nodes JSON because their bundle is
 /// assembled from live selection state.
 pub fn build_codegen_input_value(state: &EditorState) -> Option<CodegenInput> {
-    build_codegen_input(state).map(|(input, _raw)| input)
+    let selected = codegen_target_nodes(state)?;
+    Some(input_from_nodes(
+        &selected,
+        state.codegen.framework,
+        &state.doc,
+    ))
 }
 
 fn codegen_target_nodes(state: &EditorState) -> Option<Vec<&PenNode>> {
@@ -76,21 +80,54 @@ fn codegen_target_nodes(state: &EditorState) -> Option<Vec<&PenNode>> {
         return (!children.is_empty()).then(|| children.iter().collect());
     }
 
-    let mut selected = Vec::with_capacity(state.selection.set.len());
+    // Find all requested IDs in one canonical preorder walk, retaining the
+    // first page/preorder match just as the prior per-ID searches did. The
+    // final projection retains selection iteration order and overlapping roots.
+    let mut remaining: HashSet<&str> = state.selection.set.iter().map(|id| id.as_str()).collect();
+    let mut found = HashMap::with_capacity(remaining.len());
+    let mut stack = Vec::new();
     if let Some(pages) = state.doc.pages.as_ref() {
-        for id in &state.selection.set {
-            if let Some(node) = pages.iter().find_map(|page| find_node(&page.children, id)) {
-                selected.push(node);
+        for page in pages {
+            collect_codegen_targets(&page.children, &mut remaining, &mut found, &mut stack);
+            if remaining.is_empty() {
+                break;
             }
         }
     } else {
-        for id in &state.selection.set {
-            if let Some(node) = find_node(&state.doc.children, id) {
-                selected.push(node);
-            }
+        collect_codegen_targets(&state.doc.children, &mut remaining, &mut found, &mut stack);
+    }
+    let selected: Vec<_> = state
+        .selection
+        .set
+        .iter()
+        .filter_map(|id| found.get(id.as_str()).copied())
+        .collect();
+    (!selected.is_empty()).then_some(selected)
+}
+
+fn collect_codegen_targets<'a>(
+    roots: &'a [PenNode],
+    remaining: &mut HashSet<&str>,
+    found: &mut HashMap<&'a str, &'a PenNode>,
+    stack: &mut Vec<std::slice::Iter<'a, PenNode>>,
+) {
+    stack.push(roots.iter());
+    while !remaining.is_empty() {
+        let Some(siblings) = stack.last_mut() else {
+            break;
+        };
+        let Some(node) = siblings.next() else {
+            stack.pop();
+            continue;
+        };
+        if remaining.remove(node.id_str()) {
+            found.insert(node.id_str(), node);
+        }
+        if let Some(children) = node.children().filter(|children| !children.is_empty()) {
+            stack.push(children.iter());
         }
     }
-    (!selected.is_empty()).then_some(selected)
+    stack.clear();
 }
 
 struct LimitedJsonWriter {
@@ -129,7 +166,7 @@ fn input_from_nodes(
     nodes: &[&PenNode],
     framework: op_editor_core::codegen::Framework,
     doc: &jian_ops_schema::PenDocument,
-) -> (CodegenInput, String) {
+) -> CodegenInput {
     let nodes_json = serde_json::to_string(nodes).unwrap_or_else(|_| "[]".to_string());
     let variables_json = doc
         .variables
@@ -148,8 +185,8 @@ fn input_from_nodes(
         .then(|| serde_json::to_string(&components).ok())
         .flatten();
 
-    let input = CodegenInput {
-        nodes_json: nodes_json.clone(),
+    CodegenInput {
+        nodes_json,
         framework,
         variables_json,
         themes_json,
@@ -157,8 +194,7 @@ fn input_from_nodes(
         max_output_tokens: DEFAULT_MAX_OUTPUT_TOKENS,
         thinking: ThinkingMode::Adaptive,
         effort: EffortLevel::Low,
-    };
-    (input, nodes_json)
+    }
 }
 
 /// File extension for the active framework's generated component file.
