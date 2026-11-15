@@ -71,7 +71,7 @@ impl Index {
         let mut index = Self {
             entries: Vec::new(),
             ids: HashMap::new(),
-            pages: Vec::new(),
+            pages: Vec::with_capacity(doc.pages.as_ref().map_or(0, Vec::len)),
         };
         let root = index.add_root();
         index.append(root, &doc.children);
@@ -133,7 +133,11 @@ impl Index {
         key
     }
     fn append(&mut self, parent: usize, nodes: &[PenNode]) {
-        let mut stack = vec![(parent, nodes.iter())];
+        if nodes.is_empty() {
+            return;
+        }
+        let mut stack = crate::walkers::stack::Stack::<_, 16>::new();
+        stack.push((parent, nodes.iter()));
         while let Some((parent, siblings)) = stack.last_mut() {
             let Some(node) = siblings.next() else {
                 stack.pop();
@@ -214,14 +218,18 @@ impl Index {
                 .map(|(_, root)| *root),
         }
     }
-    fn path(&self, mut key: usize) -> Box<[usize]> {
+    fn path(&self, key: usize) -> Box<[usize]> {
         let mut path = Vec::new();
+        self.fill_path(key, &mut path);
+        path.into_boxed_slice()
+    }
+    fn fill_path(&self, mut key: usize, path: &mut Vec<usize>) {
+        path.clear();
         while let Some(parent) = self.entries[key].parent {
             path.push(self.entries[key].slot);
             key = parent;
         }
         path.reverse();
-        path.into_boxed_slice()
     }
     fn select(&self, root: usize, id: &str, order: Order) -> Option<usize> {
         let keys = self.ids.get(id)?.keys();
@@ -231,7 +239,9 @@ impl Index {
                 && (!matches!(order, Order::LastNonEmptyPostorder) || !entry.children.is_empty()))
             .then_some(*key);
         }
-        let mut best: Option<(usize, Box<[usize]>)> = None;
+        let mut best = None;
+        let mut best_path = Vec::new();
+        let mut candidate_path = Vec::new();
         for &key in keys {
             if self.entries[key].root != root
                 || matches!(order, Order::LastNonEmptyPostorder)
@@ -239,18 +249,22 @@ impl Index {
             {
                 continue;
             }
-            let path = self.path(key);
-            let replace = best.as_ref().is_none_or(|(_, old)| match order {
-                Order::Preorder => path.as_ref() < old.as_ref(),
-                Order::SiblingFirst => sibling_priority(&path, old).is_lt(),
-                Order::LastPreorder => path.as_ref() > old.as_ref(),
-                Order::LastNonEmptyPostorder => postorder_priority(&path, old).is_gt(),
-            });
+            self.fill_path(key, &mut candidate_path);
+            let replace = best.is_none()
+                || match order {
+                    Order::Preorder => candidate_path < best_path,
+                    Order::SiblingFirst => sibling_priority(&candidate_path, &best_path).is_lt(),
+                    Order::LastPreorder => candidate_path > best_path,
+                    Order::LastNonEmptyPostorder => {
+                        postorder_priority(&candidate_path, &best_path).is_gt()
+                    }
+                };
             if replace {
-                best = Some((key, path));
+                std::mem::swap(&mut candidate_path, &mut best_path);
+                best = Some(key);
             }
         }
-        best.map(|(key, _)| key)
+        best
     }
     fn query(&self, scope: &Scope, id: &str, order: Order) -> Option<Option<Box<[usize]>>> {
         let root = self.root(scope)?;
@@ -262,6 +276,9 @@ impl Index {
             let key = self.entries[parent].children[slot];
             self.entries[key].slot = slot;
         }
+        // A removed cursor no longer needs its allocated child slots or a new
+        // empty Arc per descendant. Stable entry tokens themselves stay put.
+        let empty_id = Arc::clone(&self.entries[0].id);
         let mut pending = vec![key];
         while let Some(key) = pending.pop() {
             let row = &mut self.entries[key];
@@ -272,18 +289,20 @@ impl Index {
             {
                 self.ids.remove(&row.id);
             }
-            pending.append(&mut row.children);
+            pending.extend(std::mem::take(&mut row.children));
             row.parent = None;
-            row.id = Arc::from("");
+            row.id = Arc::clone(&empty_id);
         }
     }
 }
 fn postorder_priority(a: &[usize], b: &[usize]) -> Ordering {
-    if a.starts_with(b) || b.starts_with(a) {
-        b.len().cmp(&a.len())
-    } else {
-        a.cmp(b)
+    for (a, b) in a.iter().zip(b) {
+        let order = a.cmp(b);
+        if order != Ordering::Equal {
+            return order;
+        }
     }
+    b.len().cmp(&a.len())
 }
 fn sibling_priority(a: &[usize], b: &[usize]) -> Ordering {
     let common = a.iter().zip(b).take_while(|(a, b)| a == b).count();
@@ -543,7 +562,8 @@ impl Cache {
 // and selected reorder use exact sibling receipts above; page reorder and
 // unknown topology still discard routes. This list only permits header/view edits.
 fn preserves_locations(command: &C) -> bool {
-    let mut pending = vec![command];
+    let mut pending = crate::walkers::stack::Stack::<_, 16>::new();
+    pending.push(command);
     let mut count = 0usize;
     while let Some(command) = pending.pop() {
         count += 1;
@@ -551,7 +571,12 @@ fn preserves_locations(command: &C) -> bool {
             return false;
         }
         if let C::Batch { commands } = command {
-            pending.extend(commands);
+            if commands.len() > 4096 - count {
+                return false;
+            }
+            for command in commands {
+                pending.push(command);
+            }
             continue;
         }
         if !command.may_change_document() {

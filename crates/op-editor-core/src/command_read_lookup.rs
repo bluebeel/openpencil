@@ -47,21 +47,24 @@ impl ReadCache {
     fn take(&mut self, state: &EditorState) -> Option<Record> {
         let owner = state.derived_cache_owner();
         let mut found = None;
-        let mut kept = VecDeque::new();
+        let generation = state.document_generation();
+        let revision = state.document_revision();
         self.bytes = 0;
-        for record in self.records.drain(..) {
+        let mut index = 0;
+        while index < self.records.len() {
+            let record = &self.records[index];
             if record.owner.ptr_eq(&owner) {
-                if record.generation == state.document_generation()
-                    && record.revision == state.document_revision()
-                {
+                let record = self.records.remove(index).expect("observed cache entry");
+                if record.generation == generation && record.revision == revision {
                     found = Some(record);
                 }
-            } else if record.owner.strong_count() != 0 {
+            } else if record.owner.strong_count() == 0 {
+                self.records.remove(index);
+            } else {
                 self.bytes = self.bytes.saturating_add(record.bytes);
-                kept.push_back(record);
+                index += 1;
             }
         }
-        self.records = kept;
         found
     }
     fn acquire(
