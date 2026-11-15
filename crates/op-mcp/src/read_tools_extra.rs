@@ -5,7 +5,8 @@
 //! (no dependency on the layout/empty-space helpers that remain in
 //! `read_tools.rs`).
 
-use std::collections::BTreeMap;
+use super::tools::read_walk;
+use std::{collections::BTreeMap, fmt::Write};
 
 use jian_ops_schema::node::PenNode;
 use op_editor_core::pen_node_ext::PenNodeExt;
@@ -114,15 +115,13 @@ impl McpTool for FindNodeByName {
 
 pub fn find_node_by_name_snapshot(state: &EditorState) -> FindNodeByName {
     fn walk(nodes: &[PenNode], out: &mut Vec<(String, String, String)>) {
-        for n in nodes {
+        for entry in read_walk::nodes(nodes) {
+            let node = entry.node;
             out.push((
-                n.base().name.clone().unwrap_or_default(),
-                n.id_str().to_string(),
-                kind_label(n).to_string(),
+                node.base().name.clone().unwrap_or_default(),
+                node.id_str().to_string(),
+                kind_label(node).to_string(),
             ));
-            if let Some(children) = n.children() {
-                walk(children, out);
-            }
         }
     }
     let mut index = Vec::new();
@@ -159,17 +158,19 @@ fn first_match<'a>(
     depth: u32,
     matches: &impl Fn(&PenNode) -> bool,
 ) -> Option<(&'a PenNode, &'a str, u32)> {
-    for node in nodes {
-        if matches(node) {
-            return Some((node, parent, depth));
-        }
-        if let Some(children) = node.children() {
-            if let Some(found) = first_match(children, node.id_str(), depth + 1, matches) {
-                return Some(found);
-            }
-        }
-    }
-    None
+    read_walk::nodes(nodes)
+        .find(|entry| matches(entry.node))
+        .map(|entry| {
+            (
+                entry.node,
+                if entry.depth == 0 {
+                    parent
+                } else {
+                    entry.parent
+                },
+                depth + entry.depth as u32,
+            )
+        })
 }
 
 // --- get_node_parent -------------------------------------------------
@@ -204,11 +205,17 @@ impl McpTool for GetNodeParent {
 
 pub fn get_node_parent_snapshot(state: &EditorState) -> GetNodeParent {
     fn walk(nodes: &[PenNode], parent: &str, depth: u32, out: &mut Vec<(String, String, u32)>) {
-        for n in nodes {
-            out.push((n.id_str().to_string(), parent.to_string(), depth));
-            if let Some(children) = n.children() {
-                walk(children, n.id_str(), depth + 1, out);
-            }
+        for entry in read_walk::nodes(nodes) {
+            out.push((
+                entry.node.id_str().to_string(),
+                if entry.depth == 0 {
+                    parent
+                } else {
+                    entry.parent
+                }
+                .to_string(),
+                depth + entry.depth as u32,
+            ));
         }
     }
     let mut index = Vec::new();
@@ -222,12 +229,13 @@ pub fn get_node_parent_snapshot_for_call(
     state: &EditorState,
     args: &BTreeMap<String, String>,
 ) -> GetNodeParent {
-    if let (Some(id), Some(lookup)) = (
-        args.get("node_id"),
-        state
-            .trusted_node_lookup(active_children(state))
-            .filter(|lookup| lookup.is_indexed()),
-    ) {
+    let Some(id) = args.get("node_id") else {
+        return GetNodeParent { index: Vec::new() };
+    };
+    if let Some(lookup) = state
+        .trusted_node_lookup(active_children(state))
+        .filter(|lookup| lookup.is_indexed())
+    {
         let index = lookup
             .find(id, op_editor_core::NodeReadOrder::First)
             .map(|found| {
@@ -262,25 +270,23 @@ impl McpTool for CountNodes {
     }
     fn call(&self, _args: &BTreeMap<String, String>) -> ToolOutcome {
         let total: u32 = self.per_page.iter().sum();
-        let encoded: Vec<String> = self
-            .per_page
-            .iter()
-            .enumerate()
-            .map(|(i, c)| format!("{i}|{c}"))
-            .collect();
+        let mut encoded = String::new();
+        for (index, count) in self.per_page.iter().enumerate() {
+            if index > 0 {
+                encoded.push(';');
+            }
+            let _ = write!(encoded, "{index}|{count}");
+        }
         let mut out = BTreeMap::new();
         out.insert("total".into(), total.to_string());
-        out.insert("per_page".into(), encoded.join(";"));
+        out.insert("per_page".into(), encoded);
         ToolOutcome::Ok(out)
     }
 }
 
 pub fn count_nodes_snapshot(state: &EditorState) -> CountNodes {
     fn walk(nodes: &[PenNode]) -> u32 {
-        nodes
-            .iter()
-            .map(|n| 1u32 + n.children().map(|c| walk(c)).unwrap_or(0))
-            .sum()
+        read_walk::nodes(nodes).count() as u32
     }
     let per_page = match state.doc.pages.as_ref() {
         Some(pages) => pages.iter().map(|p| walk(&p.children)).collect(),
@@ -302,25 +308,24 @@ impl McpTool for ListNodeKinds {
         "list_node_kinds"
     }
     fn call(&self, _args: &BTreeMap<String, String>) -> ToolOutcome {
-        let encoded: Vec<String> = self
-            .histogram
-            .iter()
-            .map(|(k, c)| format!("{k}|{c}"))
-            .collect();
+        let mut encoded = String::new();
+        for (index, (kind, count)) in self.histogram.iter().enumerate() {
+            if index > 0 {
+                encoded.push(';');
+            }
+            let _ = write!(encoded, "{kind}|{count}");
+        }
         let mut out = BTreeMap::new();
         out.insert("distinct".into(), self.histogram.len().to_string());
-        out.insert("kinds".into(), encoded.join(";"));
+        out.insert("kinds".into(), encoded);
         ToolOutcome::Ok(out)
     }
 }
 
 pub fn list_node_kinds_snapshot(state: &EditorState) -> ListNodeKinds {
     fn walk(nodes: &[PenNode], counts: &mut BTreeMap<&'static str, u32>) {
-        for n in nodes {
-            *counts.entry(kind_label(n)).or_insert(0) += 1;
-            if let Some(children) = n.children() {
-                walk(children, counts);
-            }
+        for entry in read_walk::nodes(nodes) {
+            *counts.entry(kind_label(entry.node)).or_insert(0) += 1;
         }
     }
     let mut counts: BTreeMap<&'static str, u32> = BTreeMap::new();

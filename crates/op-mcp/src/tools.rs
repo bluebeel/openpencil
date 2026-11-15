@@ -22,6 +22,9 @@ use serde_json::{json, Map, Value};
 use super::{McpTool, ToolErrorCode, ToolOutcome};
 use crate::read_nodes::encode_node_fields;
 
+#[path = "read_walk.rs"]
+pub(crate) mod read_walk;
+
 // --- Shared helpers --------------------------------------------------
 
 /// Canonical lowercase label for a `PenNode` variant — the string set
@@ -93,10 +96,7 @@ impl McpTool for GetDocumentInfo {
 }
 
 fn count_subtree(n: &PenNode) -> usize {
-    1 + n
-        .children()
-        .map(|c| c.iter().map(count_subtree).sum::<usize>())
-        .unwrap_or(0)
+    read_walk::nodes(std::slice::from_ref(n)).count()
 }
 
 /// Snapshot the document into a `GetDocumentInfo` tool. Counts all
@@ -433,12 +433,16 @@ pub fn get_node_snapshot_for_call(state: &EditorState, args: &BTreeMap<String, S
         parent: &'a str,
         found: &mut Option<(&'a PenNode, &'a str)>,
     ) {
-        for node in nodes {
-            if node.id_str() == id {
-                *found = Some((node, parent));
-            }
-            if let Some(children) = node.children() {
-                last(children, id, node.id_str(), found);
+        for entry in read_walk::nodes(nodes) {
+            if entry.node.id_str() == id {
+                *found = Some((
+                    entry.node,
+                    if entry.depth == 0 {
+                        parent
+                    } else {
+                        entry.parent
+                    },
+                ));
             }
         }
     }
@@ -516,14 +520,20 @@ fn walk_node(
     stroke_refs: &std::collections::HashMap<NodeId, String>,
     out: &mut BTreeMap<String, NodeRecord>,
 ) {
-    out.insert(
-        node.id_str().to_string(),
-        node_record(node, parent_id, fill_refs, stroke_refs),
-    );
-    if let Some(children) = node.children() {
-        for child in children {
-            walk_node(child, node.id_str(), fill_refs, stroke_refs, out);
-        }
+    for entry in read_walk::nodes(std::slice::from_ref(node)) {
+        out.insert(
+            entry.node.id_str().to_string(),
+            node_record(
+                entry.node,
+                if entry.depth == 0 {
+                    parent_id
+                } else {
+                    entry.parent
+                },
+                fill_refs,
+                stroke_refs,
+            ),
+        );
     }
 }
 
