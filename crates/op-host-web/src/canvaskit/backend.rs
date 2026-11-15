@@ -18,6 +18,8 @@ use op_editor_ui::{
     TextBaselineRequest, TextLayout,
 };
 use wasm_bindgen::prelude::*;
+#[path = "path_coordinates.rs"]
+mod path_coordinates;
 
 use super::bindings::{op_ck_init, set_image_cache_factory, web_image_cache_factory, OpCk};
 use super::convert::{
@@ -63,6 +65,7 @@ impl RenderBackend for CanvasKitBackend {
         options: &op_editor_ui::StrokeMaskOptions<'_>,
         color: Color,
     ) -> bool {
+        let _coordinates = path_coordinates::Scope::new(&self.ck);
         stroke_paint::draw(&self.ck, geometry, options, color);
         true
     }
@@ -267,9 +270,11 @@ impl RenderBackend for CanvasKitBackend {
         color: Color,
         even_odd: bool,
     ) {
+        let _coordinates = path_coordinates::Scope::new(&self.ck);
         ops::fill_svg_path_in_rect_with_fill_rule(&self.ck, d, rect, color, even_odd);
     }
     fn stroke_svg_path_in_rect(&mut self, d: &str, rect: Rect, color: Color, width: f32) {
+        let _coordinates = path_coordinates::Scope::new(&self.ck);
         ops::stroke_svg_path_in_rect(&self.ck, d, rect, color, width);
     }
     fn fill_svg_path_in_rect_linear_gradient(
@@ -298,6 +303,7 @@ impl RenderBackend for CanvasKitBackend {
         opacity: f32,
         even_odd: bool,
     ) {
+        let _coordinates = path_coordinates::Scope::new(&self.ck);
         ops::fill_svg_path_in_rect_linear_gradient_with_fill_rule(
             &self.ck, d, rect, stops, angle_deg, opacity, even_odd,
         );
@@ -334,6 +340,7 @@ impl RenderBackend for CanvasKitBackend {
         opacity: f32,
         even_odd: bool,
     ) {
+        let _coordinates = path_coordinates::Scope::new(&self.ck);
         ops::fill_svg_path_in_rect_radial_gradient_with_fill_rule(
             &self.ck,
             d,
@@ -375,6 +382,7 @@ impl RenderBackend for CanvasKitBackend {
         color: Color,
         even_odd: bool,
     ) {
+        let _coordinates = path_coordinates::Scope::new(&self.ck);
         ops::fill_inner_shadow_svg_path_with_fill_rule(
             &self.ck, d, rect, offset_x, offset_y, blur, color, even_odd,
         );
@@ -700,6 +708,7 @@ impl RenderBackend for CanvasKitBackend {
         self.ck.clip_polygon(&flat);
     }
     fn clip_svg_path_in_rect(&mut self, d: &str, rect: Rect, even_odd: bool) {
+        let _coordinates = path_coordinates::Scope::new(&self.ck);
         self.ck.clip_svg_path_in_rect(
             d,
             rect.origin.x,

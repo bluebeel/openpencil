@@ -1,6 +1,11 @@
+use crate::color::parse_css_color;
+use crate::css::cascade::ComputedStyle;
 use crate::import_warning::ImportWarning;
-use std::collections::{BTreeMap, BTreeSet};
-
+use crate::mapper::{container_props_from, fill_glyph_color, MapCtx};
+use crate::{
+    wrap_imported_document, HtmlDocumentResult, HtmlImportOptions, HtmlImportResult,
+    MAX_OUTPUT_NODES,
+};
 use jian_ops_schema::constraints::{Constraints, HConstraint, VConstraint};
 use jian_ops_schema::node::base::{NumberOrExpression, PenNodeBase};
 use jian_ops_schema::node::container::{ContainerProps, CornerRadius, LayoutMode};
@@ -11,14 +16,7 @@ use jian_ops_schema::node::{FrameNode, ImageSrc, PenNode};
 use jian_ops_schema::sizing::SizingBehavior;
 use jian_ops_schema::style::{BlendMode, PenFill, SolidFillBody};
 use serde_json::{Map, Value};
-
-use crate::color::parse_css_color;
-use crate::css::cascade::ComputedStyle;
-use crate::mapper::{container_props_from, fill_glyph_color, MapCtx};
-use crate::{
-    wrap_imported_document, HtmlDocumentResult, HtmlImportOptions, HtmlImportResult,
-    MAX_OUTPUT_NODES,
-};
+use std::collections::{BTreeMap, BTreeSet};
 
 #[path = "snapshot_stack.rs"]
 mod snapshot_stack;
@@ -513,6 +511,7 @@ impl<'a> SnapshotCtx<'a> {
             _ => None,
         };
         Some(PenNode::Path(PathNode {
+            view_box: None,
             base,
             icon_id: None,
             d: Some(data),

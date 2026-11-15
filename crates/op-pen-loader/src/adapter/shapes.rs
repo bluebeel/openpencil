@@ -187,6 +187,7 @@ pub(super) fn path_to_payload(n: &PathNode) -> NodePayload {
     assign_first_fill(&mut p, n.fill.as_deref());
     crate::style_payload::assign_stroke(&mut p, n.stroke.as_ref());
     p.svg_path = n.d.clone();
+    p.svg_view_box = n.view_box.clone();
     if let Some(anchors) = &n.anchors {
         // `points` is the path's anchor polyline — kept 1:1 with the
         // schema anchors so the pen-tool anchor hit-test (which maps a

@@ -180,7 +180,11 @@ fn compute_subtree_visual_bounds(
     } else {
         world_to_parent
     };
-    let own_bounds = finite_normalized_rect(node.bounds)?;
+    let ink = match &node.svg_view_box {
+        Some(geometry) => geometry.map_bounds(node.bounds).ok_or(())?,
+        None => node.bounds,
+    };
+    let own_bounds = finite_normalized_rect(ink)?;
     let owns_geometry = !selected_output
         || node.widget.is_some()
         || node.image_src.is_some()
@@ -717,7 +721,10 @@ fn export_mask_bounds_inner(node: &SceneNode, basis: glam::Mat2) -> BoundsResult
         .as_deref()
         .is_some_and(|d| !d.trim().is_empty())
     {
-        finite_normalized_rect(node.bounds)?
+        finite_normalized_rect(match &node.svg_view_box {
+            Some(geometry) => geometry.map_bounds(node.bounds).ok_or(())?,
+            None => node.bounds,
+        })?
     } else {
         let points = jian_scene::path_geometry::flatten_path_points(node);
         let mut bounds: Option<Rect> = None;

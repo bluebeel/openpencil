@@ -23,6 +23,9 @@ extern "C" {
     /// a handle rather than borrow the host's.
     #[derive(Clone)]
     pub type OpCk;
+    #[wasm_bindgen(method, js_name = setSvgPathViewBox)]
+    pub(super) fn set_svg_path_view_box(this: &OpCk, view_box: &JsValue) -> JsValue;
+
     #[wasm_bindgen(method,js_name=drawExplicitImageField)]
     pub(super) fn draw_explicit_image_field(
         this: &OpCk,

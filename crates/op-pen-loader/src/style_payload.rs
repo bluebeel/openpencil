@@ -63,6 +63,7 @@ pub(crate) fn base_payload(base: &PenNodeBase, kind: &str) -> NodePayload {
         mask_type: base.mask_type,
         even_odd_fill: false,
         svg_path: None,
+        svg_view_box: None,
         font_size: 0.0,
         font_weight: 0,
         font_kerning: None,

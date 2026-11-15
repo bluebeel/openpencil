@@ -188,6 +188,8 @@ pub struct NodePayload {
     /// are local doc-px relative to the node origin.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub svg_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub svg_view_box: Option<Box<[f64; 4]>>,
     /// Text size in doc-px. 0 = use the renderer's default 13 px.
     /// Text-only.
     #[serde(default)]

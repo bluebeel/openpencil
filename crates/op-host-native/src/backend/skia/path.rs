@@ -675,6 +675,15 @@ pub(super) fn fit_path_to_rect_with_rule(
     rect: Rect,
     even_odd: bool,
 ) -> skia_safe::Path {
+    if let Some([x, y, w, h]) = op_editor_ui::svg_path_coordinates::current() {
+        let sx = rect.size.x / w;
+        let sy = rect.size.y / h;
+        let mut matrix = skia_safe::Matrix::new_identity();
+        matrix.set_scale_translate((sx, sy), (rect.origin.x - x * sx, rect.origin.y - y * sy));
+        if matrix.is_finite() && rect.size.x > 0.0 && rect.size.y > 0.0 {
+            return super::vector_text::transformed_path(path, &matrix, even_odd);
+        }
+    }
     super::vector_text::fitted_path(
         path,
         [rect.origin.x, rect.origin.y, rect.size.x, rect.size.y],

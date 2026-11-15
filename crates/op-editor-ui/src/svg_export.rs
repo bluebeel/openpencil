@@ -256,6 +256,7 @@ fn emit_node_defs(
     if n.hidden {
         return Ok(());
     }
+    let _coordinates = crate::svg_path_coordinates::Scope::new(n.svg_view_box.as_deref());
     let id = svg_id(&n.id);
     fill_layers::emit_defs(out, n)?;
     if n.fill_layers.is_empty() {
@@ -568,6 +569,13 @@ fn emit_path(out: &mut String, n: &SceneNode) {
 
 fn svg_path_fit_transform(d: &str, bounds: Rect) -> String {
     let rect = normalize_rect(bounds);
+    if let Some([x, y, w, h]) = crate::svg_path_coordinates::current() {
+        let sx = rect.size.x / w;
+        let sy = rect.size.y / h;
+        let tx = rect.origin.x - x * sx;
+        let ty = rect.origin.y - y * sy;
+        return format!(r#" transform="matrix({sx} 0 0 {sy} {tx} {ty})""#);
+    }
     let Some((source_x, source_y, source_w, source_h)) = op_editor_core::svg_path_data_bounds(d)
     else {
         return format!(

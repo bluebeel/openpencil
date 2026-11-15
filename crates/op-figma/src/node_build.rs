@@ -145,6 +145,7 @@ pub fn path_node(
     mask: Option<bool>,
 ) -> PenNode {
     PenNode::Path(PathNode {
+        view_box: None,
         base,
         icon_id,
         d,
@@ -231,4 +232,20 @@ pub fn ref_node(base: PenNodeBase, target: String) -> PenNode {
         gestures: None,
         route: None,
     })
+}
+
+/// Geometry streams are local to the authored Figma size, including expanded
+/// strokes outside its edges. Preserve that box instead of changing the layer.
+pub(crate) fn with_figma_view_box(mut node: PenNode, figma: &crate::kiwi::FigValue) -> PenNode {
+    if let PenNode::Path(path) = &mut node {
+        if let (Some(w), Some(h)) = (
+            figma.get("size").and_then(|v| v.get_f64("x")),
+            figma.get("size").and_then(|v| v.get_f64("y")),
+        ) {
+            if w.is_finite() && h.is_finite() && w > 0.0 && h > 0.0 {
+                path.view_box = Some(Box::new([0.0, 0.0, w, h]));
+            }
+        }
+    }
+    node
 }

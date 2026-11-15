@@ -33,6 +33,18 @@ pub(crate) fn node_payload_to_scene(
     inherited_paint_opacity: f32,
 ) -> SceneNode {
     use op_editor_core::render_backend::{Point2D, Rect};
+    let svg_view_box = node
+        .svg_view_box
+        .as_deref()
+        .and_then(|view_box| {
+            jian_scene::path_coordinates::ScenePathGeometry::new(
+                *view_box,
+                node.svg_path
+                    .as_deref()
+                    .and_then(op_editor_core::svg_path_data_bounds),
+            )
+        })
+        .map(std::sync::Arc::new);
     let node_id = op_editor_core::NodeId::new(node.id.clone());
     let mask_type = node.mask_type.or_else(|| {
         node.is_mask
@@ -190,6 +202,7 @@ pub(crate) fn node_payload_to_scene(
         mask_type,
         even_odd_fill: node.even_odd_fill,
         svg_path: node.svg_path,
+        svg_view_box,
         arc_start_angle: node.arc_start_angle,
         arc_sweep_angle: node.arc_sweep_angle,
         arc_inner_radius: node.arc_inner_radius,

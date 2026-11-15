@@ -280,6 +280,7 @@ fn push_path_mask_clip(
     }
 
     if let Some(path) = svg_path {
+        let _coordinates = crate::svg_path_coordinates::Scope::new(mask.svg_view_box.as_deref());
         cx.backend
             .clip_svg_path_in_rect(path, world_rect, mask.even_odd_fill);
     } else if let Some(points) = polygon.as_ref() {

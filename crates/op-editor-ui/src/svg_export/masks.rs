@@ -145,7 +145,12 @@ pub(super) fn source_bounds(node: &SceneNode, parent_xform: glam::Affine2) -> Op
             .is_some_and(|d| !d.trim().is_empty())
         {
             return Some(transform::transformed_bounds(
-                normalize_rect(node.bounds),
+                normalize_rect(
+                    node.svg_view_box
+                        .as_ref()
+                        .and_then(|geometry| geometry.map_bounds(node.bounds))
+                        .unwrap_or(node.bounds),
+                ),
                 xform,
             ));
         }
@@ -173,6 +178,7 @@ fn has_clip_geometry(node: &SceneNode) -> bool {
 }
 
 fn emit_clip_geometry(out: &mut String, node: &SceneNode) {
+    let _coordinates = crate::svg_path_coordinates::Scope::new(node.svg_view_box.as_deref());
     if let Some(d) = node.svg_path.as_deref().filter(|d| !d.trim().is_empty()) {
         let rule = if node.even_odd_fill {
             "evenodd"

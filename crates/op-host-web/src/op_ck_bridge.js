@@ -1158,9 +1158,16 @@ export async function opCkInit(canvasId) {
     return cx - x;
   };
   const pathIsFinite = (bounds) => bounds && bounds.length >= 4 && bounds.every((v) => Number.isFinite(v));
+  let svgPathViewBox = null;
   const fitPathToRect = (path, x, y, w, h) => {
     if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) {
       path.transform(CK.Matrix.translated(x, y));
+      return path;
+    }
+    if (svgPathViewBox) {
+      const [vx, vy, vw, vh] = svgPathViewBox;
+      const sx = w / vw, sy = h / vh;
+      path.transform(CK.Matrix.multiply(CK.Matrix.translated(x-vx*sx, y-vy*sy), CK.Matrix.scaled(sx, sy)));
       return path;
     }
     // Match native Skia's `compute_tight_bounds`: control points may sit far
@@ -1290,6 +1297,12 @@ export async function opCkInit(canvasId) {
   return {
     pushPaintSpace(x,y,w,h) {if(paintSpaces.length>=16)throw new Error('stroke paint-space nesting exceeds16');paintSpaces.push([x,y,w,h]);},
     popPaintSpace() {if(!paintSpaces.length)throw new Error('unbalanced stroke paint-space');paintSpaces.pop();},
+    setSvgPathViewBox(value) {
+      const old = svgPathViewBox;
+      svgPathViewBox = value && value.length === 4 && Array.from(value).every(Number.isFinite)
+        && value[2] > 0 && value[3] > 0 ? Array.from(value) : null;
+      return old;
+    },
     strokeGeometry(kind,data,values,evenOdd,width,sides,placement,cap,join,dashes,phase,color) {strokePaintGeometry(CK,canvas,cachedSvgPath,fitPathToRect,kind,data,values,evenOdd,width,sides,placement,cap,join,dashes,phase,color);},
     beginFrame() {
       paintSpaces.length=0;

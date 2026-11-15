@@ -274,6 +274,7 @@ pub(crate) fn paint_svg_path_node(
     zoom: f32,
     d: &str,
 ) {
+    let _coordinates = crate::svg_path_coordinates::Scope::new(node.svg_view_box.as_deref());
     let layered = paint_svg_path_fill_layers(cx, node, world_rect, zoom, d);
     if !layered {
         // Gradient-filled paths paint through the dedicated gradient method

@@ -381,6 +381,7 @@ pub fn make_group(id: String, name: &str, children: Vec<PenNode>) -> PenNode {
 pub fn make_path(id: String, name: &str, first: (f64, f64)) -> PenNode {
     use jian_ops_schema::node::{PathNode, PenPathAnchor};
     PenNode::Path(PathNode {
+        view_box: None,
         base: PenNodeBase {
             id,
             name: Some(name.to_string()),

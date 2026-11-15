@@ -162,7 +162,12 @@ pub fn own_paint_corners(n: &SceneNode, rules: PaintCornerRules) -> Option<Vec<g
         }
         NodeKind::Path => {
             if n.svg_path.is_some() && has_own_paint(n, rules) {
-                let nr = normalize_rect(n.bounds);
+                let geometry = n
+                    .svg_view_box
+                    .as_ref()
+                    .and_then(|geometry| geometry.map_bounds(n.bounds))
+                    .unwrap_or(n.bounds);
+                let nr = normalize_rect(geometry);
                 return Some(vec![
                     glam::Vec2::new(nr.origin.x - stroke_pad, nr.origin.y - stroke_pad),
                     glam::Vec2::new(

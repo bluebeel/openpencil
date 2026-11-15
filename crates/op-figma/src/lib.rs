@@ -482,6 +482,7 @@ fn build_node(variant: FigmaNodeVariant, base: PenNodeBase) -> PenNode {
             limits: Default::default(),
         }),
         FigmaNodeVariant::Path => PenNode::Path(PathNode {
+            view_box: None,
             base,
             icon_id: None,
             d: None,

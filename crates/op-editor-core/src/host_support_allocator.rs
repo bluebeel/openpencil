@@ -273,6 +273,7 @@ impl EditorState {
         let id = allocator.allocate(&mut taken)?;
         let icon_id = format!("{}:{icon_name}", family.trim());
         let node = PenNode::Path(PathNode {
+            view_box: None,
             base: PenNodeBase {
                 id: id.as_str().to_string(),
                 name: Some(icon_id.clone()),
@@ -372,6 +373,7 @@ impl EditorState {
         let mut taken = allocator.document_collision_ids(&self.doc);
         let id = allocator.allocate(&mut taken)?;
         let node = PenNode::Path(PathNode {
+            view_box: None,
             base: PenNodeBase {
                 id: id.as_str().to_string(),
                 name: Some("Boolean Result".to_string()),

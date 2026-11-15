@@ -669,32 +669,38 @@ fn convert_vector(
             && from_stroke_geometry;
 
         if is_stroke_only {
-            return path_node(
+            return crate::node_build::with_figma_view_box(
+                path_node(
+                    base,
+                    Some(path_d),
+                    None,
+                    fill_rule,
+                    width,
+                    height,
+                    map_figma_fills(figma.get_array("strokePaints")),
+                    None,
+                    map_figma_node_effects(figma),
+                    figma_path_mask(figma),
+                ),
+                figma,
+            );
+        }
+        return crate::node_build::with_figma_view_box(
+            path_node(
                 base,
                 Some(path_d),
                 None,
                 fill_rule,
                 width,
                 height,
-                map_figma_fills(figma.get_array("strokePaints")),
-                None,
+                allows_fill
+                    .then(|| map_figma_fills(figma.get_array("fillPaints")))
+                    .flatten(),
+                map_figma_stroke(figma),
                 map_figma_node_effects(figma),
                 figma_path_mask(figma),
-            );
-        }
-        return path_node(
-            base,
-            Some(path_d),
-            None,
-            fill_rule,
-            width,
-            height,
-            allows_fill
-                .then(|| map_figma_fills(figma.get_array("fillPaints")))
-                .flatten(),
-            map_figma_stroke(figma),
-            map_figma_node_effects(figma),
-            figma_path_mask(figma),
+            ),
+            figma,
         );
     }
 

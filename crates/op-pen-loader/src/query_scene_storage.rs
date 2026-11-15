@@ -161,6 +161,9 @@ impl Charge {
             + node.font_family.capacity()
             + node.text.as_ref().map_or(0, String::capacity)
             + node.svg_path.as_ref().map_or(0, String::capacity)
+            + node.svg_view_box.as_ref().map_or(0, |_| {
+                std::mem::size_of::<jian_scene::path_coordinates::ScenePathGeometry>() + 32
+            })
             + node.text_runs.capacity() * size_of::<SceneTextRun>()
             + node.points.capacity() * size_of::<op_editor_core::render_backend::Point2D>()
             + node.path_anchors.capacity() * size_of::<SceneAnchor>()
@@ -278,6 +281,7 @@ fn scene_shape_guard(node: &SceneNode) {
         mask_type: _,
         even_odd_fill: _,
         svg_path: _,
+        svg_view_box: _,
         arc_start_angle: _,
         arc_sweep_angle: _,
         arc_inner_radius: _,

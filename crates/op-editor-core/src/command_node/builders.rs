@@ -179,6 +179,7 @@ pub fn build_leaf_node(
             limits: Default::default(),
         }),
         "path" => PenNode::Path(PathNode {
+            view_box: None,
             base,
             icon_id: None,
             d: None,

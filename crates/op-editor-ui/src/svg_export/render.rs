@@ -12,6 +12,7 @@ pub(super) fn emit_mask_source(out: &mut String, n: &SceneNode) {
 }
 
 fn emit_node_inner(out: &mut String, n: &SceneNode, suppress_node_blend: bool) {
+    let _coordinates = crate::svg_path_coordinates::Scope::new(n.svg_view_box.as_deref());
     if n.hidden {
         return;
     }
