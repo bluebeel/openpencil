@@ -91,6 +91,18 @@ fn has_own_paint(n: &SceneNode, rules: PaintCornerRules) -> bool {
 /// Frame/Other contribute only when a counted paint source is set (see
 /// [`PaintCornerRules`]); Path with empty `points` is invisible.
 pub fn own_paint_corners(n: &SceneNode, rules: PaintCornerRules) -> Option<Vec<glam::Vec2>> {
+    let mut corners = Vec::new();
+    for_each_own_paint_corner(n, rules, |point| corners.push(point)).then_some(corners)
+}
+
+/// Borrowed paint-corner stream. Common rectangles use a stack array and
+/// arbitrary paths visit their anchors directly; no per-node Vec is allocated.
+/// The compatibility collector above retains the original order and values.
+pub fn for_each_own_paint_corner(
+    n: &SceneNode,
+    rules: PaintCornerRules,
+    mut visit: impl FnMut(glam::Vec2),
+) -> bool {
     let stroke_pad = n
         .stroke
         .map(|s| s.width * if n.stroke_paint.is_some() { 4.0 } else { 0.5 })
@@ -107,7 +119,7 @@ pub fn own_paint_corners(n: &SceneNode, rules: PaintCornerRules) -> Option<Vec<g
         }
         NodeKind::Frame => {
             if !has_own_paint(n, rules) {
-                return None;
+                return false;
             }
             let nr = normalize_rect(n.bounds);
             (
@@ -119,7 +131,7 @@ pub fn own_paint_corners(n: &SceneNode, rules: PaintCornerRules) -> Option<Vec<g
         }
         NodeKind::Other(tag) if tag == "icon_font" => {
             if n.text.as_ref().is_none_or(|s| s.trim().is_empty()) {
-                return None;
+                return false;
             }
             let nr = normalize_rect(n.bounds);
             (
@@ -133,7 +145,7 @@ pub fn own_paint_corners(n: &SceneNode, rules: PaintCornerRules) -> Option<Vec<g
             // Unknown tagged kinds paint no own silhouette; their bounds
             // still contribute when authored with a counted paint source.
             if !(has_own_paint(n, rules) || (rules.image_paints && n.image_src.is_some())) {
-                return None;
+                return false;
             }
             let nr = normalize_rect(n.bounds);
             (
@@ -150,7 +162,7 @@ pub fn own_paint_corners(n: &SceneNode, rules: PaintCornerRules) -> Option<Vec<g
             // metric pass.
             let has_text = n.text.as_ref().is_some_and(|s| !s.is_empty());
             if !has_text {
-                return None;
+                return false;
             }
             let nr = normalize_rect(n.bounds);
             (
@@ -168,45 +180,57 @@ pub fn own_paint_corners(n: &SceneNode, rules: PaintCornerRules) -> Option<Vec<g
                     .and_then(|geometry| geometry.map_bounds(n.bounds))
                     .unwrap_or(n.bounds);
                 let nr = normalize_rect(geometry);
-                return Some(vec![
-                    glam::Vec2::new(nr.origin.x - stroke_pad, nr.origin.y - stroke_pad),
-                    glam::Vec2::new(
-                        nr.origin.x + nr.size.x + stroke_pad,
-                        nr.origin.y - stroke_pad,
-                    ),
-                    glam::Vec2::new(
-                        nr.origin.x + nr.size.x + stroke_pad,
-                        nr.origin.y + nr.size.y + stroke_pad,
-                    ),
-                    glam::Vec2::new(
-                        nr.origin.x - stroke_pad,
-                        nr.origin.y + nr.size.y + stroke_pad,
-                    ),
-                ]);
+                return visit_corners(
+                    [
+                        glam::Vec2::new(nr.origin.x - stroke_pad, nr.origin.y - stroke_pad),
+                        glam::Vec2::new(
+                            nr.origin.x + nr.size.x + stroke_pad,
+                            nr.origin.y - stroke_pad,
+                        ),
+                        glam::Vec2::new(
+                            nr.origin.x + nr.size.x + stroke_pad,
+                            nr.origin.y + nr.size.y + stroke_pad,
+                        ),
+                        glam::Vec2::new(
+                            nr.origin.x - stroke_pad,
+                            nr.origin.y + nr.size.y + stroke_pad,
+                        ),
+                    ],
+                    &mut visit,
+                );
             }
             if n.points.is_empty() {
-                return None;
+                return false;
             }
             // Each polyline anchor + stroke-pad cardinal offsets so the
             // cumulative parent transform doesn't clip them.
-            let mut out = Vec::with_capacity(n.points.len() * 4);
             for p in &n.points {
-                out.push(glam::Vec2::new(p.x - stroke_pad, p.y - stroke_pad));
-                out.push(glam::Vec2::new(p.x + stroke_pad, p.y - stroke_pad));
-                out.push(glam::Vec2::new(p.x - stroke_pad, p.y + stroke_pad));
-                out.push(glam::Vec2::new(p.x + stroke_pad, p.y + stroke_pad));
+                visit(glam::Vec2::new(p.x - stroke_pad, p.y - stroke_pad));
+                visit(glam::Vec2::new(p.x + stroke_pad, p.y - stroke_pad));
+                visit(glam::Vec2::new(p.x - stroke_pad, p.y + stroke_pad));
+                visit(glam::Vec2::new(p.x + stroke_pad, p.y + stroke_pad));
             }
-            return Some(out);
+            return true;
         }
-        NodeKind::Group => return None,
+        NodeKind::Group => return false,
     };
     if (x1 - x0).abs() == 0.0 && (y1 - y0).abs() == 0.0 {
-        return None;
+        return false;
     }
-    Some(vec![
-        glam::Vec2::new(x0 - stroke_pad, y0 - stroke_pad),
-        glam::Vec2::new(x1 + stroke_pad, y0 - stroke_pad),
-        glam::Vec2::new(x1 + stroke_pad, y1 + stroke_pad),
-        glam::Vec2::new(x0 - stroke_pad, y1 + stroke_pad),
-    ])
+    visit_corners(
+        [
+            glam::Vec2::new(x0 - stroke_pad, y0 - stroke_pad),
+            glam::Vec2::new(x1 + stroke_pad, y0 - stroke_pad),
+            glam::Vec2::new(x1 + stroke_pad, y1 + stroke_pad),
+            glam::Vec2::new(x0 - stroke_pad, y1 + stroke_pad),
+        ],
+        &mut visit,
+    )
+}
+
+fn visit_corners(corners: [glam::Vec2; 4], visit: &mut impl FnMut(glam::Vec2)) -> bool {
+    for point in corners {
+        visit(point);
+    }
+    true
 }

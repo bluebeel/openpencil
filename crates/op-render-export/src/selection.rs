@@ -90,13 +90,18 @@ pub fn export_selected_node_raster(
 ) -> Result<(), ExportError> {
     format.ensure_supported()?;
     let bounds = selection_bounds(selection)?;
-    let bytes = render_selected_node_in_viewport(
-        selection,
-        bounds,
-        format,
-        scale,
-        margin,
-        RasterSampling::Native,
-    )?;
-    std::fs::write(target, bytes).map_err(|error| ExportError::Write(error.to_string()))
+    // This API always uses Native sampling. Encode the already-painted surface
+    // straight into the existing atomic sibling writer instead of allocating
+    // an encoded Vec and immediately copying it back into the file API.
+    let scale = crate::raster_scale(scale);
+    let margin = margin.max(0.0);
+    let cull = Rect::xywh(
+        bounds.origin.x - margin,
+        bounds.origin.y - margin,
+        bounds.size.x + margin * 2.0,
+        bounds.size.y + margin * 2.0,
+    );
+    crate::render_raster(bounds, target, format, scale, margin, |canvas| {
+        crate::scene_painter::paint_selection(canvas, selection, cull)
+    })
 }

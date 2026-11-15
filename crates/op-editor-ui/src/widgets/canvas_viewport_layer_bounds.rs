@@ -58,12 +58,10 @@ pub(super) fn sibling_mask_layer_bounds<'a>(
     hidden_id: Option<&str>,
     transforms: &[OverlayTransform],
 ) -> Rect {
-    let mut bounds = subtree_visual_bounds(mask, true, hidden_id, inverse_shadow_basis(transforms));
+    let basis = inverse_shadow_basis(transforms);
+    let mut bounds = subtree_visual_bounds(mask, true, hidden_id, basis);
     for node in content {
-        bounds = union_results(
-            bounds,
-            subtree_visual_bounds(node, true, hidden_id, inverse_shadow_basis(transforms)),
-        );
+        bounds = union_results(bounds, subtree_visual_bounds(node, true, hidden_id, basis));
     }
     finish_layer_bounds(bounds, viewport_origin, zoom, cull, transforms)
 }
@@ -188,14 +186,14 @@ fn compute_subtree_visual_bounds(
     let owns_geometry = !selected_output
         || node.widget.is_some()
         || node.image_src.is_some()
-        || crate::scene_bounds::own_paint_corners(
+        || crate::scene_bounds::for_each_own_paint_corner(
             node,
             crate::scene_bounds::PaintCornerRules {
                 gradient_paints: true,
                 image_paints: true,
             },
-        )
-        .is_some();
+            |_| {},
+        );
     let mut visual = if owns_geometry {
         own_bounds
             .map(|bounds| stroke_visual_bounds(node, bounds))

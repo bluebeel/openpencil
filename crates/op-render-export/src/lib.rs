@@ -504,12 +504,10 @@ pub(crate) fn collect_bounds(n: &SceneNode, parent_xform: glam::Affine2, acc: &m
     } else {
         parent_xform
     };
-    if let Some(local_corners) = own_paint_corners(n) {
-        for p in local_corners {
-            let w = local_xform.transform_point2(p);
-            acc.add(w.x, w.y, w.x, w.y);
-        }
-    }
+    op_editor_ui::scene_bounds::for_each_own_paint_corner(n, RASTER_PAINT_RULES, |p| {
+        let w = local_xform.transform_point2(p);
+        acc.add(w.x, w.y, w.x, w.y);
+    });
     // A `clip_content` container clips its children to its own rect
     // (the painter pushes the same clip scope the live canvas does —
     // see `canvas_viewport_paint::push_clip_content`), so child
@@ -533,10 +531,6 @@ pub(crate) fn collect_bounds(n: &SceneNode, parent_xform: glam::Affine2, acc: &m
     for child in &n.children {
         collect_bounds(child, local_xform, acc);
     }
-}
-
-fn own_paint_corners(n: &SceneNode) -> Option<Vec<glam::Vec2>> {
-    op_editor_ui::scene_bounds::own_paint_corners(n, RASTER_PAINT_RULES)
 }
 
 #[cfg(test)]

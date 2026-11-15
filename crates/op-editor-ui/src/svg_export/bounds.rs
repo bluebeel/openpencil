@@ -13,12 +13,10 @@ pub(super) fn collect_bounds(n: &SceneNode, parent_xform: glam::Affine2, acc: &m
         return;
     }
     let local_xform = parent_xform * node_transform(n);
-    if let Some(local_corners) = own_paint_corners(n) {
-        for p in local_corners {
-            let w = local_xform.transform_point2(p);
-            acc.add(w.x, w.y, w.x, w.y);
-        }
-    }
+    for_each_own_paint_corner(n, |p| {
+        let w = local_xform.transform_point2(p);
+        acc.add(w.x, w.y, w.x, w.y);
+    });
     if n.clip_content && !n.children.is_empty() && n.bounds.size.x > 0.0 && n.bounds.size.y > 0.0 {
         let mut child_acc = BoundsAcc::new();
         collect_sibling_bounds(n.visible_children(), local_xform, &mut child_acc);
@@ -38,20 +36,23 @@ pub(super) fn collect_bounds(n: &SceneNode, parent_xform: glam::Affine2, acc: &m
     collect_sibling_bounds(n.visible_children(), local_xform, acc);
 }
 
-fn own_paint_corners(n: &SceneNode) -> Option<Vec<glam::Vec2>> {
+fn for_each_own_paint_corner(n: &SceneNode, mut visit: impl FnMut(glam::Vec2)) {
     if composite::has_widget_visual(n) {
         // An empty input still paints its surface, placeholder and icons.
         // Its degraded Text kind must not make the export appear empty.
         let r = normalize_rect(n.bounds);
         let pad = n.stroke.map_or(0.0, |stroke| stroke.width.max(0.0) / 2.0);
-        return Some(vec![
+        for point in [
             glam::Vec2::new(r.origin.x - pad, r.origin.y - pad),
             glam::Vec2::new(r.origin.x + r.size.x + pad, r.origin.y - pad),
             glam::Vec2::new(r.origin.x + r.size.x + pad, r.origin.y + r.size.y + pad),
             glam::Vec2::new(r.origin.x - pad, r.origin.y + r.size.y + pad),
-        ]);
+        ] {
+            visit(point);
+        }
+        return;
     }
-    crate::scene_bounds::own_paint_corners(n, SVG_PAINT_RULES)
+    crate::scene_bounds::for_each_own_paint_corner(n, SVG_PAINT_RULES, visit);
 }
 
 /// Mask markers split runs even when hidden or unsupported, exactly as paint.

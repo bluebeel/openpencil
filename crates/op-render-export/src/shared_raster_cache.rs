@@ -6,6 +6,8 @@ use std::{
     mem::size_of,
     sync::{Arc, Weak},
 };
+#[path = "shared_raster_dependencies.rs"]
+mod dependencies;
 const MAX_BYTES: usize = 32 * 1024 * 1024;
 const MAX_OUTPUT: usize = 8 * 1024 * 1024;
 const MAX_ENTRIES: usize = 128;
@@ -47,10 +49,23 @@ struct Entry {
 pub(super) struct Cache {
     entries: Vec<Entry>,
     payload: usize,
+    dependencies: dependencies::Dependencies,
 }
 impl Cache {
+    /// Call only with actual source branches borrowed from `scene`. Scene Weak
+    /// identity is the authority; mutable/public paint callbacks never use it.
+    pub(super) fn resource_free(&mut self, scene: &Arc<LayoutScene>, node: &SceneNode) -> bool {
+        let safe = self.dependencies.get_or_check(scene, node);
+        // Proof metadata shares the existing hard cache budget. A newly
+        // memoized branch must not leave already-retained outputs over it.
+        while self.retained() > MAX_BYTES && !self.entries.is_empty() {
+            self.remove(0);
+        }
+        safe
+    }
+
     fn retained(&self) -> usize {
-        self.payload + self.entries.capacity() * size_of::<Entry>()
+        self.payload + self.entries.capacity() * size_of::<Entry>() + self.dependencies.retained()
     }
     fn remove(&mut self, index: usize) {
         self.payload -= self.entries.remove(index).charge;
@@ -147,6 +162,11 @@ pub(super) fn resource_free(root: &SceneNode) -> bool {
             pending.pop();
             continue;
         };
+        // The actual painter returns before any resource access for the
+        // complete hidden branch. Authored hidden resources remain in scene.
+        if node.hidden {
+            continue;
+        }
         if node.image_src.is_some()
             || node.image_thumbnail_src.is_some()
             || node.image_geometry.is_some()

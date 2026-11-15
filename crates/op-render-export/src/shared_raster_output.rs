@@ -1,7 +1,7 @@
 //! One worker serializes producers, so queued identical targets naturally reuse
 //! a completed success. Admission and each output/ACK remain the original ones.
 use super::{
-    encoded_cache::{resource_free, Cache, Input},
+    encoded_cache::{Cache, Input},
     NodeBatchJob, RasterJob, SharedRasterTarget,
 };
 use crate::{ExportError, RasterSampling, SceneSelectionBatch};
@@ -60,7 +60,10 @@ pub(super) fn render_job(job: &RasterJob, cache: &mut Cache) -> Result<Vec<u8>, 
     };
     let (safe, result) = match &job.target {
         SharedRasterTarget::Page { .. } => {
-            let safe = page.children.iter().all(resource_free);
+            let safe = page
+                .children
+                .iter()
+                .all(|root| cache.resource_free(&job.scene, root));
             (
                 safe,
                 crate::render_page_raster_bytes_with_sampling(
@@ -83,7 +86,7 @@ pub(super) fn render_job(job: &RasterJob, cache: &mut Cache) -> Result<Vec<u8>, 
                     node_id: node_id.clone(),
                     page_id: page.id.clone(),
                 })?;
-            let safe = selected.all_paint_sources(resource_free);
+            let safe = selected.all_paint_sources(|root| cache.resource_free(&job.scene, root));
             (
                 safe,
                 crate::render_selected_node_raster_bytes_with_sampling(
@@ -142,7 +145,9 @@ pub(super) fn render_node_batch_job(job: NodeBatchJob, cache: &mut Cache) {
                                 (Some(nodes), Some(cursor)) => match cursor.get(nodes, id.as_str())
                                 {
                                     Some(selected) => {
-                                        safe = selected.all_paint_sources(resource_free);
+                                        safe = selected.all_paint_sources(|root| {
+                                            cache.resource_free(&job.scene, root)
+                                        });
                                         crate::render_selected_node_raster_bytes(
                                             selected, job.format, job.scale,
                                         )
@@ -160,7 +165,9 @@ pub(super) fn render_node_batch_job(job: NodeBatchJob, cache: &mut Cache) {
                             let fallback = SceneSelectionBatch::new(page, [id.as_str()]);
                             match fallback.get(id) {
                                 Some(selected) => {
-                                    safe = selected.all_paint_sources(resource_free);
+                                    safe = selected.all_paint_sources(|root| {
+                                        cache.resource_free(&job.scene, root)
+                                    });
                                     crate::render_selected_node_raster_bytes(
                                         &selected, job.format, job.scale,
                                     )
