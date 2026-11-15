@@ -14,6 +14,8 @@ pub(crate) fn tool(name: &str) -> bool {
             | "set_variables"
             | "upsert_variables"
             | "set_themes"
+            | "load_theme_preset"
+            | "set_design_md"
             | "add_page"
             | "duplicate_page"
             | "delete_page"
@@ -122,6 +124,8 @@ pub(crate) fn command(command: &C) -> bool {
             C::SetVariables { .. }
                 | C::UpsertVariables { .. }
                 | C::SetThemes { .. }
+                | C::MergeThemePreset { .. }
+                | C::SetDesignMd { .. }
                 | C::SetVariableColor { .. }
                 | C::SetVariableScalar { .. }
                 | C::CreateVariable { .. }

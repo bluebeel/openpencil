@@ -7,6 +7,7 @@ use super::{
 use crate::{EditorCommand as C, EditorState, NodeId};
 use jian_ops_schema::variable::VariableDefinition;
 use std::mem;
+mod bulk;
 #[path = "auxiliary/catalog.rs"]
 mod catalog;
 #[path = "auxiliary/forward.rs"]
@@ -21,6 +22,7 @@ pub(super) use page_catalog::{AddedPage, PreparedPageCatalog};
 mod plan;
 #[derive(Debug)]
 pub(super) enum Target {
+    Bulk(bulk::Pending),
     Lifecycle(lifecycle::Pending),
     Variable {
         key: String,
@@ -46,6 +48,7 @@ pub(super) struct Pending {
 }
 #[derive(Debug, Clone, PartialEq)]
 pub(super) enum Patch {
+    Bulk(bulk::Patch),
     Catalog(catalog::Patch),
     Variable(MapPatch<VariableDefinition>),
     Page {
@@ -61,9 +64,12 @@ pub(super) enum Patch {
     },
 }
 pub(crate) fn supports(command: &C) -> bool {
-    lifecycle::supports(command) || plan::supports(command)
+    bulk::supports(command) || lifecycle::supports(command) || plan::supports(command)
 }
 pub(crate) fn forecast(state: &EditorState, command: &C) -> Option<(usize, bool)> {
+    if bulk::supports(command) {
+        return bulk::forecast(state, command).map(|bytes| (bytes, false));
+    }
     if lifecycle::supports(command) {
         return lifecycle::forecast(state, command).map(|bytes| (bytes, false));
     }
@@ -74,6 +80,16 @@ impl Pending {
         state: &EditorState,
         command: &C,
     ) -> Option<(Self, Vec<Scope>, bool, Vec<super::TargetSpec>)> {
+        if bulk::supports(command) {
+            return Some((
+                Self {
+                    value: Target::Bulk(bulk::Pending::capture(state, command)?),
+                },
+                Vec::new(),
+                false,
+                Vec::new(),
+            ));
+        }
         if lifecycle::supports(command) {
             let plan = lifecycle::Pending::capture(state, command)?;
             return Some((
@@ -111,10 +127,11 @@ impl Pending {
         ))
     }
     pub(super) fn is_header(&self) -> bool {
-        matches!(self.value, Target::Variable { .. })
+        matches!(self.value, Target::Bulk(_) | Target::Variable { .. })
     }
     pub(super) fn matches_header(&self, doc: &jian_ops_schema::PenDocument) -> bool {
         match &self.value {
+            Target::Bulk(value) => value.matches_header(doc),
             Target::Variable {
                 key,
                 old,
@@ -134,6 +151,7 @@ impl Pending {
     }
     pub(super) fn request_matches(&self, command: &C) -> bool {
         match (&self.value, command) {
+            (Target::Bulk(pending), command) => pending.request_matches(command),
             (Target::Lifecycle(pending), command) => pending.request_matches(command),
             (
                 Target::Variable {
@@ -157,6 +175,7 @@ impl Pending {
     pub(super) fn matches(&self, state: &EditorState) -> bool {
         self.matches_header(&state.doc)
             && match &self.value {
+                Target::Bulk(pending) => pending.matches(state),
                 Target::Lifecycle(pending) => pending.matches(state),
                 Target::Variable { .. } => true,
                 Target::Page { index, id, old } => state
@@ -174,6 +193,7 @@ impl Pending {
     }
     pub(super) fn compact(self, state: &EditorState) -> Result<Option<Patch>, ScopedHistoryError> {
         Ok(match self.value {
+            Target::Bulk(pending) => pending.compact(state)?.map(Patch::Bulk),
             Target::Lifecycle(pending) => pending.compact(state)?.map(Patch::Catalog),
             Target::Variable {
                 key,
@@ -233,13 +253,14 @@ impl Patch {
     /// Catalog changes are outside PenDocument. Variables/page names are not
     /// described by the canonical node-header visitor and invalidate its delta.
     pub(super) fn changes_document_outside_nodes(&self) -> bool {
-        matches!(self, Self::Variable(_) | Self::Page { .. })
+        matches!(self, Self::Bulk(_) | Self::Variable(_) | Self::Page { .. })
     }
     pub(super) fn is_header(&self) -> bool {
-        matches!(self, Self::Variable(_))
+        matches!(self, Self::Bulk(_) | Self::Variable(_))
     }
     pub(super) fn actor_safe(&self) -> bool {
         match self {
+            Self::Bulk(patch) => patch.actor_safe(),
             Self::Variable(map) => map.actor_safe(),
             Self::Catalog(_) => true,
             Self::Page { .. } | Self::Component { .. } => true,
@@ -247,6 +268,10 @@ impl Patch {
     }
     pub(super) fn actor_conflicts(&self, other: &Self) -> bool {
         match (self, other) {
+            (Self::Bulk(a), Self::Bulk(b)) => a.conflicts(b),
+            (Self::Bulk(a), Self::Variable(b)) | (Self::Variable(b), Self::Bulk(a)) => {
+                a.conflicts_variable(b)
+            }
             (Self::Catalog(a), Self::Catalog(b)) => a.id == b.id,
             (Self::Catalog(a), Self::Component { id, .. })
             | (Self::Component { id, .. }, Self::Catalog(a)) => a.id == *id,
@@ -278,6 +303,7 @@ impl Patch {
     pub(super) fn storage_bytes(&self) -> usize {
         mem::size_of::<Self>()
             + match self {
+                Self::Bulk(patch) => patch.bytes(),
                 Self::Variable(map) => map.storage_bytes(),
                 Self::Catalog(patch) => patch.bytes(),
                 Self::Page {
@@ -310,6 +336,12 @@ impl Prepared {
             catalogs.push(None);
             indices.push(match patch {
                 Patch::Catalog(_) => unreachable!(),
+                Patch::Bulk(patch) => {
+                    if !patch.validate(state, actor) {
+                        return Err(ScopedHistoryError::DocumentHeaderChanged);
+                    }
+                    None
+                }
                 Patch::Variable(map) => {
                     if !(if actor {
                         map.validate_actor(&state.doc.variables)
@@ -354,6 +386,7 @@ impl Prepared {
     pub(super) fn exchange(self, state: &mut EditorState, patches: &mut [Patch]) {
         for ((patch, index), catalog) in patches.iter_mut().zip(self.indices).zip(self.catalogs) {
             match patch {
+                Patch::Bulk(patch) => patch.exchange(state),
                 Patch::Catalog(patch) => catalog
                     .expect("prepared catalog destination")
                     .exchange(state, patch),
@@ -376,6 +409,7 @@ impl Prepared {
 impl Patch {
     pub(super) fn cohort_live_bound(&self, state: &EditorState, limit: usize) -> Option<usize> {
         match self {
+            Self::Bulk(patch) => patch.cohort_live_bound(state, limit),
             Self::Catalog(patch) => patch.cohort_live_bound(state, limit),
             Self::Variable(map) => map.cohort_live_bound(&state.doc.variables, limit),
             Self::Page { index, id, .. } => {
