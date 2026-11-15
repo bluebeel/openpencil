@@ -6,7 +6,7 @@ use super::batch_program_node_parse::NodeParseOptions;
 use super::EditorCommand;
 use jian_ops_schema::node::PenNode;
 use op_editor_core::command_node::remap_subtree_ids_mapping;
-use op_editor_core::CommandSimulation;
+use op_editor_core::{CommandSimulation, IdAllocator, SequentialIdAllocator};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -94,6 +94,33 @@ impl ProgramCtx {
     /// alias table so slash paths keep resolving TS-style.
     pub(crate) fn remap(&mut self, nodes: &mut [PenNode]) -> Result<Vec<(String, String)>> {
         let map = self.remap_copied_nodes(nodes)?;
+        for (old, new) in &map {
+            if !old.starts_with("__op_tmp_") {
+                self.alias.entry(old.clone()).or_insert_with(|| new.clone());
+            }
+        }
+        Ok(map)
+    }
+
+    /// Predict the same remap for a replacement without cloning its payload.
+    /// Use the canonical allocator and commit aliases/high-water only after the
+    /// complete allocation succeeds, exactly as the mutating remap does.
+    pub(crate) fn preview_remap(&mut self, nodes: &[PenNode]) -> Result<Vec<(String, String)>> {
+        let seed = self
+            .sim
+            .next_program_id_seed(self.id_high_water)
+            .ok_or(ProgramError::IdSpaceExhausted)?
+            .max(self.id_high_water);
+        let mut allocator = SequentialIdAllocator::new(seed);
+        let mut taken = std::collections::HashSet::new();
+        let mut map = Vec::new();
+        for entry in crate::tools::read_walk::nodes(nodes) {
+            let new = allocator
+                .allocate(&mut taken)
+                .map_err(|_| ProgramError::IdSpaceExhausted)?;
+            map.push((entry.node.id_str().to_owned(), String::from(new)));
+        }
+        self.id_high_water = allocator.next_counter();
         for (old, new) in &map {
             if !old.starts_with("__op_tmp_") {
                 self.alias.entry(old.clone()).or_insert_with(|| new.clone());

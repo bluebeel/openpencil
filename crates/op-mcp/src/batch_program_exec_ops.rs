@@ -8,6 +8,7 @@
 use jian_ops_schema::node::{ContainerProps, LayoutMode, PenNode};
 use jian_scene::layout_scene::SceneNode;
 use op_editor_core::{EditorState, NodeId, PenNodeExt};
+use serde::Serialize;
 use serde_json::json;
 
 use super::batch_design::{find_top_level_char, normalize_node_shape};
@@ -33,8 +34,8 @@ pub(crate) fn execute_copy(binding: &str, args: &str, ctx: &mut ProgramCtx) -> R
         Some(second) => (rest[..second].trim(), rest[second + 1..].trim()),
     };
     let source_id = lookup_id(&resolve_ref(source_raw, &ctx.bindings), &ctx.alias);
-    let Some(source) =
-        op_editor_core::walkers::find_node(ctx.sim.active_children(), &NodeId::new(&source_id))
+    let Some(source) = NodeId::new_opt(&source_id)
+        .and_then(|id| op_editor_core::walkers::find_node(ctx.sim.active_children(), &id))
     else {
         return Err(ProgramError::NotFound(format!(
             "Copy source not found: {source_id}"
@@ -42,25 +43,33 @@ pub(crate) fn execute_copy(binding: &str, args: &str, ctx: &mut ProgramCtx) -> R
     };
     // TS Object.assign minus source ids and descendants (both no-ops).
     let overrides = parse_json_arg(data_str)?;
-    let Some(overrides) = overrides.as_object() else {
+    let serde_json::Value::Object(mut overrides) = overrides else {
         return Err(ProgramError::Syntax(
             "C() overrides JSON must be an object".into(),
         ));
     };
-    let apply = |value: &mut serde_json::Value, root: bool| {
+    let replaces_children = overrides.contains_key("children");
+    let mut apply = |value: &mut serde_json::Value, root: bool| {
         if root {
             if let Some(obj) = value.as_object_mut() {
-                for (key, value) in overrides {
+                for (key, value) in std::mem::take(&mut overrides) {
                     if key != "id" && key != "descendants" {
-                        obj.insert(key.clone(), value.clone());
+                        obj.insert(key, value);
                     }
                 }
             }
         }
         normalize_node_shape(value);
     };
-    let mut node = if overrides.contains_key("children") {
-        let mut value = serde_json::to_value(source)
+    let mut node = if replaces_children {
+        // The override replaces children outright; don't encode the discarded
+        // source forest just to overwrite it in the next step. A placeholder
+        // preserves the schema field's insertion order for the owned override.
+        let mut value = source
+            .serialize(jian_ops_schema::serde_children::ReplaceChildren::new(
+                serde_json::value::Serializer,
+                Some(()),
+            ))
             .map_err(|e| ProgramError::InvalidNode(format!("Copy source unserializable: {e}")))?;
         apply(&mut value, true);
         serde_json::from_value::<PenNode>(value)
@@ -202,8 +211,7 @@ pub(crate) fn execute_replace(binding: &str, args: &str, ctx: &mut ProgramCtx) -
     // Predict the ids `cmd_replace_subtree` will assign: it remaps off
     // the live seed/taken BEFORE removing the old subtree — identical
     // inputs to this sim-side dry run, so the mapping is identical.
-    let mut probe = vec![node.clone()];
-    let map = ctx.remap(&mut probe)?;
+    let map = ctx.preview_remap(std::slice::from_ref(&node))?;
     let new_id = map
         .first()
         .map(|(_, new)| new.clone())
@@ -359,12 +367,14 @@ pub(crate) fn execute_image(binding: &str, args: &str, ctx: &mut ProgramCtx) -> 
         _ => unreachable!("placement validated above"),
     }
     if matches!(container.layout, Some(LayoutMode::None)) {
+        let width = target.width_px();
+        let height = target.height_px();
         let has_declared_size = container.width.is_some() && container.height.is_some();
-        let resolved = has_declared_size
+        let resolved = (has_declared_size && (width.is_none() || height.is_none()))
             .then(|| resolved_node_size(&ctx.sim, &target_id))
             .flatten();
-        let width = target.width_px().or_else(|| resolved.map(|size| size.0));
-        let height = target.height_px().or_else(|| resolved.map(|size| size.1));
+        let width = width.or_else(|| resolved.map(|size| size.0));
+        let height = height.or_else(|| resolved.map(|size| size.1));
         let (Some(width), Some(height)) = (width, height) else {
             return Err(ProgramError::Rejected(format!(
                     "G() target {target_id} uses layout none, so it needs declared width and height that resolve above zero before an image can fill it"
@@ -409,14 +419,14 @@ pub(crate) fn execute_image(binding: &str, args: &str, ctx: &mut ProgramCtx) -> 
 /// Ids of `node`'s direct children that are themselves empty containers —
 /// the shape an authored media slot takes when the model wraps it in a
 /// painted card. Used only to name a candidate in a rejection message.
-fn empty_container_children(node: &PenNode) -> Vec<String> {
+fn empty_container_children(node: &PenNode) -> Vec<&str> {
     node.children()
         .into_iter()
         .flatten()
         .filter(|child| {
             node_container(child).is_some() && child.children().is_some_and(|kids| kids.is_empty())
         })
-        .map(|child| child.id_str().to_string())
+        .map(PenNode::id_str)
         .collect()
 }
 
@@ -448,16 +458,25 @@ fn node_container(node: &PenNode) -> Option<&ContainerProps> {
 
 fn resolved_node_size(state: &EditorState, node_id: &str) -> Option<(f64, f64)> {
     fn find(nodes: &[SceneNode], node_id: &str) -> Option<(f64, f64)> {
-        for node in nodes {
+        let mut ancestors = Vec::new();
+        let mut nodes = nodes.iter();
+        loop {
+            let Some(node) = nodes.next() else {
+                let Some(parent) = ancestors.pop() else {
+                    return None;
+                };
+                nodes = parent;
+                continue;
+            };
             if node.id == node_id {
                 let bounds = node.aggregate_bounds();
                 return Some((f64::from(bounds.size.x), f64::from(bounds.size.y)));
             }
-            if let Some(size) = find(&node.children, node_id) {
-                return Some(size);
+            if !node.children.is_empty() {
+                ancestors.push(nodes);
+                nodes = node.children.iter();
             }
         }
-        None
     }
 
     let scene = op_pen_loader::editor_state_to_active_page_layout_scene(state);

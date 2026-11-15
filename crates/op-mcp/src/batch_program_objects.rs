@@ -8,9 +8,9 @@ use serde_json::Value;
 /// inside the object tree untouched. Modify uses that to diff against the live
 /// document before deciding which subtrees are truly new.
 pub fn parse_program_objects(program: &str) -> Vec<(String, Value)> {
-    crate::batch_design::split_operations(program)
+    crate::batch_design::split_operation_slices(program)
         .into_iter()
-        .filter_map(|line| parse_program_object(&line))
+        .filter_map(parse_program_object)
         .collect()
 }
 

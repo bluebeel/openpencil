@@ -82,18 +82,19 @@ pub(crate) fn parse_node_body(raw: &str, options: NodeParseOptions) -> Result<Pa
     normalize_node_shape(&mut value);
     let mut tmp = 1usize;
     ensure_node_ids(&mut value, &mut tmp);
-    let mut node = match PenNode::deserialize(&value) {
-        Ok(node) => node,
-        Err(error) => {
-            let salvaged = if options.salvage_fields {
-                salvage_one_field(&value, &mut notes)
-            } else {
-                None
-            };
-            salvaged.ok_or_else(|| {
+    let mut node = if options.salvage_fields {
+        // Only the fallback policy needs to retain JSON for another attempt.
+        match PenNode::deserialize(&value) {
+            Ok(node) => node,
+            Err(error) => salvage_one_field(&value, &mut notes).ok_or_else(|| {
                 ProgramError::InvalidNode(format!("invalid PenNode payload: {error}"))
-            })?
+            })?,
         }
+    } else {
+        // Consume JSON so owned strings/arrays can move into the typed node.
+        serde_json::from_value(value).map_err(|error| {
+            ProgramError::InvalidNode(format!("invalid PenNode payload: {error}"))
+        })?
     };
     if options.post_process {
         // TS postProcess hooks (emoji strip, unique ids, layout-child
@@ -134,10 +135,14 @@ fn salvage_one_field(value: &Value, notes: &mut Vec<String>) -> Option<PenNode> 
         if SALVAGE_PROTECTED.contains(&key.as_str()) {
             continue;
         }
-        let mut candidate = object.clone();
-        candidate.remove(key);
-        let candidate = Value::Object(candidate);
-        if let Ok(node) = PenNode::deserialize(&candidate) {
+        // Forward the original ordered entries, omitting one top-level key.
+        // A rejected candidate must not clone the complete child forest.
+        let fields = object
+            .iter()
+            .filter(|(candidate, _)| *candidate != key)
+            .map(|(key, value)| (key.as_str(), value));
+        let candidate = serde::de::value::MapDeserializer::<_, serde_json::Error>::new(fields);
+        if let Ok(node) = PenNode::deserialize(candidate) {
             notes.push(format!(
                 "dropped field `{key}`: the schema rejects its value"
             ));
@@ -152,27 +157,34 @@ fn salvage_one_field(value: &Value, notes: &mut Vec<String>) -> Option<PenNode> 
 /// Keep explicit true/false overrides, including on nested authored frames.
 pub(super) fn mark_new_authored_layout(node: &mut PenNode) {
     use jian_ops_schema::node::container::LayoutMode;
-    let container = match node {
-        PenNode::Frame(n) => Some(&mut n.container),
-        PenNode::Group(n) => Some(&mut n.container),
-        PenNode::Rectangle(n) => Some(&mut n.container),
-        _ => None,
-    };
-    if let Some(c) = container {
-        if c.preserve_geometry.is_none()
-            && matches!(
-                c.layout.as_ref(),
-                Some(LayoutMode::Horizontal | LayoutMode::Vertical)
-            )
-        {
-            c.preserve_geometry = Some(false);
+    let mut pending = vec![std::slice::from_mut(node).iter_mut()];
+    while let Some(siblings) = pending.last_mut() {
+        let Some(node) = siblings.next() else {
+            pending.pop();
+            continue;
+        };
+        let container = match node {
+            PenNode::Frame(n) => Some(&mut n.container),
+            PenNode::Group(n) => Some(&mut n.container),
+            PenNode::Rectangle(n) => Some(&mut n.container),
+            _ => None,
+        };
+        if let Some(c) = container {
+            if c.preserve_geometry.is_none()
+                && matches!(
+                    c.layout.as_ref(),
+                    Some(LayoutMode::Horizontal | LayoutMode::Vertical)
+                )
+            {
+                c.preserve_geometry = Some(false);
+            }
         }
-    }
-    // children_mut initializes absent arrays. Borrow only existing arrays, so
-    // authoring a leaf never changes None into an unsolicited empty children.
-    if node.children().is_some() {
-        for child in node.children_mut().expect("existing child array") {
-            mark_new_authored_layout(child);
+        // Preserve omitted Ref children; retain only a cursor per ancestor.
+        if let Some(children) = node
+            .children_mut_if_present()
+            .filter(|kids| !kids.is_empty())
+        {
+            pending.push(children.iter_mut());
         }
     }
 }
