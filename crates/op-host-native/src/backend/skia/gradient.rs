@@ -264,23 +264,10 @@ impl NativeBackend {
 /// dimensions. Preset shaders receive an exact `float2 size` uniform;
 /// arbitrary shaders without a valid size still get node-local coordinates.
 fn runtime_shader_local_matrix(rect: Rect, uniforms: &[(&str, &[f32])]) -> skia_safe::Matrix {
-    let mut matrix = skia_safe::Matrix::new_identity();
-    let document_size = uniforms
-        .iter()
-        .find(|(name, values)| *name == "size" && values.len() == 2)
-        .map(|(_, values)| (values[0], values[1]));
-
-    if let Some((width, height)) = document_size {
-        if width.is_finite() && height.is_finite() && width > 0.0 && height > 0.0 {
-            matrix.set_scale_translate(
-                (rect.size.x / width, rect.size.y / height),
-                (rect.origin.x, rect.origin.y),
-            );
-            return matrix;
-        }
-    }
-    matrix.set_translate((rect.origin.x, rect.origin.y));
-    matrix
+    jian_skia::shader_geometry::local_matrix(
+        [rect.origin.x, rect.origin.y, rect.size.x, rect.size.y],
+        uniforms.iter().map(|(name, values)| (*name, *values)),
+    )
 }
 
 /// Multiply a colour's alpha by a per-fill opacity factor. Used as
