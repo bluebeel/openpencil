@@ -143,8 +143,10 @@ impl FigValue {
 
     /// Numeric field read (`obj.key` coerced to f64).
     pub fn get_f64(&self, key: &str) -> Option<f64> {
-        self.compact_number(key)
-            .or_else(|| self.get(key).and_then(|v| v.as_f64()))
+        let value = self.resolved();
+        value
+            .compact_number(key)
+            .or_else(|| value.get(key).and_then(|v| v.as_f64()))
     }
 
     /// String field read.

@@ -81,17 +81,15 @@ impl Decoder<'_, '_> {
 
 impl FigValue {
     pub(super) fn compact_number(&self, key: &str) -> Option<f64> {
-        self.small_float_number(key)
-            .or_else(|| self.guid_number(key))
-            .or_else(|| {
-                let Self::Affine(values) = self else {
-                    return None;
-                };
-                FIELDS
-                    .iter()
-                    .position(|name| *name == key)
-                    .map(|index| f64::from(values[index]))
-            })
+        match self {
+            Self::Vec2(_) | Self::Color(_) => self.small_float_number(key),
+            Self::Guid(_, _) => self.guid_number(key),
+            Self::Affine(values) => FIELDS
+                .iter()
+                .position(|name| *name == key)
+                .map(|index| f64::from(values[index])),
+            _ => None,
+        }
     }
 
     pub(crate) fn affine_parts(&self) -> Option<[f32; 6]> {

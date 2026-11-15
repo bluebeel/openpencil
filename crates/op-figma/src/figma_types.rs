@@ -21,6 +21,13 @@ pub struct FigGuid {
 impl FigGuid {
     /// Extract from a decoded `{ sessionID, localID }` object.
     pub fn from_value(v: &FigValue) -> Option<FigGuid> {
+        let v = v.resolved();
+        if let FigValue::Guid(session_id, local_id) = v {
+            return Some(FigGuid {
+                session_id: *session_id,
+                local_id: *local_id,
+            });
+        }
         Some(FigGuid {
             session_id: v.get_f64("sessionID")? as u32,
             local_id: v.get_f64("localID")? as u32,
@@ -46,6 +53,17 @@ pub struct FigMatrix {
 
 impl FigMatrix {
     pub fn from_value(v: &FigValue) -> Option<FigMatrix> {
+        let v = v.resolved();
+        if let Some(values) = v.affine_parts() {
+            return Some(FigMatrix {
+                m00: f64::from(values[0]),
+                m01: f64::from(values[1]),
+                m02: f64::from(values[2]),
+                m10: f64::from(values[3]),
+                m11: f64::from(values[4]),
+                m12: f64::from(values[5]),
+            });
+        }
         if !v.is_object() {
             return None;
         }
@@ -71,6 +89,16 @@ pub struct FigColor {
 
 impl FigColor {
     pub fn from_value(v: &FigValue) -> Option<FigColor> {
+        let v = v.resolved();
+        if let FigValue::Color(record) = v {
+            let values = record.values();
+            return Some(FigColor {
+                r: f64::from(values[0]),
+                g: f64::from(values[1]),
+                b: f64::from(values[2]),
+                a: Some(f64::from(values[3])),
+            });
+        }
         if !v.is_object() {
             return None;
         }
@@ -92,6 +120,14 @@ pub struct FigVec2 {
 
 impl FigVec2 {
     pub fn from_value(v: &FigValue) -> Option<FigVec2> {
+        let v = v.resolved();
+        if let FigValue::Vec2(record) = v {
+            let values = record.values();
+            return Some(FigVec2 {
+                x: f64::from(values[0]),
+                y: f64::from(values[1]),
+            });
+        }
         if !v.is_object() {
             return None;
         }

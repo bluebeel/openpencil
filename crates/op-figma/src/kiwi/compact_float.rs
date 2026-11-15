@@ -17,6 +17,9 @@ impl<const N: usize> FloatRecord<N> {
             views: AtomicPtr::new(std::ptr::null_mut()),
         }
     }
+    pub(crate) fn values(&self) -> &[f32; N] {
+        &self.values
+    }
     fn get(&self, key: &str, fields: &[&str; N]) -> Option<&FigValue> {
         let index = fields.iter().position(|name| *name == key)?;
         let mut pointer = self.views.load(Ordering::Acquire);
@@ -46,8 +49,10 @@ impl<const N: usize> FloatRecord<N> {
     fn set(&mut self, key: &str, value: &FigValue, fields: &[&str; N]) -> bool {
         if let FigValue::Float(value) = value {
             if let Some(index) = fields.iter().position(|name| *name == key) {
-                self.values[index] = *value;
-                self.clear_views();
+                if self.values[index].to_bits() != value.to_bits() {
+                    self.values[index] = *value;
+                    self.clear_views();
+                }
                 return true;
             }
         }
@@ -196,16 +201,18 @@ impl FigValue {
         }
     }
     pub(super) fn small_float_number(&self, key: &str) -> Option<f64> {
-        let (kind, values) = match self {
-            Self::Vec2(v) => (FloatKind::Vector, [v.values[0], v.values[1], 0.0, 0.0]),
-            Self::Color(v) => (FloatKind::Color, v.values),
+        let value = match (self, key) {
+            (Self::Vec2(values), "x") => values.values[0],
+            (Self::Vec2(values), "y") => values.values[1],
+            (Self::Color(values), "r") => values.values[0],
+            (Self::Color(values), "g") => values.values[1],
+            (Self::Color(values), "b") => values.values[2],
+            (Self::Color(values), "a") => values.values[3],
             _ => return None,
         };
-        kind.fields()
-            .iter()
-            .position(|name| *name == key)
-            .map(|i| f64::from(values[i]))
+        Some(f64::from(value))
     }
+
     pub(crate) fn small_float_parts(&self) -> Option<(FloatKind, [f32; 4])> {
         match self {
             Self::Vec2(v) => Some((FloatKind::Vector, [v.values[0], v.values[1], 0.0, 0.0])),

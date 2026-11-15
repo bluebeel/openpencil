@@ -34,6 +34,7 @@ pub(crate) fn parse_indexed_owned(
         chunk.len,
     )
     .map_err(FigFileError::Kiwi)?;
+    drop(schema);
     observer(FigImportPhase::Extract);
     drop(container.parts);
     let (node_changes, mut blobs) =
