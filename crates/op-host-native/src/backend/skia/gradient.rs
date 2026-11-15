@@ -246,9 +246,8 @@ impl NativeBackend {
                     ),
                     None,
                 );
-                // alpha already folded into Color4f; reset the layer alpha
-                // so it isn't applied twice.
-                paint.set_alpha_f(1.0);
+                // Paint alpha is the Color4f alpha itself, not an independent
+                // layer factor. Keep the authored fallback alpha set above.
             }
         }
         raster_point::draw_round_rect(canvas, to_sk_rect(rect), radius, radius, &paint);
