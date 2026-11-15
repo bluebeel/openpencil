@@ -104,6 +104,8 @@ pub mod quality_report;
 pub mod size_class;
 // Runtime-fetched product assets for the browser bundle (native embeds them).
 mod derived_cache_identity;
+mod document_node_counts;
+pub use document_node_counts::{DocumentNodeCounts, ForestNodeCounts};
 pub mod editor_ui_state;
 pub mod export_batch;
 pub mod export_dialog_state;
