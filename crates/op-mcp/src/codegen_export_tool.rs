@@ -20,7 +20,7 @@ use op_codegen::{
 };
 use op_editor_core::codegen::Framework;
 use op_editor_core::{EditorState, PenNodeExt};
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value};
 
 use super::{McpTool, ToolErrorCode, ToolOutcome};
 
@@ -149,13 +149,17 @@ impl ExportContext<'_> {
             Some(Framework::ReactTailwind) => {
                 let components = referenced_components(&roots, self.doc);
                 let generated = ReactTailwind.generate_files_with_components(&scoped, &components);
-                files.insert("component.tsx".into(), json!(generated.component));
-                files.insert("app/globals.css".into(), json!(generated.globals_css));
+                let code = generated.to_single_file();
+                files.insert("component.tsx".into(), Value::String(generated.component));
+                files.insert(
+                    "app/globals.css".into(),
+                    Value::String(generated.globals_css),
+                );
                 files.insert(
                     "tailwind.config.ts".into(),
-                    json!(generated.tailwind_config),
+                    Value::String(generated.tailwind_config),
                 );
-                generated.to_single_file()
+                code
             }
             Some(Framework::React) => React.generate(&scoped),
             Some(Framework::Vue) => Vue.generate(&scoped),
@@ -168,15 +172,21 @@ impl ExportContext<'_> {
             None => CssVariables.generate(&scoped),
         };
         if files.is_empty() {
-            files.insert(format!("component.{}", extension(framework)), json!(code));
+            // The protocol includes the source in both fields; this is the
+            // one necessary duplicate, rather than cloning the whole reply.
+            files.insert(
+                format!("component.{}", extension(framework)),
+                Value::String(code.clone()),
+            );
         }
-        let out = json!({
-            "framework": target,
-            "nodeCount": roots.len(),
-            "code": code,
-            "files": Value::Object(files),
-        });
-        ToolOutcome::OkJson(out.to_string())
+        let mut out = Map::new();
+        // Same literal insertion sequence and Map ordering as the old json!
+        // reply, transferring owned code/files instead of cloning their trees.
+        out.insert("framework".into(), Value::String(target.to_owned()));
+        out.insert("nodeCount".into(), Value::from(roots.len()));
+        out.insert("code".into(), Value::String(code));
+        out.insert("files".into(), Value::Object(files));
+        ToolOutcome::OkJson(Value::Object(out).to_string())
     }
 
     fn pages(&self) -> Vec<(&str, &[PenNode])> {
@@ -190,6 +200,9 @@ impl ExportContext<'_> {
     }
 
     fn find_requested<S: AsRef<str>>(&self, ids: &[S]) -> Vec<Option<&PenNode>> {
+        if ids.is_empty() {
+            return Vec::new();
+        }
         let mut found = HashMap::new();
         let forests = self.pages().into_iter().map(|(_, roots)| roots);
         let requested = match self.state {
@@ -215,10 +228,10 @@ impl ExportContext<'_> {
             }
             return Ok(nodes);
         }
-        let pages = self.pages();
         if let Some(page_id) = args.get("pageId").filter(|p| !p.is_empty()) {
-            let (_, roots) = pages
-                .iter()
+            let (_, roots) = self
+                .pages()
+                .into_iter()
                 .find(|(id, _)| id == page_id)
                 .ok_or_else(|| format!("page not found: {page_id}"))?;
             return non_empty(roots.iter().collect());
@@ -231,6 +244,7 @@ impl ExportContext<'_> {
         if !selected.is_empty() {
             return Ok(selected);
         }
+        let pages = self.pages();
         let index = self.active_page.min(pages.len().saturating_sub(1));
         non_empty(pages[index].1.iter().collect())
     }
