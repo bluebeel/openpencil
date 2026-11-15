@@ -2209,8 +2209,8 @@ export async function opCkInit(canvasId, dpr = 1, logicalWidth = 0, logicalHeigh
     rotate(deg, px, py) { canvas.rotate(deg, px, py); },
 
     resize(w, h) {
-      textMasks.cancel();
       if (el.width === w && el.height === h) return;
+      textMasks.cancel();
       setCanvasBufferSize(el, w, h);
       try { surface.delete(); } catch (e) {}
       surface = CK.MakeWebGLCanvasSurface(canvasId);
