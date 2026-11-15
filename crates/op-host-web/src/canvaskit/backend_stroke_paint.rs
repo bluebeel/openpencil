@@ -9,26 +9,27 @@ pub(super) fn draw(
     options: &StrokeMaskOptions<'_>,
     color: Color,
 ) {
-    let mut values = Vec::new();
+    let mut fixed = [0.0; 8];
+    let mut curves = Vec::new();
     let mut data = "";
     let mut even_odd = false;
-    let kind = match geometry {
+    let (kind, fixed_len) = match geometry {
         StrokeGeometry::RawSvg {
             data: d,
             even_odd: e,
         } => {
             data = d;
             even_odd = e;
-            4
+            (4, 0)
         }
         StrokeGeometry::RoundedRect { rect, radii } => {
-            values.extend([rect.origin.x, rect.origin.y, rect.size.x, rect.size.y]);
-            values.extend(radii);
-            0
+            fixed[..4].copy_from_slice(&[rect.origin.x, rect.origin.y, rect.size.x, rect.size.y]);
+            fixed[4..].copy_from_slice(&radii);
+            (0, 8)
         }
         StrokeGeometry::Oval(rect) => {
-            values.extend([rect.origin.x, rect.origin.y, rect.size.x, rect.size.y]);
-            1
+            fixed[..4].copy_from_slice(&[rect.origin.x, rect.origin.y, rect.size.x, rect.size.y]);
+            (1, 4)
         }
         StrokeGeometry::Svg {
             data: d,
@@ -37,8 +38,8 @@ pub(super) fn draw(
         } => {
             data = d;
             even_odd = e;
-            values.extend([rect.origin.x, rect.origin.y, rect.size.x, rect.size.y]);
-            2
+            fixed[..4].copy_from_slice(&[rect.origin.x, rect.origin.y, rect.size.x, rect.size.y]);
+            (2, 4)
         }
         StrokeGeometry::Curves {
             elements,
@@ -47,17 +48,22 @@ pub(super) fn draw(
             even_odd = e;
             for element in elements {
                 match element {
-                    StrokeCurve::Move(a) => values.extend([0.0, a.x, a.y]),
-                    StrokeCurve::Line(a) => values.extend([1.0, a.x, a.y]),
-                    StrokeCurve::Quad(a, b) => values.extend([2.0, a.x, a.y, b.x, b.y]),
+                    StrokeCurve::Move(a) => curves.extend([0.0, a.x, a.y]),
+                    StrokeCurve::Line(a) => curves.extend([1.0, a.x, a.y]),
+                    StrokeCurve::Quad(a, b) => curves.extend([2.0, a.x, a.y, b.x, b.y]),
                     StrokeCurve::Cubic(a, b, c) => {
-                        values.extend([4.0, a.x, a.y, b.x, b.y, c.x, c.y])
+                        curves.extend([4.0, a.x, a.y, b.x, b.y, c.x, c.y])
                     }
-                    StrokeCurve::Close => values.push(5.0),
+                    StrokeCurve::Close => curves.push(5.0),
                 }
             }
-            3
+            (3, 0)
         }
+    };
+    let values = if kind == 3 {
+        curves.as_slice()
+    } else {
+        &fixed[..fixed_len]
     };
     let placement = match options.placement {
         StrokePlacement::Inside => 0,
@@ -77,7 +83,7 @@ pub(super) fn draw(
     ck.stroke_geometry(
         kind,
         data,
-        &values,
+        values,
         even_odd,
         options.width,
         options.sides.as_ref().map_or(&[], |s| &s[..]),

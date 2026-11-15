@@ -1,6 +1,8 @@
 import { createTextMaskCapture, drawTextMaskImage } from './op_ck_text_mask.js';
 import { drawExplicitImageField } from './op_ck_image_geometry.js';
-import { strokePaintGeometry, imagePaintField, drawMeshPaintField } from './op_ck_stroke_paint.js';
+import { strokePaintGeometry, imagePaintField, drawMeshPaintField, releasePaintHandle } from './op_ck_stroke_paint.js';
+import { opCkBuildMeshGradientData } from './op_ck_mesh_geometry.js';
+export { opCkBuildMeshGradientData } from './op_ck_mesh_geometry.js';
 // Thin CanvasKit FFI bridge for the Rust web shell.
 //
 // FFI glue only — flat, scalar-argument drawing functions the Rust
@@ -328,51 +330,6 @@ export function opCkMakeRuntimeShaderForRect(
     uniformArities,
     opCkRuntimeEffectLocalMatrix(uniformNames, uniforms, uniformArities, x, y, w, h),
   );
-}
-
-// Build the row-major vertex lattice consumed by CanvasKit.MakeVertices.
-// Kept pure + exported so the geometry/index contract can run under Node
-// without booting a WebGL surface. CanvasKit indices are u16, so grids larger
-// than 65,535 vertices take the same visible first-colour fallback as malformed
-// grids instead of wrapping indices and drawing corrupt triangles.
-export function opCkBuildMeshGradientData(x, y, w, h, rows, cols, colors) {
-  rows = Math.trunc(Number(rows));
-  cols = Math.trunc(Number(cols));
-  const vertexCount = rows * cols;
-  if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(w) || !Number.isFinite(h)
-      || rows < 2 || cols < 2 || !Number.isSafeInteger(vertexCount)
-      || vertexCount > 0xffff || colors.length !== vertexCount * 4) {
-    return null;
-  }
-
-  const positions = new Float32Array(vertexCount * 2);
-  const rgba = new Float32Array(vertexCount * 4);
-  for (let row = 0; row < rows; row++) {
-    for (let colIndex = 0; colIndex < cols; colIndex++) {
-      const vertex = row * cols + colIndex;
-      positions[vertex * 2] = x + (colIndex / (cols - 1)) * w;
-      positions[vertex * 2 + 1] = y + (row / (rows - 1)) * h;
-      const colorOffset = vertex * 4;
-      rgba[colorOffset] = opCkClampUnit(colors[colorOffset]);
-      rgba[colorOffset + 1] = opCkClampUnit(colors[colorOffset + 1]);
-      rgba[colorOffset + 2] = opCkClampUnit(colors[colorOffset + 2]);
-      rgba[colorOffset + 3] = opCkClampUnit(colors[colorOffset + 3]);
-    }
-  }
-
-  const indices = new Uint16Array((rows - 1) * (cols - 1) * 6);
-  let index = 0;
-  for (let row = 0; row < rows - 1; row++) {
-    for (let colIndex = 0; colIndex < cols - 1; colIndex++) {
-      const topLeft = row * cols + colIndex;
-      const topRight = topLeft + 1;
-      const bottomLeft = (row + 1) * cols + colIndex;
-      const bottomRight = bottomLeft + 1;
-      indices.set([topLeft, topRight, bottomLeft, topRight, bottomRight, bottomLeft], index);
-      index += 6;
-    }
-  }
-  return { positions, rgba, indices };
 }
 
 // Match the typed rounded-shadow geometry before converting arrays to Skia.
@@ -889,12 +846,13 @@ export async function opCkInit(canvasId, dpr = 1, logicalWidth = 0, logicalHeigh
       canvas.drawRRect(rrect, fillPaint(...fallbackColor));
       return;
     }
-    const paint = shaderPaint(shader);
+    let paint = null;
     try {
+      paint = shaderPaint(shader);
       canvas.drawRRect(rrect, paint);
     } finally {
-      paint.delete();
-      if (shader.delete) shader.delete();
+      releasePaintHandle(paint);
+      releasePaintHandle(shader);
     }
   };
   const drawRuntimeEffectRRect = (
@@ -931,13 +889,14 @@ export async function opCkInit(canvasId, dpr = 1, logicalWidth = 0, logicalHeigh
       ));
       return;
     }
-    const paint = shaderPaint(shader);
-    paint.setAlphaf(alpha);
+    let paint = null;
     try {
+      paint = shaderPaint(shader);
+      paint.setAlphaf(alpha);
       canvas.drawRRect(rrect, paint);
     } finally {
-      paint.delete();
-      if (shader.delete) shader.delete();
+      releasePaintHandle(paint);
+      releasePaintHandle(shader);
     }
   };
   const makeLinearGradient = (x, y, w, h, stops, angleDeg, opacity) => {
@@ -985,7 +944,14 @@ export async function opCkInit(canvasId, dpr = 1, logicalWidth = 0, logicalHeigh
     }
   };
   const drawMeshGradientRRect = (rrect, x, y, w, h, rows, cols, colors, opacity) => {
-    if(paintSpaces.length){drawMeshPaintField(CK,canvas,[x,y,w,h],paintSpace(x,y,w,h),rows,cols,colors,opacity);return;}
+    if (paintSpaces.length) {
+      canvas.save();
+      try {
+        canvas.clipRRect(rrect, CK.ClipOp.Intersect, true);
+        drawMeshPaintField(CK,canvas,[x,y,w,h],paintSpace(x,y,w,h),rows,cols,colors,opacity);
+      } finally { canvas.restore(); }
+      return;
+    }
     const alpha = opCkClampUnit(opacity);
     const fallback = colors.length >= 4
       ? [
@@ -1019,15 +985,15 @@ export async function opCkInit(canvasId, dpr = 1, logicalWidth = 0, logicalHeigh
       return;
     }
 
-    const paint = allocFillPaint(1, 1, 1, alpha);
-    canvas.save();
+    let paint = null, saved = false;
     try {
+      paint = allocFillPaint(1, 1, 1, alpha);
+      canvas.save(); saved = true;
       canvas.clipRRect(rrect, CK.ClipOp.Intersect, true);
       canvas.drawVertices(vertices, CK.BlendMode.Modulate, paint);
     } finally {
-      canvas.restore();
-      paint.delete();
-      vertices.delete();
+      try { if (saved) canvas.restore(); }
+      finally { releasePaintHandle(paint); releasePaintHandle(vertices); }
     }
   };
   const fontCovers = (entry, text) => {
