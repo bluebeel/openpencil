@@ -285,6 +285,13 @@ impl McpTool for CountNodes {
 }
 
 pub fn count_nodes_snapshot(state: &EditorState) -> CountNodes {
+    if let Some(counts) = state.trusted_document_node_counts() {
+        let per_page = match counts.pages() {
+            Some(pages) => pages.iter().map(|page| page.total() as u32).collect(),
+            None => vec![counts.root().total() as u32],
+        };
+        return CountNodes { per_page };
+    }
     fn walk(nodes: &[PenNode]) -> u32 {
         read_walk::nodes(nodes).count() as u32
     }
@@ -323,6 +330,14 @@ impl McpTool for ListNodeKinds {
 }
 
 pub fn list_node_kinds_snapshot(state: &EditorState) -> ListNodeKinds {
+    if let Some(counts) = state.trusted_document_node_counts() {
+        let histogram = counts
+            .active_page(state.ui.active_page_index)
+            .histogram()
+            .map(|(kind, count)| (kind.to_owned(), count as u32))
+            .collect();
+        return ListNodeKinds { histogram };
+    }
     fn walk(nodes: &[PenNode], counts: &mut BTreeMap<&'static str, u32>) {
         for entry in read_walk::nodes(nodes) {
             *counts.entry(kind_label(entry.node)).or_insert(0) += 1;

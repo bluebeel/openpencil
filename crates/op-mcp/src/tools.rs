@@ -102,6 +102,13 @@ fn count_subtree(n: &PenNode) -> usize {
 /// Snapshot the document into a `GetDocumentInfo` tool. Counts all
 /// nodes recursively across every page (or the single-page root).
 pub fn document_info_snapshot(state: &EditorState) -> GetDocumentInfo {
+    if let Some(counts) = state.trusted_document_node_counts() {
+        return GetDocumentInfo {
+            page_count: state.page_count(),
+            active_page_index: state.ui.active_page_index,
+            total_nodes: counts.canonical_total(),
+        };
+    }
     let total_nodes: usize = match state.doc.pages.as_ref() {
         Some(pages) => pages
             .iter()

@@ -4,7 +4,9 @@ use serde_json::json;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
+#[cfg(windows)]
+use std::process::Stdio;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const PID_FILE_NAME: &str = "openpencil-mcp-server.pid";
@@ -729,14 +731,7 @@ fn collect_app_images(dir: &Path, candidates: &mut Vec<PathBuf>) {
 
 #[cfg(unix)]
 fn is_pid_alive(pid: u32) -> bool {
-    Command::new("kill")
-        .arg("-0")
-        .arg(pid.to_string())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|status| status.success())
-        .unwrap_or(false)
+    op_process_io::process_exists(pid)
 }
 
 #[cfg(windows)]
