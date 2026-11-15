@@ -441,6 +441,8 @@ impl EditorCommand {
             }
             C::UpsertComponent { .. }
             | C::InstantiateComponent { .. }
+            | C::DetachComponent { .. }
+            | C::SetInstanceComponent { .. }
             | C::CreateComponent { .. }
             | C::DeleteComponent { .. }
             | C::RenameComponent { .. } => A::Document(D::Unsupported(U::Components)),

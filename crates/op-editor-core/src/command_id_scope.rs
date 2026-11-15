@@ -124,7 +124,10 @@ impl CommandSimulation {
             self.sequential_seed = None;
         }
         self.floor.prepare(&command);
-        let allocates = crate::command_apply_legacy::allocation_policy::requires_id_seed(&command);
+        let allocates = crate::command_apply_legacy::allocation_policy::requires_id_seed_in(
+            &self.state,
+            &command,
+        );
         let mut allocator = if allocates {
             let seed = match self.sequential_seed {
                 Some(seed) => match self.state.runtime_next_id_seed() {

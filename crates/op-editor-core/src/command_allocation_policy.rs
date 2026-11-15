@@ -20,6 +20,7 @@ pub(crate) fn requires_id_seed(command: &C) -> bool {
         | C::UpsertComponent { .. }
         | C::UpsertScreen { .. }
         | C::InstantiateComponent { .. }
+        | C::DetachComponent { .. }
         | C::InstantiateKitComponent { .. }
         | C::AddPage { .. }
         | C::DuplicatePage { .. }
@@ -29,7 +30,8 @@ pub(crate) fn requires_id_seed(command: &C) -> bool {
         | C::PasteClipboard { .. }
         | C::ImportSvg { .. }
         | C::PromoteLegacyWidgets => true,
-        C::CreateComponent { .. }
+        C::SetInstanceComponent { .. }
+        | C::CreateComponent { .. }
         | C::SetVariableColor { .. }
         | C::InsertAuthoredSubtree { .. }
         | C::InsertAuthoredSubtreePreservingRoots { .. }
@@ -97,6 +99,34 @@ pub(crate) fn requires_id_seed(command: &C) -> bool {
     }
 }
 
+/// A direct reusable-definition detach allocates nothing. Keep this path
+/// usable at counter exhaustion; Ref detachment still uses the caller's exact
+/// normal seed. Mixed Batch conservatively retains its existing static policy.
+pub(crate) fn requires_id_seed_in(state: &crate::EditorState, command: &C) -> bool {
+    if let C::DetachComponent { node_id } = command {
+        fn first<'a>(
+            nodes: &'a [jian_ops_schema::node::PenNode],
+            id: &str,
+        ) -> Option<&'a jian_ops_schema::node::PenNode> {
+            use crate::PenNodeExt;
+            for node in nodes {
+                if node.id_str() == id {
+                    return Some(node);
+                }
+                if let Some(found) = node.children().and_then(|children| first(children, id)) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        return matches!(
+            first(state.active_children(), node_id.as_str()),
+            Some(jian_ops_schema::node::PenNode::Ref(_))
+        );
+    }
+    requires_id_seed(command)
+}
+
 /// Changes to page/node presence need identity tracking; scalar and UI edits do not.
 pub(crate) fn may_change_identities(command: &C) -> bool {
     match command {
@@ -112,6 +142,7 @@ pub(crate) fn may_change_identities(command: &C) -> bool {
         | C::UpsertComponent { .. }
         | C::UpsertScreen { .. }
         | C::InstantiateComponent { .. }
+        | C::DetachComponent { .. }
         | C::InstantiateKitComponent { .. }
         | C::AddPage { .. }
         | C::DuplicatePage { .. }
@@ -131,7 +162,8 @@ pub(crate) fn may_change_identities(command: &C) -> bool {
         | C::DeleteSelected
         | C::UngroupSelected
         | C::CutSelected => true,
-        C::CreateComponent { .. }
+        C::SetInstanceComponent { .. }
+        | C::CreateComponent { .. }
         | C::SetVariableColor { .. }
         | C::SetActiveAxisValue { .. }
         | C::CycleActiveAxisValue { .. }

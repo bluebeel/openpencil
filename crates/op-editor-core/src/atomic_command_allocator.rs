@@ -38,7 +38,8 @@ impl AtomicCommandAllocator {
         command: EditorCommand,
         preserves_cursor: bool,
     ) -> Result<bool, IdAllocError> {
-        let needs_ids = crate::command_apply_legacy::allocation_policy::requires_id_seed(&command);
+        let needs_ids =
+            crate::command_apply_legacy::allocation_policy::requires_id_seed_in(state, &command);
         if needs_ids {
             if let Some(error) = self.seed_error {
                 return Err(error);

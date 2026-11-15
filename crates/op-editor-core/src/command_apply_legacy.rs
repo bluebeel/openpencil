@@ -54,7 +54,7 @@ impl EditorState {
         command: EditorCommand,
         checkpoint: Option<&crate::EditorSnapshot>,
     ) -> bool {
-        let mut allocator = if allocation_policy::requires_id_seed(&command) {
+        let mut allocator = if allocation_policy::requires_id_seed_in(self, &command) {
             let Ok(allocator) = self.standalone_id_allocator() else {
                 return false;
             };
@@ -74,6 +74,7 @@ impl EditorState {
                 | EditorCommand::AddPage { .. }
                 | EditorCommand::DuplicatePage { .. }
                 | EditorCommand::InstantiateComponent { .. }
+                | EditorCommand::DetachComponent { .. }
                 | EditorCommand::InstantiateKitComponent { .. }
                 | EditorCommand::DuplicateSelected { .. }
                 | EditorCommand::PasteClipboard { .. }

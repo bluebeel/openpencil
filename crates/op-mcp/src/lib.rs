@@ -228,10 +228,15 @@ pub use codegen_tools::{
     codegen_assemble_snapshot, codegen_clean_snapshot, codegen_plan_snapshot,
     codegen_submit_chunk_snapshot, CodegenAssemble, CodegenClean, CodegenPlan, CodegenSubmitChunk,
 };
+mod component_write_tools;
 pub use component_tools::{
     create_component_snapshot, delete_component_snapshot, instantiate_component_snapshot,
     rename_component_snapshot, set_node_collapsed_snapshot, CreateComponent, DeleteComponent,
     InstantiateComponent, RenameComponent, SetNodeCollapsed,
+};
+pub use component_write_tools::{
+    detach_component_snapshot, detach_component_snapshot_for_call, set_instance_component_snapshot,
+    set_instance_component_snapshot_for_call, DetachComponent, SetInstanceComponent,
 };
 pub use conversion_status::{conversion_status_snapshot, ConversionStatus};
 pub use conversion_tools::{

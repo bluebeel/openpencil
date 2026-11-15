@@ -378,6 +378,13 @@ pub enum EditorCommand {
     },
     /// Instantiate a registered component onto the active page.
     InstantiateComponent { component_id: NodeId },
+    /// Materialize a canonical Ref or unregister a reusable definition in place.
+    DetachComponent { node_id: NodeId },
+    /// Change only a canonical Ref's target, preserving its authored overrides.
+    SetInstanceComponent {
+        node_id: NodeId,
+        component_id: NodeId,
+    },
     /// Promote an active-page Frame / Group / Rectangle to a component.
     CreateComponent { node_id: NodeId, name: String },
     /// Remove a component registration.

@@ -165,9 +165,11 @@ fn plan(
         | C::SetImageVideoPlayback { .. }
         | C::AddImageVideo { .. }
         | C::RemoveImageVideo { .. } => *active,
-        C::CreateComponent { .. } | C::InstantiateComponent { .. } | C::RenameComponent { .. } => {
-            *active
-        }
+        C::CreateComponent { .. }
+        | C::InstantiateComponent { .. }
+        | C::RenameComponent { .. }
+        | C::DetachComponent { .. }
+        | C::SetInstanceComponent { .. } => *active,
         C::DeleteComponent { component_id } => {
             // Include every pre-existing match: an earlier Batch command may
             // remove the first duplicate and expose a later page/root match.

@@ -103,6 +103,12 @@ pub const TOOL_PROFILES: &[ToolProfile] = &[
         ToolSurface::HostDiagnostics,
     ),
     ToolProfile::new("delete_component", ToolAccess::Write, ToolSurface::InMemory),
+    ToolProfile::new("detach_component", ToolAccess::Write, ToolSurface::InMemory),
+    ToolProfile::new(
+        "set_instance_component",
+        ToolAccess::Write,
+        ToolSurface::InMemory,
+    ),
     ToolProfile::new("delete_node", ToolAccess::Write, ToolSurface::InMemory),
     ToolProfile::new("annotate_image", ToolAccess::Write, ToolSurface::InMemory),
     ToolProfile::new("delete_page", ToolAccess::Write, ToolSurface::InMemory),

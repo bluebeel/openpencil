@@ -715,6 +715,13 @@ impl EditorState {
             EditorCommand::InstantiateComponent { component_id } => self
                 .instantiate_component_with_allocator(&component_id, allocator)?
                 .is_some(),
+            EditorCommand::DetachComponent { node_id } => self
+                .detach_component_with_allocator(&node_id, allocator)?
+                .is_some(),
+            EditorCommand::SetInstanceComponent {
+                node_id,
+                component_id,
+            } => self.set_instance_component(&node_id, &component_id),
             EditorCommand::CreateComponent { node_id, name } => {
                 self.create_component_from_node(&node_id, &name)
             }

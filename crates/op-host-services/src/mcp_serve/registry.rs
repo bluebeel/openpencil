@@ -492,6 +492,20 @@ pub(super) fn rebuild_registry_with_authority(
         }
     );
     register_tool!("instantiate_component", instantiate_component_snapshot());
+    register_tool!(
+        "detach_component",
+        match arguments {
+            Some(args) => detach_component_snapshot_for_call(doc, args),
+            None => detach_component_snapshot(),
+        }
+    );
+    register_tool!(
+        "set_instance_component",
+        match arguments {
+            Some(args) => set_instance_component_snapshot_for_call(doc, args),
+            None => set_instance_component_snapshot(),
+        }
+    );
     register_tool!("create_component", create_component_snapshot());
     register_tool!("delete_component", delete_component_snapshot());
     register_tool!("rename_component", rename_component_snapshot());

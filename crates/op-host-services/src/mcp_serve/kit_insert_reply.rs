@@ -8,7 +8,13 @@ pub(in crate::mcp_serve) fn apply(
     run: impl FnOnce(&mut EditorState) -> bool,
 ) -> AppliedReply {
     let capture = KitRootCapture::begin(state, command);
+    let detached = op_editor_core::ComponentDetachCapture::begin(state, command);
     let applied = run(state);
     let kit_root = capture.and_then(|capture| capture.finish(state, applied));
-    AppliedReply { applied, kit_root }
+    let detached = detached.and_then(|capture| capture.finish(state, applied));
+    AppliedReply {
+        applied,
+        kit_root,
+        detached,
+    }
 }

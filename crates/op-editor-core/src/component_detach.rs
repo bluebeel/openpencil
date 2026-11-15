@@ -71,6 +71,7 @@ pub(super) fn apply(
             .expect("checked detach source route") = detached;
         state.set_single_selection(id.clone());
         state.finish_component_history(pending, snapshot);
+        crate::component_mutation_receipt::record(state, &plan.original_id, &plan.path, &id, true);
         Ok(Some(id))
     } else {
         let pending = crate::history::PendingScopedSnapshot::capture_component_detach(
@@ -89,6 +90,13 @@ pub(super) fn apply(
         );
         state.components.remove(&plan.original_id);
         state.finish_component_history(pending, snapshot);
+        crate::component_mutation_receipt::record(
+            state,
+            &plan.original_id,
+            &plan.path,
+            &plan.original_id,
+            false,
+        );
         Ok(Some(plan.original_id))
     }
 }
