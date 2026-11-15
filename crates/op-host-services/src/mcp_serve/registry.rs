@@ -285,7 +285,17 @@ pub(super) fn rebuild_registry_with_authority(
     register_tool!("get_viewport", get_viewport_snapshot(doc));
     register_tool!("get_selection_set", get_selection_set_snapshot(doc));
     register_tool!("get_editor_state", get_editor_state_snapshot(doc));
-    register_tool!("get_design_quality", get_design_quality_snapshot(doc));
+    if should_register(requested_tool, "get_design_quality") {
+        if trusted_authority && requested_tool.is_some() {
+            r.register(http_export::wrap(Box::new(
+                design_quality_tool::get_design_quality_for_call(doc),
+            )));
+        } else {
+            r.register(http_export::wrap(Box::new(get_design_quality_snapshot(
+                doc,
+            ))));
+        }
+    }
     #[cfg(feature = "mcp-debug-tools")]
     if debug_tools_enabled() {
         register_tool!(

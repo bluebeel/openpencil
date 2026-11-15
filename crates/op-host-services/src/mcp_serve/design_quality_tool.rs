@@ -21,14 +21,35 @@ impl McpTool for GetDesignQuality {
     }
 
     fn call(&self, _args: &BTreeMap<String, String>) -> ToolOutcome {
-        let report = op_chat_agent::design_agent_tools::collect_design_quality(&self.state);
-        match serde_json::to_string(&report) {
-            Ok(json) => ToolOutcome::OkJson(json),
-            Err(error) => ToolOutcome::Err(
-                op_mcp::ToolErrorCode::Internal,
-                format!("serialize design quality failed: {error}"),
-            ),
-        }
+        collect(&self.state)
+    }
+}
+
+/// Request-local pure diagnostics borrow the locked editor while preparing;
+/// the returned tool owns only its result, never an extra document forest.
+pub(crate) struct PreparedQuality(ToolOutcome);
+pub(crate) fn get_design_quality_for_call(state: &EditorState) -> PreparedQuality {
+    PreparedQuality(collect(state))
+}
+impl McpTool for PreparedQuality {
+    fn name(&self) -> &str {
+        "get_design_quality"
+    }
+    fn call(&self, _args: &BTreeMap<String, String>) -> ToolOutcome {
+        self.0.clone()
+    }
+    fn call_once(self: Box<Self>, _args: &BTreeMap<String, String>) -> ToolOutcome {
+        self.0
+    }
+}
+fn collect(state: &EditorState) -> ToolOutcome {
+    let report = op_chat_agent::design_agent_tools::collect_design_quality(state);
+    match serde_json::to_string(&report) {
+        Ok(json) => ToolOutcome::OkJson(json),
+        Err(error) => ToolOutcome::Err(
+            op_mcp::ToolErrorCode::Internal,
+            format!("serialize design quality failed: {error}"),
+        ),
     }
 }
 

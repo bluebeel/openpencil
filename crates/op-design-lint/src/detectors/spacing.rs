@@ -213,6 +213,61 @@ fn is_coloured_media(node: &PenNode) -> bool {
                 )
             })
         })
+        && !children(node)
+            .iter()
+            .any(|child| matches!(node_kind(child), NodeKind::Text))
+}
+
+fn node_spans_width(node: &PenNode, root_width: f64) -> bool {
+    node_width(node).is_some_and(|width| {
+        matches!(width, SizingBehavior::Keyword(SizingKeyword::FillContainer))
+            || (root_width > 0.0
+                && matches!(width, SizingBehavior::Number(width) if *width >= root_width - 1.0))
+    })
+}
+
+fn node_width(node: &PenNode) -> Option<&SizingBehavior> {
+    match node {
+        PenNode::Frame(node) => node.container.width.as_ref(),
+        PenNode::Group(node) => node.container.width.as_ref(),
+        PenNode::Rectangle(node) => node.container.width.as_ref(),
+        PenNode::Image(node) => node.width.as_ref(),
+        _ => None,
+    }
+}
+
+pub(super) fn numeric_width(node: &PenNode) -> Option<f64> {
+    match node_width(node) {
+        Some(SizingBehavior::Number(width)) => Some(*width),
+        _ => None,
+    }
+}
+
+fn has_concrete_zero_horizontal_padding(node: &PenNode) -> bool {
+    !matches!(padding(node), Some(Padding::Expression(_)))
+        && get_padding_left(node) == 0.0
+        && get_padding_right(node) == 0.0
+}
+
+fn is_intentional_horizontal_scroller(node: &PenNode) -> bool {
+    if crate::horizontal_scroll::is_clipped_horizontal_lane_node(node) {
+        return true;
+    }
+    match node {
+        PenNode::Frame(node) => {
+            node.container.layout == Some(LayoutMode::Horizontal)
+                && node.container.clip_content == Some(true)
+        }
+        PenNode::Group(node) => {
+            node.container.layout == Some(LayoutMode::Horizontal)
+                && node.container.clip_content == Some(true)
+        }
+        PenNode::Rectangle(node) => {
+            node.container.layout == Some(LayoutMode::Horizontal)
+                && node.container.clip_content == Some(true)
+        }
+        _ => false,
+    }
 }
 
 fn contains_intentional_horizontal_scroller(node: &PenNode) -> bool {
