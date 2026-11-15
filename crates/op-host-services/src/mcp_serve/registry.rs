@@ -29,6 +29,9 @@ pub(super) fn rebuild_registry_with_authority(
         return lean_profile::lean_registry(doc, requested_tool, arguments);
     }
     let mut r = ToolRegistry::default();
+    for tool in op_mcp::advanced_edit_tools::tools(requested_tool) {
+        r.register(http_export::wrap(tool));
+    }
 
     macro_rules! register_tool {
         ($name:literal, $tool:expr) => {

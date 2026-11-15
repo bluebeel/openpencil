@@ -131,24 +131,25 @@ fn collect(
 }
 
 fn stateless_setter(name: &str) -> bool {
-    matches!(
-        name,
-        "update_node"
-            | "set_node_rotation"
-            | "set_node_text"
-            | "set_node_corner_radius"
-            | "set_node_font_size"
-            | "set_node_font_weight"
-            | "set_node_stroke_hex"
-            | "set_node_stroke_width"
-            | "set_node_stroke_side_width"
-            | "set_node_fill_hex"
-            | "set_node_name"
-            | "set_node_hidden"
-            | "set_node_locked"
-            | "set_node_collapsed"
-            | "set_node_flip"
-            | "add_node_effect"
-            | "remove_node_effect"
-    )
+    op_mcp::advanced_edit_tools::is_local_setter(name)
+        || matches!(
+            name,
+            "update_node"
+                | "set_node_rotation"
+                | "set_node_text"
+                | "set_node_corner_radius"
+                | "set_node_font_size"
+                | "set_node_font_weight"
+                | "set_node_stroke_hex"
+                | "set_node_stroke_width"
+                | "set_node_stroke_side_width"
+                | "set_node_fill_hex"
+                | "set_node_name"
+                | "set_node_hidden"
+                | "set_node_locked"
+                | "set_node_collapsed"
+                | "set_node_flip"
+                | "add_node_effect"
+                | "remove_node_effect"
+        )
 }

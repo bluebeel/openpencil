@@ -2,6 +2,34 @@
 use super::{ToolAccess, ToolProfile, ToolSurface};
 
 pub const TOOL_PROFILES: &[ToolProfile] = &[
+    ToolProfile::new("add_image_video", ToolAccess::Write, ToolSurface::InMemory),
+    ToolProfile::new(
+        "remove_image_video",
+        ToolAccess::Write,
+        ToolSurface::InMemory,
+    ),
+    ToolProfile::new(
+        "replace_font_family",
+        ToolAccess::Write,
+        ToolSurface::InMemory,
+    ),
+    ToolProfile::new("set_effect_color", ToolAccess::Write, ToolSurface::InMemory),
+    ToolProfile::new("set_effect_param", ToolAccess::Write, ToolSurface::InMemory),
+    ToolProfile::new(
+        "set_image_video_playback",
+        ToolAccess::Write,
+        ToolSurface::InMemory,
+    ),
+    ToolProfile::new(
+        "set_image_video_src",
+        ToolAccess::Write,
+        ToolSurface::InMemory,
+    ),
+    ToolProfile::new(
+        "set_node_layout_property",
+        ToolAccess::Write,
+        ToolSurface::InMemory,
+    ),
     ToolProfile::new("ToolSearch", ToolAccess::Read, ToolSurface::InMemory),
     ToolProfile::new("add_node_effect", ToolAccess::Write, ToolSurface::InMemory),
     ToolProfile::new("add_page", ToolAccess::Write, ToolSurface::InMemory),

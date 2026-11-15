@@ -283,7 +283,8 @@ fn structural(name: &str) -> bool {
     )
 }
 fn eligible(name: &str) -> bool {
-    cacheable_document_read(name)
+    op_mcp::advanced_edit_tools::is_local_setter(name)
+        || cacheable_document_read(name)
         || structural(name)
         || matches!(
             name,

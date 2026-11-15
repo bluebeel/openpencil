@@ -50,6 +50,7 @@ mod batch_layered_tests;
 mod batch_page;
 mod image_annotation;
 pub use image_annotation::{annotate_image_snapshot, annotate_image_snapshot_for_call};
+pub mod advanced_edit_tools;
 mod batch_program;
 mod batch_program_context;
 #[cfg(test)]

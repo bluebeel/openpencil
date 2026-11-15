@@ -507,7 +507,8 @@ fn structured_arg_allowed(tool: &str, key: &str) -> bool {
     }
     matches!(
         (tool, key),
-        ("batch_tools", "operations")
+        ("set_node_layout_property", "value")
+            | ("batch_tools", "operations")
             | ("set_variables", "variables")
             | ("upsert_variables", "variables")
             | ("upsert_component", "node_json")
