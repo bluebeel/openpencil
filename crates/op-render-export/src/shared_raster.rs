@@ -20,6 +20,11 @@ use crate::shared_work::{
 };
 
 const MAX_ADMITTED: usize = MAX_RENDER_ADMISSIONS;
+#[path = "shared_raster_cache.rs"]
+mod encoded_cache;
+#[path = "shared_raster_output.rs"]
+mod output;
+use output::{render_job, render_node_batch_job};
 
 thread_local! { static CONSUMING_BATCH: Cell<bool> = const { Cell::new(false) }; }
 fn check_consumer_reentry() -> Result<(), ExportError> {
@@ -128,6 +133,7 @@ impl SharedRasterWorker {
             .name("op-shared-raster".into())
             .spawn(move || {
                 let mut initialized = false;
+                let mut encoded = encoded_cache::Cache::default();
                 for job in receiver {
                     if !initialized {
                         crate::scene_painter::initialize_backend();
@@ -140,7 +146,7 @@ impl SharedRasterWorker {
                         Job::Raster(job) => {
                             let result =
                                 crate::scene_painter::with_immutable_scene(&job.scene, || {
-                                    render_job(&job)
+                                    render_job(&job, &mut encoded)
                                 });
                             worker_counters.completed.fetch_add(1, Ordering::Relaxed);
                             let _ = job.reply.send(result);
@@ -148,7 +154,7 @@ impl SharedRasterWorker {
                         Job::Nodes(job) => {
                             let scene = Arc::clone(&job.scene);
                             crate::scene_painter::with_immutable_scene(&scene, || {
-                                render_node_batch_job(job)
+                                render_node_batch_job(job, &mut encoded)
                             });
                             worker_counters.completed.fetch_add(1, Ordering::Relaxed);
                         }
@@ -389,59 +395,6 @@ pub fn shared_raster_worker() -> Result<&'static SharedRasterWorker, ExportError
         .get_or_init(|| SharedRasterWorker::with_work_gate(shared_work_gate().clone()))
         .as_ref()
         .map_err(Clone::clone)
-}
-
-fn render_job(job: &RasterJob) -> Result<Vec<u8>, ExportError> {
-    let page_id = match &job.target {
-        SharedRasterTarget::Page { page_id } | SharedRasterTarget::Node { page_id, .. } => page_id,
-    };
-    let page = job
-        .scene
-        .pages
-        .iter()
-        .find(|page| &page.id == page_id)
-        .ok_or_else(|| ExportError::PageNotFound {
-            page_id: page_id.clone(),
-        })?;
-    match &job.target {
-        SharedRasterTarget::Page { .. } => {
-            crate::render_page_raster_bytes_with_sampling(page, job.format, job.scale, job.sampling)
-        }
-        SharedRasterTarget::Node { node_id, .. } => {
-            crate::render_node_on_page_raster_bytes_with_sampling(
-                page,
-                node_id,
-                job.format,
-                job.scale,
-                job.sampling,
-            )
-        }
-    }
-}
-
-fn render_node_batch_job(job: NodeBatchJob) {
-    let page = job.scene.active_page();
-    let nodes = page
-        .map(|page| crate::SceneSelectionBatch::new(page, job.node_ids.iter().map(String::as_str)));
-    let mut cursor = nodes.as_ref().map(|nodes| nodes.cursor());
-    crate::with_batch_preparation(|| {
-        for (index, id) in job.node_ids.iter().enumerate() {
-            let result = match (&nodes, &mut cursor) {
-                (Some(nodes), Some(cursor)) => match cursor.get(nodes, id.as_str()) {
-                    None => Err(ExportError::NodeNotFoundOnActivePage {
-                        node_id: id.clone(),
-                    }),
-                    Some(selected) => {
-                        crate::render_selected_node_raster_bytes(selected, job.format, job.scale)
-                    }
-                },
-                _ => Err(ExportError::NoActivePage),
-            };
-            if job.reply.send((index, result)).is_err() || job.advance.recv().is_err() {
-                break;
-            }
-        }
-    });
 }
 
 #[cfg(test)]

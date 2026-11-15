@@ -57,6 +57,8 @@ pub mod context;
     target_os = "android"
 ))]
 pub mod backend;
+/// Registry epoch used by immutable raster-output consumers.
+pub use jian_skia::font_generation as render_font_generation;
 pub use jian_skia::raster_sampling;
 #[cfg(any(
     target_os = "macos",
