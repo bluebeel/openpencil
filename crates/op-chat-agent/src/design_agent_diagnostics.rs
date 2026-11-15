@@ -376,7 +376,11 @@ fn scan_variable_refs(
     if out.len() >= LIMIT {
         return;
     }
-    let Ok(value) = serde_json::to_value(node) else {
+    // This per-node scan reads fill/stroke metadata only. Serializing children
+    // here repeatedly copied every descendant at every ancestor on large files.
+    let Ok(value) = serde_json::to_value(
+        op_editor_core::history_snapshot::BorrowedNodeMetadata::new(node),
+    ) else {
         return;
     };
     let mut refs = BTreeSet::new();
