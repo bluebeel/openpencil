@@ -1,7 +1,7 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use jian_ops_schema::conversion::{ConversionEntry, ConversionKind};
-use op_editor_core::EditorState;
+use op_editor_core::{EditorState, PenNodeExt};
 
 use super::{McpTool, ToolErrorCode, ToolOutcome};
 
@@ -9,7 +9,6 @@ pub struct ConversionStatus {
     entries: Vec<StatusEntry>,
 }
 
-#[derive(Clone)]
 struct StatusEntry {
     kind: String,
     key: String,
@@ -37,17 +36,16 @@ impl McpTool for ConversionStatus {
                 );
             }
         };
-        let entries: Vec<StatusEntry> = self
+        let entries = self
             .entries
             .iter()
-            .filter(|entry| filter.is_none_or(|kind| entry.kind == kind))
-            .cloned()
-            .collect();
+            .filter(|entry| filter.is_none_or(|kind| entry.kind == kind));
         ToolOutcome::OkJson(status_json(entries))
     }
 }
 
 pub fn conversion_status_snapshot(state: &EditorState) -> ConversionStatus {
+    let missing = missing_node_ids(&state.doc);
     let entries = state
         .doc
         .conversion
@@ -55,20 +53,57 @@ pub fn conversion_status_snapshot(state: &EditorState) -> ConversionStatus {
         .map(|spec| {
             spec.entries
                 .iter()
-                .map(|entry| status_entry(&state.doc, entry))
+                .map(|entry| status_entry(entry, &missing))
                 .collect()
         })
         .unwrap_or_default();
     ConversionStatus { entries }
 }
 
-fn status_entry(doc: &jian_ops_schema::PenDocument, entry: &ConversionEntry) -> StatusEntry {
+// Retain only ledger identities. One borrowed forest walk replaces a complete
+// document search for every converted root; tokens require no tree traversal.
+fn missing_node_ids(doc: &jian_ops_schema::PenDocument) -> HashSet<&str> {
+    let mut missing: HashSet<_> = doc
+        .conversion
+        .iter()
+        .flat_map(|spec| &spec.entries)
+        .filter(|entry| entry.kind != ConversionKind::Token)
+        .filter_map(|entry| entry.node_id.as_deref())
+        .collect();
+    for roots in doc
+        .pages
+        .iter()
+        .flatten()
+        .map(|page| page.children.as_slice())
+        .chain(std::iter::once(doc.children.as_slice()))
+    {
+        if missing.is_empty() {
+            break;
+        }
+        let mut pending = vec![roots.iter()];
+        while let Some(siblings) = pending.last_mut() {
+            if let Some(node) = siblings.next() {
+                missing.remove(node.id_str());
+                if missing.is_empty() {
+                    break;
+                }
+                if let Some(children) = node.children() {
+                    pending.push(children.iter());
+                }
+            } else {
+                pending.pop();
+            }
+        }
+    }
+    missing
+}
+fn status_entry(entry: &ConversionEntry, missing: &HashSet<&str>) -> StatusEntry {
     let node_ok = match entry.kind {
         ConversionKind::Token => true,
         ConversionKind::Component | ConversionKind::Screen => entry
             .node_id
             .as_deref()
-            .is_some_and(|node_id| op_editor_core::conversion::node_exists(doc, node_id)),
+            .is_some_and(|node_id| !node_id.is_empty() && !missing.contains(node_id)),
     };
     StatusEntry {
         kind: kind_str(entry.kind).into(),
@@ -88,8 +123,8 @@ fn kind_str(kind: ConversionKind) -> &'static str {
     }
 }
 
-fn status_json(entries: Vec<StatusEntry>) -> String {
-    let values: Vec<serde_json::Value> = entries.iter().map(status_entry_json).collect();
+fn status_json<'a>(entries: impl Iterator<Item = &'a StatusEntry>) -> String {
+    let values: Vec<serde_json::Value> = entries.map(status_entry_json).collect();
     serde_json::json!({
         "total": values.len(),
         "entries": values,
