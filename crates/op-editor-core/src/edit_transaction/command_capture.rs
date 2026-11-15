@@ -7,6 +7,8 @@ use crate::{
 use std::{mem, sync::Arc};
 #[path = "command_auxiliary_apply.rs"]
 mod auxiliary;
+#[path = "command_save_receipt.rs"]
+mod canonical_save;
 #[path = "command_scope.rs"]
 mod command_scope;
 #[path = "command_history_cohort.rs"]

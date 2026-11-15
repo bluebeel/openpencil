@@ -46,6 +46,9 @@ pub(super) fn route(
                 .ensure_document_available()
                 .map_err(|e| crate::mcp_serve::McpServeError::Document(e.to_string()))?;
             let fence = guard.recovery.clone();
+            // Keep proven canonical bytes outside the temporary actor UI
+            // checkout. Every other mutable editor path still invalidates it.
+            let mut save_chain = guard.editor.take_save_chain();
             let response = crate::mcp_serve::agent_context::with_agent_context(
                 &agent_contexts,
                 document_key,
@@ -54,9 +57,14 @@ pub(super) fn route(
                 mcp_profile,
                 |editor| {
                     let operation = fence.watch();
-                    let saved = crate::doc_io::save_to_path(editor, destination).map_err(|error| {
-                        crate::mcp_serve::McpServeError::Document(error.to_string())
-                    });
+                    let saved = if canonical_primary.is_some_and(|path| path == destination) {
+                        save_chain.save_explicit(editor, destination).map(|_| ())
+                    } else {
+                        // New targets/SaveAs preserve the existing complete
+                        // pretty writer and destination-authority contract.
+                        crate::doc_io::save_to_path(editor, destination)
+                    }
+                    .map_err(|error| crate::mcp_serve::McpServeError::Document(error.to_string()));
                     operation.complete();
                     saved?;
                     Ok(None)
@@ -68,6 +76,7 @@ pub(super) fn route(
                     crate::document_recovery::REQUIRED.into(),
                 ));
             }
+            guard.editor.restore_save_chain(save_chain);
             response.map(|_| ())
         },
     )?;

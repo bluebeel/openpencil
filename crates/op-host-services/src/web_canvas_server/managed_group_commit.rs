@@ -429,11 +429,17 @@ impl Transaction<'_, '_, '_> {
                             budget.retain_unanchored_components();
                         }
                         if applied && changed {
-                            save_chain.observe(editor, |visitor| {
+                            save_chain.observe(editor, |nodes, headers, appends| {
                                 capture
                                     .as_ref()
                                     .expect("applied capture")
-                                    .visit_metadata_changes(editor, visitor)
+                                    .visit_canonical_edits(
+                                        editor,
+                                        crate::doc_io::incremental::HEADER_VALUE_LIMIT,
+                                        nodes,
+                                        headers,
+                                        appends,
+                                    )
                             });
                             committed_changes
                                 .capture(capture.as_ref().expect("applied capture"), editor);

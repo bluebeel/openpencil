@@ -23,8 +23,11 @@ pub(super) enum Event {
     TakeEmpty,
     RestoreReady,
     CollaborationProjection,
+    HeaderMismatch,
+    AppendRefusal,
+    ExplicitCommitReuse,
 }
-const N: usize = 20;
+const N: usize = 23;
 static COUNTS: [AtomicU64; N] = [const { AtomicU64::new(0) }; N];
 pub(super) fn hit(event: Event) {
     COUNTS[event as usize].fetch_add(1, Ordering::Relaxed);
@@ -51,6 +54,9 @@ pub(crate) fn snapshot() -> serde_json::Value {
         "takeEmpty",
         "restoreReady",
         "collaborationProjectionBorrows",
+        "headerMismatches",
+        "appendRefusals",
+        "explicitMatchingCommitReuses",
     ];
     let mut values = serde_json::Map::new();
     for (name, value) in names.iter().zip(&COUNTS) {

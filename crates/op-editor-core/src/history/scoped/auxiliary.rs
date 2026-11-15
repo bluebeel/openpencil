@@ -15,6 +15,7 @@ mod forward;
 #[path = "auxiliary/lifecycle.rs"]
 mod lifecycle;
 mod mixed;
+mod save;
 mod upsert;
 mod variable_rewrite;
 pub(super) use forward::Label as ForwardLabel;

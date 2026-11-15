@@ -3,6 +3,7 @@ use super::{patch, ScopedHistoryError};
 use crate::{EditorState, PenNodeExt, SharedNode};
 use jian_ops_schema::{node::PenNode, PenDocument};
 use std::{mem, sync::Arc};
+mod canonical_append;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SpliceSpec {

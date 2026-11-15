@@ -7,14 +7,34 @@ pub(super) struct Span {
     pub start: usize,
     pub end: usize,
 }
+impl Span {
+    pub fn overlaps(self, other: Self) -> bool {
+        if self.start == self.end {
+            return other.start < self.start && self.start < other.end;
+        }
+        if other.start == other.end {
+            return self.start < other.start && other.start < self.end;
+        }
+        self.start < other.end && other.start < self.end
+    }
+}
+#[derive(Clone, Copy)]
+pub(super) struct Children {
+    pub span: Span,
+    pub len: usize,
+    pub last: Option<usize>,
+}
 #[derive(Clone, Copy)]
 pub(super) struct Node {
     pub object: Span,
-    pub children: Option<Span>,
+    pub children: Option<Children>,
 }
 pub(super) struct Index {
     pub nodes: HashMap<String, Option<Node>>,
+    pub root: Option<Children>,
+    pub pages: HashMap<String, Option<Children>>,
     pub meta: Span,
+    pub headers: [Option<Span>; 4],
 }
 #[path = "index_stream.rs"]
 mod stream;
@@ -25,9 +45,16 @@ impl Index {
         stream::build(file)
     }
     pub fn bytes(&self) -> usize {
-        self.nodes.capacity() * (std::mem::size_of::<(String, Option<Node>)>() + 16)
+        std::mem::size_of::<Self>()
+            + self.nodes.capacity() * (std::mem::size_of::<(String, Option<Node>)>() + 16)
             + self
                 .nodes
+                .keys()
+                .map(|id| id.capacity() + 32)
+                .sum::<usize>()
+            + self.pages.capacity() * (std::mem::size_of::<(String, Option<Children>)>() + 16)
+            + self
+                .pages
                 .keys()
                 .map(|id| id.capacity() + 32)
                 .sum::<usize>()

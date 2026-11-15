@@ -1,5 +1,7 @@
 //! Exact one-sided deltas for optional persisted header maps.
 use serde::Serialize;
+#[path = "header_map/save.rs"]
+mod save;
 use std::{collections::BTreeMap, mem};
 
 #[derive(Debug, Clone, PartialEq)]

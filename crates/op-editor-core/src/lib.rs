@@ -39,6 +39,7 @@ pub mod table_filter_contract;
 pub mod table_pagination;
 pub mod text_effect_overlay;
 pub use chat_title::{is_default_chat_title, suggest_chat_title};
+mod canonical_save_receipt;
 pub mod clipboard;
 pub mod codegen;
 pub mod collab_admission_ui;
@@ -55,6 +56,9 @@ pub mod collab_wire;
 pub mod color_picker;
 pub mod color_picker_edit;
 mod color_picker_snapshot;
+pub use canonical_save_receipt::{
+    CanonicalAppend, CanonicalChildTarget, CanonicalHeaderChange, CanonicalHeaderField,
+};
 pub mod command;
 pub mod command_apply;
 mod command_apply_legacy;

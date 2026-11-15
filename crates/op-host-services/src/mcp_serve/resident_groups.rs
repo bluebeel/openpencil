@@ -274,21 +274,28 @@ fn run(lease: &DocumentLease<'_>, requests: &[Request]) -> Vec<Reply> {
                 .collect()
         }
     };
-    let result =
-        lease.with_editor_accounted_epoch(false, Some(claim_epoch), |editor, stamp, fence| {
+    let result = lease.with_tracked_editor_accounted_epoch(
+        false,
+        Some(claim_epoch),
+        |tracked, stamp, fence| {
+            let mut save_chain = tracked.take_save_chain();
             let mut tx = transaction::Transaction::new(
-                editor,
+                tracked,
                 lease.path(),
                 stamp,
                 fence,
                 groups,
                 requests,
                 claim_epoch,
+                &mut save_chain,
             );
             for index in 0..requests.len() {
                 tx.stage(index);
             }
             let (replies, persisted, invalidate) = tx.finish();
+            if !invalidate && !fence.required() {
+                tracked.restore_save_chain(save_chain);
+            }
             (
                 ActionResult {
                     value: replies,
@@ -297,7 +304,8 @@ fn run(lease: &DocumentLease<'_>, requests: &[Request]) -> Vec<Reply> {
                 },
                 None,
             )
-        });
+        },
+    );
     match result {
         Ok(replies) => replies,
         Err(AuthorityError::Uncertain) => requests

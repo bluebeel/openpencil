@@ -38,6 +38,19 @@ impl TrackedEditor {
         super::hit(super::Event::CollaborationProjection);
         &mut self.state.editor_ui.collab
     }
+    /// Conservatively reserve the derived index/fragment/thumb/I/O ownership
+    /// beside the resident document ledger. The raw source itself is file-backed.
+    pub(crate) fn save_chain_bytes(&self) -> usize {
+        self.chain
+            .base
+            .as_ref()
+            .map_or(0, |base| base._reservation.0)
+    }
+    /// Optional derived bytes are the first eviction candidate; never evict a
+    /// complete authoritative editor merely to keep its acceleration cache.
+    pub(crate) fn discard_save_chain(&mut self) {
+        self.chain.invalidate();
+    }
     /// Extract only while one writer authority remains exclusively locked.
     /// All document-changing steps must feed receipts or invalidate this chain.
     pub(crate) fn take_save_chain(&mut self) -> SaveChain {

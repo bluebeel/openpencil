@@ -16,6 +16,7 @@ struct Pending {
 pub(super) struct Transaction<'s, 'q> {
     claim_epoch: u64,
     editor: &'s mut EditorState,
+    save_chain: &'s mut crate::doc_io::incremental::SaveChain,
     path: &'s Path,
     stamp: &'s FileStamp,
     fence: &'s DocumentRecovery,
@@ -43,10 +44,12 @@ impl<'s, 'q> Transaction<'s, 'q> {
         groups: &'s Groups,
         requests: &'q [Request],
         claim_epoch: u64,
+        save_chain: &'s mut crate::doc_io::incremental::SaveChain,
     ) -> Self {
         Self {
             claim_epoch,
             editor,
+            save_chain,
             path,
             stamp,
             fence,
@@ -139,6 +142,7 @@ impl<'s, 'q> Transaction<'s, 'q> {
             self.live_selection = Some(selection.clone());
         }
         let before_budget = self.budget;
+        let save_chain = &mut self.save_chain;
         let budget = &mut self.budget;
         let capture_quota = &mut self.capture_quota;
         let metrics = &self.groups.metrics;
@@ -225,6 +229,7 @@ impl<'s, 'q> Transaction<'s, 'q> {
                     // or unrepresentable bounded call can fall back only after
                     // its exact capture has demonstrably restored all local state.
                     if !applied || isolated || failure.is_some() || result.is_err() {
+                        save_chain.invalidate();
                         if let Some(checkpoint) = capture.take() {
                             if editor.abort_command_edit(checkpoint).is_err() {
                                 fence.trip();
@@ -236,6 +241,19 @@ impl<'s, 'q> Transaction<'s, 'q> {
                     }
                     if applied && !changed {
                         budget.retain_unanchored_components();
+                    }
+                    if applied && changed {
+                        save_chain.observe(editor, |nodes, headers, appends| {
+                            capture.as_ref().is_some_and(|capture| {
+                                capture.visit_canonical_edits(
+                                    editor,
+                                    crate::doc_io::incremental::HEADER_VALUE_LIMIT,
+                                    nodes,
+                                    headers,
+                                    appends,
+                                )
+                            })
+                        });
                     }
                     operation.complete();
                     result
@@ -251,6 +269,7 @@ impl<'s, 'q> Transaction<'s, 'q> {
             })
         });
         if applied && (response.is_err() || rejected) {
+            self.save_chain.invalidate();
             self.id_sequence.invalidate();
             // A context restoration error must not leave an unacknowledged
             // staged command in the cohort. Reenter exactly that pinned actor.
@@ -286,6 +305,7 @@ impl<'s, 'q> Transaction<'s, 'q> {
     }
 
     fn rollback(&mut self) -> bool {
+        self.save_chain.invalidate();
         self.id_sequence.invalidate();
         let mut clean = true;
         for pending in std::mem::take(&mut self.pending).into_iter().rev() {
@@ -346,6 +366,7 @@ impl<'s, 'q> Transaction<'s, 'q> {
                 let stamp = self.stamp;
                 let fence = self.fence.clone();
                 let persisted = &mut self.persisted;
+                let save_chain = &mut self.save_chain;
                 let result = mcp_serve::agent_context::with_agent_context_for_commit(
                     &request.contexts,
                     path,
@@ -358,8 +379,11 @@ impl<'s, 'q> Transaction<'s, 'q> {
                         match stamp
                             .verify(path)
                             .map_err(|error| McpServeError::Document(error.to_string()))
-                            .and_then(|_| mcp_serve::save_editor_state(editor, path))
-                        {
+                            .and_then(|_| {
+                                save_chain
+                                    .save(editor, path)
+                                    .map_err(|error| McpServeError::Document(error.to_string()))
+                            }) {
                             Ok(()) => {
                                 *persisted = true;
                                 saved = true;

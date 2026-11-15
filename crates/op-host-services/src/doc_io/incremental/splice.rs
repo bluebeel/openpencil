@@ -32,7 +32,7 @@ pub(super) fn encode(value: &impl Serialize) -> Option<Vec<u8>> {
 }
 /// Editor catalogs are independent of node headers: full Bridge metadata is
 /// larger than 1 MiB. Retained replacements still share the existing EDITS cap.
-pub(super) fn editor_meta(value: &op_pen_loader::EditorMeta) -> Option<Vec<u8>> {
+pub(super) fn editor_meta(value: &impl Serialize) -> Option<Vec<u8>> {
     encode_with_limit(value, 4 * 1024 * 1024)
 }
 fn encode_with_limit(value: &impl Serialize, limit: usize) -> Option<Vec<u8>> {
@@ -42,6 +42,26 @@ fn encode_with_limit(value: &impl Serialize, limit: usize) -> Option<Vec<u8>> {
     };
     serde_json::to_writer(&mut out, value).ok()?;
     Some(out.bytes)
+}
+pub(super) fn append(nodes: &[PenNode]) -> Option<Vec<u8>> {
+    let mut resources = false;
+    jian_ops_schema::image_table::visit_legacy_node_roots(nodes.iter(), &mut |_| resources = true);
+    if resources {
+        return None;
+    }
+    let bytes = jian_ops_schema::image_table::without_save_scope(|| {
+        encode_with_limit(&nodes, super::HEADER_VALUE_LIMIT)
+    })?;
+    (bytes.capacity() <= super::HEADER_VALUE_LIMIT && resource_neutral(&bytes)).then_some(bytes)
+}
+fn resource_neutral(bytes: &[u8]) -> bool {
+    [
+        b"\"url\":".as_slice(),
+        b"\"src\":".as_slice(),
+        b"\"thumbnailUrl\":".as_slice(),
+    ]
+    .iter()
+    .all(|key| !bytes.windows(key.len()).any(|part| part == *key))
 }
 pub(super) fn metadata(node: &PenNode) -> Option<Vec<u8>> {
     let bytes = encode(&BorrowedNodeMetadata::new(node))?;

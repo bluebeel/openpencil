@@ -13,6 +13,7 @@ use std::{
     },
 };
 
+use crate::doc_io::incremental::TrackedEditor;
 use op_editor_core::EditorState;
 
 use super::file_ownership::{self, FileVersion, Handle, OperationScope, Owner, SourceIdentity};
@@ -110,7 +111,7 @@ impl FileStamp {
 struct Resident {
     claim_epoch: Option<u64>,
     recovery: crate::document_recovery::DocumentRecovery,
-    editor: Option<EditorState>,
+    editor: Option<TrackedEditor>,
     stamp: Option<FileStamp>,
     charge_cache: ChargeCache,
 }
@@ -360,6 +361,7 @@ impl DocumentLease<'_> {
 
     /// Trusted routed dispatcher only: every canonical mutation must pass its
     /// observed capture receipt. Arbitrary/public closures use the full ledger.
+    #[cfg(test)]
     pub(super) fn with_editor_accounted<T>(
         &self,
         create: bool,
@@ -371,12 +373,44 @@ impl DocumentLease<'_> {
     ) -> Result<T, AuthorityError> {
         self.with_editor_accounted_epoch(create, None, action)
     }
+    #[cfg(test)]
     pub(super) fn with_editor_accounted_epoch<T>(
         &self,
         create: bool,
         expected_epoch: Option<u64>,
         action: impl FnOnce(
             &mut EditorState,
+            &FileStamp,
+            &crate::document_recovery::DocumentRecovery,
+        ) -> (ActionResult<T>, Option<DocumentDelta>),
+    ) -> Result<T, AuthorityError> {
+        // This compatibility closure has an unrestricted mutable EditorState.
+        // DerefMut intentionally discards the saved-byte chain before entry.
+        self.with_tracked_editor_accounted_epoch(create, expected_epoch, |editor, stamp, fence| {
+            action(editor, stamp, fence)
+        })
+    }
+
+    /// Closed host dispatcher only. Take the chain before any mutable coercion,
+    /// observe every completed canonical receipt and discard unproved changes.
+    pub(super) fn with_tracked_editor_accounted<T>(
+        &self,
+        create: bool,
+        action: impl FnOnce(
+            &mut TrackedEditor,
+            &FileStamp,
+            &crate::document_recovery::DocumentRecovery,
+        ) -> (ActionResult<T>, Option<DocumentDelta>),
+    ) -> Result<T, AuthorityError> {
+        self.with_tracked_editor_accounted_epoch(create, None, action)
+    }
+
+    pub(super) fn with_tracked_editor_accounted_epoch<T>(
+        &self,
+        create: bool,
+        expected_epoch: Option<u64>,
+        action: impl FnOnce(
+            &mut TrackedEditor,
             &FileStamp,
             &crate::document_recovery::DocumentRecovery,
         ) -> (ActionResult<T>, Option<DocumentDelta>),
@@ -466,7 +500,7 @@ impl DocumentLease<'_> {
             if !self.hub.adopt_charge(&self.slot, charge)? {
                 return Err(self.hub.capacity());
             }
-            resident.editor = Some(editor);
+            resident.editor = Some(editor.into());
             resident.stamp = Some(stamp);
             resident.charge_cache = charge_cache;
             let epoch = resident.recovery.epoch();
@@ -486,6 +520,7 @@ impl DocumentLease<'_> {
             OperationScope::enter(operation, Some(Arc::clone(&source)), fence.clone());
         let editor = resident.editor.as_mut().ok_or(AuthorityError::Poisoned)?;
         let before = accounting_marker(editor);
+        let save_bytes_before = editor.save_chain_bytes();
         let (result, document_delta) = {
             let operation = fence.watch();
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -513,7 +548,9 @@ impl DocumentLease<'_> {
             self.slot.charge.store(RESERVATION, Ordering::Relaxed);
             return Err(AuthorityError::Uncertain);
         }
-        let changed = before != accounting_marker(editor) || result.persisted;
+        let changed = before != accounting_marker(editor)
+            || result.persisted
+            || save_bytes_before != editor.save_chain_bytes();
         let current = FileStamp::read(self.path());
         let keep = !result.invalidate
             && source.verify().is_ok()
@@ -535,8 +572,21 @@ impl DocumentLease<'_> {
                 charge_cache,
                 document_delta,
             );
-            if let Ok(charge) = charge {
-                if self.hub.adopt_charge(&self.slot, charge)? {
+            if let Ok(document_charge) = charge {
+                let editor = editor.as_mut().unwrap();
+                let saved_bytes = editor.save_chain_bytes();
+                let combined = document_charge
+                    .checked_add(saved_bytes)
+                    .filter(|charge| *charge <= self.hub.max_bytes);
+                let mut adopted = match combined {
+                    Some(charge) => self.hub.adopt_charge(&self.slot, charge)?,
+                    None => false,
+                };
+                if !adopted && saved_bytes != 0 {
+                    editor.discard_save_chain();
+                    adopted = self.hub.adopt_charge(&self.slot, document_charge)?;
+                }
+                if adopted {
                     resident.stamp = current.ok();
                     return Ok(result.value);
                 }

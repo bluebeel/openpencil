@@ -3,7 +3,7 @@
 use super::DocIoError;
 use crate::mcp_serve::file_ownership::FileVersion;
 use jian_ops_schema::{image_thumbs::ImageThumbSnapshot, node::PenNode};
-use op_editor_core::{EditorState, PenNodeExt};
+use op_editor_core::{CanonicalHeaderChange, EditorState, PenNodeExt};
 use std::{
     collections::BTreeMap,
     fs::File,
@@ -16,9 +16,11 @@ mod splice;
 mod stats;
 mod tracked;
 use index::{Index, Span};
+mod append;
 pub(crate) use stats::snapshot as snapshot_stats;
 use stats::{hit, Event};
 pub(crate) use tracked::TrackedEditor;
+pub(crate) const HEADER_VALUE_LIMIT: usize = 4 * 1024 * 1024;
 
 /// Writer-derived byte cache, never a second canonical document. A caller may
 /// retain this only behind TrackedEditor and while all mutations are observed.
@@ -30,9 +32,11 @@ struct Base {
     raw: File,
     index: Index,
     replacements: BTreeMap<Span, Vec<u8>>,
+    appends: append::Overlay,
     replacement_bytes: usize,
     path: PathBuf,
     stamp: FileVersion,
+    owner: std::sync::Weak<()>,
     generation: u64,
     revision: u64,
     thumbnails: ImageThumbSnapshot,
@@ -44,32 +48,71 @@ impl SaveChain {
     }
     pub(crate) fn matches(&self, state: &EditorState) -> bool {
         self.base.as_ref().is_some_and(|base| {
-            base.generation == state.document_generation()
+            base.owner.ptr_eq(&state.derived_cache_owner())
+                && base.generation == state.document_generation()
                 && base.revision == state.document_revision()
         })
     }
     /// Call immediately after each completed command, before another command.
     /// A false proof, changed IDs/resources, partial visit or bounds exhaustion
     /// discards the whole derived cache; the canonical writer remains fallback.
-    pub(crate) fn observe(
+    pub(crate) fn observe<'a>(
         &mut self,
-        state: &EditorState,
-        visit: impl FnOnce(&mut dyn FnMut(&PenNode, &PenNode)) -> bool,
+        state: &'a EditorState,
+        visit: impl FnOnce(
+            &mut dyn FnMut(&PenNode, &PenNode),
+            &mut dyn FnMut(CanonicalHeaderChange) -> bool,
+            &mut dyn FnMut(op_editor_core::CanonicalAppend<'a>) -> bool,
+        ) -> bool,
     ) {
         let Some(base) = self.base.as_mut() else {
             return;
         };
-        let mut valid = base.generation == state.document_generation();
-        let exact = visit(&mut |old, current| {
-            if !valid {
-                return;
-            }
-            valid = old.id_str() == current.id_str() && base.patch(old, current).is_some();
-            if !valid {
-                hit(Event::MetadataMismatch);
-            }
-        });
-        if !exact || !valid {
+        // All visitors share one transaction. If any piece refuses, discard
+        // the entire derived chain before the ordinary canonical writer runs.
+        let valid = std::cell::Cell::new(
+            base.owner.ptr_eq(&state.derived_cache_owner())
+                && base.generation == state.document_generation(),
+        );
+        let exact = {
+            let base = std::cell::RefCell::new(base);
+            visit(
+                &mut |old, current| {
+                    if !valid.get() {
+                        return;
+                    }
+                    let okay = old.id_str() == current.id_str()
+                        && base.borrow_mut().patch(old, current).is_some();
+                    if !okay {
+                        hit(Event::MetadataMismatch);
+                        valid.set(false);
+                    }
+                },
+                &mut |change| {
+                    if !valid.get() {
+                        return false;
+                    }
+                    let okay = base.borrow_mut().patch_header(change).is_some();
+                    if !okay {
+                        hit(Event::HeaderMismatch);
+                        valid.set(false);
+                    }
+                    okay
+                },
+                &mut |receipt| {
+                    if !valid.get() {
+                        return false;
+                    }
+                    let okay = base.borrow_mut().append(receipt).is_some();
+                    if !okay {
+                        hit(Event::AppendRefusal);
+                        valid.set(false);
+                    }
+                    okay
+                },
+            )
+        };
+        if !exact || !valid.get() {
             if !exact {
                 hit(Event::ReceiptRefusal);
             }
@@ -77,15 +120,55 @@ impl SaveChain {
         }
     }
     pub(crate) fn save(&mut self, state: &EditorState, path: &Path) -> Result<(), DocIoError> {
+        self.save_inner(state, path, false).map(|_| ())
+    }
+    /// Explicit same-file save under a read-only authority scope. False means
+    /// the exact canonical/view/resource state already has a confirmed durable
+    /// commit. Different saved view metadata still performs a real byte copy.
+    /// The caller must take this chain BEFORE obtaining mutable EditorState
+    /// access and restore only after the audited read-only save scope ends.
+    pub(crate) fn save_explicit(
+        &mut self,
+        state: &EditorState,
+        path: &Path,
+    ) -> Result<bool, DocIoError> {
+        if !self.matches(state) {
+            self.invalidate();
+        }
+        self.save_inner(state, path, true)
+    }
+    fn save_inner(
+        &mut self,
+        state: &EditorState,
+        path: &Path,
+        allow_matching_commit: bool,
+    ) -> Result<bool, DocIoError> {
         let thumbs = jian_ops_schema::image_thumbs::capture_snapshot();
         if let Some(base) = &mut self.base {
-            if base.generation == state.document_generation()
+            if base.owner.ptr_eq(&state.derived_cache_owner())
+                && base.generation == state.document_generation()
                 && base.thumbnails.same_contents(&thumbs)
             {
                 if let Some(meta) =
-                    splice::editor_meta(&op_pen_loader::EditorMeta::from_state(state))
+                    splice::editor_meta(&op_pen_loader::EditorMeta::borrowed_from_state(state))
                 {
                     let span = base.index.meta;
+                    if allow_matching_commit
+                        && base.revision == state.document_revision()
+                        && base.current_matches(span, &meta).is_some()
+                    {
+                        match base.confirm_destination(path) {
+                            Ok(true) => {
+                                hit(Event::ExplicitCommitReuse);
+                                return Ok(false);
+                            }
+                            Ok(false) => hit(Event::SourceDrift),
+                            Err(error) => {
+                                self.base = None;
+                                return Err(error);
+                            }
+                        }
+                    }
                     if base.replace(span, meta).is_some() {
                         // A real I/O/ownership failure is returned, never hidden
                         // by a second save attempt or an acknowledgement.
@@ -93,7 +176,7 @@ impl SaveChain {
                             Ok(true) => {
                                 base.revision = state.document_revision();
                                 hit(Event::IncrementalSave);
-                                return Ok(());
+                                return Ok(true);
                             }
                             Ok(false) => hit(Event::SourceDrift),
                             Err(error) => {
@@ -123,16 +206,18 @@ impl SaveChain {
                         index.bytes() + budget::EDITS + thumbs.storage_bytes() + budget::IO;
                     if retained > reservation.0 {
                         hit(Event::SeedCharge);
-                        return Ok(());
+                        return Ok(true);
                     }
                     reservation.shrink(retained);
                     self.base = Some(Base {
                         raw,
                         index,
                         replacements: BTreeMap::new(),
+                        appends: append::Overlay::default(),
                         replacement_bytes: 0,
                         path,
                         stamp,
+                        owner: state.derived_cache_owner(),
                         generation: state.document_generation(),
                         revision: state.document_revision(),
                         thumbnails: thumbs,
@@ -146,10 +231,38 @@ impl SaveChain {
                 hit(Event::SeedSource);
             }
         }
-        Ok(())
+        Ok(true)
     }
 }
 impl Base {
+    /// Same ownership and actual FileVersion checks as a real byte-copy save,
+    /// even when no new temporary file is needed. No replay or skipped auth.
+    fn confirm_destination(&self, requested: &Path) -> Result<bool, DocIoError> {
+        let authorization =
+            crate::mcp_serve::file_ownership::authorize_save(requested).map_err(|error| {
+                DocIoError::FileOwnership {
+                    detail: error.to_string(),
+                    committed: false,
+                }
+            })?;
+        let _scope = authorization.scope();
+        let path = authorization.path();
+        let stamp = std::fs::metadata(path)
+            .map(|meta| FileVersion::metadata(&meta))
+            .map_err(|error| DocIoError::Io(error.to_string()))?;
+        Ok(path == self.path && stamp == self.stamp)
+    }
+
+    fn patch_header(&mut self, change: CanonicalHeaderChange) -> Option<()> {
+        let span = self.index.headers[change.field.index()]?;
+        // Add/remove root keys needs delimiter/schema-order surgery. Use the
+        // full writer for that first transition, then the next seed is indexed.
+        let before = change.before?;
+        let after = change.after?;
+        self.current_matches(span, &before)?;
+        self.replace(span, after)
+    }
+
     fn replace(&mut self, span: Span, replacement: Vec<u8>) -> Option<()> {
         let old = self.replacements.get(&span).map_or(0, Vec::capacity);
         let bytes = self
@@ -157,7 +270,7 @@ impl Base {
             .checked_sub(old)?
             .checked_add(replacement.capacity())?;
         if (!self.replacements.contains_key(&span) && self.replacements.len() >= 8192)
-            || bytes > budget::EDITS - 1024 * 1024
+            || bytes.checked_add(self.appends.bytes())? > budget::EDITS - 1024 * 1024
         {
             return None;
         }
@@ -169,7 +282,7 @@ impl Base {
             .into_iter()
             .chain(self.replacements.range((Excluded(span), Unbounded)).next())
         {
-            if span.start < other.end && other.start < span.end {
+            if span.overlaps(*other) {
                 return None;
             }
         }
@@ -186,12 +299,17 @@ impl Base {
         }
         // Only the bounded typed metadata/header pieces are read here. Complete
         // descendant bytes are never copied into a metadata comparison buffer.
-        let mut bytes = vec![0; expected.len()];
         self.raw
             .seek(SeekFrom::Start(span.start.try_into().ok()?))
             .ok()?;
-        self.raw.read_exact(&mut bytes).ok()?;
-        (bytes == expected).then_some(())
+        let mut scratch = [0u8; 8192];
+        for chunk in expected.chunks(scratch.len()) {
+            self.raw.read_exact(&mut scratch[..chunk.len()]).ok()?;
+            if &scratch[..chunk.len()] != chunk {
+                return None;
+            }
+        }
+        Some(())
     }
     fn patch(&mut self, old: &PenNode, current: &PenNode) -> Option<()> {
         let node = self.index.nodes.get(old.id_str()).copied().flatten()?;
@@ -207,6 +325,7 @@ impl Base {
                 self.replace(node.object, after)
             }
             (Some(children), Some(a), Some(b)) => {
+                let children = children.span;
                 let prefix = Span {
                     start: node.object.start,
                     end: children.start,

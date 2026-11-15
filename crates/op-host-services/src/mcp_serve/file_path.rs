@@ -189,9 +189,14 @@ pub(crate) fn process_message_for_file_path_arg_with_contexts(
             .resolve(&target.path)
             .and_then(|path| hub.acquire_canonical(&path))
             .and_then(|lease| {
-                lease.with_editor_accounted(
+                lease.with_tracked_editor_accounted(
                     target.tool == "open_document",
-                    |state, stamp, fence| {
+                    |tracked, stamp, fence| {
+                        // Detach before actor UI/history exchange obtains a
+                        // mutable EditorState. The closed dispatcher below
+                        // routes every canonical mutation through this receipt.
+                        let mut save_chain=tracked.take_save_chain();
+                        let state=&mut **tracked;
                         let mut document_delta =
                             super::resident_charge::DocumentDelta::begin(state);
                         let mut persisted = false;
@@ -214,6 +219,9 @@ pub(crate) fn process_message_for_file_path_arg_with_contexts(
                                         let cmd = match action {
                                             super::AuthorityAction::Command(command) => command,
                                             super::AuthorityAction::AuthorizeAtomic(_) => {
+                                                // Atomic execution has no completed per-step
+                                                // canonical save receipt here; full writer seeds it.
+                                                save_chain.invalidate();
                                                 if let Err(error) = stamp.verify(lease.path()) {
                                                     write_failure = Some(error.to_string());
                                                     invalidate = true;
@@ -248,10 +256,8 @@ pub(crate) fn process_message_for_file_path_arg_with_contexts(
                                                         McpServeError::Document(error.to_string())
                                                     })
                                                     .and_then(|_| {
-                                                        super::save_editor_state(
-                                                            state,
-                                                            lease.path(),
-                                                        )
+                                                        save_chain.save(state,lease.path())
+                                                            .map_err(|error|McpServeError::Document(error.to_string()))
                                                     });
                                                 if let Err(error) = saved {
                                                     write_failure = Some(error.to_string());
@@ -262,6 +268,7 @@ pub(crate) fn process_message_for_file_path_arg_with_contexts(
                                                 return true;
                                             }
                                             super::AuthorityAction::AtomicUncertain(reason) => {
+                                                save_chain.invalidate();
                                                 fence.trip();
                                                 invalidate = true;
                                                 write_failure = Some(format!(
@@ -317,6 +324,7 @@ pub(crate) fn process_message_for_file_path_arg_with_contexts(
                                             ),
                                         };
                                         if !applied {
+                                            save_chain.invalidate();
                                             if let Some(clipboard) = clipboard_before {
                                                 state.clipboard = clipboard;
                                             }
@@ -338,13 +346,23 @@ pub(crate) fn process_message_for_file_path_arg_with_contexts(
                                         if !needs_save {
                                             return true;
                                         }
+                                        if state.document_revision()!=revision {
+                                            save_chain.observe(state,|nodes,headers,appends| {
+                                                capture.as_ref().is_some_and(|capture| {
+                                                    capture.visit_canonical_edits(state,
+                                                        crate::doc_io::incremental::HEADER_VALUE_LIMIT,
+                                                        nodes,headers,appends)
+                                                })
+                                            });
+                                        }
                                         let saved = stamp
                                             .verify(lease.path())
                                             .map_err(|error| {
                                                 McpServeError::Document(error.to_string())
                                             })
                                             .and_then(|_| {
-                                                super::save_editor_state(state, lease.path())
+                                                save_chain.save(state,lease.path())
+                                                    .map_err(|error|McpServeError::Document(error.to_string()))
                                             });
                                         if let Err(error) = saved {
                                             let rollback = if let Some(capture) = capture {
@@ -385,6 +403,9 @@ pub(crate) fn process_message_for_file_path_arg_with_contexts(
                             None => response,
                         };
                         let document_delta = document_delta.finish(state);
+                        if !invalidate && !fence.required() {
+                            tracked.restore_save_chain(save_chain);
+                        }
                         (
                             super::resident_documents::ActionResult {
                                 value: response,
@@ -450,13 +471,16 @@ fn process_save_copy(
     let destination_lease = (source.path() != destination.as_path())
         .then(|| hub.acquire_canonical(&destination))
         .transpose()?;
-    source.with_editor_accounted(false, |state, stamp, fence| {
+    source.with_tracked_editor_accounted(false, |tracked, stamp, fence| {
+        let mut save_chain = tracked.take_save_chain();
+        let state = &mut **tracked;
         // This save callback only borrows canonical content. Context exchange
         // may change runtime/history accounting, but never the live Doc charge.
         let document_delta = super::resident_charge::DocumentDelta::begin(state);
         let mut persisted = false;
         let response = with_agent_context(contexts, source.path(), state, line, profile, |state| {
             let operation = fence.watch();
+            let mut written = false;
             let saved = if let Some(destination_lease) = &destination_lease {
                 destination_lease
                     .with_destination(|path| {
@@ -481,13 +505,21 @@ fn process_save_copy(
                 stamp
                     .verify(source.path())
                     .map_err(|e| McpServeError::Document(e.to_string()))
-                    .and_then(|_| super::save_editor_state(state, source.path()))
+                    .and_then(|_| {
+                        save_chain
+                            .save_explicit(state, source.path())
+                            .map_err(|error| McpServeError::Document(error.to_string()))
+                    })
+                    .map(|did_write| written = did_write)
             };
-            persisted = destination_lease.is_none() && saved.is_ok();
+            persisted = destination_lease.is_none() && saved.is_ok() && written;
             operation.complete();
             Ok(Some(save_response(call, destination.as_path(), &saved)))
         });
         let document_delta = document_delta.finish(state);
+        if !fence.required() && response.is_ok() {
+            tracked.restore_save_chain(save_chain);
+        }
         (
             ActionResult {
                 value: response,

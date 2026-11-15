@@ -84,8 +84,14 @@ fn apply_command(
         return Ok(false);
     }
     if editor.document_revision() != revision {
-        save_chain.observe(editor, |visitor| {
-            capture.visit_metadata_changes(editor, visitor)
+        save_chain.observe(editor, |nodes, headers, appends| {
+            capture.visit_canonical_edits(
+                editor,
+                crate::doc_io::incremental::HEADER_VALUE_LIMIT,
+                nodes,
+                headers,
+                appends,
+            )
         });
         if let Err(source) = save_chain.save(editor, path) {
             let rollback = capture.abort(editor).err();

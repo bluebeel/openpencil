@@ -1,6 +1,6 @@
 //! One forward scan of completed writer bytes. Descendant spans are indexed
 //! during the first pass, not rescanned through every ancestor's field list.
-use super::{Index, Node, Span, MAX_INDEX};
+use super::{Children, Index, Node, Span, MAX_INDEX};
 use std::{
     collections::HashMap,
     fs::File,
@@ -16,8 +16,11 @@ struct Scan<'a> {
     input: BufReader<&'a mut File>,
     at: usize,
     nodes: HashMap<String, Option<Node>>,
+    root: Option<Children>,
+    pages: HashMap<String, Option<Children>>,
     names: usize,
     meta: Option<Span>,
+    headers: [Option<Span>; 4],
 }
 pub(super) fn build(file: &mut File) -> Option<Index> {
     file.seek(SeekFrom::Start(0)).ok()?;
@@ -25,8 +28,11 @@ pub(super) fn build(file: &mut File) -> Option<Index> {
         input: BufReader::with_capacity(128 * 1024, file),
         at: 0,
         nodes: HashMap::new(),
+        root: None,
+        pages: HashMap::new(),
         names: 0,
         meta: None,
+        headers: [None; 4],
     };
     scan.object(Role::Document, 0)?;
     scan.space()?;
@@ -35,7 +41,10 @@ pub(super) fn build(file: &mut File) -> Option<Index> {
     }
     Some(Index {
         nodes: scan.nodes,
+        root: scan.root,
+        pages: scan.pages,
         meta: scan.meta?,
+        headers: scan.headers,
     })
 }
 impl Scan<'_> {
@@ -163,20 +172,29 @@ impl Scan<'_> {
         }
         Some(())
     }
-    fn array(&mut self, role: Role, depth: usize) -> Option<Span> {
+    fn array(&mut self, role: Role, depth: usize) -> Option<Children> {
         self.space()?;
         let start = self.at;
         self.expect(b'[')?;
         self.space()?;
         if self.peek()? == b']' {
             self.advance(1)?;
-            return Some(Span {
-                start,
-                end: self.at,
+            return Some(Children {
+                span: Span {
+                    start,
+                    end: self.at,
+                },
+                len: 0,
+                last: None,
             });
         }
+        let mut len = 0usize;
+        let mut last;
         loop {
+            self.space()?;
+            last = Some(self.at);
             self.object(role, depth + 1)?;
+            len = len.checked_add(1)?;
             self.space()?;
             match self.byte()? {
                 b',' => (),
@@ -184,9 +202,13 @@ impl Scan<'_> {
                 _ => return None,
             }
         }
-        Some(Span {
-            start,
-            end: self.at,
+        Some(Children {
+            span: Span {
+                start,
+                end: self.at,
+            },
+            len,
+            last,
         })
     }
     fn object(&mut self, role: Role, depth: usize) -> Option<()> {
@@ -213,11 +235,33 @@ impl Scan<'_> {
                 self.space()?;
                 let value_start = self.at;
                 match (role, key.as_str(), self.peek()?) {
-                    (Role::Document | Role::Page, "children", b'[') => {
-                        self.array(Role::Node, depth + 1)?;
+                    (Role::Document, "children", b'[') => {
+                        self.root = Some(self.array(Role::Node, depth + 1)?);
+                    }
+                    (Role::Page, "children", b'[') => {
+                        children = Some(self.array(Role::Node, depth + 1)?);
                     }
                     (Role::Document, "pages", b'[') => {
                         self.array(Role::Page, depth + 1)?;
+                    }
+                    (Role::Document, "variables" | "themes" | "designMd" | "conversion", _) => {
+                        self.skip(depth + 1)?;
+                        let slot = match key.as_str() {
+                            "variables" => 0,
+                            "themes" => 1,
+                            "designMd" => 2,
+                            "conversion" => 3,
+                            _ => unreachable!(),
+                        };
+                        if self.headers[slot]
+                            .replace(Span {
+                                start: value_start,
+                                end: self.at,
+                            })
+                            .is_some()
+                        {
+                            return None;
+                        }
                     }
                     (Role::Document, "editorMeta", _) => {
                         self.skip(depth + 1)?;
@@ -226,7 +270,7 @@ impl Scan<'_> {
                             end: self.at,
                         });
                     }
-                    (Role::Node, "id", b'"') => {
+                    (Role::Node | Role::Page, "id", b'"') => {
                         id = Some(serde_json::from_slice::<String>(&self.string(true)?).ok()?);
                     }
                     (Role::Node, "children", b'[') => {
@@ -243,7 +287,16 @@ impl Scan<'_> {
                 }
             }
         }
-        if matches!(role, Role::Node) {
+        if matches!(role, Role::Page) {
+            let id = id?;
+            let value = children?;
+            self.names = self.names.checked_add(id.capacity().checked_add(32)?)?;
+            if self.pages.contains_key(&id) {
+                self.pages.insert(id, None);
+            } else {
+                self.pages.insert(id, Some(value));
+            }
+        } else if matches!(role, Role::Node) {
             let id = id?;
             self.names = self.names.checked_add(id.capacity().checked_add(32)?)?;
             let node = Node {
@@ -258,13 +311,18 @@ impl Scan<'_> {
             } else {
                 self.nodes.insert(id, Some(node));
             }
-            let slots = self
-                .nodes
-                .capacity()
-                .checked_mul(std::mem::size_of::<(String, Option<Node>)>() + 16)?;
-            if self.names.checked_add(slots)? > MAX_INDEX {
-                return None;
-            }
+        }
+        let slots = self
+            .nodes
+            .capacity()
+            .checked_mul(std::mem::size_of::<(String, Option<Node>)>() + 16)?
+            .checked_add(
+                self.pages
+                    .capacity()
+                    .checked_mul(std::mem::size_of::<(String, Option<Children>)>() + 16)?,
+            )?;
+        if self.names.checked_add(slots)? > MAX_INDEX {
+            return None;
         }
         Some(())
     }
