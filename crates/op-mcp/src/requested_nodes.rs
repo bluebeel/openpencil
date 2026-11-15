@@ -29,7 +29,7 @@ pub(super) fn find_for_state<'a, S: AsRef<str>>(
     }
     if let Some(lookup) = state
         .trusted_node_lookup(roots)
-        .filter(|lookup| lookup.is_indexed())
+        .filter(|lookup| lookup.is_ready())
     {
         return ids
             .iter()
@@ -60,8 +60,7 @@ pub(super) fn find_in_forests_for_state<'a, S: AsRef<str>>(
         .iter()
         .map(|&roots| state.trusted_node_lookup(roots))
         .collect();
-    if let Some(lookups) =
-        lookups.filter(|lookups| lookups.iter().all(|lookup| lookup.is_indexed()))
+    if let Some(lookups) = lookups.filter(|lookups| lookups.iter().all(|lookup| lookup.is_ready()))
     {
         return ids
             .iter()
@@ -138,16 +137,28 @@ fn visit<'a>(
     found: &mut HashMap<&'a str, &'a PenNode>,
     visited: &mut impl FnMut(),
 ) {
-    for node in roots {
+    // Retain one iterator per ancestor, rather than recursive Rust frames or
+    // a sibling-sized pending-node list. Search stops at the last first match.
+    let mut ancestors = Vec::new();
+    let mut nodes = roots.iter();
+    loop {
         if wanted.is_empty() {
             return;
         }
+        let Some(node) = nodes.next() else {
+            let Some(parent) = ancestors.pop() else {
+                return;
+            };
+            nodes = parent;
+            continue;
+        };
         visited();
         if wanted.remove(node.id_str()) {
             found.insert(node.id_str(), node);
         }
-        if let Some(children) = node.children() {
-            visit(children, wanted, found, visited);
+        if let Some(children) = node.children().filter(|children| !children.is_empty()) {
+            ancestors.push(nodes);
+            nodes = children.iter();
         }
     }
 }
