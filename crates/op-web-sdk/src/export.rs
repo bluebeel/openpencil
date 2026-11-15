@@ -25,13 +25,14 @@ impl Viewer {
 /// `"png"` / `"pdf"` — returns an explicit error; use a daemon for raster/PDF.
 #[wasm_bindgen]
 pub fn export(viewer: &Viewer, format: String) -> Result<Vec<u8>, JsValue> {
-    match format.to_lowercase().as_str() {
-        "svg" => viewer
+    if format.eq_ignore_ascii_case("svg") {
+        viewer
             .export_svg()
-            .map(|s| s.into_bytes())
-            .map_err(|e| JsValue::from_str(&e.to_string())),
-        _ => Err(JsValue::from_str(
+            .map(String::into_bytes)
+            .map_err(|e| JsValue::from_str(&e.to_string()))
+    } else {
+        Err(JsValue::from_str(
             "format not available in standalone v1; use SVG or a daemon",
-        )),
+        ))
     }
 }

@@ -11,7 +11,12 @@ const documentDecoder = new TextDecoder();
 
 /** Ensure the canvas element has an id, assigning one if absent. */
 function ensureCanvasId(canvas: HTMLCanvasElement): string {
-  if (!canvas.id) canvas.id = `op-web-sdk-canvas-${++canvasSeq}`;
+  if (!canvas.id) {
+    let id: string;
+    do { id = `op-web-sdk-canvas-${++canvasSeq}`; }
+    while (canvas.ownerDocument.getElementById(id));
+    canvas.id = id;
+  }
   return canvas.id;
 }
 
@@ -208,7 +213,9 @@ export async function createViewer(opts: CreateViewerOptions): Promise<OpViewer>
       viewer.resizeObserver.observe(opts.canvas);
     }
     viewer.wheelHandler = (e: WheelEvent) => {
+      if (viewer.canvas !== opts.canvas) return;
       e.preventDefault();
+      if (e.deltaX === 0 && e.deltaY === 0) return;
       const r = opts.canvas.getBoundingClientRect();
       const wheel = viewerWheelInput(e, r.width, r.height);
       inner.forward_wheel(

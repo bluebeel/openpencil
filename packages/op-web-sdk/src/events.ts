@@ -16,10 +16,21 @@ export class Emitter {
   }
 
   /** Unsubscribe a specific callback from an event. */
-  off(e: ViewerEvent, cb: () => void): void { this.map.get(e)?.delete(cb); }
+  off(e: ViewerEvent, cb: () => void): void {
+    const listeners = this.map.get(e);
+    if (listeners?.delete(cb) && listeners.size === 0) this.map.delete(e);
+  }
 
-  /** Fire all listeners registered for the given event. */
-  emit(e: ViewerEvent): void { this.map.get(e)?.forEach((cb) => cb()); }
+  /** Fire current listeners once; callbacks may unsubscribe or subscribe. */
+  emit(e: ViewerEvent): void {
+    const listeners = this.map.get(e);
+    if (!listeners?.size) return;
+    // Iterating the live Set can visit callbacks added by a callback forever.
+    // Snapshot identity only; removed/destroyed subscriptions stay removed.
+    for (const cb of Array.from(listeners)) {
+      if (this.map.get(e) === listeners && listeners.has(cb)) cb();
+    }
+  }
 
   /** Remove all listeners for all events. */
   clear(): void { this.map.clear(); }
