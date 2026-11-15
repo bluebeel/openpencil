@@ -343,7 +343,7 @@ impl Serialize for SharedPage<'_> {
 /// snapshot skeleton. Written as an explicit struct literal (no
 /// `..Default`) so a new `PenDocument` field fails to compile here
 /// until it is classified, keeping the skeleton schema-complete.
-fn strip_children(doc: &PenDocument) -> PenDocument {
+pub(crate) fn strip_children(doc: &PenDocument) -> PenDocument {
     PenDocument {
         version: doc.version.clone(),
         name: doc.name.clone(),

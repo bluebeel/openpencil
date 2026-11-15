@@ -5,22 +5,17 @@ use std::{cell::RefCell, collections::HashMap, slice};
 
 /// Same depth-first order as the former complete index: all pages, then the
 /// legacy root list. Only traversal edges are retained; nodes remain borrowed.
-struct DocumentNodes<'a> {
-    roots: Vec<&'a [PenNode]>,
-    next_root: usize,
-    pending: Vec<slice::Iter<'a, PenNode>>,
+pub(super) struct DocumentNodes<'a> {
+    pages: slice::Iter<'a, jian_ops_schema::page::PenPage>,
+    legacy: Option<&'a [PenNode]>,
+    pending: crate::walkers::stack::Stack<slice::Iter<'a, PenNode>, 16>,
 }
 impl<'a> DocumentNodes<'a> {
-    fn new(doc: &'a PenDocument) -> Self {
-        let mut roots = Vec::with_capacity(doc.pages.as_ref().map_or(1, |p| p.len() + 1));
-        if let Some(pages) = &doc.pages {
-            roots.extend(pages.iter().map(|p| p.children.as_slice()));
-        }
-        roots.push(doc.children.as_slice());
+    pub(super) fn new(doc: &'a PenDocument) -> Self {
         Self {
-            roots,
-            next_root: 0,
-            pending: Vec::new(),
+            pages: doc.pages.as_deref().unwrap_or_default().iter(),
+            legacy: Some(&doc.children),
+            pending: crate::walkers::stack::Stack::new(),
         }
     }
 }
@@ -30,16 +25,21 @@ impl<'a> Iterator for DocumentNodes<'a> {
         loop {
             if let Some(iter) = self.pending.last_mut() {
                 if let Some(node) = iter.next() {
-                    if let Some(children) = node.children() {
+                    if let Some(children) = node.children().filter(|children| !children.is_empty())
+                    {
                         self.pending.push(children.iter());
                     }
                     return Some(node);
                 }
                 self.pending.pop();
             } else {
-                let roots = *self.roots.get(self.next_root)?;
-                self.next_root += 1;
-                self.pending.push(roots.iter());
+                let roots = match self.pages.next() {
+                    Some(page) => page.children.as_slice(),
+                    None => self.legacy.take()?,
+                };
+                if !roots.is_empty() {
+                    self.pending.push(roots.iter());
+                }
             }
         }
     }

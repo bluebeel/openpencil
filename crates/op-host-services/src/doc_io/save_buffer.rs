@@ -6,6 +6,7 @@ use std::{
     cell::RefCell,
     fs::File,
     io::{self, BufWriter, Write},
+    ops::{Deref, DerefMut},
 };
 
 const BUFFER_BYTES: usize = 1024 * 1024;
@@ -28,6 +29,37 @@ impl Write for SaveTarget {
     }
 }
 
+/// Failure/unwind must discard pending bytes, never let BufWriter's Drop
+/// attempt another implicit file write after the caller reported failure.
+struct ActiveWriter(Option<BufWriter<SaveTarget>>);
+impl Deref for ActiveWriter {
+    type Target = BufWriter<SaveTarget>;
+    fn deref(&self) -> &Self::Target {
+        self.0.as_ref().expect("active writer is owned")
+    }
+}
+impl DerefMut for ActiveWriter {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.0.as_mut().expect("active writer is owned")
+    }
+}
+impl ActiveWriter {
+    fn into_writer(mut self) -> BufWriter<SaveTarget> {
+        self.0.take().expect("active writer is owned")
+    }
+}
+impl Drop for ActiveWriter {
+    fn drop(&mut self) {
+        if let Some(writer) = self.0.take() {
+            // into_parts explicitly performs no flush, even after an inner
+            // writer panic; dropping its target closes only this owned file.
+            let (target, pending) = writer.into_parts();
+            drop(target);
+            drop(pending);
+        }
+    }
+}
+
 thread_local! {
     static BUFFER: RefCell<Option<BufWriter<SaveTarget>>> = const { RefCell::new(None) };
 }
@@ -36,9 +68,10 @@ pub(super) fn with_buffered_file<T>(
     file: File,
     action: impl FnOnce(&mut BufWriter<SaveTarget>) -> Result<T, DocIoError>,
 ) -> Result<T, DocIoError> {
-    let mut writer = BUFFER
+    let writer = BUFFER
         .with(|slot| slot.borrow_mut().take())
         .unwrap_or_else(|| BufWriter::with_capacity(BUFFER_BYTES, SaveTarget(None)));
+    let mut writer = ActiveWriter(Some(writer));
     debug_assert!(writer.buffer().is_empty());
     debug_assert!(writer.get_ref().0.is_none());
     writer.get_mut().0 = Some(file);
@@ -49,7 +82,7 @@ pub(super) fn with_buffered_file<T>(
         .flush()
         .map_err(|error| DocIoError::Io(error.to_string()))?;
     drop(writer.get_mut().0.take());
-    BUFFER.with(|slot| *slot.borrow_mut() = Some(writer));
+    BUFFER.with(|slot| *slot.borrow_mut() = Some(writer.into_writer()));
     Ok(value)
 }
 
@@ -65,8 +98,9 @@ pub(super) fn with_shared_buffered_file<T>(
     static POOL: OnceLock<Mutex<Vec<BufWriter<SaveTarget>>>> = OnceLock::new();
     let pool = POOL.get_or_init(|| Mutex::new(Vec::new()));
     let reusable = { pool.lock().unwrap_or_else(|p| p.into_inner()).pop() };
-    let mut writer =
+    let writer =
         reusable.unwrap_or_else(|| BufWriter::with_capacity(BUFFER_BYTES, SaveTarget(None)));
+    let mut writer = ActiveWriter(Some(writer));
     debug_assert!(writer.buffer().is_empty());
     debug_assert!(writer.get_ref().0.is_none());
     writer.get_mut().0 = Some(file);
@@ -77,7 +111,7 @@ pub(super) fn with_shared_buffered_file<T>(
     drop(writer.get_mut().0.take());
     let mut pool = pool.lock().unwrap_or_else(|p| p.into_inner());
     if pool.len() < MAX_IDLE_BUFFERS {
-        pool.push(writer);
+        pool.push(writer.into_writer());
     }
     Ok(value)
 }

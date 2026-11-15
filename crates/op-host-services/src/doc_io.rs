@@ -93,9 +93,9 @@ pub fn sidecar_path(path: &std::path::Path) -> PathBuf {
 /// without a separate sidecar.
 pub fn save_to_path(state: &EditorState, path: &std::path::Path) -> Result<(), DocIoError> {
     let thumbnails = jian_ops_schema::image_thumbs::capture_snapshot();
-    save_document_with_thumbnails_to_path(
+    save_serializable_document_with_thumbnails_to_path(
         &state.doc,
-        op_pen_loader::EditorMeta::from_state(state),
+        op_pen_loader::EditorMeta::borrowed_from_state(state),
         &thumbnails,
         path,
     )
@@ -107,7 +107,7 @@ pub fn save_to_path_compact(state: &EditorState, path: &std::path::Path) -> Resu
     let thumbnails = jian_ops_schema::image_thumbs::capture_snapshot();
     save_serializable_document_with_format(
         &state.doc,
-        op_pen_loader::EditorMeta::from_state(state),
+        op_pen_loader::EditorMeta::borrowed_from_state(state),
         &thumbnails,
         path,
         SaveFormat::Compact,
@@ -125,9 +125,9 @@ pub fn save_to_path_without_thumbnails(
     state: &EditorState,
     path: &std::path::Path,
 ) -> Result<(), DocIoError> {
-    save_document_with_thumbnails_to_path(
+    save_serializable_document_with_thumbnails_to_path(
         &state.doc,
-        op_pen_loader::EditorMeta::from_state(state),
+        op_pen_loader::EditorMeta::borrowed_from_state(state),
         &jian_ops_schema::image_thumbs::ImageThumbSnapshot::default(),
         path,
     )
@@ -164,7 +164,7 @@ pub fn save_snapshot_to_path(
 ) -> Result<(), DocIoError> {
     save_serializable_document_with_thumbnails_to_path(
         snapshot.document(),
-        snapshot.editor_meta(),
+        snapshot.editor_meta_ref(),
         snapshot.image_thumbnails(),
         path,
     )
@@ -183,9 +183,10 @@ pub fn save_document_with_thumbnails_to_path(
 
 fn save_serializable_document_with_thumbnails_to_path<
     D: serde::Serialize + jian_ops_schema::image_table::SaveImageOrder + ?Sized,
+    M: serde::Serialize,
 >(
     document: &D,
-    meta: op_pen_loader::EditorMeta,
+    meta: M,
     thumbnails: &jian_ops_schema::image_thumbs::ImageThumbSnapshot,
     path: &std::path::Path,
 ) -> Result<(), DocIoError> {
@@ -200,9 +201,10 @@ enum SaveFormat {
 
 fn save_serializable_document_with_format<
     D: serde::Serialize + jian_ops_schema::image_table::SaveImageOrder + ?Sized,
+    M: serde::Serialize,
 >(
     document: &D,
-    meta: op_pen_loader::EditorMeta,
+    meta: M,
     thumbnails: &jian_ops_schema::image_thumbs::ImageThumbSnapshot,
     path: &std::path::Path,
     format: SaveFormat,
@@ -218,7 +220,7 @@ fn save_compact_recorded(
 ) -> Result<(), DocIoError> {
     save_serializable_document_with_format_and_seed(
         &state.doc,
-        op_pen_loader::EditorMeta::from_state(state),
+        op_pen_loader::EditorMeta::borrowed_from_state(state),
         thumbnails,
         path,
         SaveFormat::Compact,
@@ -228,9 +230,10 @@ fn save_compact_recorded(
 
 fn save_serializable_document_with_format_and_seed<
     D: serde::Serialize + jian_ops_schema::image_table::SaveImageOrder + ?Sized,
+    M: serde::Serialize,
 >(
     document: &D,
-    meta: op_pen_loader::EditorMeta,
+    meta: M,
     thumbnails: &jian_ops_schema::image_thumbs::ImageThumbSnapshot,
     path: &std::path::Path,
     format: SaveFormat,
@@ -252,6 +255,7 @@ fn save_serializable_document_with_format_and_seed<
         seed.bind(path);
     }
     let (tmp, file) = create_sibling_temp(path)?;
+    let mut cleanup = atomic_file::StagingCleanup::new(&tmp);
     let write_result = (|| {
         let serialize = |writer: &mut std::io::BufWriter<save_buffer::SaveTarget>| match format {
             SaveFormat::Pretty => canonical_save::write_serializable_document_with_thumbnails(
@@ -285,8 +289,8 @@ fn save_serializable_document_with_format_and_seed<
         }
         commit_staged_document(&tmp, path)
     })();
-    if write_result.is_err() {
-        let _ = std::fs::remove_file(&tmp);
+    if write_result.is_ok() {
+        cleanup.disarm();
     }
     write_result
 }

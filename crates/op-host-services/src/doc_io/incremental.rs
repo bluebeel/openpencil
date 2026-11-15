@@ -11,9 +11,9 @@ use std::{
     path::{Path, PathBuf},
 };
 mod budget;
+mod capture;
 mod index;
 mod resource_metadata;
-mod capture;
 mod splice;
 mod stats;
 mod tracked;
@@ -353,8 +353,8 @@ impl Base {
         current: &PenNode,
         certified_ref: bool,
     ) -> Option<()> {
-        let sealed_ref = certified_ref
-            && matches!((old, current), (PenNode::Ref(_), PenNode::Ref(_)));
+        let sealed_ref =
+            certified_ref && matches!((old, current), (PenNode::Ref(_), PenNode::Ref(_)));
         if !sealed_ref && (!append::eligible(old) || !append::eligible(current)) {
             return None;
         }
@@ -413,6 +413,7 @@ impl Base {
             return Ok(false);
         }
         let (temp, file) = super::create_sibling_temp(path)?;
+        let mut cleanup = super::atomic_file::StagingCleanup::new(&temp);
         let result = (|| {
             super::save_buffer::with_shared_buffered_file(file, |writer| {
                 self.appends
@@ -425,8 +426,8 @@ impl Base {
             self.stamp = next;
             Ok(true)
         })();
-        if result.is_err() {
-            let _ = std::fs::remove_file(&temp);
+        if result.is_ok() {
+            cleanup.disarm();
         }
         result
     }

@@ -58,23 +58,18 @@ pub fn resolve_component_target<'a>(
 /// subtree. Unresolvable refs (unknown target, cycle) are dropped —
 /// TS `resolveRefs` returns `[]` for them.
 pub fn resolve_refs_for_canvas(doc: &PenDocument) -> PenDocument {
-    let mut resolved = doc.clone();
-    // Component lookup runs against the WHOLE document (any page),
-    // so cross-page instances resolve like `instantiate_component`
-    // allows authoring them. `resolve_nodes` only ever READS through
-    // `lookup` (find_node / expand_ref never mutate it), so the
-    // original `doc` borrow serves as the lookup source directly —
-    // it is a distinct object from `resolved`, which is built fresh
-    // into `out` vecs rather than mutated in place, so there is no
-    // borrow conflict and no need for a second whole-document clone.
+    // Copy required document/page metadata only; resolve directly from the
+    // complete original forests instead of deep-cloning and then replacing
+    // those same forests with a second owned expansion.
+    let mut resolved = crate::history_snapshot::strip_children(doc);
     let lookup = NodeLookup::from_document(doc);
     let mut visited = BTreeSet::new();
-    if let Some(pages) = resolved.pages.as_mut() {
-        for page in pages {
-            page.children = resolve_nodes(&page.children, &lookup, &mut visited);
+    if let (Some(pages), Some(original)) = (resolved.pages.as_mut(), doc.pages.as_ref()) {
+        for (page, source) in pages.iter_mut().zip(original) {
+            page.children = resolve_nodes(&source.children, &lookup, &mut visited);
         }
     }
-    resolved.children = resolve_nodes(&resolved.children, &lookup, &mut visited);
+    resolved.children = resolve_nodes(&doc.children, &lookup, &mut visited);
     resolved
 }
 
@@ -105,11 +100,25 @@ pub fn resolve_refs_for_canvas_roots_with_components(
 /// use it before cloning an active page so inactive pages do not participate in
 /// a page switch.
 pub fn roots_have_refs(nodes: &[PenNode]) -> bool {
-    nodes.iter().any(|node| {
-        matches!(node, PenNode::Ref(_))
-            || crate::pen_node_ext::PenNodeExt::children(node)
-                .is_some_and(|children| roots_have_refs(children))
-    })
+    let mut pending = crate::walkers::stack::Stack::<_, 16>::new();
+    if !nodes.is_empty() {
+        pending.push(nodes.iter());
+    }
+    while let Some(siblings) = pending.last_mut() {
+        let Some(node) = siblings.next() else {
+            pending.pop();
+            continue;
+        };
+        if matches!(node, PenNode::Ref(_)) {
+            return true;
+        }
+        if let Some(children) =
+            crate::pen_node_ext::PenNodeExt::children(node).filter(|children| !children.is_empty())
+        {
+            pending.push(children.iter());
+        }
+    }
+    false
 }
 
 /// True when any `Ref` node exists anywhere in the document — the
@@ -159,33 +168,36 @@ fn resolve_nodes(
 }
 
 fn resolve_owned_nodes(
-    nodes: Vec<PenNode>,
+    mut nodes: Vec<PenNode>,
     lookup: &NodeLookup<'_>,
     visited: &mut BTreeSet<String>,
 ) -> Vec<PenNode> {
-    let mut out = Vec::with_capacity(nodes.len());
-    for mut node in nodes {
-        if let PenNode::Ref(reference) = &node {
-            if visited.contains(&reference.target) {
-                continue;
+    nodes.retain_mut(|node| {
+        if let PenNode::Ref(reference) = &*node {
+            let target = reference.target.as_str();
+            if visited.contains(target) {
+                return false;
             }
-            let Some(component) = lookup.find(&reference.target) else {
-                continue;
+            let Some(component) = lookup.find(target) else {
+                return false;
             };
-            let target = reference.target.clone();
-            visited.insert(target.clone());
-            if let Some(expanded) = expand_ref(&node, component, lookup, visited) {
-                out.push(expanded);
+            visited.insert(target.to_string());
+            let expanded = expand_ref(node, component, lookup, visited);
+            visited.remove(target);
+            if let Some(expanded) = expanded {
+                *node = expanded;
+                true
+            } else {
+                false
             }
-            visited.remove(&target);
         } else {
-            if let Some(children) = crate::pen_node_ext::PenNodeExt::children_mut(&mut node) {
+            if let Some(children) = crate::pen_node_ext::PenNodeExt::children_mut(node) {
                 *children = resolve_owned_nodes(std::mem::take(children), lookup, visited);
             }
-            out.push(node);
+            true
         }
-    }
-    out
+    });
+    nodes
 }
 
 /// Merge `component` under the instance's defined props and remap the
@@ -202,16 +214,16 @@ fn expand_ref(
         None => {
             let mut fallback = component.clone();
             let ref_base = crate::pen_node_ext::PenNodeExt::base(ref_node);
-            let ref_id = ref_base.id.clone();
+            let ref_id = &ref_base.id;
             let (x, y) = (ref_base.x, ref_base.y);
             let base = crate::pen_node_ext::PenNodeExt::base_mut(&mut fallback);
-            base.id = ref_id.clone();
+            base.id.clone_from(ref_id);
             base.x = x;
             base.y = y;
             // The fallback bypassed `remap_ids`, so push its children
             // into the instance's virtual id space by hand — component
             // ids must never appear twice in one scene.
-            remap_ids_typed(&mut fallback, &ref_id);
+            remap_ids_typed(&mut fallback, ref_id);
             fallback
         }
     };
@@ -228,12 +240,26 @@ fn expand_ref(
 /// all depths, like TS). The root keeps the instance id the caller
 /// already wrote.
 fn remap_ids_typed(node: &mut PenNode, ref_id: &str) {
-    if let Some(children) = crate::pen_node_ext::PenNodeExt::children_mut(node) {
-        for child in children {
-            let original = crate::pen_node_ext::PenNodeExt::base(child).id.clone();
-            crate::pen_node_ext::PenNodeExt::base_mut(child).id =
-                instance_child_virtual_id(ref_id, &original);
-            remap_ids_typed(child, ref_id);
+    let mut pending = crate::walkers::stack::Stack::<_, 16>::new();
+    if let Some(children) =
+        crate::pen_node_ext::PenNodeExt::children_mut(node).filter(|children| !children.is_empty())
+    {
+        pending.push(children.iter_mut());
+    }
+    while let Some(siblings) = pending.last_mut() {
+        let Some(child) = siblings.next() else {
+            pending.pop();
+            continue;
+        };
+        let remapped = instance_child_virtual_id(
+            ref_id,
+            crate::pen_node_ext::PenNodeExt::base(child).id.as_str(),
+        );
+        crate::pen_node_ext::PenNodeExt::base_mut(child).id = remapped;
+        if let Some(children) = crate::pen_node_ext::PenNodeExt::children_mut(child)
+            .filter(|children| !children.is_empty())
+        {
+            pending.push(children.iter_mut());
         }
     }
 }
@@ -288,27 +314,8 @@ pub(crate) fn find_component_node<'a>(doc: &'a PenDocument, id: &str) -> Option<
 /// Find a node by id anywhere in the document (pages + fallback
 /// children) — TS `findNodeInTree` against the full root set.
 fn find_node<'a>(doc: &'a PenDocument, id: &str) -> Option<&'a PenNode> {
-    fn walk<'a>(nodes: &'a [PenNode], id: &str) -> Option<&'a PenNode> {
-        for node in nodes {
-            if crate::pen_node_ext::PenNodeExt::base(node).id == id {
-                return Some(node);
-            }
-            if let Some(children) = crate::pen_node_ext::PenNodeExt::children(node) {
-                if let Some(hit) = walk(children, id) {
-                    return Some(hit);
-                }
-            }
-        }
-        None
-    }
-    if let Some(pages) = doc.pages.as_ref() {
-        for page in pages {
-            if let Some(hit) = walk(&page.children, id) {
-                return Some(hit);
-            }
-        }
-    }
-    walk(&doc.children, id)
+    request_lookup::DocumentNodes::new(doc)
+        .find(|node| crate::pen_node_ext::PenNodeExt::id_str(*node) == id)
 }
 
 #[cfg(test)]
