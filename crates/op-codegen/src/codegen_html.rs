@@ -54,7 +54,12 @@ pub(super) fn emit_node_html(out: &mut String, node: &PenNode, depth: usize) {
         fmt_num(h),
     );
     if let Some(fill) = node_fill_css(node) {
-        let _ = write!(style, ";background:{}", color_to_css(&fill));
+        let property = if node_is_text(node) {
+            "color"
+        } else {
+            "background"
+        };
+        let _ = write!(style, ";{property}:{}", color_to_css(fill));
     }
     if let Some((color, width)) = node_stroke_css(node) {
         let _ = write!(style, ";border:{}px solid {}", width, color_to_css(&color));

@@ -260,6 +260,11 @@ pub(crate) fn node_text(node: &PenNode) -> Option<Cow<'_, str>> {
 /// color — they read as `None` (same degrade as the TS generators).
 pub(crate) fn node_fill_css(node: &PenNode) -> Option<&str> {
     let fills = node_fills(node)?;
+    if matches!(node, PenNode::Text(_) | PenNode::IconFont(_))
+        && !fills.iter().any(PenFill::is_enabled)
+    {
+        return Some("#00000000");
+    }
     first_solid_color(fills)
 }
 

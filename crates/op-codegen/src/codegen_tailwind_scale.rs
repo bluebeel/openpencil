@@ -83,14 +83,10 @@ const OPACITY: &[u32] = &[0, 5, 10, 20, 25, 30, 40, 50, 60, 70, 75, 80, 90, 95, 
 /// Rotation steps (`rotate-45`, …).
 const ROTATE: &[f64] = &[0.0, 1.0, 2.0, 3.0, 6.0, 12.0, 45.0, 90.0, 180.0];
 
-/// Values closer than this are treated as equal (float noise from
-/// layout math must not push `16.0000001` off the scale).
-const EPSILON: f64 = 1e-6;
-
 fn lookup(table: &[(f64, &'static str)], value: f64) -> Option<&'static str> {
     table
         .iter()
-        .find(|(step, _)| (step - value).abs() < EPSILON)
+        .find(|(step, _)| *step == value)
         .map(|(_, name)| *name)
 }
 
@@ -99,9 +95,9 @@ pub(super) fn px(value: f64) -> String {
     format!("{}px", fmt_num(round_px(value)))
 }
 
-/// Round to 2 decimals so layout noise cannot leak into class names.
+/// Preserve authored precision; a named utility is chosen only on exact equality.
 pub(super) fn round_px(value: f64) -> f64 {
-    (value * 100.0).round() / 100.0
+    value
 }
 
 /// A spacing utility: `{prefix}-{step}` on-scale, `{prefix}-[Npx]`
@@ -139,7 +135,7 @@ pub(super) fn leading(value: f64) -> Option<String> {
     if value > 4.0 {
         return Some(format!("leading-[{}]", px(value)));
     }
-    let rounded = (value * 1000.0).round() / 1000.0;
+    let rounded = value;
     Some(match lookup(LEADING, rounded) {
         Some(step) => format!("leading-{step}"),
         None => format!("leading-[{}]", fmt_num(rounded)),
@@ -159,6 +155,24 @@ pub(super) fn font_weight(weight: u32) -> Option<&'static str> {
         800 => "font-extrabold",
         900 => "font-black",
         _ => return None,
+    })
+}
+
+/// CSS accepts every integral weight1..1000, not only named hundreds.
+pub(super) fn font_weight_class(weight: u32) -> Option<String> {
+    font_weight(weight).map(str::to_owned).or_else(|| {
+        (1..=1000)
+            .contains(&weight)
+            .then(|| format!("font-[{weight}]"))
+    })
+}
+pub(super) fn font_weight_keyword_class(keyword: &str) -> Option<String> {
+    font_weight_keyword(keyword).map(str::to_owned).or_else(|| {
+        keyword
+            .trim()
+            .parse::<u32>()
+            .ok()
+            .and_then(font_weight_class)
     })
 }
 
@@ -182,44 +196,40 @@ pub(super) fn font_weight_keyword(keyword: &str) -> Option<&'static str> {
 /// `opacity-50` / `opacity-[0.37]` for a 0..=1 opacity. Full opacity
 /// emits nothing.
 pub(super) fn opacity(value: f64) -> Option<String> {
-    if !value.is_finite() || value >= 1.0 - EPSILON {
+    if !value.is_finite() || value >= 1.0 {
         return None;
     }
     let value = value.max(0.0);
     let percent = (value * 100.0).round() as u32;
-    if (value * 100.0 - f64::from(percent)).abs() < 1e-3 && OPACITY.contains(&percent) {
+    if value == f64::from(percent) / 100.0 && OPACITY.contains(&percent) {
         Some(format!("opacity-{percent}"))
     } else {
-        Some(format!(
-            "opacity-[{}]",
-            fmt_num((value * 1000.0).round() / 1000.0)
-        ))
+        Some(format!("opacity-[{}]", fmt_num(value)))
     }
 }
 
 /// Colour opacity modifier suffix: `/50`, `/[0.37]`, or empty at 100%.
 pub(super) fn color_alpha_suffix(alpha: f64) -> String {
     let alpha = f64::from(alpha);
-    if !alpha.is_finite() || alpha >= 1.0 - EPSILON {
+    if !alpha.is_finite() || alpha >= 1.0 {
         return String::new();
     }
     let alpha = alpha.max(0.0);
     let percent = (alpha * 100.0).round() as u32;
-    if (alpha * 100.0 - f64::from(percent)).abs() < 1e-3 && percent.is_multiple_of(5) {
+    if alpha == f64::from(percent) / 100.0 && percent.is_multiple_of(5) {
         format!("/{percent}")
     } else {
-        format!("/[{}]", fmt_num((alpha * 1000.0).round() / 1000.0))
+        format!("/[{}]", fmt_num(alpha))
     }
 }
 
 /// `rotate-45` / `-rotate-90` / `rotate-[13deg]`.
 pub(super) fn rotate(degrees: f64) -> Option<String> {
-    let degrees = (degrees * 100.0).round() / 100.0;
-    if degrees.abs() < EPSILON {
+    if degrees == 0.0 {
         return None;
     }
     let magnitude = degrees.abs();
-    if ROTATE.iter().any(|step| (step - magnitude).abs() < EPSILON) {
+    if ROTATE.contains(&magnitude) {
         let sign = if degrees < 0.0 { "-" } else { "" };
         return Some(format!("{sign}rotate-{}", fmt_num(magnitude)));
     }
@@ -239,8 +249,8 @@ pub(super) fn border_width(side: &str, width: f64) -> Option<String> {
         format!("border-{side}")
     };
     Some(match width {
-        w if (w - 1.0).abs() < EPSILON => prefix,
-        w if [2.0, 4.0, 8.0].iter().any(|s| (s - w).abs() < EPSILON) => {
+        1.0 => prefix,
+        w if [2.0, 4.0, 8.0].contains(&w) => {
             format!("{prefix}-{}", fmt_num(w))
         }
         w => format!("{prefix}-[{}]", px(w)),
@@ -273,7 +283,7 @@ impl RadiusScale {
             }
         }
         for (px, name) in [(16.0, "2xl"), (24.0, "3xl")] {
-            if !steps.iter().any(|(v, _)| (v - px).abs() < EPSILON) {
+            if !steps.iter().any(|(v, _)| *v == px) {
                 steps.push((px, name));
             }
         }
@@ -300,7 +310,7 @@ impl RadiusScale {
         let hit = self
             .steps
             .iter()
-            .find(|(step, _)| *step > 0.0 && (step - value).abs() < EPSILON);
+            .find(|(step, _)| *step > 0.0 && *step == value);
         Some(match hit {
             Some((_, name)) => format!("{prefix}-{name}"),
             None => format!("{prefix}-[{}]", px(value)),

@@ -308,7 +308,15 @@ fn emit_node_jsx(out: &mut String, node: &PenNode, depth: usize) {
         fmt_num(w),
         fmt_num(h),
         node_fill_css(node)
-            .map(|c| format!(", background: '{}'", color_to_css(&c)))
+            .map(|c| format!(
+                ", {}: '{}'",
+                if node_is_text(node) {
+                    "color"
+                } else {
+                    "background"
+                },
+                color_to_css(c)
+            ))
             .unwrap_or_default(),
         node_stroke_css(node)
             .map(|(c, sw)| format!(", border: '{}px solid {}'", sw, color_to_css(&c)))
@@ -430,7 +438,13 @@ fn emit_node_flutter(out: &mut String, node: &PenNode, depth: usize) {
     let (w, h) = node_size(node);
     let inner = if node_is_text(node) {
         let body = node_text(node).unwrap_or_default();
-        format!("Text({:?})", body)
+        format!(
+            "Text({:?}, style: TextStyle(color: {}))",
+            body,
+            node_fill_css(node)
+                .map(flutter_color)
+                .unwrap_or_else(|| "null".into())
+        )
     } else {
         let color = node_fill_css(node)
             .map(|c| flutter_color(&c))
@@ -492,7 +506,7 @@ fn emit_node_swiftui(out: &mut String, node: &PenNode, depth: usize) {
         .and_then(|c| parse_color(&c))
         .map(|(r, g, b, a)| {
             format!(
-                ".foregroundColor(Color(red: {:.3}, green: {:.3}, blue: {:.3}, opacity: {:.3}))",
+                ".foregroundColor(Color(red: {}, green: {}, blue: {}, opacity: {}))",
                 r, g, b, a
             )
         })
@@ -551,8 +565,21 @@ fn emit_node_compose(out: &mut String, node: &PenNode, depth: usize) {
     if node_is_text(node) {
         let body = node_text(node).unwrap_or_default();
         out.push_str(&format!(
-            "{indent}Text(text = {:?}, modifier = Modifier.offset(x = {}.dp, y = {}.dp))\n",
+            "{indent}Text(text = {:?}{}, modifier = Modifier.offset(x = {}.dp, y = {}.dp))\n",
             body,
+            node_fill_css(node)
+                .and_then(parse_color)
+                .map(|(r, g, b, a)| {
+                    let to_u8 = |value: f32| (value.clamp(0.0, 1.0) * 255.0).round() as u8;
+                    format!(
+                        ", color = Color({}, {}, {}, {})",
+                        to_u8(r),
+                        to_u8(g),
+                        to_u8(b),
+                        to_u8(a)
+                    )
+                })
+                .unwrap_or_default(),
             fmt_num(x),
             fmt_num(y)
         ));
@@ -625,7 +652,15 @@ fn emit_node_rn(out: &mut String, node: &PenNode, depth: usize) {
         fmt_num(w),
         fmt_num(h),
         node_fill_css(node)
-            .map(|c| format!(", backgroundColor: '{}'", color_to_css(&c)))
+            .map(|c| format!(
+                ", {}: '{}'",
+                if node_is_text(node) {
+                    "color"
+                } else {
+                    "backgroundColor"
+                },
+                color_to_css(c)
+            ))
             .unwrap_or_default(),
         if radius > 0.0 {
             format!(", borderRadius: {}", fmt_num(radius))

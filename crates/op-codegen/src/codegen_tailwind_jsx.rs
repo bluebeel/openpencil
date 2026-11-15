@@ -152,7 +152,7 @@ fn styled_segments(ctx: &mut Ctx, segments: &[StyledTextSegment]) -> String {
             classes.push(super::scale::font_size(f64::from(size)));
         }
         if let Some(weight) = segment.font_weight {
-            classes.push_opt(super::scale::font_weight(weight));
+            classes.push_opt(super::scale::font_weight_class(weight));
         }
         if segment.font_style == Some(jian_ops_schema::style::FontStyleKind::Italic) {
             classes.push("italic");
@@ -163,7 +163,23 @@ fn styled_segments(ctx: &mut Ctx, segments: &[StyledTextSegment]) -> String {
         if segment.strikethrough == Some(true) {
             classes.push("line-through");
         }
-        if let Some(fill) = segment.fill.as_deref() {
+        if let Some(paints) = segment.fill_paints.as_ref() {
+            if let Some(body) = paints
+                .iter()
+                .filter(|paint| paint.is_enabled())
+                .find_map(|paint| {
+                    if let PenFill::Solid(body) = paint {
+                        Some(body)
+                    } else {
+                        None
+                    }
+                })
+            {
+                classes.push_opt(style::color_class(ctx, "text", &body.color, body.opacity));
+            } else if !paints.iter().any(PenFill::is_enabled) {
+                classes.push("text-transparent");
+            }
+        } else if let Some(fill) = segment.fill.as_deref() {
             classes.push_opt(style::color_class(ctx, "text", fill, None));
         }
         let text = jsx_text(&segment.text);
@@ -281,43 +297,77 @@ fn emit_path(ctx: &mut Ctx, out: &mut String, node: &PenNode, parent: Parent, de
         node.width_px().unwrap_or(24.0),
         node.height_px().unwrap_or(24.0),
     );
-    let has_fill =
-        style::fills(node).is_some_and(|f| f.iter().any(|f| matches!(f, PenFill::Solid(_))));
+    let has_fill = style::fills(node).is_some_and(|f| {
+        f.iter()
+            .any(|f| f.is_enabled() && matches!(f, PenFill::Solid(_)))
+    });
     let stroke = style::stroke(node).and_then(|s| {
         let width = match &s.thickness {
             jian_ops_schema::style::StrokeThickness::Uniform(w) => *w,
             _ => 1.0,
         };
-        let color = s.fill.as_ref()?.iter().find_map(|f| match f {
-            PenFill::Solid(body) => Some(body.color.clone()),
-            _ => None,
-        })?;
-        Some((color, width))
+        let color = s
+            .fill
+            .as_ref()?
+            .iter()
+            .filter(|fill| fill.is_enabled())
+            .find_map(|f| match f {
+                PenFill::Solid(body) => Some((body.color.as_str(), body.opacity)),
+                _ => None,
+            })?;
+        Some((color.0, width, color.1))
     });
     let mut attrs = String::new();
+    if let Some(rule) = path.fill_rule {
+        attrs.push_str(match rule {
+            jian_ops_schema::node::PathFillRule::Nonzero => " fillRule=\"nonzero\"",
+            jian_ops_schema::node::PathFillRule::Evenodd => " fillRule=\"evenodd\"",
+        });
+    }
+    let view_box = path.view_box.as_deref().filter(|bounds| {
+        bounds.iter().all(|value| value.is_finite()) && bounds[2] > 0.0 && bounds[3] > 0.0
+    });
+    let view_box = match view_box {
+        Some([x, y, width, height]) => {
+            // Canonical local boxes stretch to the authored layout rectangle,
+            // matching the existing renderer's independent x/y mapping.
+            attrs.push_str(" preserveAspectRatio=\"none\"");
+            format!(
+                "{} {} {} {}",
+                fmt_num(*x),
+                fmt_num(*y),
+                fmt_num(*width),
+                fmt_num(*height)
+            )
+        }
+        None => format!("0 0 {} {}", fmt_num(w), fmt_num(h)),
+    };
     if has_fill {
         classes.push_opt(style::foreground(ctx, node));
         attrs.push_str(" fill=\"currentColor\"");
     } else {
         attrs.push_str(" fill=\"none\"");
     }
-    if let Some((color, width)) = stroke {
-        if !has_fill {
-            classes.push_opt(style::color_class(ctx, "text", &color, None));
+    if let Some((color, width, opacity)) = stroke {
+        // Fill and stroke are independent paints; using currentColor for both
+        // made every filled path inherit its fill color for its stroke too.
+        if let Some(color) = style::css_color(ctx, color) {
+            attrs.push_str(&format!(
+                " stroke=\"{}\" strokeWidth={{{}}}",
+                jsx_attr(&color),
+                fmt_num(width)
+            ));
+            if let Some(alpha) = opacity.filter(|alpha| alpha.is_finite()) {
+                attrs.push_str(&format!(" strokeOpacity={{{}}}", fmt_num(alpha)));
+            }
         }
-        attrs.push_str(&format!(
-            " stroke=\"currentColor\" strokeWidth={{{}}}",
-            fmt_num(super::scale::round_px(f64::from(width)))
-        ));
     }
     style::visuals(ctx, node, &mut classes);
     line(
         out,
         depth,
         &format!(
-            "<svg viewBox=\"0 0 {} {}\"{attrs}{}><path d=\"{}\" /></svg>",
-            fmt_num(super::scale::round_px(w)),
-            fmt_num(super::scale::round_px(h)),
+            "<svg viewBox=\"{view_box}\"{attrs}{}><path d=\"{}\" /></svg>",
             classes.attr(),
             jsx_attr(d)
         ),
@@ -328,6 +378,12 @@ fn emit_line(ctx: &mut Ctx, out: &mut String, node: &PenNode, parent: Parent, de
     let PenNode::Line(segment) = node else {
         return;
     };
+    if style::stroke(node)
+        .and_then(|stroke| stroke.fill.as_ref())
+        .is_some_and(|fills| !fills.iter().any(PenFill::is_enabled))
+    {
+        return;
+    }
     let base = node.base();
     let dx = segment.x2.unwrap_or(base.x.unwrap_or(0.0)) - base.x.unwrap_or(0.0);
     let dy = segment.y2.unwrap_or(base.y.unwrap_or(0.0)) - base.y.unwrap_or(0.0);
@@ -348,19 +404,24 @@ fn emit_line(ctx: &mut Ctx, out: &mut String, node: &PenNode, parent: Parent, de
         classes.push(super::scale::spacing("w", length));
     }
     classes.push_opt(super::scale::border_width(side, width));
-    if let Some(color) = style::stroke(node)
-        .and_then(|s| s.fill.as_ref())
-        .and_then(|fills| {
-            fills.iter().find_map(|f| match f {
-                PenFill::Solid(body) => Some(body.color.clone()),
-                _ => None,
+    if let Some((color, opacity)) =
+        style::stroke(node)
+            .and_then(|s| s.fill.as_ref())
+            .and_then(|fills| {
+                fills
+                    .iter()
+                    .filter(|fill| fill.is_enabled())
+                    .find_map(|f| match f {
+                        PenFill::Solid(body) => Some((body.color.as_str(), body.opacity)),
+                        _ => None,
+                    })
             })
-        })
     {
-        classes.push_opt(style::color_class(ctx, "border", &color, None));
+        classes.push_opt(style::color_class(ctx, "border", color, opacity));
     }
-    if !vertical && dy.abs() > f64::EPSILON {
-        classes.push_opt(super::scale::rotate(dy.atan2(dx).to_degrees()));
+    let rotation = dy.atan2(dx).to_degrees() - if vertical { 90.0 } else { 0.0 };
+    if rotation != 0.0 {
+        classes.push_opt(super::scale::rotate(rotation));
         classes.push("origin-top-left");
     }
     line(out, depth, &format!("<div{} />", classes.attr()));
