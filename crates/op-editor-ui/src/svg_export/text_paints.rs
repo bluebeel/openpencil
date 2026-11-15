@@ -3,7 +3,7 @@ use super::*;
 
 pub(super) fn content(node: &SceneNode, line: &str, line_start: usize) -> String {
     if !node.fill_disabled && node.text_runs.iter().all(|run| !run.fill_disabled) {
-        return xml_escape(line);
+        return xml_escape(line).to_string();
     }
     let mut out = String::new();
     let mut cursor = 0;
@@ -17,7 +17,7 @@ pub(super) fn content(node: &SceneNode, line: &str, line_start: usize) -> String
         {
             continue;
         }
-        out.push_str(&xml_escape(&line[cursor..start]));
+        let _ = write!(out, "{}", xml_escape(&line[cursor..start]));
         if run.fill_disabled {
             let _ = write!(
                 out,
@@ -33,10 +33,10 @@ pub(super) fn content(node: &SceneNode, line: &str, line_start: usize) -> String
                 xml_escape(&line[start..end])
             );
         } else {
-            out.push_str(&xml_escape(&line[start..end]));
+            let _ = write!(out, "{}", xml_escape(&line[start..end]));
         }
         cursor = end;
     }
-    out.push_str(&xml_escape(&line[cursor..]));
+    let _ = write!(out, "{}", xml_escape(&line[cursor..]));
     out
 }
