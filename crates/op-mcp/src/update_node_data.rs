@@ -7,9 +7,9 @@ use serde_json::Value;
 use super::{ToolErrorCode, ToolOutcome};
 
 #[allow(clippy::result_large_err)]
-pub(super) fn ts_update_patch_json(
+pub(super) fn parse_update_data(
     args: &BTreeMap<String, String>,
-) -> Result<Option<String>, ToolOutcome> {
+) -> Result<Option<Value>, ToolOutcome> {
     let Some(raw) = args.get("data") else {
         return Ok(None);
     };
@@ -25,8 +25,7 @@ pub(super) fn ts_update_patch_json(
             "data must be a JSON object".into(),
         ));
     };
-    ts_update_patch_json_value_owned(value)
-        .map_err(|error| ToolOutcome::Err(ToolErrorCode::InvalidArgument, error.to_string()))
+    Ok(Some(value))
 }
 
 /// A rich-patch normalization failure. Both variants are malformed-`fill_hex`
@@ -163,11 +162,11 @@ fn canonicalize_fill_hex_shortcut(value: &mut Value) -> Result<(), UpdateDataErr
     let Some(shortcut) = shortcut.or(camel_shortcut) else {
         return Ok(());
     };
-    let Some(hex) = shortcut.as_str() else {
+    let Value::String(hex) = shortcut else {
         return Err(UpdateDataError::FillHexNotString);
     };
-    if !validate_hex(hex) {
-        return Err(UpdateDataError::InvalidFillHex(hex.to_string()));
+    if !validate_hex(&hex) {
+        return Err(UpdateDataError::InvalidFillHex(hex));
     }
     obj.insert(
         "fill".into(),
