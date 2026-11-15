@@ -172,7 +172,8 @@ pub(super) fn draw(
             if setup.clip_viewport { 1.0 } else { 0.0 },
         ]
         .map(|v| v as f32);
-        let bytes: Vec<_> = values.into_iter().flat_map(f32::to_ne_bytes).collect();
+        let bytes: [u8; 60] =
+            std::array::from_fn(|index| values[index / 4].to_ne_bytes()[index % 4]);
         let shader = SOURCE_EFFECT.with(|effect| {
             effect
                 .as_ref()?
@@ -215,7 +216,8 @@ pub(super) fn draw(
         if !values.iter().all(|v| v.is_finite()) {
             return;
         }
-        let bytes: Vec<u8> = values.into_iter().flat_map(f32::to_ne_bytes).collect();
+        let bytes: [u8; 76] =
+            std::array::from_fn(|index| values[index / 4].to_ne_bytes()[index % 4]);
         let shader = EFFECT.with(|effect| {
             effect.as_ref()?.make_shader(
                 Data::new_copy(&bytes),

@@ -27,43 +27,9 @@ pub(super) enum Parent {
     Stack,
 }
 
-/// Ordered, de-duplicated class list.
-#[derive(Debug, Default, Clone)]
-pub(super) struct Classes(Vec<String>);
-
-impl Classes {
-    pub(super) fn push(&mut self, class: impl Into<String>) {
-        let class = class.into();
-        if !class.is_empty() && !self.0.contains(&class) {
-            self.0.push(class);
-        }
-    }
-
-    pub(super) fn push_opt(&mut self, class: Option<impl Into<String>>) {
-        if let Some(class) = class {
-            self.push(class);
-        }
-    }
-
-    pub(super) fn extend(&mut self, other: Classes) {
-        for class in other.0 {
-            self.push(class);
-        }
-    }
-
-    pub(super) fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-
-    /// ` className="…"` attribute (leading space), or empty.
-    pub(super) fn attr(&self) -> String {
-        if self.0.is_empty() {
-            String::new()
-        } else {
-            format!(" className=\"{}\"", self.0.join(" "))
-        }
-    }
-}
+#[path = "codegen_tailwind_classes.rs"]
+mod classes;
+pub(super) use classes::Classes;
 
 // --- Accessors -------------------------------------------------------
 
