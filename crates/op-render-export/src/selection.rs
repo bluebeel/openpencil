@@ -58,7 +58,7 @@ pub fn render_selected_node_in_viewport(
             node_id: selection.node().id.clone(),
         });
     }
-    let scale = crate::clamp_scale(scale);
+    let scale = crate::raster_scale(scale);
     let margin = margin.max(0.0);
     let cull = Rect::xywh(
         viewport.origin.x - margin,

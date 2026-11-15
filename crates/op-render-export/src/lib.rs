@@ -151,7 +151,7 @@ pub fn export_raster(
     scale: f32,
 ) -> Result<(), ExportError> {
     format.ensure_supported()?;
-    let scale = clamp_scale(scale);
+    let scale = raster_scale(scale);
     let page = scene.active_page().ok_or(ExportError::NoActivePage)?;
     let bounds = page_bounds(page).ok_or(ExportError::NothingToExport)?;
     render_raster(bounds, target, format, scale, MARGIN, |canvas| {
@@ -188,7 +188,7 @@ pub fn export_node_raster_with_margin(
     margin: f32,
 ) -> Result<(), ExportError> {
     format.ensure_supported()?;
-    let scale = clamp_scale(scale);
+    let scale = raster_scale(scale);
     let page = scene.active_page().ok_or(ExportError::NoActivePage)?;
     let batch = SceneSelectionBatch::new(page, [node_id]);
     let selected = batch
@@ -219,7 +219,7 @@ fn export_scene_node_raster_with_margin(
     margin: f32,
 ) -> Result<(), ExportError> {
     format.ensure_supported()?;
-    let scale = clamp_scale(scale);
+    let scale = raster_scale(scale);
     let mut acc = BoundsAcc::new();
     collect_bounds(node, glam::Affine2::IDENTITY, &mut acc);
     let bounds = acc
@@ -288,7 +288,7 @@ pub fn render_page_raster_bytes(
     let bounds = page_bounds(page).ok_or_else(|| ExportError::PageEmpty {
         page_id: page.id.clone(),
     })?;
-    render_raster_bytes(bounds, format, clamp_scale(scale), MARGIN, |canvas| {
+    render_raster_bytes(bounds, format, raster_scale(scale), MARGIN, |canvas| {
         paint_nodes(canvas, &page.children);
     })
 }
@@ -331,16 +331,19 @@ pub fn render_scene_node_raster_bytes(
         .ok_or_else(|| ExportError::NodePaintsNothing {
             node_id: node.id.clone(),
         })?;
-    render_raster_bytes(bounds, format, clamp_scale(scale), MARGIN, |canvas| {
+    render_raster_bytes(bounds, format, raster_scale(scale), MARGIN, |canvas| {
         paint_node(canvas, node);
     })
 }
 
-/// Clamp a caller-supplied export scale to the @0.5x..@8x range,
-/// defaulting a non-finite value to @2x (TS export-dialog parity).
-fn clamp_scale(scale: f32) -> f32 {
-    if scale.is_finite() {
-        scale.clamp(0.5, 8.0)
+/// Honor positive caller scales, including fractional thumbnail sizes.
+/// Output-side and pixel-count checks bound allocation independently. Keep
+/// the legacy fallbacks only for nonpositive/nonfinite persisted UI values.
+fn raster_scale(scale: f32) -> f32 {
+    if scale.is_finite() && scale > 0.0 {
+        scale
+    } else if scale.is_finite() {
+        0.5
     } else {
         2.0
     }

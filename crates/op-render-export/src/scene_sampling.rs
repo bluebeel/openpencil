@@ -15,7 +15,7 @@ pub fn render_scene_nodes_raster_bytes(
     margin: f32,
     sampling: RasterSampling,
 ) -> Result<Vec<u8>, ExportError> {
-    let scale = super::clamp_scale(scale);
+    let scale = super::raster_scale(scale);
     match sampling {
         RasterSampling::Native => {
             super::render_raster_bytes(bounds, format, scale, margin, |canvas| {
