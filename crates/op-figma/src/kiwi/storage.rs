@@ -177,7 +177,7 @@ impl<T> PackedVec<T> {
         self.with_vec(|v| v.truncate(length));
     }
     pub fn clear(&mut self) {
-        self.0 = Box::default();
+        *self = Self::default();
     }
 }
 
