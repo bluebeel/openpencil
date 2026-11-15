@@ -489,11 +489,9 @@ fn flatten(command: EditorCommand) -> Result<Vec<EditorCommand>> {
 
 /// Admission reserves the existing clipboard bound before execution; names are
 /// literal, so refs cannot conceal a later clipboard writer from this pass.
-pub(super) fn requests_clipboard_reservation(line: &str) -> bool {
-    op_mcp::parse_tool_call(line)
-        .filter(|call| call.tool == "batch_tools")
-        .and_then(|call| input::parse(&call.arguments).ok())
-        .is_some_and(|steps| {
+pub(super) fn requests_clipboard_reservation(call: &op_mcp::ToolCall) -> bool {
+    call.tool == "batch_tools"
+        && input::parse(&call.arguments).is_ok_and(|steps| {
             steps
                 .iter()
                 .any(|step| matches!(step.name.as_str(), "copy_selected" | "cut_selected"))

@@ -39,16 +39,28 @@ struct UiContext {
 
 impl UiContext {
     fn charge(&self) -> usize {
-        256 + self.active_page_id.as_ref().map_or(0, String::capacity)
-            + self.selection.set.capacity() * std::mem::size_of::<op_editor_core::NodeId>()
-            + self
-                .selection
-                .set
-                .iter()
-                .map(|id| id.as_str().len())
-                .sum::<usize>()
-            + self.selection.anchor.as_str().len()
+        ui_charge(
+            &self.selection,
+            self.active_page_id.as_ref().map_or(0, String::capacity),
+            self.selection.set.capacity(),
+        )
     }
+}
+
+fn ui_charge(
+    selection: &SelectionState,
+    page_identity_bytes: usize,
+    selection_capacity: usize,
+) -> usize {
+    selection.set.iter().fold(
+        256usize
+            .saturating_add(page_identity_bytes)
+            .saturating_add(
+                selection_capacity.saturating_mul(std::mem::size_of::<op_editor_core::NodeId>()),
+            )
+            .saturating_add(selection.anchor.as_str().len()),
+        |bytes, id| bytes.saturating_add(id.as_str().len()),
+    )
 }
 
 #[derive(Default)]
@@ -60,13 +72,14 @@ struct AgentData {
 
 impl AgentData {
     fn charge(&self) -> usize {
-        AGENT_BASE
-            + self.clipboard_charge
-            + self
-                .documents
-                .iter()
-                .map(|(key, ui)| key.as_os_str().len() + ui.charge())
-                .sum::<usize>()
+        self.documents.iter().fold(
+            AGENT_BASE.saturating_add(self.clipboard_charge),
+            |bytes, (key, ui)| {
+                bytes
+                    .saturating_add(key.as_os_str().len())
+                    .saturating_add(ui.charge())
+            },
+        )
     }
 }
 
@@ -106,7 +119,10 @@ pub(crate) struct AgentContexts {
 
 impl Default for AgentContexts {
     fn default() -> Self {
-        Self::with_limits(4096, 32, 64 * 1024 * 1024)
+        // Concurrent thousand-agent workloads across three files can pin one
+        // 64 KiB UI allowance per outstanding call. This is a lazy accounting
+        // ceiling, not an eager allocation or a per-agent document snapshot.
+        Self::with_limits(4096, 32, 256 * 1024 * 1024)
     }
 }
 
@@ -134,7 +150,7 @@ impl AgentContexts {
                 ticket: None,
             });
         }
-        let Some(call) = op_mcp::parse_tool_call(line.trim()) else {
+        let Some(mut call) = op_mcp::parse_tool_call(line.trim()) else {
             return Ok(AgentAdmission {
                 store: self,
                 agent: None,
@@ -154,6 +170,11 @@ impl AgentContexts {
             });
         }
         validate_agent(agent)?;
+        let agent = call
+            .arguments
+            .remove("agentId")
+            .expect("validated agent argument");
+        drop(call);
         let mut ledger = self.ledger.lock().unwrap_or_else(|p| p.into_inner());
         let ticket = ledger
             .next_admission
@@ -163,7 +184,7 @@ impl AgentContexts {
             thread: std::thread::current().id(),
             ticket,
         };
-        if let Some(slot) = ledger.agents.get_mut(agent) {
+        if let Some(slot) = ledger.agents.get_mut(agent.as_str()) {
             if slot.admitted.is_some() || slot.data.is_none() {
                 return Err(AgentContextError::Busy);
             }
@@ -201,19 +222,20 @@ impl AgentContexts {
         ledger.next_admission = ticket;
         Ok(AgentAdmission {
             store: self,
-            agent: Some(agent.clone()),
+            agent: Some(agent),
             ticket: Some(ticket),
         })
     }
 
     fn checkout_with_permit<'a>(
         &'a self,
-        agent: &str,
+        agent: &'a str,
         document: &Path,
         permit: Option<&AgentExecutionPermit>,
     ) -> Result<Lease<'a>, AgentContextError> {
         let mut ledger = self.ledger.lock().unwrap_or_else(|p| p.into_inner());
-        if let Some(slot) = ledger.agents.get(agent) {
+        let existing = ledger.agents.get(agent);
+        if let Some(slot) = existing {
             let allowed = match permit {
                 Some(permit) => slot
                     .admitted
@@ -242,16 +264,12 @@ impl AgentContexts {
                 limit: self.max_agents,
             });
         }
-        let previous = ledger.agents.get(agent).map_or(0, |slot| slot.charge);
-        let actual = ledger
-            .agents
-            .get(agent)
+        let previous = existing.map_or(0, |slot| slot.charge);
+        let actual = existing
             .and_then(|slot| slot.data.as_ref())
             .map_or(AGENT_BASE, AgentData::charge);
-        let pinned = ledger
-            .agents
-            .get(agent)
-            .map_or(0, |slot| slot.execution_reservation);
+        let pinned = existing.map_or(0, |slot| slot.execution_reservation);
+        let known_actor = existing.map(|slot| slot.history_actor);
         // A queued permit owns its original UI allowance through save/rollback;
         // unrelated documents cannot consume that reservation between stages.
         let reservation = execution::reservation::checkout(
@@ -265,32 +283,37 @@ impl AgentContexts {
             resource: "queued actor UI bytes",
             limit: pinned,
         })?;
-        let total = ledger.charge - previous + reservation;
-        if total > self.max_bytes {
-            return Err(AgentContextError::Capacity {
-                resource: "context bytes",
-                limit: self.max_bytes,
-            });
-        }
-        let history_actor = match ledger.agents.get(agent) {
-            Some(slot) => slot.history_actor,
+        let total =
+            execution::reservation::adjusted(ledger.charge, previous, reservation, self.max_bytes)
+                .ok_or(AgentContextError::Capacity {
+                    resource: "context bytes",
+                    limit: self.max_bytes,
+                })?;
+        let history_actor = match known_actor {
+            Some(actor) => actor,
             None => HistoryActor::allocate().ok_or(AgentContextError::AdmissionExhausted)?,
         };
         ledger.charge = total;
-        let slot = ledger.agents.entry(agent.into()).or_insert_with(|| Slot {
-            history_actor,
-            admitted: None,
-            execution_pins: 0,
-            execution_reservation: 0,
-            admission_released: true,
-            data: Some(AgentData::default()),
-            charge: 0,
-        });
+        if known_actor.is_none() {
+            ledger.agents.insert(
+                agent.to_owned(),
+                Slot {
+                    history_actor,
+                    admitted: None,
+                    execution_pins: 0,
+                    execution_reservation: 0,
+                    admission_released: true,
+                    data: Some(AgentData::default()),
+                    charge: 0,
+                },
+            );
+        }
+        let slot = ledger.agents.get_mut(agent).expect("checked actor slot");
         slot.charge = reservation;
         let data = slot.data.take().unwrap();
         Ok(Lease {
             store: self,
-            agent: agent.into(),
+            agent,
             data: Some(data),
             reservation,
             history_actor,
@@ -343,7 +366,7 @@ fn validate_agent(agent: &str) -> Result<(), AgentContextError> {
 
 struct Lease<'a> {
     store: &'a AgentContexts,
-    agent: String,
+    agent: &'a str,
     data: Option<AgentData>,
     reservation: usize,
     history_actor: HistoryActor,
@@ -358,18 +381,28 @@ impl Lease<'_> {
             });
         }
         let data = self.data.as_ref().unwrap();
-        let required = self
+        let replaced = self
             .reservation
-            .max(self.reservation - data.clipboard_charge + charge);
-        let mut ledger = self.store.ledger.lock().unwrap_or_else(|p| p.into_inner());
-        if ledger.charge - self.reservation + required > self.store.max_bytes {
-            return Err(AgentContextError::Capacity {
+            .checked_sub(data.clipboard_charge)
+            .and_then(|bytes| bytes.checked_add(charge))
+            .ok_or(AgentContextError::Capacity {
                 resource: "context bytes",
                 limit: self.store.max_bytes,
-            });
-        }
-        ledger.charge = ledger.charge - self.reservation + required;
-        ledger.agents.get_mut(&self.agent).unwrap().charge = required;
+            })?;
+        let required = self.reservation.max(replaced);
+        let mut ledger = self.store.ledger.lock().unwrap_or_else(|p| p.into_inner());
+        let total = execution::reservation::adjusted(
+            ledger.charge,
+            self.reservation,
+            required,
+            self.store.max_bytes,
+        )
+        .ok_or(AgentContextError::Capacity {
+            resource: "context bytes",
+            limit: self.store.max_bytes,
+        })?;
+        ledger.charge = total;
+        ledger.agents.get_mut(self.agent).unwrap().charge = required;
         self.reservation = required;
         Ok(())
     }
@@ -382,11 +415,11 @@ impl Drop for Lease<'_> {
         let mut ledger = self.store.ledger.lock().unwrap_or_else(|p| p.into_inner());
         let pinned = ledger
             .agents
-            .get(&self.agent)
+            .get(self.agent)
             .map_or(0, |slot| slot.execution_reservation);
         let charge = actual.max(pinned);
         ledger.charge = ledger.charge - self.reservation + charge;
-        let slot = ledger.agents.get_mut(&self.agent).unwrap();
+        let slot = ledger.agents.get_mut(self.agent).unwrap();
         slot.charge = charge;
         slot.data = Some(data);
     }
@@ -422,9 +455,19 @@ pub(crate) fn with_agent_context(
     profile: McpAccessProfile,
     action: impl FnOnce(&mut EditorState) -> Result<Option<String>, McpServeError>,
 ) -> Result<Option<String>, McpServeError> {
-    if let Some(permit) = execution::delivery_permit(contexts, document, line) {
-        return with_agent_context_permit(
-            contexts, document, state, line, profile, &permit, action,
+    if let Some((permit, call)) = execution::delivery_permit(contexts, document, line) {
+        // Delivery matched store/document/agent against this exact parsed call;
+        // checkout still validates the live admission owner and reservation.
+        return with_agent_context_impl(
+            contexts,
+            document,
+            state,
+            line,
+            profile,
+            Some(&permit),
+            Phase::Request,
+            Some(&call),
+            action,
         );
     }
     with_agent_context_impl(
@@ -435,6 +478,7 @@ pub(crate) fn with_agent_context(
         profile,
         None,
         Phase::Request,
+        None,
         action,
     )
 }
@@ -453,6 +497,7 @@ fn with_agent_context_impl(
     profile: McpAccessProfile,
     permit: Option<&AgentExecutionPermit>,
     phase: Phase,
+    prepared_call: Option<&op_mcp::ToolCall>,
     action: impl FnOnce(&mut EditorState) -> Result<Option<String>, McpServeError>,
 ) -> Result<Option<String>, McpServeError> {
     if super::sniff::is_control_message(line) {
@@ -466,7 +511,12 @@ fn with_agent_context_impl(
             .configure_limits(limits)
             .map_err(|error| McpServeError::Validation(error.to_string()))?;
     }
-    let Some(call) = op_mcp::parse_tool_call(line.trim()) else {
+    let parsed = if prepared_call.is_none() {
+        op_mcp::parse_tool_call(line.trim())
+    } else {
+        None
+    };
+    let Some(call) = prepared_call.or(parsed.as_ref()) else {
         return action(state);
     };
     let Some(agent) = call.arguments.get("agentId") else {
@@ -497,7 +547,7 @@ fn with_agent_context_impl(
             return refusal(&call, error.to_string());
         }
     }
-    if phase == Phase::Request && super::atomic_tools::requests_clipboard_reservation(line) {
+    if phase == Phase::Request && super::atomic_tools::requests_clipboard_reservation(call) {
         if let Err(error) = scope.lease.reserve_clipboard(MAX_CLIPBOARD) {
             return refusal(&call, error.to_string());
         }
@@ -528,156 +578,9 @@ fn with_agent_context_impl(
     }
 }
 
-struct Scope<'a, 's> {
-    lease: Lease<'a>,
-    state: &'s mut EditorState,
-    document: PathBuf,
-    live: UiContext,
-    live_history_actor: Option<HistoryActor>,
-    live_clipboard: Vec<PenNode>,
-    // Protect interactive text/property drafts too. Variable/theme caches remain
-    // shared and are moved back after the call, including canonical edits.
-    live_ui: Option<op_editor_core::ui_draft::UiDraftState>,
-    live_image_panel: op_editor_core::image_panel_state::ImagePanelState,
-    live_crop_editing: Option<op_editor_core::NodeId>,
-    clipboard_identity: (*const PenNode, usize),
-    finished: bool,
-}
-
-impl<'a, 's> Scope<'a, 's> {
-    fn enter(
-        mut lease: Lease<'a>,
-        document: &Path,
-        state: &'s mut EditorState,
-        phase: Phase,
-    ) -> Self {
-        let live_history_actor = state.set_history_actor(Some(lease.history_actor));
-        if phase == Phase::Request {
-            state.take_actor_history_error();
-        }
-        let data = lease.data.as_mut().unwrap();
-        let mut agent_ui = data.documents.remove(document).unwrap_or_default();
-        let mut live_ui = std::mem::take(&mut state.ui);
-        state.ui.variables = std::mem::take(&mut live_ui.variables);
-        state.ui.active_page_index = resolve_page(
-            state,
-            agent_ui.active_page,
-            agent_ui.active_page_id.as_deref(),
-        );
-        agent_ui.active_page_id = state
-            .doc
-            .pages
-            .as_ref()
-            .and_then(|pages| pages.get(live_ui.active_page_index))
-            .map(|page| page.id.clone());
-        selected::prune(&mut agent_ui.selection, state.active_children());
-        agent_ui.active_page = live_ui.active_page_index;
-        std::mem::swap(&mut state.selection, &mut agent_ui.selection);
-        std::mem::swap(&mut state.viewport, &mut agent_ui.viewport);
-        std::mem::swap(&mut state.tool, &mut agent_ui.tool);
-        let live_clipboard =
-            std::mem::replace(&mut state.clipboard, std::mem::take(&mut data.clipboard));
-        let clipboard_identity = (state.clipboard.as_ptr(), state.clipboard.len());
-        let live_image_panel = std::mem::take(&mut state.editor_ui.image_panel);
-        let live_crop_editing = state.editor_ui.image_crop_editing.take();
-        Self {
-            lease,
-            state,
-            document: document.into(),
-            live: agent_ui,
-            live_history_actor,
-            live_clipboard,
-            live_ui: Some(live_ui),
-            live_image_panel,
-            live_crop_editing,
-            clipboard_identity,
-            finished: false,
-        }
-    }
-
-    fn finish(&mut self) -> Result<(), AgentContextError> {
-        if self.finished {
-            return Ok(());
-        }
-        self.finished = true;
-        self.state.set_history_actor(self.live_history_actor);
-        let data = self.lease.data.as_mut().unwrap();
-        let clipboard_changed =
-            self.clipboard_identity != (self.state.clipboard.as_ptr(), self.state.clipboard.len());
-        std::mem::swap(&mut self.state.selection, &mut self.live.selection);
-        std::mem::swap(&mut self.state.viewport, &mut self.live.viewport);
-        std::mem::swap(&mut self.state.tool, &mut self.live.tool);
-        let human_page_id = self.live.active_page_id.take();
-        self.live.active_page = self.state.ui.active_page_index;
-        self.live.active_page_id = current_page_id(self.state);
-        let mut live_ui = self.live_ui.take().unwrap();
-        live_ui.variables = std::mem::take(&mut self.state.ui.variables);
-        self.state.ui = live_ui;
-        self.state.editor_ui.image_panel = std::mem::take(&mut self.live_image_panel);
-        self.state.editor_ui.image_crop_editing = self.live_crop_editing.take();
-        self.state.ui.active_page_index = resolve_page(
-            self.state,
-            self.state.ui.active_page_index,
-            human_page_id.as_deref(),
-        );
-        let mut selection = std::mem::take(&mut self.state.selection);
-        selected::prune(&mut selection, self.state.active_children());
-        self.state.selection = selection;
-        data.clipboard = std::mem::replace(
-            &mut self.state.clipboard,
-            std::mem::take(&mut self.live_clipboard),
-        );
-        let mut error = None;
-        if clipboard_changed {
-            match clipboard_charge(data.clipboard.iter(), data.clipboard.capacity()) {
-                Ok(bytes) => data.clipboard_charge = bytes,
-                Err(message) => {
-                    data.clipboard = Vec::new();
-                    data.clipboard_charge = 0;
-                    error = Some(message);
-                }
-            }
-        }
-        if self
-            .live
-            .active_page_id
-            .as_ref()
-            .is_some_and(|id| id.capacity() > UI_ALLOWANCE / 4)
-        {
-            // Canonical page data is untouched. Refuse an unretainable actor
-            // preference rather than keeping bytes outside the UI reservation.
-            self.live.active_page_id = None;
-            error = Some(AgentContextError::Capacity {
-                resource: "page identity bytes",
-                limit: UI_ALLOWANCE / 4,
-            });
-        }
-        if self.live.selection.len() > MAX_SELECTION || self.live.charge() > UI_ALLOWANCE / 2 {
-            self.live.selection = SelectionState::empty();
-            error = Some(AgentContextError::OversizedSelection {
-                limit: MAX_SELECTION,
-            });
-        }
-        data.documents.insert(
-            std::mem::take(&mut self.document),
-            std::mem::take(&mut self.live),
-        );
-        // The allowance admits normal UI changes; unexpected custom clipboard
-        // writers cannot leave unaccounted data retained after a call.
-        if data.charge() > self.lease.reservation {
-            data.clipboard = Vec::new();
-            data.clipboard_charge = 0;
-            error = Some(AgentContextError::UnaccountedClipboard);
-        }
-        error.map_or(Ok(()), Err)
-    }
-}
-
-impl Drop for Scope<'_, '_> {
-    fn drop(&mut self) {
-        let _ = self.finish();
-    }
-}
+#[path = "agent_context_scope.rs"]
+mod actor_scope;
+use actor_scope::Scope;
 
 struct ByteCounter {
     bytes: usize,
@@ -700,13 +603,36 @@ fn clipboard_charge<'a>(
     root_capacity: usize,
 ) -> Result<usize, AgentContextError> {
     fn node_bytes(node: &PenNode) -> usize {
-        node.children().map_or(0, |nodes| {
-            nodes.capacity() * std::mem::size_of::<PenNode>() * 2
-                + nodes.iter().map(node_bytes).sum::<usize>()
-        })
+        let Some(children) = node.children() else {
+            return 0;
+        };
+        let row = std::mem::size_of::<PenNode>().saturating_mul(2);
+        if children.is_empty() {
+            return children.capacity().saturating_mul(row);
+        }
+        let mut pending = vec![children];
+        let mut bytes = 0usize;
+        while let Some(nodes) = pending.pop() {
+            bytes = bytes.saturating_add(nodes.capacity().saturating_mul(row));
+            if bytes > MAX_CLIPBOARD {
+                return bytes;
+            }
+            for node in nodes {
+                if let Some(children) = node.children() {
+                    if children.is_empty() {
+                        bytes = bytes.saturating_add(children.capacity().saturating_mul(row));
+                    } else {
+                        pending.push(children);
+                    }
+                }
+            }
+        }
+        bytes
     }
     let mut serialized = ByteCounter { bytes: 0 };
-    let mut storage = root_capacity * std::mem::size_of::<PenNode>() * 2;
+    let mut storage = root_capacity
+        .saturating_mul(std::mem::size_of::<PenNode>())
+        .saturating_mul(2);
     for node in nodes {
         serde_json::to_writer(&mut serialized, node)
             .map_err(|_| AgentContextError::ClipboardSerialization)?;
@@ -735,14 +661,18 @@ pub(super) fn validate_atomic_ui(state: &EditorState) -> Result<(), AgentContext
             limit: MAX_SELECTION,
         });
     }
-    let ui = UiContext {
-        selection: state.selection.clone(),
-        viewport: state.viewport,
-        active_page: state.ui.active_page_index,
-        active_page_id: current_page_id(state),
-        tool: state.tool,
-    };
-    if ui.charge() > UI_ALLOWANCE / 2 {
+    let page_identity_bytes = state
+        .doc
+        .pages
+        .as_ref()
+        .and_then(|pages| pages.get(state.ui.active_page_index))
+        .map_or(0, |page| page.id.len());
+    if ui_charge(
+        &state.selection,
+        page_identity_bytes,
+        state.selection.set.len(),
+    ) > UI_ALLOWANCE / 2
+    {
         return Err(AgentContextError::Capacity {
             resource: "atomic UI bytes",
             limit: UI_ALLOWANCE / 2,
@@ -753,7 +683,7 @@ pub(super) fn validate_atomic_ui(state: &EditorState) -> Result<(), AgentContext
 
 fn selected_clipboard_charge(state: &EditorState) -> Result<usize, AgentContextError> {
     clipboard_charge(
-        selected::roots(&state.selection, state.active_children()).into_iter(),
+        selected::roots(&state.selection, state).into_iter(),
         state.selection.set.len(),
     )
 }
