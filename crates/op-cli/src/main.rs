@@ -72,16 +72,27 @@ fn run(args: &[String]) -> Result<String, CliError> {
     let needs_server = command_needs_server(&command);
     // The live MCP endpoint authenticates every stateful call, so the token
     // has to be resolved alongside the port rather than after it.
-    let (target_port, target_token) = if port_explicit || !needs_server {
-        (port, app_control_cli::token_for_port(port))
-    } else {
+    let discovered = if needs_server && !port_explicit {
         app_control_cli::discover_running_endpoint()
-            .unwrap_or_else(|| (port, app_control_cli::token_for_port(port)))
+    } else {
+        None
+    };
+    let already_verified = discovered.is_some();
+    let (target_port, target_token) = if !needs_server {
+        (port, String::new())
+    } else {
+        discovered.unwrap_or_else(|| (port, app_control_cli::token_for_port(port)))
     };
     let out = match command {
         Command::Help => USAGE.to_string(),
         Command::Version => version_json(),
-        Command::Status => status_json(target_port),
+        Command::Status => {
+            if already_verified {
+                mcp_http_cli::status_json_verified(target_port)
+            } else {
+                status_json(target_port)
+            }
+        }
         Command::StartMcp {
             document_path,
             headless,

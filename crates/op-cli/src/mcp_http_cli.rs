@@ -16,23 +16,28 @@ pub(crate) fn status_json(port: u16) -> String {
     // the port. Mirrors TS `op status`, which reports running only when the
     // OpenPencil endpoint actually responds. A stale/foreign listener now
     // correctly reports `running:false`.
-    let running = ping_result(port).is_some();
+    if ping_result(port).is_none() {
+        return status_json_from_running(port, false);
+    }
+    status_json_verified(port)
+}
+
+/// Reuse identity verification completed by this command's endpoint discovery.
+pub(crate) fn status_json_verified(port: u16) -> String {
     // TS `op status` returns {running, port, pid, url, uptime}. When the live
     // discovery file is present AND advertises this port, surface pid +
     // uptime (seconds since the host wrote `timestamp`). Otherwise fall back
     // to the discovery-free shape.
-    if running {
-        if let Some((file_port, pid, timestamp)) = crate::app_control_cli::live_status_fields() {
-            if file_port == port {
-                let uptime = now_millis().saturating_sub(timestamp) / 1000;
-                let url = op_editor_core::local_daemon_origin(port);
-                return format!(
-                    r#"{{"running":true,"port":{port},"pid":{pid},"url":"{url}","uptime":{uptime}}}"#
-                );
-            }
+    if let Some((file_port, pid, timestamp)) = crate::app_control_cli::live_status_fields() {
+        if file_port == port {
+            let uptime = now_millis().saturating_sub(timestamp) / 1000;
+            let url = op_editor_core::local_daemon_origin(port);
+            return format!(
+                r#"{{"running":true,"port":{port},"pid":{pid},"url":"{url}","uptime":{uptime}}}"#
+            );
         }
     }
-    status_json_from_running(port, running)
+    status_json_from_running(port, true)
 }
 
 pub(crate) fn status_json_from_running(port: u16, running: bool) -> String {
