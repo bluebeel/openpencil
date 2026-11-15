@@ -172,7 +172,7 @@ fn canonical_element_tool_schema(tool: &str, component_name: &str) -> String {
     serde_json::json!({
         "name": tool,
         "description": format!(
-            "Insert a {component_name} from the built-in UIKit onto the active page. Optional x/y doc-px floats place the top-left; defaults to (0, 0)."
+            "Insert a {component_name} from the built-in UIKit onto the active page. Optional x/y doc-px floats place the top-left; defaults to (0, 0). Applied host replies include node_id and newIds for the inserted root."
         ),
         "inputSchema": {
             "type": "object",
