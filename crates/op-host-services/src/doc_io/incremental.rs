@@ -270,6 +270,7 @@ impl Base {
             .checked_sub(old)?
             .checked_add(replacement.capacity())?;
         if (!self.replacements.contains_key(&span) && self.replacements.len() >= 8192)
+            || self.appends.raw_overlap(span)
             || bytes.checked_add(self.appends.bytes())? > budget::EDITS - 1024 * 1024
         {
             return None;
@@ -312,7 +313,9 @@ impl Base {
         Some(())
     }
     fn patch(&mut self, old: &PenNode, current: &PenNode) -> Option<()> {
-        let node = self.index.nodes.get(old.id_str()).copied().flatten()?;
+        let Some(node) = self.index.nodes.get(old.id_str()).copied().flatten() else {
+            return self.patch_appended(old, current);
+        };
         // visit_metadata_changes proved the old SharedNode child wire witness
         // equals the current node's presence, before exposing either header.
         let before = splice::old_metadata(old, current.children().is_some())?;
@@ -361,25 +364,8 @@ impl Base {
         let (temp, file) = super::create_sibling_temp(path)?;
         let result = (|| {
             super::save_buffer::with_shared_buffered_file(file, |writer| {
-                let mut at = 0;
-                for (span, bytes) in &self.replacements {
-                    copy_range(&mut self.raw, at, span.start, writer)?;
-                    writer
-                        .write_all(bytes)
-                        .map_err(|e| DocIoError::Io(e.to_string()))?;
-                    at = span.end;
-                }
-                let end = self
-                    .raw
-                    .metadata()
-                    .map_err(|e| DocIoError::Io(e.to_string()))?
-                    .len();
-                copy_range(
-                    &mut self.raw,
-                    at,
-                    usize::try_from(end).map_err(|e| DocIoError::Io(e.to_string()))?,
-                    writer,
-                )
+                self.appends
+                    .write(&mut self.raw, &self.replacements, writer)
             })?;
             let next = std::fs::metadata(&temp)
                 .map(|m| FileVersion::metadata(&m))

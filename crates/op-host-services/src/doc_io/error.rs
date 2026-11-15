@@ -45,6 +45,12 @@ use std::fmt;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DocIoError {
+    /// A writer-produced derived fragment range failed its internal bounds.
+    IncrementalSpan {
+        fragment: Option<usize>,
+        start: usize,
+        end: usize,
+    },
     /// Ownership/stamp refusal, or a committed file whose final identity could
     /// not be confirmed. Callers must never replay the latter as a rejection.
     FileOwnership { detail: String, committed: bool },
@@ -98,6 +104,14 @@ pub enum DocIoError {
 impl fmt::Display for DocIoError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            DocIoError::IncrementalSpan {
+                fragment,
+                start,
+                end,
+            } => write!(
+                f,
+                "invalid canonical fragment {fragment:?} range {start}..{end}"
+            ),
             DocIoError::FileOwnership { detail, .. } => f.write_str(detail),
             DocIoError::CreateTemp { path, detail } => write!(f, "create {path}: {detail}"),
             DocIoError::TempAllocExhausted { path } => {

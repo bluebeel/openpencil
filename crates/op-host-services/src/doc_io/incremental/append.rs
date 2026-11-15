@@ -1,75 +1,194 @@
-//! Bounded suffix overlays against immutable writer-owned child-array spans.
-//! Appended IDs deliberately have no metadata span: their later edits reseed
-//! through the full writer instead of guessing new output offsets.
-use super::{budget, index::Children, splice, Base, Span};
+//! Immutable writer-produced suffix segments. Every new-node span stays local
+//! to its original bytes, so later edits never shift/reindex another fragment.
+use super::{
+    budget,
+    index::{self, Children, Node},
+    splice, Base, Span,
+};
 use jian_ops_schema::node::PenNode;
 use op_editor_core::{CanonicalAppend, CanonicalChildTarget, PenNodeExt};
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     mem,
-    ops::Bound::{Excluded, Unbounded},
 };
+mod metadata;
+mod write;
 const MAX_IDS: usize = 8192;
 const MAX_NEW_NODES: usize = 4096;
+const MAX_SEGMENT_DEPTH: usize = 128;
 const EDIT_LIMIT: usize = budget::EDITS - 1024 * 1024;
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Source {
+    Raw,
+    Segment(usize),
+}
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct Location {
+    source: Source,
+    at: usize,
+}
+#[derive(Clone, Copy)]
+struct PlacedNode {
+    source: Source,
+    node: Node,
+}
+#[derive(Clone, Copy)]
+struct Link {
+    segment: usize,
+    comma: bool,
+}
+struct Segment {
+    bytes: Vec<u8>,
+    patches: BTreeMap<Span, Vec<u8>>,
+    points: BTreeMap<usize, Vec<Link>>,
+    depth: usize,
+}
 #[derive(Default)]
 pub(super) struct Overlay {
-    lists: BTreeMap<usize, State>,
-    ids: HashSet<String>,
-    strings: usize,
+    lists: BTreeMap<Location, State>,
+    nodes: HashMap<String, PlacedNode>,
+    segments: Vec<Segment>,
+    raw_points: BTreeMap<usize, Vec<Link>>,
 }
 struct State {
     len: usize,
     last: String,
 }
+#[derive(Clone, Copy)]
+struct Array {
+    source: Source,
+    list: Children,
+}
+fn points_bytes(points: &BTreeMap<usize, Vec<Link>>) -> usize {
+    points
+        .len()
+        .saturating_mul(1024 + mem::size_of::<(usize, Vec<Link>)>())
+        .saturating_add(
+            points
+                .values()
+                .map(|links| links.capacity() * mem::size_of::<Link>())
+                .sum::<usize>(),
+        )
+}
 impl Overlay {
     pub(super) fn bytes(&self) -> usize {
-        self.strings
-            .saturating_add(
-                self.ids
-                    .capacity()
-                    .saturating_mul(mem::size_of::<String>() + 16),
-            )
+        let mut bytes = self
+            .nodes
+            .capacity()
+            .saturating_mul(mem::size_of::<(String, PlacedNode)>() + 16)
+            .saturating_add(self.nodes.keys().map(String::capacity).sum::<usize>())
             .saturating_add(
                 self.lists
                     .len()
-                    .saturating_mul(mem::size_of::<(usize, State)>() + 1024),
+                    .saturating_mul(mem::size_of::<(Location, State)>() + 1024),
             )
+            .saturating_add(
+                self.lists
+                    .values()
+                    .map(|state| state.last.capacity())
+                    .sum::<usize>(),
+            )
+            .saturating_add(
+                self.segments
+                    .capacity()
+                    .saturating_mul(mem::size_of::<Segment>()),
+            )
+            .saturating_add(points_bytes(&self.raw_points));
+        for segment in &self.segments {
+            bytes = bytes
+                .saturating_add(segment.bytes.capacity())
+                .saturating_add(points_bytes(&segment.points))
+                .saturating_add(
+                    segment
+                        .patches
+                        .len()
+                        .saturating_mul(mem::size_of::<(Span, Vec<u8>)>() + 1024),
+                )
+                .saturating_add(segment.patches.values().map(Vec::capacity).sum::<usize>());
+        }
+        bytes
+    }
+    fn points_mut(&mut self, source: Source) -> Option<&mut BTreeMap<usize, Vec<Link>>> {
+        match source {
+            Source::Raw => Some(&mut self.raw_points),
+            Source::Segment(id) => Some(&mut self.segments.get_mut(id)?.points),
+        }
+    }
+    pub(super) fn raw_overlap(&self, span: Span) -> bool {
+        self.raw_points
+            .range(span.start..span.end)
+            .any(|(point, _)| span.start < *point)
     }
 }
+fn overlap(
+    patches: &BTreeMap<Span, Vec<u8>>,
+    points: &BTreeMap<usize, Vec<Link>>,
+    span: Span,
+) -> bool {
+    // All installed replacements are disjoint; only immediate neighbors can
+    // contain/overlap a new range. Insertion points strictly inside it refuse.
+    use std::ops::Bound::{Excluded, Unbounded};
+    patches
+        .range(..span)
+        .next_back()
+        .into_iter()
+        .chain(patches.range((Excluded(span), Unbounded)).next())
+        .any(|(other, _)| span.overlaps(*other))
+        || points
+            .range(span.start..span.end)
+            .any(|(point, _)| span.start < *point)
+}
 impl Base {
-    fn child_array(&self, target: CanonicalChildTarget<'_>) -> Option<Children> {
+    fn placed_node(&self, id: &str) -> Option<PlacedNode> {
+        match self.index.nodes.get(id) {
+            Some(node) => node.map(|node| PlacedNode {
+                source: Source::Raw,
+                node,
+            }),
+            None => self.appends.nodes.get(id).copied(),
+        }
+    }
+    fn child_array(&self, target: CanonicalChildTarget<'_>) -> Option<Array> {
         match target {
-            CanonicalChildTarget::Root => self.index.root,
-            CanonicalChildTarget::Page { id, .. } => self.index.pages.get(id).copied().flatten(),
+            CanonicalChildTarget::Root => Some(Array {
+                source: Source::Raw,
+                list: self.index.root?,
+            }),
+            CanonicalChildTarget::Page { id, .. } => Some(Array {
+                source: Source::Raw,
+                list: self.index.pages.get(id).copied().flatten()?,
+            }),
             CanonicalChildTarget::Node { id } => {
-                self.index.nodes.get(id).copied().flatten()?.children
+                let node = self.placed_node(id)?;
+                Some(Array {
+                    source: node.source,
+                    list: node.node.children?,
+                })
             }
         }
     }
-    fn before_append(&self, list: Children, len: usize, last: Option<&str>) -> Option<()> {
-        if let Some(current) = self.appends.lists.get(&list.span.start) {
+    fn before_append(&self, array: Array, len: usize, last: Option<&str>) -> Option<()> {
+        let key = Location {
+            source: array.source,
+            at: array.list.span.start,
+        };
+        if let Some(current) = self.appends.lists.get(&key) {
             return (current.len == len && Some(current.last.as_str()) == last).then_some(());
         }
-        if list.len != len {
+        if array.list.len != len {
             return None;
         }
-        match (last, list.last) {
+        match (last, array.list.last) {
             (None, None) if len == 0 => Some(()),
             (Some(id), Some(at)) => self
-                .index
-                .nodes
-                .get(id)
-                .copied()
-                .flatten()
-                .filter(|node| node.object.start == at)
+                .placed_node(id)
+                .filter(|node| node.source == array.source && node.node.object.start == at)
                 .map(|_| ()),
             _ => None,
         }
     }
-    fn new_ids<'a>(&self, nodes: &'a [PenNode]) -> Option<Vec<&'a str>> {
-        let mut result = Vec::new();
-        let mut seen = HashSet::new();
+    fn new_ids<'a>(&self, nodes: &'a [PenNode]) -> Option<HashSet<&'a str>> {
+        let mut result = HashSet::new();
         let mut pending = vec![nodes.iter()];
         while let Some(siblings) = pending.last_mut() {
             let Some(node) = siblings.next() else {
@@ -77,17 +196,15 @@ impl Base {
                 continue;
             };
             if result.len() == MAX_NEW_NODES
+                || !eligible(node)
                 || node.id_str().is_empty()
                 || node.id_str().len() > 16 * 1024
                 || self.index.nodes.contains_key(node.id_str())
-                || self.appends.ids.contains(node.id_str())
-                || !seen.insert(node.id_str())
-                || matches!(node, PenNode::Ref(_))
-                || matches!(node,PenNode::Frame(frame)if frame.reusable==Some(true))
+                || self.appends.nodes.contains_key(node.id_str())
+                || !result.insert(node.id_str())
             {
                 return None;
             }
-            result.push(node.id_str());
             if let Some(children) = node.children().filter(|children| !children.is_empty()) {
                 if pending.len() == 128 {
                     return None;
@@ -95,99 +212,93 @@ impl Base {
                 pending.push(children.iter());
             }
         }
-        (!result.is_empty() && self.appends.ids.len().checked_add(result.len())? <= MAX_IDS)
+        (!result.is_empty() && self.appends.nodes.len().checked_add(result.len())? <= MAX_IDS)
             .then_some(result)
     }
     pub(super) fn append(&mut self, receipt: CanonicalAppend<'_>) -> Option<()> {
-        if receipt.nodes.is_empty() {
-            return None;
-        }
-        let list = self.child_array(receipt.target)?;
-        self.before_append(list, receipt.previous_len, receipt.previous_last)?;
+        let array = self.child_array(receipt.target)?;
+        self.before_append(array, receipt.previous_len, receipt.previous_last)?;
         let ids = self.new_ids(receipt.nodes)?;
         let encoded = splice::append(receipt.nodes)?;
-        let payload = encoded.strip_prefix(b"[")?.strip_suffix(b"]")?;
-        if payload.is_empty() {
+        let indexed = index::appended_nodes(&encoded)?;
+        if indexed.len() != ids.len() {
             return None;
         }
-        let len = receipt.previous_len.checked_add(receipt.nodes.len())?;
-        let last = receipt.nodes.last()?.id_str();
-        self.appends.ids.try_reserve(ids.len()).ok()?;
-        for id in ids {
-            let owned = id.to_owned();
-            self.appends.strings = self.appends.strings.checked_add(owned.capacity())?;
-            self.appends.ids.insert(owned);
-            if self.appends.bytes().checked_add(self.replacement_bytes)? > EDIT_LIMIT {
-                return None;
-            }
-        }
-        let last = last.to_owned();
-        let old = self
-            .appends
-            .lists
-            .insert(list.span.start, State { len, last });
-        self.appends.strings = self
-            .appends
-            .strings
-            .checked_sub(old.as_ref().map_or(0, |state| state.last.capacity()))?
-            .checked_add(self.appends.lists.get(&list.span.start)?.last.capacity())?;
-        if self.appends.bytes().checked_add(self.replacement_bytes)? > EDIT_LIMIT {
-            return None;
-        }
-        let point = Span {
-            start: list.span.end.checked_sub(1)?,
-            end: list.span.end - 1,
-        };
-        self.append_fragment(point, receipt.previous_len != 0, payload)
-    }
-    fn append_fragment(&mut self, span: Span, comma: bool, payload: &[u8]) -> Option<()> {
-        if !self.replacements.contains_key(&span) && self.replacements.len() >= 8192 {
-            return None;
-        }
-        for (other, _) in self
-            .replacements
-            .range(..span)
-            .next_back()
-            .into_iter()
-            .chain(self.replacements.range((Excluded(span), Unbounded)).next())
+        let mut encoded_ids = HashSet::new();
+        if indexed
+            .iter()
+            .any(|(id, _)| !ids.contains(id.as_str()) || !encoded_ids.insert(id.as_str()))
         {
-            if span.overlaps(*other) {
-                return None;
+            return None;
+        }
+        drop(encoded_ids);
+        let depth = match array.source {
+            Source::Raw => 1,
+            Source::Segment(id) => self.appends.segments.get(id)?.depth.checked_add(1)?,
+        };
+        if depth > MAX_SEGMENT_DEPTH || self.appends.segments.len() == MAX_IDS {
+            return None;
+        }
+        let point = array.list.span.end.checked_sub(1)?;
+        let point_span = Span {
+            start: point,
+            end: point,
+        };
+        match array.source {
+            Source::Raw => {
+                if overlap(&self.replacements, &self.appends.raw_points, point_span) {
+                    return None;
+                }
+            }
+            Source::Segment(id) => {
+                let segment = self.appends.segments.get(id)?;
+                if overlap(&segment.patches, &segment.points, point_span) {
+                    return None;
+                }
             }
         }
-        let old = self.replacements.get(&span).map_or(0, Vec::capacity);
-        let rest = self
-            .replacement_bytes
-            .checked_sub(old)?
-            .checked_add(self.appends.bytes())?;
-        let available = EDIT_LIMIT.checked_sub(rest)?;
-        let bytes = self.replacements.entry(span).or_default();
-        let required = bytes
-            .len()
-            .checked_add(usize::from(comma))?
-            .checked_add(payload.len())?;
-        if required > available {
-            return None;
+        self.appends.nodes.try_reserve(indexed.len()).ok()?;
+        self.appends.segments.try_reserve(1).ok()?;
+        let segment = self.appends.segments.len();
+        self.appends.segments.push(Segment {
+            bytes: encoded,
+            patches: BTreeMap::new(),
+            points: BTreeMap::new(),
+            depth,
+        });
+        for (id, node) in indexed {
+            self.appends.nodes.insert(
+                id,
+                PlacedNode {
+                    source: Source::Segment(segment),
+                    node,
+                },
+            );
         }
-        if required > bytes.capacity() {
-            let target = required
-                .max(bytes.capacity().saturating_mul(2))
-                .min(available);
-            bytes
-                .try_reserve_exact(target.checked_sub(bytes.len())?)
-                .ok()?;
-        }
-        if bytes.capacity() > available {
-            return None;
-        }
-        self.replacement_bytes = self
-            .replacement_bytes
-            .checked_sub(old)?
-            .checked_add(bytes.capacity())?;
-        if comma {
-            bytes.push(b',');
-        }
-        bytes.extend_from_slice(payload);
-        Some(())
+        let links = self
+            .appends
+            .points_mut(array.source)?
+            .entry(point)
+            .or_default();
+        links.try_reserve(1).ok()?;
+        links.push(Link {
+            segment,
+            comma: receipt.previous_len != 0,
+        });
+        self.appends.lists.insert(
+            Location {
+                source: array.source,
+                at: array.list.span.start,
+            },
+            State {
+                len: receipt.previous_len.checked_add(receipt.nodes.len())?,
+                last: receipt.nodes.last()?.id_str().to_owned(),
+            },
+        );
+        (self.appends.bytes().checked_add(self.replacement_bytes)? <= EDIT_LIMIT).then_some(())
     }
+}
+fn eligible(node: &PenNode) -> bool {
+    !matches!(node, PenNode::Ref(_))
+        && !matches!(node,PenNode::Frame(frame)if frame.reusable==Some(true))
 }

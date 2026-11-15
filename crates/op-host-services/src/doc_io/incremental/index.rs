@@ -36,6 +36,9 @@ pub(super) struct Index {
     pub meta: Span,
     pub headers: [Option<Span>; 4],
 }
+#[path = "index_inline.rs"]
+mod inline;
+pub(super) use inline::appended_nodes;
 #[path = "index_stream.rs"]
 mod stream;
 const MAX_INDEX: usize = 224 * 1024 * 1024;
