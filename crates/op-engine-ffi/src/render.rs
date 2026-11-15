@@ -25,52 +25,20 @@ const BACKDROP: Color = Color::rgb_u8(245, 245, 247);
 const SELECTION_COLOR: Color = Color::rgb_u8(79, 70, 229);
 const SELECTION_STROKE: f32 = 2.0;
 
-/// Paint one full frame: converge the image-decode queue, then paint
-/// the active page + selection overlay onto `surface`.
+/// Paint directly onto the real target, then converge newly discovered image
+/// decodes before returning. A warm frame paints exactly once; image misses
+/// repaint this same target after decoding, without a throwaway raster/chrome
+/// pass or an additional final paint after convergence.
 pub(crate) fn paint_frame(session: &mut Session, surface: &mut SkiaSurface) {
-    // The shared image registry records pending decodes during paint;
-    // decode them synchronously and repaint until nothing new appears
-    // (documents carry base64 data URLs; a single pass usually
-    // converges). Remote images stay placeholders in the viewer.
+    use op_editor_ui::widgets::canvas_viewport_image::pending_decode_count;
+    paint_into_canvas(session, surface.canvas());
     for _ in 0..64 {
-        let discovered = discover_pending_decodes(session);
-        if discovered == 0 {
+        if pending_decode_count() == 0 {
             break;
         }
         decode_pending(session);
-    }
-    paint_into_canvas(session, surface.canvas());
-}
-
-/// Paint a discovery pass on a throwaway raster and report how many
-/// pending decodes it recorded (mirrors the export path's
-/// `ensure_images_decoded`).
-///
-/// The pass runs at the session's REAL size (capped): the viewer could
-/// get away with 1×1, but the editor chrome lays out against the viewport
-/// dimensions — a 1×1 paint would leave the widget host with 1-px panel
-/// geometry and corrupt the following real frame.
-fn discover_pending_decodes(session: &mut Session) -> usize {
-    // Discovery runs on a 1×1 raster in VIEWER mode (image-decode
-    // discovery only). In EDITOR mode it must paint at the real size —
-    // the chrome lays out against the viewport — but it is EXPENSIVE, so
-    // it runs only while new decodes keep appearing.
-    #[cfg(feature = "editor")]
-    if session.editor.is_some() {
-        let (w, h) = session.logical;
-        let width = ((w * session.dpr).round() as i32).clamp(1, 4096);
-        let height = ((h * session.dpr).round() as i32).clamp(1, 4096);
-        let Some(mut surface) = skia_safe::surfaces::raster_n32_premul((width, height)) else {
-            return 0;
-        };
         paint_into_canvas(session, surface.canvas());
-        return op_editor_ui::widgets::canvas_viewport_image::pending_decode_count();
     }
-    let Some(mut surface) = skia_safe::surfaces::raster_n32_premul((1, 1)) else {
-        return 0;
-    };
-    paint_into_canvas(session, surface.canvas());
-    op_editor_ui::widgets::canvas_viewport_image::pending_decode_count()
 }
 
 /// Install every pending encoded image into the backend's raster cache.
@@ -193,13 +161,13 @@ pub(crate) fn paint_into_canvas(session: &mut Session, canvas: &skia_safe::Canva
 
     let origin = session.viewport_origin;
     let zoom = session.zoom;
-    let selected = session.selected.clone();
     let logical = session.safe_area_viewport();
     let (insets_left, insets_top) = (session.insets.left, session.insets.top);
     let cull = viewport_cull(origin, zoom, logical);
     // Computed before the field-wise borrow so the paint pass can hand the
     // painter the draft + caret while `scene`/`backend` are live.
     let edit_caret = crate::text::paint_edit_caret(session);
+    let selected = session.selected.as_deref();
 
     let Session { scene, backend, .. } = session;
     if insets_left > 0.0 || insets_top > 0.0 {
@@ -236,7 +204,7 @@ pub(crate) fn paint_into_canvas(session: &mut Session, canvas: &skia_safe::Canva
             &mut cx, page, origin, zoom, cull, edit_caret,
         );
     }
-    if let Some(id) = selected.as_deref() {
+    if let Some(id) = selected {
         if let Some(node) = find_node(&page.children, id) {
             paint_selection_overlay(&mut frame, node, origin, zoom);
         }
@@ -271,17 +239,24 @@ fn world_rect(bounds: &Rect, origin: Point2D, zoom: f32) -> Rect {
     }
 }
 
-/// Recursively find a scene node by id (children are topmost-first).
+/// Find a scene node in exact preorder with depth-bounded, borrowed cursors.
 pub(crate) fn find_node<'a>(children: &'a [SceneNode], id: &str) -> Option<&'a SceneNode> {
-    for child in children {
-        if child.id == id {
-            return Some(child);
-        }
-        if let Some(hit) = find_node(&child.children, id) {
-            return Some(hit);
+    let mut siblings = children.iter();
+    let mut ancestors = Vec::new();
+    loop {
+        if let Some(node) = siblings.next() {
+            if node.id == id {
+                return Some(node);
+            }
+            if !node.children.is_empty() {
+                ancestors.push(std::mem::replace(&mut siblings, node.children.iter()));
+            }
+        } else if let Some(parent) = ancestors.pop() {
+            siblings = parent;
+        } else {
+            return None;
         }
     }
-    None
 }
 
 /// Union of a page's top-level node bounds (with the precomputed
