@@ -81,6 +81,18 @@ impl EditorMeta {
     /// so a field added to the metadata is persisted by all of them at once,
     /// instead of surviving only the save paths someone remembered.
     pub fn from_state(state: &op_editor_core::EditorState) -> Self {
+        let mut meta = Self::view_from_state(state);
+        meta.component_catalog = op_editor_core::ComponentCatalog::capture(state);
+        meta
+    }
+
+    /// Immediate live serialization borrows located catalog labels and IDs.
+    /// Background saves must continue to capture an owned metadata snapshot.
+    pub fn borrowed_from_state(state: &op_editor_core::EditorState) -> impl serde::Serialize + '_ {
+        crate::editor_meta_live::capture(state)
+    }
+
+    pub(crate) fn view_from_state(state: &op_editor_core::EditorState) -> Self {
         Self {
             active_page_index: state.ui.active_page_index,
             preserve_authored_geometry: state.editor_ui.preserve_authored_geometry,
@@ -100,7 +112,7 @@ impl EditorMeta {
             // imported site through every save, so a later AI edit keeps
             // deferring to its authored design.
             imported_from: state.editor_ui.home.imported_from.clone(),
-            component_catalog: op_editor_core::ComponentCatalog::capture(state),
+            component_catalog: None,
         }
     }
 }

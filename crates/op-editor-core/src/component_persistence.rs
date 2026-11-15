@@ -7,6 +7,9 @@ use serde::{
 use serde_json::Value;
 use std::collections::HashSet;
 
+#[path = "component_persistence_live.rs"]
+mod live;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ComponentCatalogError {
     Invalid(String),
@@ -148,6 +151,13 @@ fn walk<'a>(nodes: &'a [PenNode], visit: &mut impl FnMut(&'a PenNode)) {
     }
 }
 impl ComponentCatalog {
+    /// Serialize an exclusively borrowed live registry without constructing and
+    /// decoding a second catalog when every prototype has a verified document
+    /// location. External or displaced prototypes retain capture validation.
+    pub fn borrowed_capture(state: &EditorState) -> Option<impl Serialize + '_> {
+        live::capture(state)
+    }
+
     pub fn capture(state: &EditorState) -> Option<Self> {
         Self::capture_library(&state.components, &state.doc)
     }
