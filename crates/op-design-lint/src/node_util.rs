@@ -159,16 +159,7 @@ pub fn numeric_height(node: &PenNode) -> Option<f64> {
 }
 
 fn width_sizing(node: &PenNode) -> Option<&SizingBehavior> {
-    match node {
-        PenNode::Frame(n) => n.container.width.as_ref(),
-        PenNode::Group(n) => n.container.width.as_ref(),
-        PenNode::Rectangle(n) => n.container.width.as_ref(),
-        PenNode::Ellipse(n) => n.width.as_ref(),
-        PenNode::Polygon(n) => n.width.as_ref(),
-        PenNode::Path(n) => n.width.as_ref(),
-        PenNode::Image(n) => n.width.as_ref(),
-        _ => None,
-    }
+    borrowed::sizing(node, true)
 }
 
 fn numeric_sizing(sizing: Option<&SizingBehavior>) -> Option<f64> {
@@ -203,19 +194,17 @@ pub fn role(node: &PenNode) -> Option<&str> {
 /// mobile-page shape filter and the slop detectors' chrome exemption (a tab
 /// bar legitimately IS an icon+label row and must not read as slop).
 pub fn is_mobile_screen_chrome(node: &PenNode) -> bool {
-    matches!(
-        role(node)
-            .unwrap_or("")
-            .trim()
-            .to_ascii_lowercase()
-            .as_str(),
-        "status-bar"
-            | "bottom-tab-bar"
-            | "bottom-nav"
-            | "bottom-navigation-bar"
-            | "tab-bar"
-            | "tabbar"
-    )
+    let role = role(node).unwrap_or("").trim();
+    [
+        "status-bar",
+        "bottom-tab-bar",
+        "bottom-nav",
+        "bottom-navigation-bar",
+        "tab-bar",
+        "tabbar",
+    ]
+    .iter()
+    .any(|expected| role.eq_ignore_ascii_case(expected))
 }
 
 /// A node's `rotation` in degrees. jian `rotation` is `Option<f64>`; a
@@ -329,7 +318,7 @@ pub fn resolve_color_ref(raw: &str, variables: &Variables, theme: &Theme) -> Opt
         return Some(raw.to_string());
     }
     match resolve_variable_ref(raw, variables, theme)? {
-        VariableScalar::Str(s) => Some(s),
+        VariableScalar::Str(s) => Some(s.clone()),
         VariableScalar::Bool(_) | VariableScalar::Num(_) => None,
     }
 }
@@ -344,19 +333,19 @@ fn is_variable_ref(value: &str) -> bool {
 /// scalar path of TS `resolveVariableRef` (minus the palette fallback — see
 /// [`resolve_color_ref`]). Returns `None` for an unknown variable or a
 /// value that is itself a `$ref` (circular guard).
-fn resolve_variable_ref(
+fn resolve_variable_ref<'a>(
     reference: &str,
-    variables: &Variables,
+    variables: &'a Variables,
     theme: &Theme,
-) -> Option<VariableScalar> {
+) -> Option<&'a VariableScalar> {
     let name = reference.strip_prefix('$')?;
     let def = variables.get(name)?;
     let resolved = match &def.value {
-        VariableValue::Scalar(scalar) => scalar.clone(),
+        VariableValue::Scalar(scalar) => scalar,
         VariableValue::Themed(values) => resolve_themed_value(values, theme)?,
     };
     // Circular guard — a resolved value that is itself a ref stops here.
-    if let VariableScalar::Str(s) = &resolved {
+    if let VariableScalar::Str(s) = resolved {
         if is_variable_ref(s) {
             return None;
         }
@@ -367,10 +356,10 @@ fn resolve_variable_ref(
 /// Pick the concrete scalar from a themed-value list for `theme`. Mirrors TS
 /// `resolveThemedValue`: a value whose `theme` map is a subset-match of the
 /// active theme wins; otherwise the first entry is used.
-fn resolve_themed_value(
-    values: &[jian_ops_schema::variable::ThemedValue],
+fn resolve_themed_value<'a>(
+    values: &'a [jian_ops_schema::variable::ThemedValue],
     theme: &Theme,
-) -> Option<VariableScalar> {
+) -> Option<&'a VariableScalar> {
     if !theme.is_empty() {
         let matched = values.iter().find(|v| {
             v.theme.as_ref().is_some_and(|vt| {
@@ -380,10 +369,10 @@ fn resolve_themed_value(
             })
         });
         if let Some(m) = matched {
-            return Some(m.value.clone());
+            return Some(&m.value);
         }
     }
-    values.first().map(|v| v.value.clone())
+    values.first().map(|v| &v.value)
 }
 
 /// Borrow the flattened `PenNodeBase` of any node kind.
@@ -473,7 +462,11 @@ fn stroke(node: &PenNode) -> Option<&jian_ops_schema::style::PenStroke> {
 /// (e.g. `rotation: 12` not `12.0`). Shared by the structure / text / siblings
 /// detectors, all of which emit numeric `current_value` / `suggested_value`.
 pub fn json_number(value: f64) -> Value {
-    if value.fract() == 0.0 && value.is_finite() {
+    if value.fract() == 0.0
+        && value.is_finite()
+        && value >= i64::MIN as f64
+        && value < i64::MAX as f64
+    {
         Value::from(value as i64)
     } else {
         serde_json::Number::from_f64(value)
@@ -508,16 +501,10 @@ pub fn node_property_value(node: &PenNode, property: &str) -> Option<Value> {
     }
 }
 
-/// Borrow a node's `height` as a `SizingBehavior` — Frame/Group/Rectangle via
-/// `ContainerProps`, `Text` via its own field. Other kinds have no height.
+/// Borrow any canonical kind's authored height, retaining keyword/expression
+/// values for sibling-property comparisons as well as numeric dimensions.
 fn height_sizing(node: &PenNode) -> Option<&SizingBehavior> {
-    match node {
-        PenNode::Frame(n) => n.container.height.as_ref(),
-        PenNode::Group(n) => n.container.height.as_ref(),
-        PenNode::Rectangle(n) => n.container.height.as_ref(),
-        PenNode::Text(n) => n.height.as_ref(),
-        _ => None,
-    }
+    borrowed::sizing(node, false)
 }
 
 /// Encode a `SizingBehavior` to its wire `Value`. A `Number` re-encodes
@@ -614,7 +601,11 @@ pub fn raw_padding_value(padding: Option<&Padding>) -> Value {
 /// Format an `f64` like the TS template-literal `${num}` — integral values
 /// without a trailing `.0`.
 pub fn fmt_num(value: f64) -> String {
-    if value.fract() == 0.0 && value.is_finite() {
+    if value.fract() == 0.0
+        && value.is_finite()
+        && value >= i64::MIN as f64
+        && value < i64::MAX as f64
+    {
         format!("{}", value as i64)
     } else {
         format!("{value}")

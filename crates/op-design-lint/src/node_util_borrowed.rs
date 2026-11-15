@@ -3,6 +3,13 @@ use super::{base, PenNode, SizingBehavior};
 /// Exactly JSON `.get(width/height).as_f64()`: keyword/expression/absent and
 /// nonfinite values produce None; valid zero/negative/signed-zero are retained.
 pub fn numeric_wire_size(node: &PenNode, width: bool) -> Option<f64> {
+    match sizing(node, width) {
+        Some(SizingBehavior::Number(value)) if value.is_finite() => Some(*value),
+        _ => None,
+    }
+}
+/// One exhaustive canonical dimension accessor, shared by wire and lint views.
+pub(super) fn sizing(node: &PenNode, width: bool) -> Option<&SizingBehavior> {
     macro_rules! size {
         ($node:expr) => {
             if width {
@@ -12,7 +19,7 @@ pub fn numeric_wire_size(node: &PenNode, width: bool) -> Option<f64> {
             }
         };
     }
-    let sizing = match node {
+    match node {
         PenNode::Frame(node) => size!(node.container),
         PenNode::Group(node) => size!(node.container),
         PenNode::Rectangle(node) => size!(node.container),
@@ -33,10 +40,6 @@ pub fn numeric_wire_size(node: &PenNode, width: bool) -> Option<f64> {
         PenNode::Progress(node) => size!(node),
         PenNode::Tabs(node) => size!(node),
         PenNode::Line(_) | PenNode::Ref(_) => None,
-    };
-    match sizing {
-        Some(SizingBehavior::Number(value)) if value.is_finite() => Some(*value),
-        _ => None,
     }
 }
 pub fn identity_label(node: &PenNode) -> String {
@@ -47,7 +50,9 @@ pub fn identity_label(node: &PenNode) -> String {
         .flatten()
     {
         label.push(' ');
-        label.push_str(&text.to_ascii_lowercase());
+        let start = label.len();
+        label.push_str(text);
+        label[start..].make_ascii_lowercase();
     }
     label
 }
