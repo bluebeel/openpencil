@@ -397,8 +397,11 @@ pub unsafe extern "C" fn op_resize(
 ) -> OpStatus {
     unsafe {
         call_session(engine, |session| {
+            let changed = session.logical != (width, height) || session.dpr != dpr;
             session.resize(width, height, dpr)?;
-            session.request_redraw();
+            if changed {
+                session.request_redraw();
+            }
             Ok(())
         })
     }
@@ -425,18 +428,19 @@ pub unsafe extern "C" fn op_resize_with_safe_area(
 ) -> OpStatus {
     unsafe {
         call_session(engine, |session| {
-            session.resize_with_safe_area(
-                width,
-                height,
-                dpr,
-                viewport::OpInsets {
-                    top,
-                    right,
-                    bottom,
-                    left,
-                },
-            )?;
-            session.request_redraw();
+            let insets = viewport::OpInsets {
+                top,
+                right,
+                bottom,
+                left,
+            };
+            let changed = session.logical != (width, height)
+                || session.dpr != dpr
+                || session.insets != insets;
+            session.resize_with_safe_area(width, height, dpr, insets)?;
+            if changed {
+                session.request_redraw();
+            }
             Ok(())
         })
     }
