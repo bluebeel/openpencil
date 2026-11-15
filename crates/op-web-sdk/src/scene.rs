@@ -14,19 +14,19 @@ impl Viewer {
         };
         // v1: pass an empty active-theme map (default theme axis).
         let active_theme: BTreeMap<String, String> = BTreeMap::new();
-        self.scene = Some(
+        self.scene = Some(std::sync::Arc::new(
             op_pen_loader::pen_document_to_layout_scene_with_geometry_mode(
                 doc,
                 &active_theme,
                 self.active_page,
                 self.preserve_authored_geometry,
             ),
-        );
+        ));
     }
 
     /// Return a reference to the cached layout scene, or `None` if no
     /// document has been loaded or `rebuild_scene` has not been called.
     pub fn scene(&self) -> Option<&op_editor_ui::layout_scene::LayoutScene> {
-        self.scene.as_ref()
+        self.scene.as_deref()
     }
 }

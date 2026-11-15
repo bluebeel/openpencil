@@ -740,6 +740,15 @@ impl RenderBackend for CanvasKitBackend {
     }
 }
 
+impl CanvasKitBackend {
+    /// Release an exclusively owned bridge (for SDK detach/superseded attach).
+    /// General backend Drop cannot do this: host measurement owners may share
+    /// the JS handle. Call only after its final paint/measure use.
+    pub fn dispose(&self) {
+        let _ = self.ck.dispose();
+    }
+}
+
 /// Initialise CanvasKit on `canvas_id` and return a ready `CanvasKitBackend`.
 pub async fn init_backend(
     canvas_id: &str,

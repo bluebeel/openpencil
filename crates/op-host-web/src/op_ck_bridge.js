@@ -14,10 +14,29 @@ function loadScript(src) {
     if (window.CanvasKitInit) return res();
     const s = document.createElement('script');
     s.src = src;
-    s.onload = res;
-    s.onerror = () => rej(new Error('failed to load ' + src));
+    s.onload = () => { s.onload = null; s.onerror = null; res(); };
+    s.onerror = () => {
+      s.onload = null; s.onerror = null; s.remove();
+      rej(new Error('failed to load ' + src));
+    };
     document.head.appendChild(s);
   });
+}
+
+// The wasm module is shared; surfaces/fonts/image caches below remain per
+// bridge. Concurrent mounts must not instantiate a full CanvasKit heap each.
+let canvasKitPromise = null;
+function sharedCanvasKit() {
+  if (canvasKitPromise) return canvasKitPromise;
+  const pending = loadScript('/canvaskit/canvaskit.js').then(() => {
+    if (typeof window.CanvasKitInit !== 'function') throw new Error('CanvasKitInit was not installed');
+    return window.CanvasKitInit({ locateFile: f => '/canvaskit/' + f });
+  });
+  canvasKitPromise = pending;
+  pending.catch(() => {
+    if (canvasKitPromise === pending) canvasKitPromise = null;
+  });
+  return pending;
 }
 
 function copyBytes(u8) {
@@ -462,8 +481,7 @@ export function opCkDrawRoundedShadow(CK, canvas, effects, source, values, corne
 // side can additionally register Local Font Access faces through
 // registerSystemFont().
 export async function opCkInit(canvasId) {
-  await loadScript('/canvaskit/canvaskit.js');
-  const CK = await CanvasKitInit({ locateFile: (f) => '/canvaskit/' + f });
+  const CK = await sharedCanvasKit();
   if (typeof createWebImageCaches !== 'function') {
     throw new Error('CanvasKit image cache factory was not configured');
   }
@@ -1023,7 +1041,15 @@ export async function opCkInit(canvasId) {
     }
     return null;
   };
-  const tfFor = (t, emojiRun) => systemTypefaceFor(t, emojiRun) || CK.Typeface.GetDefault();
+  let defaultTypeface = null;
+  const tfFor = (t, emojiRun) => {
+    const registered = systemTypefaceFor(t, emojiRun);
+    if (registered) return registered;
+    // GetDefault returns an owned Embind handle; keep one per bridge rather
+    // than leaking a fresh wrapper on every fallback glyph/run measurement.
+    defaultTypeface ||= CK.Typeface.GetDefault();
+    return defaultTypeface;
+  };
   const runWidth = (f, s) => { const ids = f.getGlyphIDs(s); return f.getGlyphWidths(ids).reduce((a, v) => a + v, 0); };
   // Normalize the primary family for imported-font registry mutations. Text
   // lookup itself uses every authored candidate via `familyTypefaceEntry`.
@@ -1288,7 +1314,38 @@ export async function opCkInit(canvasId) {
     }
   };
 
+  let disposed = false;
   return {
+    // Called only by an owner that has finished all paint/measure use. OpCk
+    // aliases in the full editor are deliberately not auto-disposed by Rust.
+    dispose() {
+      if (disposed) return;
+      disposed = true;
+      const release = handle => { try { handle?.delete?.(); } catch (_error) {} };
+      try { textMasks.cancel(); } catch (_error) {}
+      imageCaches.dispose?.();
+      runtimeEffects.dispose();
+      for (const font of registeredFamilyFontCache.values()) release(font);
+      registeredFamilyFontCache.clear();
+      registeredCoverageCache.clear(); coverageCache.clear();
+      for (const entry of browserTextCache.values()) release(entry?.image);
+      browserTextCache.clear();
+      // Paint may retain a tint filter; release it before its cached filters.
+      release(cachedFillPaint); release(cachedStrokePaint); release(cachedTintPaint);
+      for (const filter of tintFilterCache.values()) release(filter);
+      tintFilterCache.clear();
+      for (const path of svgPathCache.values()) release(path);
+      svgPathCache.clear();
+      const typefaces = new Set(systemTypefaces.map(entry => entry.tf));
+      for (const entry of importedTypefaces.values()) typefaces.add(entry.tf);
+      for (const entry of bundledTypefaces.values()) typefaces.add(entry.tf);
+      for (const typeface of typefaces) release(typeface);
+      release(defaultTypeface); defaultTypeface = null;
+      systemTypefaces.length = 0; systemTypefaceKeys.clear(); systemTypefacesByFamily.clear();
+      importedTypefaces.clear(); bundledTypefaces.clear(); paintSpaces.length = 0;
+      browserTextCanvas.width = 0; browserTextCanvas.height = 0;
+      release(surface);
+    },
     textMaskCapture(action) {return textMasks.command(action);},
     pushPaintSpace(x,y,w,h) {if(paintSpaces.length>=16)throw new Error('stroke paint-space nesting exceeds16');paintSpaces.push([x,y,w,h]);},
     popPaintSpace() {if(!paintSpaces.length)throw new Error('unbalanced stroke paint-space');paintSpaces.pop();},

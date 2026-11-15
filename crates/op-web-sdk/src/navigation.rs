@@ -140,7 +140,7 @@ impl Viewer {
     /// RAF pump reads the updated value on the next frame.
     pub(crate) fn push_viewport(&self) {
         use crate::render::push_viewport_to_render;
-        push_viewport_to_render(self.viewport);
+        push_viewport_to_render(self, self.viewport);
     }
 }
 
