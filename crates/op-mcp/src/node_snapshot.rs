@@ -19,6 +19,21 @@ fn try_value(node: &PenNode, depth: i32) -> Result<Value, serde_json::Error> {
         depth,
         fields: Map::new(),
         key: None,
+        header_only: false,
+    })
+}
+
+#[path = "node_snapshot_writer.rs"]
+mod writer;
+pub(super) use writer::write_snapshot;
+
+fn header_value(node: &PenNode, depth: i32) -> Result<Value, serde_json::Error> {
+    node.serialize(NodeSerializer {
+        node,
+        depth,
+        fields: Map::new(),
+        key: None,
+        header_only: true,
     })
 }
 
@@ -27,6 +42,7 @@ struct NodeSerializer<'a> {
     depth: i32,
     fields: Map<String, Value>,
     key: Option<String>,
+    header_only: bool,
 }
 
 impl NodeSerializer<'_> {
@@ -38,7 +54,8 @@ impl NodeSerializer<'_> {
         let value = if key == "children" {
             match self.node.children_ref() {
                 Some([]) => Value::Array(Vec::new()),
-                Some(_) if self.depth <= 0 => Value::String("...".into()),
+                Some(_) if self.depth != -1 && self.depth <= 0 => Value::String("...".into()),
+                Some(_) if self.header_only => Value::Array(Vec::new()),
                 Some(children) => Value::Array(
                     children
                         .iter()

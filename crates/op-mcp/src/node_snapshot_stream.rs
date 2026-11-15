@@ -72,9 +72,13 @@ fn append_nodes<'a>(
         if index > 0 {
             output.push(b',');
         }
-        let mut value = super::node_snapshot_value(node, depth);
-        transform(&mut value);
-        serde_json::to_writer(&mut *output, &value)?;
+        let start = output.len();
+        if super::super::node_snapshot::write_snapshot(output, node, depth, transform).is_err() {
+            // The legacy codec returns Null for a complete requested root when
+            // any descendant fails serialization. Roll back this root only.
+            output.truncate(start);
+            output.extend_from_slice(b"null");
+        }
     }
     output.push(b']');
     Ok(())
