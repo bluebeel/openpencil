@@ -26,7 +26,18 @@ pub(crate) fn shader(paint: GradientPaint) -> Option<ShaderPayload> {
         return None;
     }
     let inverse = inverse(paint.geometry.transform);
-    let mut uniforms = vec![uniform("size", vec![1.0, 1.0])];
+    let shape_uniforms = match &paint.geometry.shape {
+        GradientShape::Linear { .. } => 1usize,
+        GradientShape::Radial { .. } => 2usize,
+    };
+    let capacity = paint
+        .stops
+        .len()
+        .checked_mul(2)?
+        .checked_add(3 + shape_uniforms)?;
+    let mut uniforms = Vec::new();
+    uniforms.try_reserve_exact(capacity).ok()?;
+    uniforms.push(uniform("size", vec![1.0, 1.0]));
     let mut source =
         String::from("uniform float2 size;\nuniform float3 row0;\nuniform float3 row1;\n");
     let inv = inverse.unwrap_or([0.0; 6]);
@@ -54,8 +65,8 @@ pub(crate) fn shader(paint: GradientPaint) -> Option<ShaderPayload> {
         };
         last = offset;
         writeln!(source, "uniform float o{i}; uniform float4 c{i};").expect("String write");
-        uniforms.push(uniform(&format!("o{i}"), vec![offset as f32]));
-        uniforms.push(uniform(&format!("c{i}"), color.to_vec()));
+        uniforms.push(uniform(format!("o{i}"), vec![offset as f32]));
+        uniforms.push(uniform(format!("c{i}"), color.to_vec()));
     }
     source.push_str("float lin(float c) { return c <= 0.04045 ? c/12.92 : pow((c+0.055)/1.055,2.4); }\nfloat enc(float c) { return c <= 0.0031308 ? c*12.92 : 1.055*pow(max(c,0.0),1.0/2.4)-0.055; }\n");
     // Geometry does not choose interpolation policy. SVG explicitly uses
@@ -184,9 +195,9 @@ pub(crate) fn shader(paint: GradientPaint) -> Option<ShaderPayload> {
     })
 }
 
-fn uniform(name: &str, values: Vec<f32>) -> ShaderUniformPayload {
+fn uniform(name: impl Into<String>, values: Vec<f32>) -> ShaderUniformPayload {
     ShaderUniformPayload {
-        name: name.to_string(),
+        name: name.into(),
         values,
     }
 }

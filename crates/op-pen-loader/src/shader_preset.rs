@@ -77,9 +77,7 @@ fn uniform<'a>(body: &'a ShaderFillBody, name: &str) -> Option<&'a ShaderUniform
 /// statements so RuntimeEffect executes only the requested amount of work and
 /// the source string remains a natural compile-cache key.
 fn turbulence_sksl(num_octaves: usize) -> String {
-    let mut source = String::with_capacity(1_600);
-    source.push_str(
-        r#"uniform float2 baseFrequency;
+    const HEAD: &str = r#"uniform float2 baseFrequency;
 uniform float seed;
 uniform float2 size;
 
@@ -107,28 +105,30 @@ half4 main(float2 fragCoord) {
     float amplitude = 0.5;
     float total = 0.0;
     float weight = 0.0;
-"#,
-    );
-
-    for octave in 0..num_octaves {
-        if octave != 0 {
-            source.push_str(
-                "    point = point * 2.0 + float2(17.0, 29.0);\n\
-                 amplitude *= 0.5;\n",
-            );
-        }
-        source.push_str(
-            "    total += value_noise(point) * amplitude;\n\
-             weight += amplitude;\n",
-        );
-    }
-
-    source.push_str(
-        r#"    float noise = total / max(weight, 0.0001);
+"#;
+    const STEP: &str = "    point = point * 2.0 + float2(17.0, 29.0);\n\
+                 amplitude *= 0.5;\n";
+    const SAMPLE: &str = "    total += value_noise(point) * amplitude;\n\
+             weight += amplitude;\n";
+    const TAIL: &str = r#"    float noise = total / max(weight, 0.0001);
     return half4(noise, noise, noise, 1.0);
 }
-"#,
-    );
+"#;
+    // Caller resolves num_octaves through the existing bounded preset policy.
+    // The output's exact literal lengths avoid growth and retained spare bytes.
+    let capacity = HEAD.len()
+        + TAIL.len()
+        + SAMPLE.len() * num_octaves
+        + STEP.len() * num_octaves.saturating_sub(1);
+    let mut source = String::with_capacity(capacity);
+    source.push_str(HEAD);
+    for octave in 0..num_octaves {
+        if octave != 0 {
+            source.push_str(STEP);
+        }
+        source.push_str(SAMPLE);
+    }
+    source.push_str(TAIL);
     source
 }
 
