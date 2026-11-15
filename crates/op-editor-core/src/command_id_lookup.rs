@@ -453,6 +453,15 @@ impl Cache {
             }
         }
     }
+    /// Observe only already prepared locations. Cold/invalid scopes remain
+    /// unavailable; pending edits are usable only while their before witness holds.
+    pub(super) fn is_ready(&self, state: &EditorState) -> bool {
+        match self {
+            Self::Ready(_) => true,
+            Self::Pending(index, pending) => pending.before(index, state),
+            _ => false,
+        }
+    }
     pub(super) fn ready(&mut self, state: &EditorState) -> bool {
         self.settle(state);
         if let Self::Bounded(limit) = self {
@@ -460,12 +469,9 @@ impl Cache {
         } else if matches!(self, Self::Unbuilt) {
             *self = Self::Ready(Index::new(&state.doc));
         }
-        match self {
-            Self::Ready(_) => true,
-            Self::Pending(index, pending) => pending.before(index, state),
-            _ => false,
-        }
+        self.is_ready(state)
     }
+
     pub(super) fn path(
         &mut self,
         state: &EditorState,

@@ -206,6 +206,17 @@ impl EditorState {
     }
 }
 impl<'a> TrustedNodeLookup<'a> {
+    /// Whether a previously prepared authority index is usable right now.
+    /// This never constructs an index or settles/rewrites pending locations.
+    /// Cold/unavailable scopes can keep one fresh multi-ID forest walk.
+    pub fn is_ready(&self) -> bool {
+        self.state
+            .command_id_seed
+            .lookup
+            .lock()
+            .ok()
+            .is_some_and(|cache| cache.is_ready(self.state))
+    }
     /// False allows multi-ID callers to keep one fresh forest walk when the
     /// bounded index cannot be built, rather than scanning once per ID.
     pub fn is_indexed(&self) -> bool {
